@@ -1,4 +1,6 @@
-playwright>=1.49
 psycopg[binary]>=3.2
 python-dotenv>=1.0
 pytest>=8.0
+fastapi>=0.118,<1
+uvicorn[standard]>=0.37,<1
+google-genai>=2.23,<3

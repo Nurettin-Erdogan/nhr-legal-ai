@@ -16,31 +16,38 @@ taranması gerekmez; tarama pahalı ve hız sınırlıdır.
 
 | Modül | Sorumluluk |
 | --- | --- |
-| `ingestion/yargitay/parser.py` | Metinden esas no, karar no, tarih ve daire çıkarımı |
+| `ingestion/yargitay/portal.py` | Resmî JSON uçları, oturum, CAPTCHA/hata tespiti ve HTML temizleme |
+| `ingestion/yargitay/parser.py` | Eski/düz metin girdileri için yedek künye ayrıştırma |
 | `ingestion/yargitay/chunking.py` | Karar metnini RAG parçalarına bölme |
 | `ingestion/yargitay/archive.py` | Diskteki JSON arşivi ve tekilleştirme indeksi |
-| `ingestion/yargitay/scraper.py` | Playwright ile portal tarama, retry ve hız sınırlama |
+| `ingestion/yargitay/scraper.py` | Arama sayfalama, hız sınırlama ve normalize karar üretimi |
 | `ingestion/yargitay/store.py` | Veritabanına upsert |
 | `ingestion/cli.py` | Komut satırı arayüzü |
 
 ### Tekilleştirme
 
-Her karar için mahkeme, daire, esas ve karar numarasından türetilen bir
-`external_id` üretilir:
+Güncel portal kayıtlarında resmî `id` alanından bir `external_id` üretilir:
 
 ```
-yargitay/9-hukuk-dairesi/2019-1234/2021-5678
+yargitay:1224329000
 ```
 
 Bu değer hem arşiv indeksinin hem de `legal_sources (source_type, external_id)`
-tekil indeksinin anahtarıdır; aynı karar tekrar tarandığında yeni satır
-oluşmaz. Esas veya karar numarası okunamayan kayıtlar tekilleştirilemeyeceği
-için atlanır ve loglanır.
+tekil indeksinin anahtarıdır. `daire`, `esasNo`, `kararNo` ve `kararTarihi`
+arama yanıtının yapılandırılmış alanlarından alınır; karar gövdesindeki benzer
+numaralar künye sanılmaz. Eski arşivlerin bileşik kimlikleri okunmaya devam eder.
 
 ### Ayrıştırma
 
-`parser.py` yalnızca düz metinle çalışır, ağ veya tarayıcı bağımlılığı yoktur;
-bu nedenle portal HTML'i değişse bile testleri geçerliliğini korur. Hem
+Portalın güncel arayüzünde kullanılan akış şudur:
+
+1. `GET /` ile oturum açılır.
+2. `POST /detayliArama` ile arama bağlamı kurulur.
+3. `POST /aramadetaylist` ile yapılandırılmış karar listesi alınır.
+4. `GET /getDokuman?id=...` ile tam karar HTML'i alınır ve düz metne çevrilir.
+
+Bu yaklaşım ekrandaki CSS sınıflarına bağlı değildir. `parser.py` eski/düz metin
+girdileri için ağ bağımlılığı olmayan yedek ayrıştırıcıdır. Hem
 etiketli (`ESAS NO : 2019/1234`) hem de son ekli (`2019/1234 E.`) biçimler
 desteklenir.
 
@@ -53,10 +60,16 @@ içerdiğinden orada etiketsiz tarihe izin verilir.
 
 ### Parçalama ve embedding
 
-`legal_chunks` satırları paragraf sınırları korunarak üretilir; `embedding`
-alanı boş bırakılır. Embedding modeli seçildikten sonra
-`database/migrations/004_configure_embeddings.sql` çalıştırılıp vektörler geri
-doldurulmalıdır.
+`legal_chunks` satırları paragraf sınırları korunarak üretilir; ilk aktarımda
+`embedding` alanı boş bırakılır. Depolama
+`database/migrations/004_configure_embeddings.sql` ile modelin boyutuna göre
+yapılandırılır. Ardından `python -m ingestion.cli embed` komutu eksik veya model
+adı değişmiş vektörleri geri doldurur. İşlem kesilirse daha önce tamamlanan
+parçalar korunur ve sonraki çalıştırma kaldığı yerden devam eder.
+
+RAG katmanı embedding bulunan parçalarda cosine benzerliği ile Türkçe tam metin
+sonuçlarını reciprocal-rank fusion ile birleştirir. Embedding servisi
+kullanılamadığında tam metin araması çalışmaya devam eder.
 
 Karar metni değişmediyse parçalar yeniden üretilmez; böylece o parçalara
 verilmiş atıflar korunur.
@@ -66,7 +79,6 @@ verilmiş atıflar korunur.
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe -m playwright install chromium
 ```
 
 ## Kullanım
@@ -80,9 +92,10 @@ Tarama:
   --max-decisions 50
 ```
 
-Portalın DOM yapısını izlemek için `--headed`, istekler arası beklemeyi
-değiştirmek için `--delay` kullanılır. Arşiv varsayılan olarak `data/yargitay`
-altına yazılır ve `.gitignore` kapsamındadır.
+İstekler arası beklemeyi `--delay`, liste sayfa boyutunu `--page-size` ile
+değiştirebilirsiniz. `--refresh-existing` arşivde bulunan kararların metnini
+yeniden kontrol eder. Arşiv varsayılan olarak `data/yargitay` altına yazılır ve
+`.gitignore` kapsamındadır.
 
 Aktarım:
 
@@ -109,11 +122,10 @@ $env:NHR_TEST_DATABASE_URL = $env:DATABASE_ADMIN_URL
 
 ## Bilinen sınırlar
 
-- `ScraperConfig` içindeki CSS seçicileri ilk prototipten devralındı ve canlı
-  portala karşı doğrulanmadı. İlk çalıştırma `--headed` ile yapılıp seçiciler
-  gerekirse güncellenmelidir.
-- Portalın kullanım koşulları ve `robots.txt` kuralları üretim taramasından
-  önce gözden geçirilmelidir; varsayılan 1.5 saniyelik bekleme koruyucu bir
-  alt sınırdır.
-- Kararlar yalnızca `legal_chunks` düzeyinde saklanır; embedding üretimi ve
-  arama katmanı henüz bağlı değildir.
+- Portal CAPTCHA istediğinde süreç bunu aşmaya çalışmaz ve açık hatayla durur.
+- Resmî uçlar belgelenmiş genel API sözleşmesi değildir; yanıt sözleşmesi
+  değişirse `portal.py` adaptörü ve sözleşme testleri güncellenmelidir.
+- Üretim taramasında resmî sitelerin kullanım şartları, makul hız sınırı ve
+  yeniden kullanım koşulları gözetilmelidir. Varsayılan bekleme 1.5 saniyedir.
+- Mevcut korpusta semantik aramanın devreye girmesi için API anahtarıyla
+  `ingestion.cli embed` geri doldurma komutunun ayrıca çalıştırılması gerekir.
