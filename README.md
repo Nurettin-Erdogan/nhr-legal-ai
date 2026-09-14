@@ -7,3 +7,7 @@ Hukuki araştırma, doküman analizi ve kaynak gösterimli yapay zekâ soru-ceva
 Proje PostgreSQL 16, pgvector ve Docker Compose kullanır. Yerel veritabanı varsayılan olarak `localhost:5433` adresinde çalışır.
 
 Kurulum, V2 migration, RLS, embedding indeksleri ve test adımları için [veritabanı kurulum dokümanına](docs/database-setup.md) bakın.
+
+## Veri aktarımı
+
+Yargıtay kararları `ingestion` paketiyle toplanır ve hukuk tablolarına aktarılır. Ayrıntılar için [Yargıtay karar aktarımı dokümanına](docs/ingestion-yargitay.md) bakın.
