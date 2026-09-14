@@ -73,3 +73,30 @@ Ardından mevcut hukuk parçalarının vektörlerini üretin:
 Embedding bulunan korpuslarda RAG, Türkçe tam metin ve cosine benzerlik
 sonuçlarını reciprocal-rank fusion ile birleştirir. Embedding servisi geçici
 olarak kullanılamazsa mevcut tam metin aramasıyla çalışmaya devam eder.
+
+## Kullanıcı hesabı
+
+Kayıt ve giriş ekranı `http://localhost:3000/auth` adresindedir. Parolalar
+Argon2 ile hash'lenir; süreli JWT hem API yanıtında hem de `HttpOnly`, `SameSite=Lax`
+cookie olarak verilir. Yerel `.env` dosyasına en az 32 karakterlik rastgele bir
+imzalama sırrı ekleyin:
+
+```env
+JWT_SECRET=buraya_uzun_rastgele_bir_deger
+JWT_EXPIRE_MINUTES=480
+AUTH_COOKIE_SECURE=false
+ALLOW_REGISTRATION=true
+```
+
+Production ortamında `AUTH_COOKIE_SECURE=true` kullanılmalı ve uygulama HTTPS
+üzerinden sunulmalıdır. Yeni hesaplara başlangıçta `lawyer` rolü atanır; sonraki
+proje ve belge işlemleri runtime bağlantısında kullanıcı kimliğini PostgreSQL
+RLS oturumuna aktarabilir.
+
+## Proje ve dava dosyaları
+
+`http://localhost:3000/projects` ekranı oturum kullanıcısının erişebildiği dava,
+icra, danışmanlık ve araştırma projelerini listeler. Yeni proje oluşturulurken
+kullanıcı `owner` üye olarak eklenir. API, JWT içindeki kullanıcı kimliğini
+transaction boyunca `app.user_id` PostgreSQL ayarına aktarır; proje ve belge
+görünürlüğünü mevcut RLS politikaları sınırlar.

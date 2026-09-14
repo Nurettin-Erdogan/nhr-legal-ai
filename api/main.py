@@ -5,9 +5,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.ai.routes import router as ai_router
+from api.auth.routes import router as auth_router
 from api.config import get_settings
 from api.db import database_connection
 from api.legal import router as legal_router
+from api.projects import router as projects_router
 from api.schemas import HealthResponse
 
 app = FastAPI(
@@ -27,6 +29,8 @@ app.add_middleware(
 
 app.include_router(legal_router)
 app.include_router(ai_router)
+app.include_router(auth_router)
+app.include_router(projects_router)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["system"])

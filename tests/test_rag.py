@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date
 from uuid import UUID
 
+from api.ai.providers import GeminiProvider
 from api.ai.rag import RAGContext, build_grounded_prompt, generate_grounded_answer
 
 
@@ -56,3 +57,22 @@ def test_provider_receives_grounding_rules_and_context():
     assert answer.endswith("[K1]")
     assert "bilgi veya karar uydurma" in provider.system_instruction
     assert CONTEXT.title in provider.prompt
+
+
+def test_gemini_provider_classifies_transient_errors():
+    assert GeminiProvider._is_transient(RuntimeError("503 high demand"))
+    assert GeminiProvider._is_transient(RuntimeError("429 rate limit"))
+    assert not GeminiProvider._is_transient(RuntimeError("invalid API key"))
+    assert not GeminiProvider._is_transient(
+        RuntimeError("429 prepayment credits are depleted")
+    )
+
+
+def test_gemini_provider_hides_raw_billing_error():
+    error = GeminiProvider._public_error(
+        RuntimeError("429 RESOURCE_EXHAUSTED: prepayment credits are depleted; raw-data")
+    )
+
+    assert error.status_code == 429
+    assert "kredisi tükenmiş" in str(error)
+    assert "raw-data" not in str(error)

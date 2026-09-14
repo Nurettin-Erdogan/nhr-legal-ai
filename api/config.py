@@ -11,6 +11,7 @@ from dotenv import dotenv_values, load_dotenv
 @dataclass(frozen=True, slots=True)
 class Settings:
     database_url: str
+    admin_database_url: str | None
     cors_origins: tuple[str, ...]
     ai_provider: str
     ai_model: str
@@ -20,6 +21,10 @@ class Settings:
     embedding_model: str
     embedding_dimensions: int
     embedding_api_key: str | None
+    jwt_secret: str | None
+    jwt_expire_minutes: int
+    auth_cookie_secure: bool
+    allow_registration: bool
 
 
 def _database_url() -> str:
@@ -49,9 +54,14 @@ def get_settings() -> Settings:
     gemini_api_key = os.getenv("GEMINI_API_KEY") or file_values.get("GEMINI_API_KEY") or None
     return Settings(
         database_url=_database_url(),
+        admin_database_url=(
+            os.getenv("DATABASE_ADMIN_URL")
+            or file_values.get("DATABASE_ADMIN_URL")
+            or None
+        ),
         cors_origins=tuple(value.strip() for value in origins.split(",") if value.strip()),
         ai_provider=os.getenv("AI_PROVIDER", "gemini").strip().lower(),
-        ai_model=os.getenv("AI_MODEL", "gemini-3.8-flash").strip(),
+        ai_model=os.getenv("AI_MODEL", "gemini-3.5-flash-lite").strip(),
         gemini_api_key=gemini_api_key,
         rag_top_k=max(1, min(int(os.getenv("RAG_TOP_K", "6")), 12)),
         embedding_provider=os.getenv("EMBEDDING_PROVIDER", "gemini").strip().lower(),
@@ -64,4 +74,12 @@ def get_settings() -> Settings:
             or file_values.get("EMBEDDING_API_KEY")
             or gemini_api_key
         ),
+        jwt_secret=os.getenv("JWT_SECRET") or file_values.get("JWT_SECRET") or None,
+        jwt_expire_minutes=max(
+            5, min(int(os.getenv("JWT_EXPIRE_MINUTES", "480")), 10080)
+        ),
+        auth_cookie_secure=os.getenv("AUTH_COOKIE_SECURE", "false").lower()
+        in {"1", "true", "yes"},
+        allow_registration=os.getenv("ALLOW_REGISTRATION", "true").lower()
+        in {"1", "true", "yes"},
     )

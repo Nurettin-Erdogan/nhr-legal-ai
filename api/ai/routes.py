@@ -92,7 +92,7 @@ async def answer_question(request: AIAnswerRequest) -> AIAnswerResponse:
             contexts=contexts,
         )
     except AIProviderError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     citations = [
         AICitation(
