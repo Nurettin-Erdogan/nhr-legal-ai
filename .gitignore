@@ -1,0 +1,42 @@
+# Ortam değişkenleri / gizli bilgiler
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / frontend
+node_modules/
+dist/
+build/
+.next/
+
+# .NET
+bin/
+obj/
+*.user
+*.suo
+
+# IDE / işletim sistemi
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Loglar
+*.log
+logs/
+
+# Yerel veri / yüklemeler
+uploads/
+data/
+
+# Docker/PostgreSQL yerel hacimleri
+postgres_data/
