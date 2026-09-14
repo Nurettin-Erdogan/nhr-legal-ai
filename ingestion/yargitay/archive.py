@@ -7,6 +7,7 @@ aktarım tekrar çalıştırılabilir.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -41,7 +42,12 @@ class DecisionArchive:
 
     @staticmethod
     def _file_name(external_id: str) -> str:
-        return f"{external_id.replace('/', '__')}.json"
+        # ':' is not a valid Windows file-name character. The DB identifier is
+        # kept intact inside JSON; only its on-disk representation is sanitized.
+        return f"{re.sub(r'[^A-Za-z0-9._-]+', '__', external_id)}.json"
+
+    def contains(self, external_id: str) -> bool:
+        return external_id in self._external_ids
 
     def __contains__(self, external_id: str) -> bool:
         return external_id in self._external_ids
@@ -50,18 +56,22 @@ class DecisionArchive:
         return len(self._external_ids)
 
     def save(self, decision: CourtDecision) -> bool:
-        """Kararı diske yazar; aynı karar daha önce kaydedilmişse `False` döner."""
-        if decision.external_id in self._external_ids:
-            return False
-
+        """Yeni veya değişmiş kararı yazar; aynı içerikteyse `False` döner."""
         path = self.root / self._file_name(decision.external_id)
+        if decision.external_id in self._external_ids:
+            if path.exists():
+                current = json.loads(path.read_text(encoding="utf-8"))
+                if current.get("content_hash") == decision.content_hash:
+                    return False
+
         path.write_text(
             json.dumps(decision.to_json(), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
-        self._external_ids.add(decision.external_id)
-        self._write_index()
+        if decision.external_id not in self._external_ids:
+            self._external_ids.add(decision.external_id)
+            self._write_index()
         return True
 
     def iter_decisions(self) -> Iterator[CourtDecision]:

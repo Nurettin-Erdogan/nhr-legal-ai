@@ -11,8 +11,9 @@ from typing import Any
 class CourtDecision:
     """Ayrıştırılmış tek bir mahkeme kararı.
 
-    `external_id` mahkeme, daire, esas ve karar numarasından türetilir; hem disk
-    arşivinde hem de `legal_sources` tablosunda tekilleştirme anahtarıdır.
+    `external_id` mümkünse resmî kaynağın değişmeyen doküman kimliğinden,
+    eski arşivlerde ise karar künyesinden türetilir. Disk arşivinde ve
+    `legal_sources` tablosunda tekilleştirme anahtarıdır.
     """
 
     court_name: str

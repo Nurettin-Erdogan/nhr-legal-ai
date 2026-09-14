@@ -1,261 +1,207 @@
-"""Yargıtay karar arama portalından karar toplayan Playwright tabanlı scraper.
-
-Portal DOM'u değişebildiği için seçiciler `ScraperConfig` üzerinden
-değiştirilebilir; ayrıştırma ve tekilleştirme mantığı DOM'dan bağımsızdır.
-"""
-
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
-import time
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 
-from playwright.async_api import (
-    Browser,
-    BrowserContext,
-    Page,
-    TimeoutError as PlaywrightTimeoutError,
-    async_playwright,
+from .archive import DecisionArchive
+from .models import CourtDecision
+from .parser import build_title, normalize_text
+from .portal import (
+    BASE_URL,
+    CaptchaRequiredError,
+    PortalDecisionRow,
+    PortalError,
+    YargitayPortalClient,
+    document_url,
+    html_to_text,
+    parse_portal_date,
+    portal_external_id,
 )
-
-from ingestion.yargitay.archive import DecisionArchive
-from ingestion.yargitay.parser import DEFAULT_COURT_NAME, parse_decision
 
 logger = logging.getLogger(__name__)
-
-_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-)
 
 
 @dataclass(slots=True)
 class ScraperConfig:
-    """Portal adresi, seçiciler ve hız sınırlama ayarları.
-
-    Seçiciler canlı portalın güncel DOM'una göre doğrulanmalıdır; varsayılanlar
-    ilk prototipten devralınmıştır.
-    """
-
-    base_url: str = "https://karararama.yargitay.gov.tr"
-    headless: bool = True
-    timeout_ms: int = 45_000
-    request_delay_seconds: float = 1.5
+    keyword: str
+    chamber: str
+    max_decisions: int = 50
+    output_dir: Path = Path("data/yargitay")
+    page_size: int = 20
+    delay_seconds: float = 1.5
+    timeout_seconds: float = 30
     max_retries: int = 3
-    retry_backoff_seconds: float = 2.0
-    search_input_selector: str = "#aranan"
-    search_button_selector: str = "#btnArama"
-    results_selector: str = ".search-result, .karar-listesi, .panel-group"
-    row_selector: str = ".panel-heading, .karar-row"
-    body_selector: str = ".panel-body, .karar-icerik"
-    next_page_selector: str = "a:has-text('»'), .pagination-next, #btnNext"
+    refresh_existing: bool = False
 
 
 @dataclass(slots=True)
 class ScrapeStats:
+    processed: int = 0
     saved: int = 0
     duplicates: int = 0
-    unparsed: int = 0
     failed: int = 0
     pages: int = 0
+    records_filtered: int = 0
+
+
+def _search_filters(config: ScraperConfig, *, page_number: int, page_size: int) -> dict[str, Any]:
+    chamber_field = "birimYrgKurulDaire"
+    if "hukuk" in config.chamber.casefold():
+        chamber_field = "birimYrgHukukDaire"
+    elif "ceza" in config.chamber.casefold():
+        chamber_field = "birimYrgCezaDaire"
+
+    filters: dict[str, Any] = {
+        "arananKelime": config.keyword.strip(),
+        "birimYrgKurulDaire": "",
+        "birimYrgHukukDaire": "",
+        "birimYrgCezaDaire": "",
+        "esasYil": "",
+        "esasIlkSiraNo": "",
+        "esasSonSiraNo": "",
+        "kararYil": "",
+        "kararIlkSiraNo": "",
+        "kararSonSiraNo": "",
+        "kararTarihiIlk": "",
+        "kararTarihiSon": "",
+        # Portal radio values: 1=esas no, 2=karar no, 3=karar tarihi.
+        "siralama": 3,
+        "siralamaDirection": "desc",
+        "pageSize": page_size,
+        "pageNumber": page_number,
+    }
+    filters[chamber_field] = config.chamber.strip()
+    return filters
+
+
+def decision_from_portal_row(
+    row: PortalDecisionRow,
+    document_html: str,
+    *,
+    base_url: str = BASE_URL,
+    scraped_at: datetime | None = None,
+) -> CourtDecision:
+    required = {
+        "dokuman kimligi": row.document_id,
+        "daire": row.chamber,
+        "esas no": row.docket_no,
+        "karar no": row.decision_no,
+        "karar tarihi": row.decision_date,
+    }
+    missing = [label for label, value in required.items() if not value]
+    if missing:
+        raise PortalError(f"Karar liste kaydinda eksik alanlar var: {', '.join(missing)}")
+
+    body = normalize_text(html_to_text(document_html))
+    if not body:
+        raise PortalError(f"Karar metni HTML'den ayristirilamadi: {row.document_id}")
+
+    decision_date = parse_portal_date(row.decision_date)
+    if decision_date is None:
+        raise PortalError(f"Karar tarihi ayristirilamadi: {row.decision_date}")
+    content_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    return CourtDecision(
+        court_name="Yargıtay",
+        chamber=row.chamber,
+        docket_no=row.docket_no,
+        decision_no=row.decision_no,
+        decision_date=decision_date,
+        title=build_title("Yargıtay", row.chamber, row.docket_no, row.decision_no, decision_date),
+        raw_text=body,
+        external_id=portal_external_id(row.document_id),
+        content_hash=content_hash,
+        source_url=document_url(row.document_id, base_url=base_url),
+        scraped_at=scraped_at or datetime.now(UTC),
+        metadata={
+            "source": "karararama.yargitay.gov.tr",
+            "source_document_id": row.document_id,
+            "search_keyword": row.keyword,
+            "header": {
+                "daire": row.chamber,
+                "esas_no": row.docket_no,
+                "karar_no": row.decision_no,
+                "karar_tarihi": row.decision_date,
+            },
+        },
+    )
 
 
 class YargitayScraper:
-    def __init__(
-        self,
-        archive: DecisionArchive,
-        *,
-        config: ScraperConfig | None = None,
-        chamber: str | None = None,
-        court_name: str = DEFAULT_COURT_NAME,
-    ) -> None:
-        self.archive = archive
-        self.config = config or ScraperConfig()
-        self.chamber = chamber
-        self.court_name = court_name
-        self._last_request_at = 0.0
-
-    async def _throttle(self) -> None:
-        elapsed = time.monotonic() - self._last_request_at
-        remaining = self.config.request_delay_seconds - elapsed
-        if remaining > 0:
-            await asyncio.sleep(remaining)
-        self._last_request_at = time.monotonic()
-
-    async def _with_retry(self, description: str, action):
-        last_error: Exception | None = None
-
-        for attempt in range(1, self.config.max_retries + 1):
-            try:
-                await self._throttle()
-                return await action()
-            except PlaywrightTimeoutError as error:
-                last_error = error
-                backoff = self.config.retry_backoff_seconds * attempt
-                logger.warning(
-                    "%s zaman aşımına uğradı (deneme %s/%s), %.1f sn sonra tekrar denenecek.",
-                    description,
-                    attempt,
-                    self.config.max_retries,
-                    backoff,
-                )
-                await asyncio.sleep(backoff)
-
-        raise TimeoutError(f"{description} {self.config.max_retries} denemede tamamlanamadı.") from last_error
-
-    async def _open_results(self, page: Page, keyword: str) -> None:
-        await self._with_retry(
-            "Portal açılışı",
-            lambda: page.goto(
-                self.config.base_url,
-                timeout=self.config.timeout_ms,
-                wait_until="domcontentloaded",
-            ),
+    def __init__(self, config: ScraperConfig, *, client: YargitayPortalClient | None = None) -> None:
+        if config.max_decisions <= 0:
+            raise ValueError("max_decisions pozitif olmalidir")
+        if config.page_size <= 0:
+            raise ValueError("page_size pozitif olmalidir")
+        if not config.keyword.strip() and not config.chamber.strip():
+            raise ValueError("En az bir arama kelimesi veya daire verilmelidir")
+        self.config = config
+        self.archive = DecisionArchive(config.output_dir)
+        self.client = client or YargitayPortalClient(
+            timeout_seconds=config.timeout_seconds,
+            max_retries=config.max_retries,
         )
 
-        search_input = page.locator(self.config.search_input_selector)
-        if await search_input.count() > 0:
-            await search_input.fill(keyword)
+    async def _pause(self) -> None:
+        if self.config.delay_seconds > 0:
+            await asyncio.sleep(self.config.delay_seconds)
 
-        await self._with_retry(
-            "Arama isteği",
-            lambda: page.locator(self.config.search_button_selector).click(
-                timeout=self.config.timeout_ms
-            ),
-        )
+    async def run(self) -> ScrapeStats:
+        stats = ScrapeStats()
+        first_page_size = min(self.config.page_size, self.config.max_decisions)
+        initial_filters = _search_filters(self.config, page_number=1, page_size=first_page_size)
+        await asyncio.to_thread(self.client.begin_detailed_search, initial_filters)
 
-        await self._with_retry(
-            "Sonuç listesi",
-            lambda: page.wait_for_selector(
-                self.config.results_selector,
-                timeout=self.config.timeout_ms,
-            ),
-        )
-
-    async def _collect_page(self, page: Page, remaining: int, stats: ScrapeStats) -> int:
-        rows = page.locator(self.config.row_selector)
-        row_count = await rows.count()
-
-        if row_count == 0:
-            logger.warning("Sayfada karar satırı bulunamadı.")
-            return 0
-
-        saved_here = 0
-
-        for position in range(row_count):
-            if saved_here >= remaining:
+        page_number = 1
+        while stats.processed < self.config.max_decisions:
+            remaining = self.config.max_decisions - stats.processed
+            page_size = min(self.config.page_size, remaining)
+            filters = _search_filters(self.config, page_number=page_number, page_size=page_size)
+            page = await asyncio.to_thread(self.client.search_page, filters)
+            stats.pages += 1
+            stats.records_filtered = page.records_filtered
+            if not page.rows:
                 break
 
-            try:
-                row = rows.nth(position)
-                header_text = await row.inner_text()
-
-                await self._throttle()
-                await row.click(timeout=self.config.timeout_ms)
-
-                body = page.locator(self.config.body_selector).nth(position)
-                body_text = await body.inner_text()
-
-                decision = parse_decision(
-                    header_text=header_text,
-                    body_text=body_text,
-                    source_url=page.url,
-                    court_name=self.court_name,
-                    fallback_chamber=self.chamber,
-                    scraped_at=datetime.now(timezone.utc),
-                )
-
-                if decision is None:
-                    stats.unparsed += 1
-                    logger.warning(
-                        "Esas/karar numarası okunamadı, kayıt atlandı: %s",
-                        header_text[:120],
-                    )
+            for row in page.rows[:remaining]:
+                stats.processed += 1
+                if not row.document_id:
+                    stats.failed += 1
                     continue
 
-                if self.archive.save(decision):
-                    saved_here += 1
-                    stats.saved += 1
-                    logger.info("Kaydedildi: %s", decision.external_id)
-                else:
+                external_id = portal_external_id(row.document_id)
+                if self.archive.contains(external_id) and not self.config.refresh_existing:
                     stats.duplicates += 1
+                    continue
 
-            except PlaywrightTimeoutError:
-                stats.failed += 1
-                logger.warning("Karar satırı zaman aşımına uğradı, atlanıyor.")
-            except Exception as error:
-                stats.failed += 1
-                logger.exception("Karar satırı işlenemedi: %s", error)
-
-        return saved_here
-
-    async def _go_to_next_page(self, page: Page) -> bool:
-        next_button = page.locator(self.config.next_page_selector)
-
-        if await next_button.count() == 0 or not await next_button.first.is_visible():
-            return False
-
-        await self._throttle()
-        await next_button.first.click(timeout=self.config.timeout_ms)
-        await page.wait_for_selector(
-            self.config.results_selector,
-            timeout=self.config.timeout_ms,
-        )
-        return True
-
-    async def scrape(self, *, keyword: str = "", max_decisions: int = 50) -> ScrapeStats:
-        stats = ScrapeStats()
-        logger.info(
-            "Scraper başlıyor | daire=%s | hedef=%s karar",
-            self.chamber or "tümü",
-            max_decisions,
-        )
-
-        async with async_playwright() as playwright:
-            browser: Browser = await playwright.chromium.launch(
-                headless=self.config.headless,
-                args=["--disable-blink-features=AutomationControlled"],
-            )
-            context: BrowserContext = await browser.new_context(
-                viewport={"width": 1920, "height": 1080},
-                user_agent=_USER_AGENT,
-            )
-            page = await context.new_page()
-
-            try:
-                await self._open_results(page, keyword)
-
-                while stats.saved < max_decisions:
-                    stats.pages += 1
-                    logger.info("Sayfa %s taranıyor.", stats.pages)
-
-                    saved_here = await self._collect_page(
-                        page,
-                        max_decisions - stats.saved,
-                        stats,
+                try:
+                    await self._pause()
+                    document_html = await asyncio.to_thread(self.client.fetch_document_html, row.document_id)
+                    decision = decision_from_portal_row(
+                        row,
+                        document_html,
+                        base_url=self.client.base_url,
                     )
+                    if self.archive.save(decision):
+                        stats.saved += 1
+                    else:
+                        stats.duplicates += 1
+                except CaptchaRequiredError:
+                    stats.failed += 1
+                    raise
+                except PortalError as exc:
+                    stats.failed += 1
+                    logger.warning("Karar alinamadi: %s | %s", row.document_id, exc)
 
-                    if stats.saved >= max_decisions:
-                        break
+            if stats.processed >= self.config.max_decisions:
+                break
+            if page.records_filtered and page_number * page_size >= page.records_filtered:
+                break
+            page_number += 1
+            await self._pause()
 
-                    if not await self._go_to_next_page(page):
-                        logger.info("Son sayfaya ulaşıldı.")
-                        break
-
-                    if saved_here == 0 and stats.duplicates == 0:
-                        logger.info("Yeni karar bulunamadı, tarama durduruldu.")
-                        break
-            finally:
-                await context.close()
-                await browser.close()
-
-        logger.info(
-            "Tarama bitti | yeni=%s | mükerrer=%s | ayrıştırılamayan=%s | hatalı=%s",
-            stats.saved,
-            stats.duplicates,
-            stats.unparsed,
-            stats.failed,
-        )
         return stats

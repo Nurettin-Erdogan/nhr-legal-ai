@@ -22,10 +22,19 @@ logger = logging.getLogger(__name__)
 IngestStatus = Literal["created", "updated", "unchanged"]
 
 _SELECT_EXISTING = """
-SELECT id, content_hash
-FROM legal_sources
-WHERE source_type = 'court_decision'
-  AND external_id = %s
+SELECT
+    ls.id,
+    ls.content_hash,
+    EXISTS (
+        SELECT 1
+        FROM legal_chunks lc
+        JOIN citations c ON c.legal_chunk_id = lc.id
+        WHERE lc.legal_source_id = ls.id
+    ) AS has_citations
+FROM legal_sources ls
+WHERE ls.source_type = 'court_decision'
+  AND ls.external_id = %s
+FOR UPDATE OF ls
 """
 
 _UPSERT_SOURCE = """
@@ -143,6 +152,10 @@ class IngestSummary:
         )
 
 
+class CitedDecisionChangedError(RuntimeError):
+    """A cited decision changed and its stable chunks cannot be replaced."""
+
+
 def _write_chunks(
     cursor: psycopg.Cursor,
     legal_source_id: str,
@@ -184,6 +197,13 @@ def upsert_decision(
         cursor.execute(_SELECT_EXISTING, (decision.external_id,))
         existing = cursor.fetchone()
 
+        content_changed = existing is None or existing[1] != decision.content_hash
+        if existing is not None and content_changed and existing[2]:
+            raise CitedDecisionChangedError(
+                f"Atif verilmis karar metni degisti; chunk'lar korunarak aktarim durduruldu: "
+                f"{decision.external_id}"
+            )
+
         cursor.execute(
             _UPSERT_SOURCE,
             {
@@ -214,8 +234,6 @@ def upsert_decision(
 
         cursor.execute(_COUNT_CHUNKS, (legal_source_id,))
         chunk_count = cursor.fetchone()[0]
-
-        content_changed = existing is None or existing[1] != decision.content_hash
 
         if content_changed or chunk_count == 0:
             chunk_count = _write_chunks(cursor, legal_source_id, decision, max_chunk_chars)

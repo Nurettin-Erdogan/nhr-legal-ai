@@ -15,7 +15,7 @@ psycopg = pytest.importorskip("psycopg")
 
 from ingestion.yargitay.models import CourtDecision
 from ingestion.yargitay.parser import content_hash
-from ingestion.yargitay.store import upsert_decision
+from ingestion.yargitay.store import CitedDecisionChangedError, upsert_decision
 
 DATABASE_URL = os.getenv("NHR_TEST_DATABASE_URL")
 
@@ -136,6 +136,47 @@ def test_changed_text_updates_source_and_rebuilds_chunks(connection):
         (first.legal_source_id,),
     )
     assert stored_hash == content_hash(updated_text)
+
+
+def test_changed_text_does_not_replace_cited_chunks(connection):
+    first = upsert_decision(connection, _decision())
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "INSERT INTO users (email, full_name) VALUES (%s, %s) RETURNING id",
+            ("citation-guard@example.test", "Citation Guard"),
+        )
+        user_id = cursor.fetchone()[0]
+        cursor.execute(
+            "INSERT INTO conversations (created_by, title) VALUES (%s, %s) RETURNING id",
+            (user_id, "Test"),
+        )
+        conversation_id = cursor.fetchone()[0]
+        cursor.execute(
+            "INSERT INTO messages (conversation_id, role, content)"
+            " VALUES (%s, 'assistant', %s) RETURNING id",
+            (conversation_id, "Kaynaklı cevap"),
+        )
+        message_id = cursor.fetchone()[0]
+        cursor.execute(
+            "SELECT id FROM legal_chunks WHERE legal_source_id = %s ORDER BY chunk_index LIMIT 1",
+            (first.legal_source_id,),
+        )
+        chunk_id = cursor.fetchone()[0]
+        cursor.execute(
+            "INSERT INTO citations (message_id, legal_chunk_id, citation_order, source_title)"
+            " VALUES (%s, %s, 1, %s)",
+            (message_id, chunk_id, "Test kararı"),
+        )
+
+    with pytest.raises(CitedDecisionChangedError, match="Atif verilmis"):
+        upsert_decision(connection, _decision(raw_text=BODY + "\n\nDeğişen metin."))
+
+    stored_hash, = _fetch_one(
+        connection,
+        "SELECT content_hash FROM legal_sources WHERE id = %s",
+        (first.legal_source_id,),
+    )
+    assert stored_hash == content_hash(BODY)
 
 
 def test_chunks_are_searchable_via_turkish_full_text_index(connection):
