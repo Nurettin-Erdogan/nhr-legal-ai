@@ -24,7 +24,7 @@ Worker hata verse bile FastAPI ve Next.js ayakta kalır. Korpus yazımı
 | **ACTIVE** | Danıştay | https://karararama.danistay.gov.tr | Oturumlu JSON/HTTP: `/detayliArama`, `/aramadetaylist`, `/getDokuman?id=` |
 | **ACTIVE** | Mevzuat | https://bedesten.adalet.gov.tr/mevzuat | JSON/HTTP: `searchDocuments`, `mevzuatMaddeTree`, `getDocumentContent` |
 | PLANNED / VERIFICATION | AYM | https://kararlarbilgibankasi.anayasa.gov.tr | Public arama JSON'u doğrulandı; tam metin güvenlik doğrulaması bekliyor |
-| PLANNED / VERIFICATION | Resmî Gazete | https://www.resmigazete.gov.tr | Canonical verification; uydurma scraper yok |
+| **ACTIVE / VERIFICATION** | Resmî Gazete | https://www.resmigazete.gov.tr | Mevzuat sync içinde `/Home/Filter` + resmî arşiv künye teyidi |
 | PLANNED / VERIFICATION | KDK | https://kararlar.ombudsman.gov.tr | Resmî karar portalı; ingestion sözleşmesi doğrulanacak |
 | PLANNED | Mevzuat canonical | resmi mevzuat sistemi / Resmî Gazete | Bedesten transport kaynağıdır, hukuki kanon değildir |
 
@@ -99,8 +99,10 @@ birinci kaynaktır.
 `legal_sources` üzerinde canonical / official URL, ingestion_method, fetched_at,
 content_hash, source_version, is_current. Transport (Bedesten) ile hukuki kanon
 (Resmî Gazete) ayrı tutulur. Resmî Gazete doğrulama alanları
-(`official_gazette_*`, `verified_against_gazette`) mevzuat metadata'sında durur;
-otomatik RG teyidi henüz ACTIVE değildir.
+(`official_gazette_*`, `verified_against_gazette`) mevzuat metadata'sında durur.
+Gazete tarih/sayı/mevzuat numarası resmî arşivde eşleşirse arşiv URL'si ve
+doğrulama zamanıyla birlikte `verified_against_gazette=true` yazılır. Bu teyit,
+yayın tarihini kendiliğinden yürürlük tarihi yapmaz.
 
 Eksik kritik alanlar `legal_source_quarantine` kuyruğuna düşer, `legal_sources`'a
 yazılmaz.
@@ -156,12 +158,14 @@ Get-Content -Raw .\database\migrations\009_kdk_source_checkpoint.sql |
   docker compose exec -T db psql -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1
 Get-Content -Raw .\database\migrations\010_activate_danistay_source.sql |
   docker compose exec -T db psql -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1
+Get-Content -Raw .\database\migrations\011_activate_resmi_gazete_verification.sql |
+  docker compose exec -T db psql -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1
 ```
 
 ## Bilinen sınırlar
 
-- AYM / Resmî Gazete / KDK için tam ingestion sözleşmesi yok; çalışan
-  sahte adapter yok. AYM public arama JSON'u doğrulandı ancak tam karar
+- AYM / KDK için tam ingestion sözleşmesi yok; çalışan sahte adapter yok.
+  AYM public arama JSON'u doğrulandı ancak tam karar
   indirme güvenlik doğrulaması otomatik aşılmaz.
 - Yargıtay ve Danıştay CAPTCHA sonrası insan müdahalesi gerekir.
 - Portal `recordsFiltered` her daire/anahtar kelime aramasına bağlıdır; "tüm Yargıtay 2020–2026" tek bir sayı değildir. Coverage pencereleri anahtar kelime `karar` ile taranır; daire bazlı taramayı CLI `--chamber` ile verin.

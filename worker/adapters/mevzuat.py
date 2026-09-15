@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import replace
 from time import sleep
 from typing import Any, Callable
 
 from ingestion.catalog import PROFILES, STARTER_LAWS, LawJob
 from ingestion.mevzuat.archive import LegislationArchive
 from ingestion.mevzuat.models import LegislationRecord
-from ingestion.mevzuat.parser import iter_article_nodes, record_from_article
+from ingestion.mevzuat.parser import iter_article_nodes, parse_portal_date, record_from_article
 from ingestion.mevzuat.portal import BASE_URL, MevzuatPortalClient, MevzuatPortalError
 from ingestion.mevzuat.store import upsert_legislation
+from ingestion.resmi_gazete.portal import ResmiGazeteClient, ResmiGazeteError
 from worker.config import get_worker_settings
 from worker.models import AdapterHealth, RecordOutcome, SyncRequest
 
@@ -20,8 +22,16 @@ class MevzuatSourceAdapter:
     active = True
     official_source_url = BASE_URL
 
-    def __init__(self, *, client: MevzuatPortalClient | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        client: MevzuatPortalClient | None = None,
+        gazette_client: ResmiGazeteClient | None = None,
+        verify_gazette: bool = True,
+    ) -> None:
         self.client = client
+        self.gazette_client = gazette_client
+        self.verify_gazette = verify_gazette
         self.last_cursor: dict[str, Any] = {}
 
     def _settings(self):
@@ -91,7 +101,12 @@ class MevzuatSourceAdapter:
                 if record.official_gazette_date
                 else None
             ),
-            "verified_against_gazette": False,
+            "verified_against_gazette": bool(
+                record.metadata.get("verified_against_gazette", False)
+            ),
+            "official_gazette_verification": record.metadata.get(
+                "official_gazette_verification"
+            ),
         }
 
     def _jobs(self, request: SyncRequest) -> tuple[LawJob, ...]:
@@ -145,6 +160,36 @@ class MevzuatSourceAdapter:
                 skip_until_article = ""
                 continue
             document = page.documents[0]
+            gazette_verification: dict[str, Any] = {
+                "verified": False,
+                "detail": "Resmî Gazete doğrulaması için tarih veya sayı bilgisi eksik",
+            }
+            gazette_date = parse_portal_date(document.get("resmiGazeteTarihi"))
+            gazette_no = str(document.get("resmiGazeteSayisi") or "").strip() or None
+            law_name = str(document.get("mevzuatAdi") or "").strip()
+            pending_verification_requests = 0
+            if self.verify_gazette and (gazette_date or gazette_no):
+                # GET ana sayfa + POST arama + GET arşiv sayfası.
+                pending_verification_requests = 3
+                verifier = self.gazette_client or ResmiGazeteClient(
+                    max_retries=settings.max_retries,
+                    retry_backoff_seconds=max(1.0, settings.mevzuat_delay_seconds),
+                )
+                try:
+                    gazette_verification = verifier.verify_legislation(
+                        publication_date=gazette_date,
+                        issue_no=gazette_no,
+                        law_no=job.law_no,
+                        law_name=law_name,
+                    ).to_json()
+                except ResmiGazeteError as exc:
+                    gazette_verification = {
+                        "verified": False,
+                        "detail": str(exc),
+                        "requested_date": gazette_date.isoformat() if gazette_date else None,
+                        "requested_issue_no": gazette_no,
+                        "law_no": job.law_no,
+                    }
             tree = client.fetch_article_tree(str(document.get("mevzuatId")))
             articles = list(iter_article_nodes(tree))
             skipping = bool(skip_until_article)
@@ -161,14 +206,34 @@ class MevzuatSourceAdapter:
                     "law_no": job.law_no,
                     "article_no": article_no,
                     "law_index": law_index,
-                    "requests_made": 1,
+                    "requests_made": 1 + pending_verification_requests,
                 }
                 try:
                     if settings.mevzuat_delay_seconds:
                         sleep(settings.mevzuat_delay_seconds)
                     html = client.fetch_article_html(str(article.get("maddeId")))
-                    extra["requests_made"] = 2
+                    extra["requests_made"] = 2 + pending_verification_requests
                     record = record_from_article(document=document, article=article, article_html=html)
+                    record = replace(
+                        record,
+                        official_gazette_no=(
+                            record.official_gazette_no
+                            or str(gazette_verification.get("observed_issue_no") or "").strip()
+                            or None
+                        ),
+                        official_gazette_date=(
+                            record.official_gazette_date
+                            or parse_portal_date(gazette_verification.get("observed_date"))
+                        ),
+                        metadata={
+                            **record.metadata,
+                            "verified_against_gazette": bool(
+                                gazette_verification.get("verified", False)
+                            ),
+                            "official_gazette_url": gazette_verification.get("archive_url"),
+                            "official_gazette_verification": gazette_verification,
+                        },
+                    )
                     missing = self.validate(record)
                     if missing:
                         yield "quarantined", {
@@ -179,6 +244,7 @@ class MevzuatSourceAdapter:
                         }
                         # Checkpoint ilerletme; resume aynı maddeyi yeniden dener.
                         stopped_on_unfinished = True
+                        pending_verification_requests = 0
                         break
                     archive.save(record)
                     if dry_run:
@@ -187,6 +253,7 @@ class MevzuatSourceAdapter:
                             "external_id": record.external_id,
                             "dry_run": True,
                         }
+                        pending_verification_requests = 0
                         last_successful_article = article_no
                         continue
                     result = upsert_legislation(connection, record)
@@ -195,9 +262,11 @@ class MevzuatSourceAdapter:
                         "external_id": result.external_id,
                         "legal_source_id": result.legal_source_id,
                     }
+                    pending_verification_requests = 0
                     last_successful_article = article_no
                 except (MevzuatPortalError, ValueError) as exc:
                     yield "failed", {**extra, "reason": str(exc)}
+                    pending_verification_requests = 0
                     stopped_on_unfinished = True
                     break
             skip_until_article = ""

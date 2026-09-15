@@ -12,6 +12,8 @@ Kurulum, V2 migration, RLS, embedding indeksleri ve test adımları için [verit
 
 Yargıtay/Danıştay kararları ve mevzuat maddeleri `ingestion` paketi ve `worker`
 servisiyle toplanır. Worker, web uygulamasından bağımsız çalışır.
+Mevzuat künyeleri ayrıca T.C. Resmî Gazete arşiviyle otomatik çapraz
+doğrulanır; doğrulama kanıtı kaynak metadata'sında saklanır.
 
 ```powershell
 .\.venv\Scripts\python.exe -m worker.runner status

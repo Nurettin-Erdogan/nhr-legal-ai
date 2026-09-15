@@ -70,9 +70,30 @@ class ResmiGazeteSourceAdapter(PlannedSourceAdapter):
     authority = "Resmî Gazete"
     official_source_url = "https://www.resmigazete.gov.tr"
     verification_detail = (
-        "Tarih ve fihrist sayfaları doğrulandı; güvenilir otomatik tam metin "
-        "sözleşmesi henüz doğrulanmadı"
+        "Mevzuat tarih/sayı/numara doğrulaması mevzuat adapter'ına gömülü; "
+        "bağımsız korpus adapter'ı değil"
     )
+
+    def health_check(self) -> AdapterHealth:
+        from ingestion.resmi_gazete.portal import ResmiGazeteClient
+
+        try:
+            result = ResmiGazeteClient(max_retries=1).verify_legislation(
+                publication_date=None,
+                issue_no="25134",
+                law_no="4857",
+                law_name="İş Kanunu",
+            )
+            state = "healthy" if result.verified else "degraded"
+            return AdapterHealth(
+                self.source_name,
+                state,
+                "Resmî Gazete künye doğrulama sözleşmesi çalışıyor; "
+                "mevzuat sync içinde kullanılıyor",
+                active=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return AdapterHealth(self.source_name, "failed", str(exc), active=False)
 
 
 class KdkSourceAdapter(PlannedSourceAdapter):

@@ -252,7 +252,7 @@ def test_mevzuat_checkpoint_does_not_advance_past_quarantined_article(
         def fetch_article_html(self, madde_id):
             return f"<p>Geçerli madde metni {madde_id}.</p>"
 
-    adapter = MevzuatSourceAdapter(client=_AllHtml())
+    adapter = MevzuatSourceAdapter(client=_AllHtml(), verify_gazette=False)
     real_validate = adapter.validate
 
     def validate_second_quarantine(record):
@@ -291,7 +291,9 @@ def test_mevzuat_checkpoint_does_not_advance_past_failed_article(
     from worker.config import get_worker_settings
 
     get_worker_settings.cache_clear()
-    adapter = MevzuatSourceAdapter(client=_MevzuatClientSuccessThenQuarantine())
+    adapter = MevzuatSourceAdapter(
+        client=_MevzuatClientSuccessThenQuarantine(), verify_gazette=False
+    )
     outcomes = list(
         adapter.sync(
             SyncRequest(
@@ -325,7 +327,7 @@ def test_mevzuat_resume_retries_after_last_successful_article(monkeypatch, tmp_p
         def fetch_article_html(self, madde_id):
             return f"<p>Geçerli madde metni {madde_id}.</p>"
 
-    adapter = MevzuatSourceAdapter(client=_AllGood())
+    adapter = MevzuatSourceAdapter(client=_AllGood(), verify_gazette=False)
     outcomes = list(
         adapter.sync(
             SyncRequest(
@@ -344,6 +346,67 @@ def test_mevzuat_resume_retries_after_last_successful_article(monkeypatch, tmp_p
     assert "1" not in article_nos
     assert article_nos[0] == "2"
     assert adapter.last_cursor["last_article_no"] == "3"
+
+
+def test_mevzuat_sync_attaches_official_gazette_verification(monkeypatch, tmp_path):
+    from ingestion.mevzuat.archive import LegislationArchive
+    from ingestion.resmi_gazete.portal import GazetteVerification
+    from worker.adapters.mevzuat import MevzuatSourceAdapter
+    from worker.config import get_worker_settings
+
+    class _DocumentWithGazette(_MevzuatClientSuccessThenQuarantine):
+        def search_page(self, **kwargs):
+            page = super().search_page(**kwargs)
+            document = {
+                **page.documents[0],
+                "resmiGazeteTarihi": None,
+                "resmiGazeteSayisi": "39999",
+            }
+            return type(page)(documents=(document,), total=1, start=0)
+
+        def fetch_article_html(self, madde_id):
+            return f"<p>Geçerli sentetik mevzuat metni {madde_id}.</p>"
+
+    class _GazetteVerifier:
+        def verify_legislation(self, **kwargs):
+            assert kwargs["issue_no"] == "39999"
+            assert kwargs["law_no"] == "4857"
+            return GazetteVerification(
+                verified=True,
+                archive_url="https://www.resmigazete.gov.tr/eskiler/2099/01/20990102.htm",
+                requested_date=None,
+                observed_date="2099-01-02",
+                requested_issue_no="39999",
+                observed_issue_no="39999",
+                law_no="4857",
+                law_no_present=True,
+                law_name_present=True,
+                verified_at="2099-01-02T00:00:00+00:00",
+                detail="sentetik doğrulama",
+            )
+
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("MEVZUAT_DELAY_SECONDS", "0")
+    monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
+    get_worker_settings.cache_clear()
+    adapter = MevzuatSourceAdapter(
+        client=_DocumentWithGazette(),
+        gazette_client=_GazetteVerifier(),  # type: ignore[arg-type]
+    )
+    list(
+        adapter.sync(
+            SyncRequest(source="mevzuat", law_no="4857", max_records=1, resume=False),
+            cursor={},
+            connection=None,
+            dry_run=True,
+            should_stop=lambda: False,
+        )
+    )
+
+    record = next(LegislationArchive(tmp_path / "mevzuat").iter_records())
+    assert record.official_gazette_date == date(2099, 1, 2)
+    assert record.metadata["verified_against_gazette"] is True
+    assert record.metadata["official_gazette_url"].endswith("20990102.htm")
 
 
 def test_last_successful_sync_at_only_on_success(monkeypatch):

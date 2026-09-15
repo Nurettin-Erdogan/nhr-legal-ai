@@ -96,18 +96,21 @@ def ingestion_sources(_admin: UUID = Depends(require_admin)) -> dict:
                 "transport": "bedesten.adalet.gov.tr/mevzuat",
             },
         ],
+        "verification": [
+            {
+                "source": "resmi_gazete",
+                "official_source_url": "https://www.resmigazete.gov.tr",
+                "status": "active",
+                "embedded_in": "mevzuat",
+                "note": "Tarih, sayı ve mevzuat numarası resmî arşivle doğrulanır",
+            }
+        ],
         "planned": [
             {
                 "source": "aym",
                 "official_source_url": "https://kararlarbilgibankasi.anayasa.gov.tr",
                 "status": "blocked",
                 "note": "Public arama doğrulandı; tam metin güvenlik doğrulaması istiyor",
-            },
-            {
-                "source": "resmi_gazete",
-                "official_source_url": "https://www.resmigazete.gov.tr",
-                "status": "blocked",
-                "note": "Doğrulama yolu netleşince canonical verification eklenecek",
             },
             {
                 "source": "kdk",

@@ -61,6 +61,8 @@ def test_ingestion_sources_visible_to_admin(monkeypatch):
         "danistay",
         "mevzuat",
     }
+    assert body["verification"][0]["source"] == "resmi_gazete"
+    assert body["verification"][0]["status"] == "active"
     assert body["planned"][0]["status"] == "blocked"
 
 

@@ -21,7 +21,7 @@ metadata'sı olarak tutulur.
 | Mevzuat | ACTIVE | `bedesten.adalet.gov.tr/mevzuat` JSON/HTTP | Mevzuat Bilgi Sistemi; Resmî Gazete teyidi ayrıca gerekir |
 | Danıştay | ACTIVE | `karararama.danistay.gov.tr` JSON/HTTP | Danıştay Karar Arama / Danıştay |
 | AYM | PLANNED | Public arama JSON'u doğrulandı; tam metin güvenlik doğrulaması istiyor | Anayasa Mahkemesi Kararlar Bilgi Bankası |
-| Resmî Gazete | PLANNED / VERIFICATION | Doğrulanmış otomasyon yok | Resmî Gazete |
+| Resmî Gazete | ACTIVE / VERIFICATION | `/Home/Filter` JSON + resmî arşiv HTML | Resmî Gazete |
 | KDK | PLANNED / VERIFICATION | `kararlar.ombudsman.gov.tr` | Kamu Denetçiliği Kurumu |
 
 PLANNED adapter'lar veri üretmez. Resmî portal sözleşmesi ve kullanım koşulları
@@ -173,18 +173,18 @@ sayılmaz.
 
 ## Resmî Gazete doğrulaması
 
-Bedesten hızlı transport kaynağıdır. Resmî Gazete çapraz doğrulaması henüz
-ACTIVE değildir. Bu nedenle:
+Bedesten hızlı transport kaynağıdır. Resmî Gazete çapraz doğrulaması
+mevzuat sync'i içinde aktiftir. Doğrulayıcı:
 
-- mevcut gerçek gazete tarihi/sayısı aynen saklanır;
-- eksik gazete veya yürürlük bilgisi tahmin edilmez;
-- `ResmiGazeteSourceAdapter` health durumunu `blocked` bildirir;
-- ileride adapter, ilan/değişiklik belgesini madde sürümüne bağlayacak ve
-  doğrulama sonucunu provenance ile kaydedecektir.
+- resmî `/Home/Filter` aramasında gazete sayısı ve mevzuat numarasını eşler;
+- dönen URL'nin yalnız `resmigazete.gov.tr` alanında olmasını kabul eder;
+- arşiv HTML'inde gazete sayısını ve mevzuat numarasını ikinci kez denetler;
+- Bedesten'de tarih boşsa resmî arama sonucundaki tarihi doldurur;
+- sonucu, arşiv URL'sini ve doğrulama zamanını metadata/provenance'ta saklar.
 
-Bir sonraki doğrulama adımı, Resmî Gazete için belgelenmiş ve izin verilen
-arama/indirme sözleşmesini fixture'larla sabitlemek; ardından amendment kaynağı
-ile yürürlük aralığını insan tarafından denetlenebilir biçimde eşlemektir.
+Bu katman bağımsız bir Resmî Gazete korpusu oluşturmaz ve yayın tarihini
+otomatik olarak maddenin yürürlük tarihi saymaz. Sonraki adım, değişiklik
+belgelerini madde sürümlerine kanıt bağlantısıyla eşlemektir.
 
 ## Change detection ve sync durumları
 
@@ -266,7 +266,8 @@ fixture/sözleşme testleri güncellenir ve uyumsuz kayıtlar quarantine edilir.
 
 ## Bilinen eksikler ve sonraki adımlar
 
-1. Resmî Gazete adapter'ı doğrulanmış transport sözleşmesiyle ACTIVE değildir.
+1. Resmî Gazete künye doğrulaması aktiftir; madde bazlı değişiklik/yürürlük
+   zinciri henüz tamamlanmamıştır.
 2. Bedesten verilerinde birçok madde için açık yürürlük aralığı bulunmadığından
    tarihsel RAG kapsaması şimdilik düşüktür; sistem tarih tahmin etmez.
 3. Danıştay tarih/daire bazlı aktiftir; serbest kelime araması bu transport
@@ -278,7 +279,6 @@ fixture/sözleşme testleri güncellenir ve uyumsuz kayıtlar quarantine edilir.
 6. Büyük ölçekli korpus kapsamı daire, tarih penceresi ve arama filtresi bazında
    ölçülmelidir; tek bir “Yargıtay toplamı” yanıltıcıdır.
 
-En mantıklı sonraki veri-katmanı işi Resmî Gazete doğrulama pilotudur: önce tek
-bir kanun/madde için yayımlanma ve değişiklik belgelerini fixture'larla doğrula,
-sonra `effective_from/effective_to` alanlarını kanıt bağlantısıyla doldur. Bu,
-tarihsel RAG kapsamını güvenli biçimde büyütür.
+En mantıklı sonraki veri-katmanı işi, Resmî Gazete değişiklik belgelerini
+madde sürümleriyle eşleyip `effective_from/effective_to` alanlarını kanıt
+bağlantısıyla doldurmaktır. Bu, tarihsel RAG kapsamını güvenli biçimde büyütür.
