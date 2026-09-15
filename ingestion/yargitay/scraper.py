@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 class ScraperConfig:
     keyword: str
     chamber: str
+    decision_date_from: date | None = None
+    decision_date_to: date | None = None
     max_decisions: int = 50
     output_dir: Path = Path("data/yargitay")
     page_size: int = 20
@@ -67,14 +69,18 @@ def _search_filters(config: ScraperConfig, *, page_number: int, page_size: int) 
         "kararYil": "",
         "kararIlkSiraNo": "",
         "kararSonSiraNo": "",
-        "kararTarihiIlk": "",
-        "kararTarihiSon": "",
+        "baslangicTarihi": "",
+        "bitisTarihi": "",
         # Portal radio values: 1=esas no, 2=karar no, 3=karar tarihi.
         "siralama": 3,
         "siralamaDirection": "desc",
         "pageSize": page_size,
         "pageNumber": page_number,
     }
+    if config.decision_date_from:
+        filters["baslangicTarihi"] = config.decision_date_from.strftime("%d.%m.%Y")
+    if config.decision_date_to:
+        filters["bitisTarihi"] = config.decision_date_to.strftime("%d.%m.%Y")
     filters[chamber_field] = config.chamber.strip()
     return filters
 
@@ -139,11 +145,18 @@ class YargitayScraper:
             raise ValueError("page_size pozitif olmalidir")
         if not config.keyword.strip() and not config.chamber.strip():
             raise ValueError("En az bir arama kelimesi veya daire verilmelidir")
+        if (
+            config.decision_date_from
+            and config.decision_date_to
+            and config.decision_date_from > config.decision_date_to
+        ):
+            raise ValueError("Başlangıç tarihi bitiş tarihinden sonra olamaz")
         self.config = config
         self.archive = DecisionArchive(config.output_dir)
         self.client = client or YargitayPortalClient(
             timeout_seconds=config.timeout_seconds,
             max_retries=config.max_retries,
+            retry_backoff_seconds=max(1.0, config.delay_seconds),
         )
 
     async def _pause(self) -> None:

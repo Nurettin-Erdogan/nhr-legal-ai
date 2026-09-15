@@ -89,6 +89,8 @@ Tarama:
 .\.venv\Scripts\python.exe -m ingestion.cli scrape `
   --keyword "kıdem tazminatı" `
   --chamber "9. Hukuk Dairesi" `
+  --decision-date-from 2025-01-01 `
+  --decision-date-to 2025-12-31 `
   --max-decisions 50
 ```
 
@@ -96,6 +98,10 @@ Tarama:
 değiştirebilirsiniz. `--refresh-existing` arşivde bulunan kararların metnini
 yeniden kontrol eder. Arşiv varsayılan olarak `data/yargitay` altına yazılır ve
 `.gitignore` kapsamındadır.
+
+Büyük korpus aktarımlarını yıl veya daha kısa tarih dilimlerine ayırın. Portal
+429 ya da geçici 5xx döndürürse istemci `Retry-After` başlığını gözetir ve her
+denemede bekleme süresini üstel artırır.
 
 Aktarım:
 

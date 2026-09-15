@@ -11,6 +11,7 @@ import asyncio
 import logging
 import os
 import sys
+from datetime import date, datetime
 from pathlib import Path
 
 from dotenv import dotenv_values, load_dotenv
@@ -22,6 +23,17 @@ DEFAULT_ARCHIVE_DIR = Path("data/yargitay")
 DEFAULT_MEVZUAT_ARCHIVE_DIR = Path("data/mevzuat")
 
 logger = logging.getLogger("ingestion")
+
+
+def _parse_date_arg(value: str) -> date:
+    for pattern in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(value.strip(), pattern).date()
+        except ValueError:
+            continue
+    raise argparse.ArgumentTypeError(
+        "Tarih YYYY-MM-DD veya GG.AA.YYYY biçiminde olmalıdır"
+    )
 
 
 def _configure_logging(verbose: bool) -> None:
@@ -51,6 +63,8 @@ def _run_scrape(args: argparse.Namespace) -> int:
     config = ScraperConfig(
         keyword=args.keyword,
         chamber=args.chamber,
+        decision_date_from=args.decision_date_from,
+        decision_date_to=args.decision_date_to,
         max_decisions=args.max_decisions,
         output_dir=args.archive_dir,
         page_size=args.page_size,
@@ -219,6 +233,18 @@ def build_parser() -> argparse.ArgumentParser:
     scrape = subparsers.add_parser("scrape", help="Portalı tara ve JSON arşivine yaz")
     scrape.add_argument("--keyword", default="", help="Arama kelimesi")
     scrape.add_argument("--chamber", default="", help="Daire adı, ör. '9. Hukuk Dairesi'")
+    scrape.add_argument(
+        "--decision-date-from",
+        type=_parse_date_arg,
+        default=None,
+        help="Karar tarihi başlangıcı (YYYY-MM-DD veya GG.AA.YYYY)",
+    )
+    scrape.add_argument(
+        "--decision-date-to",
+        type=_parse_date_arg,
+        default=None,
+        help="Karar tarihi bitişi (YYYY-MM-DD veya GG.AA.YYYY)",
+    )
     scrape.add_argument("--max-decisions", type=int, default=50, help="Hedef karar sayısı")
     scrape.add_argument("--archive-dir", type=Path, default=DEFAULT_ARCHIVE_DIR)
     scrape.add_argument("--delay", type=float, default=1.5, help="İstekler arası bekleme (sn)")

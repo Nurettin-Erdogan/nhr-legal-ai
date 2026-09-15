@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -27,6 +28,7 @@ __all__ = [
 
 
 BASE_URL = "https://karararama.yargitay.gov.tr/"
+logger = logging.getLogger(__name__)
 
 
 class PortalError(RuntimeError):
@@ -84,6 +86,22 @@ def parse_portal_date(value: str) -> date | None:
         except ValueError:
             continue
     return None
+
+
+def _retry_wait_seconds(
+    attempt: int,
+    *,
+    base_seconds: float,
+    retry_after: str | None = None,
+) -> float:
+    """Üstel bekleme süresini üretir ve sayısal Retry-After değerini gözetir."""
+    wait = max(0.0, base_seconds) * (2 ** max(0, attempt - 1))
+    if retry_after:
+        try:
+            wait = max(wait, float(retry_after))
+        except ValueError:
+            pass
+    return wait
 
 
 def _metadata_message(payload: Mapping[str, Any]) -> str:
@@ -144,10 +162,33 @@ class YargitayPortalClient:
                 retryable = exc.code == 429 or 500 <= exc.code < 600
                 if not retryable or attempt == self.max_retries:
                     raise PortalError(f"Yargitay HTTP hatasi: {exc.code} ({url})") from exc
+                wait = _retry_wait_seconds(
+                    attempt,
+                    base_seconds=self.retry_backoff_seconds,
+                    retry_after=exc.headers.get("Retry-After") if exc.headers else None,
+                )
+                logger.warning(
+                    "Yargıtay HTTP %s; %.1f saniye sonra yeniden denenecek (%s/%s)",
+                    exc.code,
+                    wait,
+                    attempt + 1,
+                    self.max_retries,
+                )
+                time.sleep(wait)
             except URLError as exc:
                 if attempt == self.max_retries:
                     raise PortalError(f"Yargitay baglanti hatasi ({url}): {exc.reason}") from exc
-            time.sleep(self.retry_backoff_seconds * attempt)
+                wait = _retry_wait_seconds(
+                    attempt,
+                    base_seconds=self.retry_backoff_seconds,
+                )
+                logger.warning(
+                    "Yargıtay bağlantısı kurulamadı; %.1f saniye sonra yeniden denenecek (%s/%s)",
+                    wait,
+                    attempt + 1,
+                    self.max_retries,
+                )
+                time.sleep(wait)
         raise AssertionError("unreachable")
 
     def _json_request(self, path: str, *, body: Mapping[str, Any] | None = None) -> Mapping[str, Any]:

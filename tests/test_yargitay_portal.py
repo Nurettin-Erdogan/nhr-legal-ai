@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -10,6 +10,7 @@ from ingestion.yargitay.portal import (
     PortalDecisionRow,
     PortalError,
     SearchPage,
+    _retry_wait_seconds,
     _validate_response,
     html_to_text,
 )
@@ -54,7 +55,13 @@ def test_structured_portal_row_is_authoritative():
 
 
 def test_search_payload_routes_hukuk_chamber_to_correct_field(tmp_path):
-    config = ScraperConfig("işçilik", "9. Hukuk Dairesi", output_dir=tmp_path)
+    config = ScraperConfig(
+        "işçilik",
+        "9. Hukuk Dairesi",
+        decision_date_from=date(2025, 1, 1),
+        decision_date_to=date(2025, 12, 31),
+        output_dir=tmp_path,
+    )
 
     filters = _search_filters(config, page_number=2, page_size=10)
 
@@ -62,6 +69,15 @@ def test_search_payload_routes_hukuk_chamber_to_correct_field(tmp_path):
     assert filters["birimYrgCezaDaire"] == ""
     assert filters["siralama"] == 3
     assert filters["pageNumber"] == 2
+    assert filters["baslangicTarihi"] == "01.01.2025"
+    assert filters["bitisTarihi"] == "31.12.2025"
+
+
+def test_retry_wait_is_exponential_and_respects_retry_after():
+    assert _retry_wait_seconds(1, base_seconds=2) == 2
+    assert _retry_wait_seconds(3, base_seconds=2) == 8
+    assert _retry_wait_seconds(2, base_seconds=2, retry_after="12") == 12
+    assert _retry_wait_seconds(2, base_seconds=2, retry_after="invalid") == 4
 
 
 class _FakeClient:
@@ -79,6 +95,19 @@ class _FakeClient:
     def fetch_document_html(self, document_id):
         self.document_calls += 1
         return "<p>Birinci paragraf.</p><p>İkinci paragraf.</p>"
+
+
+def test_scraper_rejects_reversed_date_range(tmp_path):
+    config = ScraperConfig(
+        "işçilik",
+        "9. Hukuk Dairesi",
+        decision_date_from=date(2026, 1, 2),
+        decision_date_to=date(2026, 1, 1),
+        output_dir=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="Başlangıç tarihi"):
+        YargitayScraper(config, client=_FakeClient())
 
 
 def test_scraper_archives_and_skips_same_portal_id(tmp_path):
