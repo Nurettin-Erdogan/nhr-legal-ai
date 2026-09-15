@@ -125,3 +125,13 @@ AI asistanında bir proje seçildiğinde merkezi mevzuat/karar korpusu ile yaln�
 o projedeki erişilebilir belge parçaları birlikte sıralanır. Kullanıcı belgesi
 atıfları dosya adı, sayfa ve bölüm bilgisiyle gösterilir; konuşma kaydındaki
 atıf doğrudan ilgili `document_chunk_id` değerine bağlanır.
+
+Özel belge parçalarının semantik aranması için embedding aktarımı ayrıca ve
+açıkça başlatılır. Bu işlem belge metnini yapılandırılan embedding sağlayıcısına
+gönderdiğinden KVKK/veri işleme şartları doğrulandıktan sonra çalıştırılmalıdır:
+
+```powershell
+.\.venv\Scripts\python.exe -m ingestion.cli embed --target documents --batch-size 10
+```
+
+`--target legal` varsayılandır; `--target all` iki kaynağı sırayla işler.

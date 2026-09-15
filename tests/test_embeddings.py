@@ -7,7 +7,8 @@ from api.ai.embeddings import (
     create_embedding_provider,
     vector_literal,
 )
-from ingestion.embeddings import _embed_batch_with_retry
+from ingestion.cli import build_parser
+from ingestion.embeddings import _embed_batch_with_retry, _embed_chunks
 
 
 def test_vector_literal_uses_pgvector_text_format():
@@ -78,4 +79,25 @@ def test_embedding_batch_does_not_retry_permanent_error():
             max_retries=3,
             retry_backoff_seconds=1,
             sleeper=lambda _: pytest.fail("kalıcı hata beklememeli"),
+        )
+
+
+def test_embedding_cli_keeps_private_documents_opt_in():
+    parser = build_parser()
+
+    assert parser.parse_args(["embed"]).target == "legal"
+    assert parser.parse_args(["embed", "--target", "documents"]).target == "documents"
+
+
+def test_embedding_table_name_is_strictly_allowlisted():
+    with pytest.raises(ValueError, match="Desteklenmeyen"):
+        _embed_chunks(
+            None,
+            _TransientProvider(),
+            table_name="users",
+            limit=1,
+            batch_size=1,
+            delay_seconds=0,
+            max_retries=0,
+            retry_backoff_seconds=0,
         )

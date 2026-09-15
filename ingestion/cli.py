@@ -182,7 +182,7 @@ def _run_embed(args: argparse.Namespace) -> int:
     import psycopg
 
     from api.ai.embeddings import EmbeddingProviderError, create_embedding_provider
-    from ingestion.embeddings import embed_legal_chunks
+    from ingestion.embeddings import embed_document_chunks, embed_legal_chunks
 
     load_dotenv()
     file_values = dotenv_values(".env")
@@ -208,23 +208,39 @@ def _run_embed(args: argparse.Namespace) -> int:
         # Her başarılı batch bağımsız transaction olarak kalıcılaşır. Uzun bir
         # backfill sonradan kota hatası alırsa önceki vektörler geri alınmaz.
         with psycopg.connect(database_url, autocommit=True) as connection:
-            summary = embed_legal_chunks(
-                connection,
-                provider,
-                limit=args.limit,
-                batch_size=args.batch_size,
-                delay_seconds=args.delay,
-                max_retries=args.max_retries,
-                retry_backoff_seconds=args.retry_backoff,
+            targets = (
+                ("legal", embed_legal_chunks),
+                ("documents", embed_document_chunks),
             )
+            selected = [item for item in targets if args.target in {item[0], "all"}]
+            embedded = 0
+            remaining = 0
+            for target_name, embedder in selected:
+                target_summary = embedder(
+                    connection,
+                    provider,
+                    limit=args.limit,
+                    batch_size=args.batch_size,
+                    delay_seconds=args.delay,
+                    max_retries=args.max_retries,
+                    retry_backoff_seconds=args.retry_backoff,
+                )
+                embedded += target_summary.embedded
+                remaining += target_summary.remaining
+                logger.info(
+                    "Embedding hedefi bitti | hedef=%s | yazılan=%s | kalan=%s",
+                    target_name,
+                    target_summary.embedded,
+                    target_summary.remaining,
+                )
     except EmbeddingProviderError as exc:
         logger.error("Embedding aktarımı durdu: %s", exc)
         return 2
 
     logger.info(
         "Embedding bitti | yazılan=%s | kalan=%s | model=%s",
-        summary.embedded,
-        summary.remaining,
+        embedded,
+        remaining,
         provider.model,
     )
     return 0
@@ -303,13 +319,19 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.set_defaults(handler=_run_ingest)
 
     embed = subparsers.add_parser(
-        "embed", help="Veritabanındaki hukuk parçaları için embedding üret"
+        "embed", help="Hukuk veya kullanıcı belgesi parçaları için embedding üret"
     )
     embed.add_argument("--database-url", default=None, help="Varsayılan: DATABASE_ADMIN_URL")
     embed.add_argument("--provider", default=os.getenv("EMBEDDING_PROVIDER", "gemini"))
     embed.add_argument("--model", default=os.getenv("EMBEDDING_MODEL", "gemini-embedding-2"))
     embed.add_argument("--dimensions", type=int, default=int(os.getenv("EMBEDDING_DIMENSIONS", "768")))
     embed.add_argument("--limit", type=int, default=500)
+    embed.add_argument(
+        "--target",
+        choices=("legal", "documents", "all"),
+        default="legal",
+        help="Varsayılan legal; özel belgeler dış servise yalnız açık seçimle gönderilir",
+    )
     embed.add_argument("--batch-size", type=int, default=10)
     embed.add_argument(
         "--delay",
