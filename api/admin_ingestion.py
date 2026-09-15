@@ -109,6 +109,12 @@ def ingestion_sources(_admin: UUID = Depends(require_admin)) -> dict:
                 "status": "blocked",
                 "note": "Doğrulama yolu netleşince canonical verification eklenecek",
             },
+            {
+                "source": "kdk",
+                "official_source_url": "https://kararlar.ombudsman.gov.tr",
+                "status": "blocked",
+                "note": "Arama ve tam metin sözleşmesi fixture ile doğrulanacak",
+            },
         ],
     }
 

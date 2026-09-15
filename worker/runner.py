@@ -19,7 +19,7 @@ from threading import Event
 import psycopg
 from dotenv import load_dotenv
 
-from worker import ACTIVE_SOURCES
+from worker import ACTIVE_SOURCES, PLANNED_SOURCES
 from worker.config import get_worker_settings
 from worker.jobs import run_sync
 from worker.models import SyncRequest
@@ -114,7 +114,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     run = sub.add_parser("run", help="Tek seferlik kaynak senkronu")
-    run.add_argument("--source", required=True, choices=("yargitay", "mevzuat", "all", "danistay", "aym", "resmi_gazete"))
+    run.add_argument(
+        "--source",
+        required=True,
+        choices=(*ACTIVE_SOURCES, "all", *PLANNED_SOURCES),
+    )
     run.add_argument("--date-from", default=None)
     run.add_argument("--date-to", default=None)
     run.add_argument("--dry-run", action="store_true")

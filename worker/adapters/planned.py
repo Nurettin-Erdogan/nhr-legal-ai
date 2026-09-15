@@ -13,6 +13,7 @@ from worker.models import AdapterHealth, RecordOutcome, SyncRequest
 
 class PlannedSourceAdapter:
     active = False
+    verification_detail = "Resmi portal uç sözleşmesi doğrulanmadı"
 
     def validate(self, record: Any) -> list[str]:
         return ["adapter_not_implemented"]
@@ -34,7 +35,7 @@ class PlannedSourceAdapter:
             source_name=self.source_name,
             state="blocked",
             detail=(
-                "Resmi portal uç sözleşmesi doğrulanmadan çalışan çekim yazılmadı. "
+                f"{self.verification_detail}. Çalışan çekim yazılmadı. "
                 f"Kaynak: {self.official_source_url}"
             ),
             active=False,
@@ -64,9 +65,27 @@ class AymSourceAdapter(PlannedSourceAdapter):
     source_name = "aym"
     authority = "Anayasa Mahkemesi"
     official_source_url = "https://kararlarbilgibankasi.anayasa.gov.tr"
+    verification_detail = (
+        "Public arama JSON sözleşmesi doğrulandı; tam karar indirme akışı "
+        "güvenlik doğrulaması istediği için otomatikleştirilmedi"
+    )
 
 
 class ResmiGazeteSourceAdapter(PlannedSourceAdapter):
     source_name = "resmi_gazete"
     authority = "Resmî Gazete"
     official_source_url = "https://www.resmigazete.gov.tr"
+    verification_detail = (
+        "Tarih ve fihrist sayfaları doğrulandı; güvenilir otomatik tam metin "
+        "sözleşmesi henüz doğrulanmadı"
+    )
+
+
+class KdkSourceAdapter(PlannedSourceAdapter):
+    source_name = "kdk"
+    authority = "Kamu Denetçiliği Kurumu"
+    official_source_url = "https://kararlar.ombudsman.gov.tr"
+    verification_detail = (
+        "KDK resmî karar portalı doğrulandı; arama ve tam metin sözleşmesi "
+        "henüz fixture ile sabitlenmedi"
+    )

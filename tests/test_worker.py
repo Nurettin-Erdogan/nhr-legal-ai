@@ -94,6 +94,8 @@ def test_adapter_registry_exposes_active_sources():
     assert get_adapter("mevzuat").source_name == "mevzuat"
     assert get_adapter("aym").active is False
     assert get_adapter("resmi_gazete").active is False
+    assert get_adapter("kdk").active is False
+    assert get_adapter("kdk").authority == "Kamu Denetçiliği Kurumu"
 
 
 def test_checkpoint_json_round_trip_fields():

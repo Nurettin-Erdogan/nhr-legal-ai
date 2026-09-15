@@ -22,6 +22,7 @@ metadata'sı olarak tutulur.
 | Danıştay | PLANNED | Doğrulanmış sözleşme yok | Danıştay |
 | AYM | PLANNED | Doğrulanmış sözleşme yok | Anayasa Mahkemesi Kararlar Bilgi Bankası |
 | Resmî Gazete | PLANNED / VERIFICATION | Doğrulanmış otomasyon yok | Resmî Gazete |
+| KDK | PLANNED / VERIFICATION | `kararlar.ombudsman.gov.tr` | Kamu Denetçiliği Kurumu |
 
 PLANNED adapter'lar veri üretmez. Resmî portal sözleşmesi ve kullanım koşulları
 doğrulanmadan tahminî selector, endpoint veya sahte kayıt eklenmez.
@@ -57,8 +58,9 @@ zenginleştirmedir.
 - `provenance`: kaynak ve çekim zinciri;
 - `sync`: checkpoint ile devam edebilen toplama işlemi.
 
-`YargitaySourceAdapter` ve `MevzuatSourceAdapter` aktiftir. Danıştay, AYM ve
-Resmî Gazete sınıfları yalnızca açık biçimde `blocked` dönen iskeletlerdir.
+`YargitaySourceAdapter` ve `MevzuatSourceAdapter` aktiftir. Danıştay, AYM,
+Resmî Gazete ve KDK sınıfları yalnızca açık biçimde `blocked` dönen
+iskeletlerdir.
 
 ## Provenance standardı
 
@@ -245,9 +247,11 @@ fixture/sözleşme testleri güncellenir ve uyumsuz kayıtlar quarantine edilir.
 2. Bedesten verilerinde birçok madde için açık yürürlük aralığı bulunmadığından
    tarihsel RAG kapsaması şimdilik düşüktür; sistem tarih tahmin etmez.
 3. Danıştay ve AYM adapter'ları yalnız iskelettir.
-4. Portalda kaybolan kayıtların güvenli “erişilemiyor” yaşam döngüsü için art
+4. KDK karar portalı kataloğa eklendi; arama ve tam metin sözleşmesi henüz
+   fixture'larla doğrulanmadığı için ACTIVE değildir.
+5. Portalda kaybolan kayıtların güvenli “erişilemiyor” yaşam döngüsü için art
    arda doğrulama ve insan incelemesi politikası tamamlanmalıdır.
-5. Büyük ölçekli korpus kapsamı daire, tarih penceresi ve arama filtresi bazında
+6. Büyük ölçekli korpus kapsamı daire, tarih penceresi ve arama filtresi bazında
    ölçülmelidir; tek bir “Yargıtay toplamı” yanıltıcıdır.
 
 En mantıklı sonraki veri-katmanı işi Resmî Gazete doğrulama pilotudur: önce tek

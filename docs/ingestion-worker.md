@@ -24,6 +24,7 @@ Worker hata verse bile FastAPI ve Next.js ayakta kalır. Korpus yazımı
 | PLANNED / VERIFICATION | Danıştay | https://karararama.danistay.gov.tr | Uç sözleşmesi doğrulanmadı; skeleton only |
 | PLANNED / VERIFICATION | AYM | https://kararlarbilgibankasi.anayasa.gov.tr | Uç sözleşmesi doğrulanmadı; skeleton only |
 | PLANNED / VERIFICATION | Resmî Gazete | https://www.resmigazete.gov.tr | Canonical verification; uydurma scraper yok |
+| PLANNED / VERIFICATION | KDK | https://kararlar.ombudsman.gov.tr | Resmî karar portalı; ingestion sözleşmesi doğrulanacak |
 | PLANNED | Mevzuat canonical | resmi mevzuat sistemi / Resmî Gazete | Bedesten transport kaynağıdır, hukuki kanon değildir |
 
 ## Scheduler
@@ -143,11 +144,15 @@ Get-Content -Raw .\database\migrations\007_ingestion_worker.sql |
   docker compose exec -T db psql -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1
 Get-Content -Raw .\database\migrations\008_current_source_integrity.sql |
   docker compose exec -T db psql -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1
+Get-Content -Raw .\database\migrations\009_kdk_source_checkpoint.sql |
+  docker compose exec -T db psql -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1
 ```
 
 ## Bilinen sınırlar
 
-- Danıştay / AYM / Resmî Gazete için doğrulanmış JSON sözleşme yok; çalışan sahte adapter yok.
+- Danıştay / AYM / Resmî Gazete / KDK için tam ingestion sözleşmesi yok;
+  çalışan sahte adapter yok. AYM public arama JSON'u doğrulandı ancak tam karar
+  indirme güvenlik doğrulaması otomatik aşılmaz.
 - Yargıtay CAPTCHA sonrası insan müdahalesi gerekir.
 - Portal `recordsFiltered` her daire/anahtar kelime aramasına bağlıdır; "tüm Yargıtay 2020–2026" tek bir sayı değildir. Coverage pencereleri anahtar kelime `karar` ile taranır; daire bazlı taramayı CLI `--chamber` ile verin.
 - Büyük korpus Git'te tutulmaz.
