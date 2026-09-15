@@ -124,3 +124,105 @@ def test_run_sync_resume_and_coverage(connection, monkeypatch):
     )
     assert result["status"] in {"success", "partial"}
     assert result["counters"]["records_created"] == 1
+
+
+def test_coverage_counters_accumulate_across_runs(connection):
+    repo = SyncRepository(connection)
+    source = f"yargitay-cov-{uuid4().hex[:8]}"
+    window_from = date(2026, 3, 1)
+    window_to = date(2026, 3, 31)
+
+    repo.upsert_coverage(
+        source,
+        window_from,
+        window_to,
+        seen_count=10,
+        stored_count=8,
+        duplicate_count=1,
+        failed_count=1,
+        complete=False,
+    )
+    repo.upsert_coverage(
+        source,
+        window_from,
+        window_to,
+        seen_count=5,
+        stored_count=4,
+        duplicate_count=1,
+        failed_count=0,
+        complete=True,
+    )
+
+    row = connection.execute(
+        """
+        SELECT seen_count, stored_count, duplicate_count, failed_count, complete
+        FROM source_coverage_windows
+        WHERE source_name = %s AND date_from = %s AND date_to = %s AND chamber = ''
+        """,
+        (source, window_from, window_to),
+    ).fetchone()
+    if isinstance(row, dict):
+        seen, stored, dup, failed, complete = (
+            row["seen_count"],
+            row["stored_count"],
+            row["duplicate_count"],
+            row["failed_count"],
+            row["complete"],
+        )
+    else:
+        seen, stored, dup, failed, complete = row
+    assert seen == 15
+    assert stored == 12
+    assert dup == 2
+    assert failed == 1
+    assert complete is True
+
+
+def test_last_successful_sync_at_unchanged_on_partial(connection, monkeypatch):
+    from datetime import UTC, datetime
+
+    monkeypatch.setenv("DATABASE_ADMIN_URL", DATABASE_URL)
+    from worker.config import get_worker_settings
+
+    get_worker_settings.cache_clear()
+
+    repo = SyncRepository(connection)
+    prior = datetime(2026, 2, 1, tzinfo=UTC)
+    checkpoint = Checkpoint(
+        source_name="yargitay",
+        last_successful_sync_at=prior,
+        last_cursor={},
+        health_state="healthy",
+    )
+    repo.save_checkpoint(checkpoint)
+
+    class _PartialAdapter:
+        source_name = "yargitay"
+        last_cursor = {
+            "window_from": "2026-01-01",
+            "window_to": "2026-01-31",
+            "window_complete": False,
+            "page": 1,
+            "seen_count": 1,
+            "stored_count": 0,
+            "duplicate_count": 0,
+            "failed_count": 0,
+            "chamber": "",
+        }
+
+        def sync(self, request, *, cursor, connection, dry_run, should_stop):
+            yield "quarantined", {
+                "external_id": "yargitay:q",
+                "reason": "missing",
+                "raw": {},
+                "requests_made": 1,
+            }
+
+    result = run_sync(
+        connection,
+        SyncRequest(source="yargitay", dry_run=False, resume=False),
+        adapter=_PartialAdapter(),
+    )
+    assert result["status"] == "partial"
+    loaded = repo.get_checkpoint("yargitay")
+    assert loaded.last_successful_sync_at == prior

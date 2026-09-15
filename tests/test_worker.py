@@ -215,3 +215,344 @@ def test_malformed_schema_health_is_failed():
 
     health = YargitaySourceAdapter(client=_BadClient()).health_check()
     assert health.state == "failed"
+
+
+class _MevzuatClientSuccessThenQuarantine:
+    """İlk madde geçerli HTML, ikinci madde boş → quarantine."""
+
+    def search_page(self, **kwargs):
+        from ingestion.mevzuat.portal import SearchPage
+
+        return SearchPage(
+            documents=(
+                {
+                    "mevzuatId": "1",
+                    "mevzuatNo": "4857",
+                    "mevzuatAdi": "İş Kanunu",
+                    "mevzuatTur": {"name": "KANUN"},
+                },
+            ),
+            total=1,
+            start=0,
+        )
+
+    def fetch_article_tree(self, mevzuat_id):
+        return {
+            "children": [
+                {"maddeNo": "1", "maddeId": "a1", "title": "Amaç"},
+                {"maddeNo": "2", "maddeId": "a2", "title": "Kapsam"},
+                {"maddeNo": "3", "maddeId": "a3", "title": "Tanımlar"},
+            ]
+        }
+
+    def fetch_article_html(self, madde_id):
+        if madde_id == "a2":
+            return "<p></p>"  # boş metin → validate/raw_text fail veya ValueError
+        return f"<p>Madde gövdesi {madde_id} yeterli uzunlukta metin.</p>"
+
+
+def test_mevzuat_checkpoint_does_not_advance_past_quarantined_article(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("MEVZUAT_DELAY_SECONDS", "0")
+    monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
+    from worker.adapters.mevzuat import MevzuatSourceAdapter
+    from worker.config import get_worker_settings
+
+    get_worker_settings.cache_clear()
+
+    class _AllHtml(_MevzuatClientSuccessThenQuarantine):
+        def fetch_article_html(self, madde_id):
+            return f"<p>Geçerli madde metni {madde_id}.</p>"
+
+    adapter = MevzuatSourceAdapter(client=_AllHtml())
+    real_validate = adapter.validate
+
+    def validate_second_quarantine(record):
+        if record.article_no == "2":
+            return ["raw_text"]
+        return real_validate(record)
+
+    adapter.validate = validate_second_quarantine  # type: ignore[method-assign]
+    outcomes = list(
+        adapter.sync(
+            SyncRequest(
+                source="mevzuat",
+                law_no="4857",
+                max_records=10,
+                resume=False,
+            ),
+            cursor={},
+            connection=None,
+            dry_run=True,
+            should_stop=lambda: False,
+        )
+    )
+    assert outcomes[0][0] == "created"
+    assert outcomes[1][0] == "quarantined"
+    assert adapter.last_cursor["last_article_no"] == "1"
+    assert adapter.last_cursor.get("complete") is not True
+
+
+def test_mevzuat_checkpoint_does_not_advance_past_failed_article(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("MEVZUAT_DELAY_SECONDS", "0")
+    monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
+    from worker.adapters.mevzuat import MevzuatSourceAdapter
+    from worker.config import get_worker_settings
+
+    get_worker_settings.cache_clear()
+    adapter = MevzuatSourceAdapter(client=_MevzuatClientSuccessThenQuarantine())
+    outcomes = list(
+        adapter.sync(
+            SyncRequest(
+                source="mevzuat",
+                law_no="4857",
+                max_records=10,
+                resume=False,
+            ),
+            cursor={},
+            connection=None,
+            dry_run=True,
+            should_stop=lambda: False,
+        )
+    )
+    assert outcomes[0][0] == "created"
+    assert outcomes[1][0] == "failed"
+    assert adapter.last_cursor["last_article_no"] == "1"
+    assert adapter.last_cursor.get("complete") is not True
+
+
+def test_mevzuat_resume_retries_after_last_successful_article(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("MEVZUAT_DELAY_SECONDS", "0")
+    monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
+    from worker.adapters.mevzuat import MevzuatSourceAdapter
+    from worker.config import get_worker_settings
+
+    get_worker_settings.cache_clear()
+
+    class _AllGood(_MevzuatClientSuccessThenQuarantine):
+        def fetch_article_html(self, madde_id):
+            return f"<p>Geçerli madde metni {madde_id}.</p>"
+
+    adapter = MevzuatSourceAdapter(client=_AllGood())
+    outcomes = list(
+        adapter.sync(
+            SyncRequest(
+                source="mevzuat",
+                law_no="4857",
+                max_records=10,
+                resume=True,
+            ),
+            cursor={"law_index": 0, "last_article_no": "1"},
+            connection=None,
+            dry_run=True,
+            should_stop=lambda: False,
+        )
+    )
+    article_nos = [payload["article_no"] for _, payload in outcomes]
+    assert "1" not in article_nos
+    assert article_nos[0] == "2"
+    assert adapter.last_cursor["last_article_no"] == "3"
+
+
+def test_last_successful_sync_at_only_on_success(monkeypatch):
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from worker import jobs
+    from worker.models import Checkpoint
+
+    prior = datetime(2026, 1, 1, tzinfo=UTC)
+    calls: list[Checkpoint] = []
+
+    class _Repo:
+        def get_checkpoint(self, source_name):
+            return Checkpoint(
+                source_name=source_name,
+                last_successful_sync_at=prior,
+                last_cursor={},
+            )
+
+        def start_run(self, source_name, *, checkpoint_before, metadata=None):
+            from worker.models import IngestionRun
+
+            return IngestionRun(
+                id=uuid4(),
+                source_name=source_name,
+                status="running",
+                checkpoint_before=checkpoint_before,
+                metadata=metadata or {},
+            )
+
+        def finish_run(self, *args, **kwargs):
+            return None
+
+        def quarantine(self, *args, **kwargs):
+            return None
+
+        def upsert_coverage(self, *args, **kwargs):
+            return None
+
+        def save_checkpoint(self, checkpoint):
+            calls.append(checkpoint)
+
+    class _Store:
+        def __init__(self, repo):
+            self.repo = repo
+
+        def load(self, source_name):
+            return self.repo.get_checkpoint(source_name)
+
+        def save(self, checkpoint):
+            self.repo.save_checkpoint(checkpoint)
+
+    class _PartialAdapter:
+        source_name = "yargitay"
+        last_cursor = {
+            "window_from": "2026-01-01",
+            "window_to": "2026-01-31",
+            "window_complete": False,
+            "page": 2,
+            "seen_count": 1,
+            "stored_count": 0,
+            "duplicate_count": 0,
+            "failed_count": 0,
+            "chamber": "",
+        }
+
+        def sync(self, request, *, cursor, connection, dry_run, should_stop):
+            yield "quarantined", {
+                "external_id": "yargitay:bad",
+                "reason": "missing",
+                "raw": {},
+                "requests_made": 1,
+            }
+
+    class _SuccessAdapter(_PartialAdapter):
+        last_cursor = {
+            **_PartialAdapter.last_cursor,
+            "window_complete": True,
+            "stored_count": 1,
+            "failed_count": 0,
+        }
+
+        def sync(self, request, *, cursor, connection, dry_run, should_stop):
+            yield "created", {"external_id": "yargitay:ok", "requests_made": 1}
+
+    class _Conn:
+        def cursor(self):
+            return _LockCursor(True)
+
+    monkeypatch.setattr(jobs, "SyncRepository", lambda _c: _Repo())
+    monkeypatch.setattr(jobs, "CheckpointStore", _Store)
+    monkeypatch.setattr(jobs, "source_job_lock", source_job_lock)
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    from worker.config import get_worker_settings
+
+    get_worker_settings.cache_clear()
+
+    partial = jobs.run_sync(
+        _Conn(),
+        SyncRequest(source="yargitay", dry_run=False, resume=False),
+        adapter=_PartialAdapter(),
+    )
+    assert partial["status"] == "partial"
+    assert calls[-1].last_successful_sync_at == prior
+
+    success = jobs.run_sync(
+        _Conn(),
+        SyncRequest(source="yargitay", dry_run=False, resume=False),
+        adapter=_SuccessAdapter(),
+    )
+    assert success["status"] == "success"
+    assert calls[-1].last_successful_sync_at is not None
+    assert calls[-1].last_successful_sync_at != prior
+
+
+def test_yargitay_coverage_deltas_are_written_every_run(monkeypatch):
+    """Incomplete window run'ları da coverage delta yazar; complete yalnız bayrak."""
+    from uuid import uuid4
+
+    from worker import jobs
+    from worker.models import Checkpoint
+
+    coverage_calls: list[dict] = []
+
+    class _Repo:
+        def get_checkpoint(self, source_name):
+            return Checkpoint(source_name=source_name, last_cursor={})
+
+        def start_run(self, source_name, *, checkpoint_before, metadata=None):
+            from worker.models import IngestionRun
+
+            return IngestionRun(
+                id=uuid4(),
+                source_name=source_name,
+                status="running",
+                checkpoint_before=checkpoint_before,
+                metadata=metadata or {},
+            )
+
+        def finish_run(self, *args, **kwargs):
+            return None
+
+        def save_checkpoint(self, checkpoint):
+            return None
+
+        def upsert_coverage(self, source_name, date_from, date_to, **kwargs):
+            coverage_calls.append({"source": source_name, **kwargs})
+
+    class _Store:
+        def __init__(self, repo):
+            self.repo = repo
+
+        def load(self, source_name):
+            return self.repo.get_checkpoint(source_name)
+
+        def save(self, checkpoint):
+            self.repo.save_checkpoint(checkpoint)
+
+    class _IncompleteAdapter:
+        source_name = "yargitay"
+        last_cursor = {
+            "window_from": "2026-02-01",
+            "window_to": "2026-02-28",
+            "window_complete": False,
+            "page": 2,
+            "seen_count": 10,
+            "stored_count": 7,
+            "duplicate_count": 2,
+            "failed_count": 1,
+            "chamber": "9. Hukuk Dairesi",
+            "expected_count": 100,
+        }
+
+        def sync(self, request, *, cursor, connection, dry_run, should_stop):
+            yield "created", {"external_id": "yargitay:1", "requests_made": 1}
+
+    class _Conn:
+        def cursor(self):
+            return _LockCursor(True)
+
+    monkeypatch.setattr(jobs, "SyncRepository", lambda _c: _Repo())
+    monkeypatch.setattr(jobs, "CheckpointStore", _Store)
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    from worker.config import get_worker_settings
+
+    get_worker_settings.cache_clear()
+
+    result = jobs.run_sync(
+        _Conn(),
+        SyncRequest(source="yargitay", dry_run=False, resume=True),
+        adapter=_IncompleteAdapter(),
+    )
+    assert result["status"] == "success"
+    assert len(coverage_calls) == 1
+    assert coverage_calls[0]["seen_count"] == 10
+    assert coverage_calls[0]["stored_count"] == 7
+    assert coverage_calls[0]["complete"] is False

@@ -118,14 +118,14 @@ class MevzuatSourceAdapter:
             max_retries=settings.max_retries,
         )
         archive = LegislationArchive(settings.snapshot_dir + "/mevzuat")
-        extra: dict[str, Any] = {}
         processed = 0
         law_index = start_index
-        last_article = str(cursor.get("last_article_no") or "")
-        skip_until_article = last_article if request.resume else ""
+        last_successful_article = str(cursor.get("last_article_no") or "")
+        skip_until_article = last_successful_article if request.resume else ""
+        stopped_on_unfinished = False
 
         for law_index in range(start_index, len(jobs)):
-            if processed >= max_articles or should_stop():
+            if processed >= max_articles or should_stop() or stopped_on_unfinished:
                 break
             job = jobs[law_index]
             page = client.search_page(
@@ -141,6 +141,7 @@ class MevzuatSourceAdapter:
                     "law_no": job.law_no,
                     "requests_made": 1,
                 }
+                # Kanun bulunamadı: sonraki kanuna geç; madde checkpoint'i ilerletme.
                 skip_until_article = ""
                 continue
             document = page.documents[0]
@@ -176,10 +177,17 @@ class MevzuatSourceAdapter:
                             "reason": "missing_fields:" + ",".join(missing),
                             "raw": {"article": dict(article), "missing": missing},
                         }
-                        continue
+                        # Checkpoint ilerletme; resume aynı maddeyi yeniden dener.
+                        stopped_on_unfinished = True
+                        break
                     archive.save(record)
                     if dry_run:
-                        yield "created", {**extra, "external_id": record.external_id, "dry_run": True}
+                        yield "created", {
+                            **extra,
+                            "external_id": record.external_id,
+                            "dry_run": True,
+                        }
+                        last_successful_article = article_no
                         continue
                     result = upsert_legislation(connection, record)
                     yield result.status, {  # type: ignore[misc]
@@ -187,14 +195,22 @@ class MevzuatSourceAdapter:
                         "external_id": result.external_id,
                         "legal_source_id": result.legal_source_id,
                     }
-                except MevzuatPortalError as exc:
+                    last_successful_article = article_no
+                except (MevzuatPortalError, ValueError) as exc:
                     yield "failed", {**extra, "reason": str(exc)}
+                    stopped_on_unfinished = True
+                    break
             skip_until_article = ""
 
-        complete = law_index >= len(jobs) - 1 and processed < max_articles and not should_stop()
+        complete = (
+            not stopped_on_unfinished
+            and not should_stop()
+            and law_index >= len(jobs) - 1
+            and processed < max_articles
+        )
         self.last_cursor = {
             "law_index": 0 if complete else law_index,
-            "last_article_no": extra.get("article_no") if processed else last_article,
+            "last_article_no": last_successful_article,
             "profile": "starter",
             "complete": complete,
         }

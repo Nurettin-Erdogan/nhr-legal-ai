@@ -98,7 +98,9 @@ def run_sync(
                 checkpoint.last_date_from = date.fromisoformat(cursor["window_from"])
                 checkpoint.last_date_to = date.fromisoformat(cursor["window_to"])
                 checkpoint.last_page = int(cursor.get("page") or 1)
-                if cursor.get("window_complete") and not request.dry_run:
+                # Her run'ın delta sayaçlarını yaz; SQL tarafı kümülatif toplar.
+                # Pencere birden fazla run'da bitiyorsa son run önceki coverage'ı ezmez.
+                if not request.dry_run:
                     repo.upsert_coverage(
                         source,
                         checkpoint.last_date_from,
@@ -109,7 +111,7 @@ def run_sync(
                         stored_count=int(cursor.get("stored_count") or 0),
                         duplicate_count=int(cursor.get("duplicate_count") or 0),
                         failed_count=int(cursor.get("failed_count") or 0),
-                        complete=True,
+                        complete=bool(cursor.get("window_complete")),
                     )
             checkpoint.last_cursor = cursor
             checkpoint.last_external_id = last_external_id
@@ -130,12 +132,19 @@ def run_sync(
             checkpoint.health_state = "failed"
             checkpoint.health_detail = error
 
-        if status in {"success", "partial"} and not request.dry_run:
+        if status == "success" and not request.dry_run:
             checkpoint.last_successful_sync_at = datetime.now(UTC)
+            checkpoint.consecutive_failures = 0
+            checkpoint.last_error = None
+            if checkpoint.health_state not in {"blocked", "failed"}:
+                checkpoint.health_state = "healthy"
+                checkpoint.health_detail = None
+        elif status == "partial" and not request.dry_run:
+            # partial: son başarılı sync damgasını güncelleme.
             checkpoint.consecutive_failures = 0
             checkpoint.last_error = error
             if checkpoint.health_state not in {"blocked", "failed"}:
-                checkpoint.health_state = "healthy" if status == "success" else "degraded"
+                checkpoint.health_state = "degraded"
                 checkpoint.health_detail = error
         elif status in {"failed", "captcha_required", "cancelled"}:
             checkpoint.consecutive_failures += 1
