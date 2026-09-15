@@ -95,6 +95,12 @@ def ingestion_sources(_admin: UUID = Depends(require_admin)) -> dict:
                 "canonical_legal_source": "Resmî Gazete / resmi mevzuat sistemi",
                 "transport": "bedesten.adalet.gov.tr/mevzuat",
             },
+            {
+                "source": "kdk",
+                "authority": "Kamu Denetçiliği Kurumu",
+                "official_source_url": "https://kararlar.ombudsman.gov.tr",
+                "transport": "KDK public DataTables JSON + resmî PDF",
+            },
         ],
         "verification": [
             {
@@ -111,12 +117,6 @@ def ingestion_sources(_admin: UUID = Depends(require_admin)) -> dict:
                 "official_source_url": "https://kararlarbilgibankasi.anayasa.gov.tr",
                 "status": "blocked",
                 "note": "Public arama doğrulandı; tam metin güvenlik doğrulaması istiyor",
-            },
-            {
-                "source": "kdk",
-                "official_source_url": "https://kararlar.ombudsman.gov.tr",
-                "status": "blocked",
-                "note": "Arama ve tam metin sözleşmesi fixture ile doğrulanacak",
             },
         ],
     }

@@ -17,6 +17,7 @@ class CorpusStats(BaseModel):
     chunk_count: int
     decision_count: int
     legislation_count: int
+    other_count: int = 0
     latest_decision_date: date | None
 
 

@@ -17,11 +17,18 @@ _SELECT_COLUMNS = """
     ls.title,
     ls.source_url,
     ls.authority,
-    decision.court_name,
+    COALESCE(decision.court_name, CASE WHEN ls.source_type = 'other' THEN ls.authority END) AS court_name,
     decision.chamber,
     decision.docket_no,
-    decision.decision_no,
-    decision.decision_date,
+    COALESCE(
+        decision.decision_no,
+        CASE WHEN ls.source_type = 'other' THEN ls.metadata->>'decision_no' END
+    ) AS decision_no,
+    COALESCE(
+        decision.decision_date,
+        CASE WHEN ls.source_type = 'other'
+             THEN NULLIF(ls.metadata->>'decision_date', '')::date END
+    ) AS decision_date,
     legislation.law_name,
     legislation.law_no,
     legislation.article_no,
@@ -66,6 +73,13 @@ _TEMPORAL_FILTER = """
                 AND ls.is_current
                 AND decision.decision_date IS NOT NULL
                 AND decision.decision_date <= CAST(%(as_of)s AS date)
+            )
+            OR
+            (
+                ls.source_type = 'other'
+                AND ls.is_current
+                AND ls.published_at IS NOT NULL
+                AND ls.published_at <= CAST(%(as_of)s AS date)
             )
         )
     )

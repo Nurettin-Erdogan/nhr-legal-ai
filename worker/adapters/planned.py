@@ -94,13 +94,3 @@ class ResmiGazeteSourceAdapter(PlannedSourceAdapter):
             )
         except Exception as exc:  # noqa: BLE001
             return AdapterHealth(self.source_name, "failed", str(exc), active=False)
-
-
-class KdkSourceAdapter(PlannedSourceAdapter):
-    source_name = "kdk"
-    authority = "Kamu Denetçiliği Kurumu"
-    official_source_url = "https://kararlar.ombudsman.gov.tr"
-    verification_detail = (
-        "KDK resmî karar portalı doğrulandı; arama ve tam metin sözleşmesi "
-        "henüz fixture ile sabitlenmedi"
-    )

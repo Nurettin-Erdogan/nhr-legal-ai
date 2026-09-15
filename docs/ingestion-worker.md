@@ -2,7 +2,7 @@
 
 Web uygulamasından bağımsız çalışan hukuk veri toplama servisi. Tarayıcı
 açık tutulmaz; masaüstü scraper yoktur. `ingestion/yargitay`,
-`ingestion/danistay` ve `ingestion/mevzuat` HTTP/JSON istemcileri worker
+`ingestion/danistay`, `ingestion/mevzuat` ve `ingestion/kdk` HTTP istemcileri worker
 tarafından orkestre edilir.
 
 ## Mimari
@@ -25,7 +25,7 @@ Worker hata verse bile FastAPI ve Next.js ayakta kalır. Korpus yazımı
 | **ACTIVE** | Mevzuat | https://bedesten.adalet.gov.tr/mevzuat | JSON/HTTP: `searchDocuments`, `mevzuatMaddeTree`, `getDocumentContent` |
 | PLANNED / VERIFICATION | AYM | https://kararlarbilgibankasi.anayasa.gov.tr | Public arama JSON'u doğrulandı; tam metin güvenlik doğrulaması bekliyor |
 | **ACTIVE / VERIFICATION** | Resmî Gazete | https://www.resmigazete.gov.tr | Mevzuat sync içinde `/Home/Filter` + resmî arşiv künye teyidi |
-| PLANNED / VERIFICATION | KDK | https://kararlar.ombudsman.gov.tr | Resmî karar portalı; ingestion sözleşmesi doğrulanacak |
+| ACTIVE | KDK | https://kararlar.ombudsman.gov.tr | Public DataTables JSON künyesi + resmî karar PDF'i |
 | PLANNED | Mevzuat canonical | resmi mevzuat sistemi / Resmî Gazete | Bedesten transport kaynağıdır, hukuki kanon değildir |
 
 ## Scheduler
@@ -39,15 +39,19 @@ yoracak kadar sık değildir.
 | `YARGITAY_SYNC_INTERVAL_MINUTES` | 360 | Yargıtay turları arası |
 | `DANISTAY_SYNC_INTERVAL_MINUTES` | 720 | Danıştay turları arası |
 | `MEVZUAT_SYNC_INTERVAL_MINUTES` | 720 | Mevzuat turları arası |
+| `KDK_SYNC_INTERVAL_MINUTES` | 1440 | KDK turları arası |
 | `WORKER_POLL_SECONDS` | 30 | Daemon beklerken kontrol sıklığı |
 | `YARGITAY_DELAY_SECONDS` | 1.5 | İstek arası bekleme |
 | `DANISTAY_DELAY_SECONDS` | 2.0 | Danıştay istekleri arası bekleme |
 | `MEVZUAT_DELAY_SECONDS` | 1.0 | İstek arası bekleme |
+| `KDK_DELAY_SECONDS` | 2.0 | KDK istekleri arası bekleme |
 | `YARGITAY_MAX_RECORDS_PER_RUN` | 40 | Bir turda en fazla karar |
 | `DANISTAY_MAX_RECORDS_PER_RUN` | 30 | Bir turda en fazla Danıştay kararı |
 | `MEVZUAT_MAX_ARTICLES_PER_RUN` | 30 | Bir turda en fazla madde |
+| `KDK_MAX_RECORDS_PER_RUN` | 20 | Bir turda en fazla KDK kararı |
 | `YARGITAY_CORPUS_START` | 2020-01-01 | Tam korpus için ilk ay penceresi |
 | `DANISTAY_CORPUS_START` | 2020-01-01 | Danıştay için ilk ay penceresi |
+| `KDK_CORPUS_START` | 2020-01-01 | KDK için ilk ay penceresi |
 
 İlk daemon turu `next_run_at` boşsa kaynağı due sayar; sonraki turlar
 interval kadar bekler.
@@ -58,6 +62,9 @@ Tablo: `source_sync_checkpoints`.
 
 Yargıtay ve Danıştay cursor: tarih penceresi (`window_from` / `window_to`), sayfa,
 `last_external_id`, `window_complete`, `next_window_start`.
+
+KDK cursor: tarih penceresi, DataTables `offset`, `window_complete` ve
+`next_window_start`.
 
 Mevzuat cursor: `law_index`, `last_article_no`.
 
@@ -70,7 +77,7 @@ pencere/sayfada kalır. Yeniden başlatma `--no-resume` yoksa kaldığı yerden 
 `partial`/`failed`/`cancelled`/`captcha_required`).
 
 Aynı kaynak için PostgreSQL advisory lock (`pg_try_advisory_lock`). Yargıtay,
-Danıştay ve mevzuat birbirini bloklamaz.
+Danıştay, mevzuat ve KDK birbirini bloklamaz.
 
 ## Retry / backoff / CAPTCHA
 
@@ -84,9 +91,9 @@ Danıştay ve mevzuat birbirini bloklamaz.
 
 `content_hash` karşılaştırması:
 
-| Sonuç | Yargıtay / Danıştay | Mevzuat |
+| Sonuç | Yargıtay / Danıştay / KDK | Mevzuat |
 | --- | --- | --- |
-| created | yeni `external_id` (`yargitay:<id>` / `danistay:<id>`) | yeni madde |
+| created | yeni `external_id` (`yargitay:<id>` / `danistay:<id>` / `kdk:<id>`) | yeni madde |
 | unchanged | aynı hash; atıflı chunk'lara dokunulmaz | aynı hash |
 | updated | atıfsız karar yerinde revision | — |
 | new_version | atıflı karar: eski `is_current=false`, yeni current satır | içerik değişince yeni historical satır; eski `effective_to` kapanır |
@@ -116,6 +123,13 @@ Daemon her turda kaynağa ait limitle bir pencereyi işler. Danıştay detaylı
 arama transportu serbest kelime filtresi sunmadığı için tarih ve isteğe bağlı
 daire filtresi kullanılır.
 
+## KDK karar korpusu
+
+KDK mahkeme olmadığı için kararlar `source_type=other` olarak saklanır. Karar
+numarası, tarihi, türü, şikâyet numarası, konu ve şikâyet edilen kurum
+`metadata` içinde korunur. Tam metin yalnız resmî PDF'den çıkarılır; karar
+künyesi portalın yapılandırılmış JSON alanlarından alınır.
+
 ## Embedding
 
 Fetch sırasında Gemini çağrılmaz. `python -m ingestion.cli embed --target legal`
@@ -139,6 +153,7 @@ Frontend admin paneli bu sprintte yok.
 .\.venv\Scripts\python.exe -m worker.runner run --source yargitay --date-from 2026-01-01 --date-to 2026-01-31
 .\.venv\Scripts\python.exe -m worker.runner run --source danistay --date-from 2025-01-01 --date-to 2025-01-31
 .\.venv\Scripts\python.exe -m worker.runner run --source mevzuat
+.\.venv\Scripts\python.exe -m worker.runner run --source kdk --date-from 2026-09-01 --date-to 2026-09-30 --max-records 10
 .\.venv\Scripts\python.exe -m worker.runner run --source all --dry-run
 .\.venv\Scripts\python.exe -m worker.runner status
 .\.venv\Scripts\python.exe -m worker.runner daemon
@@ -160,12 +175,13 @@ Get-Content -Raw .\database\migrations\010_activate_danistay_source.sql |
   docker compose exec -T db psql -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1
 Get-Content -Raw .\database\migrations\011_activate_resmi_gazete_verification.sql |
   docker compose exec -T db psql -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1
+Get-Content -Raw .\database\migrations\012_activate_kdk_source.sql |
+  docker compose exec -T db psql -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1
 ```
 
 ## Bilinen sınırlar
 
-- AYM / KDK için tam ingestion sözleşmesi yok; çalışan sahte adapter yok.
-  AYM public arama JSON'u doğrulandı ancak tam karar
+- AYM public arama JSON'u doğrulandı ancak tam karar
   indirme güvenlik doğrulaması otomatik aşılmaz.
 - Yargıtay ve Danıştay CAPTCHA sonrası insan müdahalesi gerekir.
 - Portal `recordsFiltered` her daire/anahtar kelime aramasına bağlıdır; "tüm Yargıtay 2020–2026" tek bir sayı değildir. Coverage pencereleri anahtar kelime `karar` ile taranır; daire bazlı taramayı CLI `--chamber` ile verin.

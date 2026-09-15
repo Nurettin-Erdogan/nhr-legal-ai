@@ -23,6 +23,7 @@ _SOURCE_KIND_LABELS = {
     "court_decision": "Mahkeme kararı",
     "legislation": "Mevzuat",
     "document": "Kullanıcı belgesi",
+    "other": "İdarî karar / resmî kaynak",
 }
 
 
@@ -87,6 +88,12 @@ class RAGContext:
             if self.article_title:
                 details.append(self.article_title)
             return ", ".join((self.title, *details))
+
+        if self.source_type == "other":
+            details = [self.title]
+            if self.authority:
+                details.append(self.authority)
+            return " — ".join(details)
 
         if self.authority:
             return f"{self.title} — {self.authority}"

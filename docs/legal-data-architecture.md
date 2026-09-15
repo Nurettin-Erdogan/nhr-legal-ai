@@ -22,7 +22,7 @@ metadata'sı olarak tutulur.
 | Danıştay | ACTIVE | `karararama.danistay.gov.tr` JSON/HTTP | Danıştay Karar Arama / Danıştay |
 | AYM | PLANNED | Public arama JSON'u doğrulandı; tam metin güvenlik doğrulaması istiyor | Anayasa Mahkemesi Kararlar Bilgi Bankası |
 | Resmî Gazete | ACTIVE / VERIFICATION | `/Home/Filter` JSON + resmî arşiv HTML | Resmî Gazete |
-| KDK | PLANNED / VERIFICATION | `kararlar.ombudsman.gov.tr` | Kamu Denetçiliği Kurumu |
+| KDK | ACTIVE | `kararlar.ombudsman.gov.tr` public JSON + resmî PDF | Kamu Denetçiliği Kurumu |
 
 PLANNED adapter'lar veri üretmez. Resmî portal sözleşmesi ve kullanım koşulları
 doğrulanmadan tahminî selector, endpoint veya sahte kayıt eklenmez.

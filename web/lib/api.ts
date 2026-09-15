@@ -6,12 +6,13 @@ export type CorpusStats = {
   chunk_count: number;
   decision_count: number;
   legislation_count: number;
+  other_count: number;
   latest_decision_date: string | null;
 };
 
 export type LegalSearchHit = {
   id: string;
-  source_type: "court_decision" | "legislation";
+  source_type: "court_decision" | "legislation" | "other";
   title: string;
   source_url: string | null;
   authority: string | null;
@@ -41,7 +42,7 @@ export type LegalSearchResponse = {
 
 export type LegalSourceDetail = {
   id: string;
-  source_type: "court_decision" | "legislation";
+  source_type: "court_decision" | "legislation" | "other";
   title: string;
   source_url: string | null;
   external_id: string | null;

@@ -143,7 +143,7 @@ export default function AssistantPage() {
                 <h3>Başvurulan kaynaklar</h3>
                 <p>{result.citations.length} kaynak parçası</p>
                 {result.citations.map((citation) => {
-                  const content = <><span>[{citation.marker}] {citation.source_type === "legislation" ? "Mevzuat" : citation.source_type === "document" ? "Proje belgesi" : "Karar"}</span><strong>{citation.reference}</strong><small>{citation.excerpt.slice(0, 130)}…</small></>;
+                  const content = <><span>[{citation.marker}] {citation.source_type === "legislation" ? "Mevzuat" : citation.source_type === "document" ? "Proje belgesi" : citation.source_type === "other" ? "İdarî karar" : "Yargı kararı"}</span><strong>{citation.reference}</strong><small>{citation.excerpt.slice(0, 130)}…</small></>;
                   return citation.source_type === "document" ? (
                     <div className="citation-card" key={citation.marker}>{content}</div>
                   ) : (

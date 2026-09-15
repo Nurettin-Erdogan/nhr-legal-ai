@@ -60,6 +60,7 @@ def test_ingestion_sources_visible_to_admin(monkeypatch):
         "yargitay",
         "danistay",
         "mevzuat",
+        "kdk",
     }
     assert body["verification"][0]["source"] == "resmi_gazete"
     assert body["verification"][0]["status"] == "active"

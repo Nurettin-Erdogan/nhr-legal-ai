@@ -6,7 +6,7 @@ import pytest
 from fastapi import HTTPException
 
 from api.ai.providers import GeminiProvider
-from api.ai.rag import build_grounded_prompt, generate_grounded_answer
+from api.ai.rag import RAGContext, build_grounded_prompt, generate_grounded_answer
 from api.ai.routes import _require_project_access
 from tests.factories import court_decision_context, document_context, legislation_context
 
@@ -57,6 +57,33 @@ def test_prompt_labels_user_document_with_page_and_section():
 
     assert "[K1] iş_sözleşmesi.pdf, s. 3, Fesih" in prompt
     assert "Tür: Kullanıcı belgesi" in prompt
+
+
+def test_prompt_labels_kdk_as_administrative_official_source():
+    context = RAGContext(
+        chunk_id=uuid4(),
+        source_id=uuid4(),
+        source_type="other",
+        title="KDK, 2099/1 — Tavsiye Kararı",
+        source_url="https://kararlar.ombudsman.gov.tr/Arama/Download?id=1",
+        authority="Kamu Denetçiliği Kurumu",
+        court_name="Kamu Denetçiliği Kurumu",
+        chamber=None,
+        docket_no=None,
+        decision_no="2099/1",
+        decision_date=None,
+        law_name=None,
+        law_no=None,
+        article_no=None,
+        article_title=None,
+        content="Sentetik KDK karar metni.",
+        rank=1.0,
+    )
+
+    prompt = build_grounded_prompt("İdarenin işlemi uygun mu?", [context])
+
+    assert "Tür: İdarî karar / resmî kaynak" in prompt
+    assert "Kamu Denetçiliği Kurumu" in prompt
 
 
 def test_project_rag_requires_authentication_before_retrieval():
