@@ -1,0 +1,180 @@
+from __future__ import annotations
+
+from datetime import UTC, date, datetime, timedelta
+from typing import Any, Callable
+
+import psycopg
+
+from ingestion.yargitay.portal import CaptchaRequiredError
+from worker import ACTIVE_SOURCES
+from worker.adapters import get_adapter
+from worker.checkpoints import CheckpointStore
+from worker.config import get_worker_settings
+from worker.locks import JobLockedError, source_job_lock
+from worker.models import RunCounters, SyncRequest
+from worker.repository import SyncRepository
+
+
+def _should_stop_never() -> bool:
+    return False
+
+
+def _interval_for(source_name: str) -> timedelta:
+    settings = get_worker_settings()
+    minutes = (
+        settings.yargitay_interval_minutes
+        if source_name == "yargitay"
+        else settings.mevzuat_interval_minutes
+    )
+    return timedelta(minutes=minutes)
+
+
+def run_sync(
+    connection: psycopg.Connection,
+    request: SyncRequest,
+    *,
+    should_stop: Callable[[], bool] = _should_stop_never,
+    adapter: Any | None = None,
+) -> dict[str, Any]:
+    source = request.source.strip().lower()
+    adapter = adapter or get_adapter(source)
+    if source not in ACTIVE_SOURCES:
+        health = adapter.health_check()
+        return {
+            "source": source,
+            "status": "failed",
+            "error": health.detail,
+            "health": health.state,
+        }
+
+    repo = SyncRepository(connection)
+    store = CheckpointStore(repo)
+    try:
+        lock = source_job_lock(connection, source)
+        lock.__enter__()
+    except JobLockedError as exc:
+        return {"source": source, "status": "failed", "error": str(exc)}
+
+    try:
+        checkpoint = store.load(source)
+        counters = RunCounters()
+        run = repo.start_run(
+            source,
+            checkpoint_before=checkpoint.as_json(),
+            metadata={"dry_run": request.dry_run, "resume": request.resume},
+        )
+        checkpoint.last_attempt_at = datetime.now(UTC)
+        status = "success"
+        error: str | None = None
+        last_external_id = checkpoint.last_external_id
+
+        try:
+            events = adapter.sync(
+                request,
+                cursor=checkpoint.last_cursor if request.resume else {},
+                connection=connection,
+                dry_run=request.dry_run,
+                should_stop=should_stop,
+            )
+            for outcome, payload in events:
+                if outcome == "quarantined" and not request.dry_run:
+                    repo.quarantine(
+                        source,
+                        external_id=payload.get("external_id"),
+                        reason_code="missing_fields",
+                        reason=str(payload.get("reason") or "invalid"),
+                        raw_payload=payload.get("raw") or payload,
+                    )
+                counters.add(outcome)
+                counters.requests_made += int(payload.get("requests_made") or 0)
+                if payload.get("external_id"):
+                    last_external_id = str(payload["external_id"])
+                if should_stop():
+                    status = "cancelled"
+                    error = "shutdown"
+                    break
+            cursor = dict(getattr(adapter, "last_cursor", {}) or {})
+            if cursor.get("window_from"):
+                checkpoint.last_date_from = date.fromisoformat(cursor["window_from"])
+                checkpoint.last_date_to = date.fromisoformat(cursor["window_to"])
+                checkpoint.last_page = int(cursor.get("page") or 1)
+                if cursor.get("window_complete") and not request.dry_run:
+                    repo.upsert_coverage(
+                        source,
+                        checkpoint.last_date_from,
+                        checkpoint.last_date_to,
+                        chamber=str(cursor.get("chamber") or ""),
+                        expected_count=cursor.get("expected_count"),
+                        seen_count=int(cursor.get("seen_count") or 0),
+                        stored_count=int(cursor.get("stored_count") or 0),
+                        duplicate_count=int(cursor.get("duplicate_count") or 0),
+                        failed_count=int(cursor.get("failed_count") or 0),
+                        complete=True,
+                    )
+            checkpoint.last_cursor = cursor
+            checkpoint.last_external_id = last_external_id
+            if should_stop() and status != "cancelled":
+                status = "cancelled"
+                error = "shutdown"
+            elif counters.records_failed or counters.records_quarantined:
+                status = "partial" if status != "cancelled" else status
+        except CaptchaRequiredError as exc:
+            status = "captcha_required"
+            error = str(exc)
+            checkpoint.health_state = "blocked"
+            checkpoint.health_detail = error
+            checkpoint.last_cursor["page"] = checkpoint.last_page
+        except Exception as exc:  # noqa: BLE001
+            status = "failed"
+            error = str(exc)
+            checkpoint.health_state = "failed"
+            checkpoint.health_detail = error
+
+        if status in {"success", "partial"} and not request.dry_run:
+            checkpoint.last_successful_sync_at = datetime.now(UTC)
+            checkpoint.consecutive_failures = 0
+            checkpoint.last_error = error
+            if checkpoint.health_state not in {"blocked", "failed"}:
+                checkpoint.health_state = "healthy" if status == "success" else "degraded"
+                checkpoint.health_detail = error
+        elif status in {"failed", "captcha_required", "cancelled"}:
+            checkpoint.consecutive_failures += 1
+            checkpoint.last_error = error
+
+        checkpoint.next_run_at = datetime.now(UTC) + _interval_for(source)
+        if not request.dry_run:
+            store.save(checkpoint)
+        repo.finish_run(
+            run,
+            status=status,
+            counters=counters,
+            last_error=error,
+            checkpoint_after=checkpoint.as_json(),
+            metadata={"dry_run": request.dry_run},
+        )
+        return {
+            "source": source,
+            "status": status,
+            "run_id": str(run.id),
+            "counters": counters.as_json(),
+            "error": error,
+            "checkpoint": checkpoint.as_json(),
+        }
+    finally:
+        lock.__exit__(None, None, None)
+
+
+def run_many(
+    connection: psycopg.Connection,
+    sources: list[str],
+    request_kwargs: dict[str, Any],
+    *,
+    should_stop: Callable[[], bool] = _should_stop_never,
+) -> list[dict[str, Any]]:
+    results = []
+    for source in sources:
+        if should_stop():
+            break
+        request = SyncRequest(source=source, **request_kwargs)
+        results.append(run_sync(connection, request, should_stop=should_stop))
+    return results

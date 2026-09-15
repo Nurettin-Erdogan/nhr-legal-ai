@@ -1,0 +1,268 @@
+from __future__ import annotations
+
+import logging
+from collections.abc import Iterator
+from datetime import date
+from pathlib import Path
+from time import sleep
+from typing import Any, Callable
+
+from ingestion.yargitay.models import CourtDecision
+from ingestion.yargitay.portal import (
+    BASE_URL,
+    CaptchaRequiredError,
+    PortalError,
+    YargitayPortalClient,
+)
+from ingestion.yargitay.scraper import (
+    ScraperConfig,
+    YargitayScraper,
+    _search_filters,
+    decision_from_portal_row,
+)
+from ingestion.yargitay.store import upsert_decision
+from worker.config import get_worker_settings
+from worker.models import AdapterHealth, RecordOutcome, SyncRequest
+from worker.windows import month_window, next_month_start
+
+logger = logging.getLogger("worker.yargitay")
+
+
+class YargitaySourceAdapter:
+    source_name = "yargitay"
+    authority = "Yargıtay"
+    active = True
+    official_source_url = BASE_URL
+
+    def __init__(self, *, client: YargitayPortalClient | None = None) -> None:
+        self.client = client
+        self.last_cursor: dict[str, Any] = {}
+
+    def _settings(self):
+        return get_worker_settings()
+
+    def health_check(self) -> AdapterHealth:
+        client = self.client or YargitayPortalClient(
+            timeout_seconds=20,
+            max_retries=1,
+        )
+        try:
+            client._request("")
+            filters = {
+                "arananKelime": "kanun",
+                "birimYrgKurulDaire": "",
+                "birimYrgHukukDaire": "",
+                "birimYrgCezaDaire": "",
+                "esasYil": "",
+                "esasIlkSiraNo": "",
+                "esasSonSiraNo": "",
+                "kararYil": "",
+                "kararIlkSiraNo": "",
+                "kararSonSiraNo": "",
+                "baslangicTarihi": "",
+                "bitisTarihi": "",
+                "siralama": 3,
+                "siralamaDirection": "desc",
+                "pageSize": 1,
+                "pageNumber": 1,
+            }
+            client.begin_detailed_search(filters)
+            page = client.search_page(filters)
+            if page.records_total < 0:
+                return AdapterHealth(
+                    self.source_name,
+                    "degraded",
+                    "recordsTotal beklenen JSON alanı yok veya geçersiz",
+                )
+            return AdapterHealth(
+                self.source_name,
+                "healthy",
+                "karararama.yargitay.gov.tr JSON sözleşmesi doğrulandı",
+            )
+        except CaptchaRequiredError as exc:
+            return AdapterHealth(self.source_name, "blocked", str(exc))
+        except PortalError as exc:
+            return AdapterHealth(self.source_name, "failed", str(exc))
+        except Exception as exc:  # noqa: BLE001
+            return AdapterHealth(self.source_name, "failed", str(exc))
+
+    def validate(self, record: CourtDecision) -> list[str]:
+        missing: list[str] = []
+        if not record.external_id.startswith("yargitay:"):
+            missing.append("external_id")
+        if not record.court_name:
+            missing.append("court_name")
+        if not record.docket_no:
+            missing.append("docket_no")
+        if not record.decision_no:
+            missing.append("decision_no")
+        if record.decision_date is None:
+            missing.append("decision_date")
+        if not record.raw_text.strip():
+            missing.append("raw_text")
+        return missing
+
+    def dedup_identity(self, record: CourtDecision) -> str:
+        return record.external_id
+
+    def version_identity(self, record: CourtDecision) -> str:
+        return f"sha256:{record.content_hash}"
+
+    def provenance(self, record: CourtDecision) -> dict[str, Any]:
+        document_id = record.metadata.get("source_document_id")
+        return {
+            "source_type": "court_decision",
+            "authority": self.authority,
+            "canonical_source_name": "Yargıtay Karar Arama",
+            "official_source_url": record.source_url or self.official_source_url,
+            "external_id": record.external_id,
+            "source_document_id": document_id,
+            "transport_source": BASE_URL,
+            "canonical_legal_source": "Yargıtay",
+            "ingestion_method": "yargitay_public_json_http",
+            "fetched_at": record.scraped_at.isoformat() if record.scraped_at else None,
+            "decision_date": record.decision_date.isoformat() if record.decision_date else None,
+            "content_hash": record.content_hash,
+            "source_version": self.version_identity(record),
+        }
+
+    def resolve_window(
+        self,
+        request: SyncRequest,
+        cursor: dict[str, Any],
+    ) -> tuple[date, date]:
+        if request.date_from and request.date_to:
+            return request.date_from, request.date_to
+        if cursor.get("window_from") and cursor.get("window_to") and not cursor.get("window_complete"):
+            return date.fromisoformat(cursor["window_from"]), date.fromisoformat(cursor["window_to"])
+        start = request.date_from or (
+            date.fromisoformat(cursor["next_window_start"])
+            if cursor.get("next_window_start")
+            else self._settings().yargitay_corpus_start
+        )
+        return month_window(start)
+
+    def sync(
+        self,
+        request: SyncRequest,
+        *,
+        cursor: dict[str, Any],
+        connection: Any,
+        dry_run: bool,
+        should_stop: Callable[[], bool],
+    ) -> Iterator[tuple[RecordOutcome, dict[str, Any]]]:
+        window_from, window_to = self.resolve_window(request, cursor)
+        start_page = int(cursor.get("page") or 1) if request.resume else 1
+        settings = self._settings()
+        max_records = request.max_records or settings.yargitay_max_records
+        keyword = request.keyword.strip() or str(cursor.get("keyword") or "karar")
+        chamber = request.chamber.strip()
+        config = ScraperConfig(
+            keyword=keyword,
+            chamber=chamber,
+            decision_date_from=window_from,
+            decision_date_to=window_to,
+            max_decisions=max_records,
+            output_dir=Path(settings.snapshot_dir) / "yargitay",
+            delay_seconds=settings.yargitay_delay_seconds,
+            max_retries=settings.max_retries,
+            start_page=start_page,
+        )
+        scraper = YargitayScraper(config, client=self.client)
+        page_number = start_page
+        processed = 0
+        seen_in_window = 0
+        stored_in_window = 0
+        duplicate_in_window = 0
+        failed_in_window = 0
+        expected: int | None = None
+        window_complete = False
+
+        first_filters = _search_filters(config, page_number=page_number, page_size=min(config.page_size, max_records))
+        scraper.client.begin_detailed_search(first_filters)
+
+        while processed < max_records and not should_stop():
+            remaining = max_records - processed
+            page_size = min(config.page_size, remaining)
+            filters = _search_filters(config, page_number=page_number, page_size=page_size)
+            page = scraper.client.search_page(filters)
+            expected = page.records_filtered
+            if not page.rows:
+                window_complete = True
+                break
+            for row in page.rows[:remaining]:
+                if should_stop():
+                    break
+                processed += 1
+                seen_in_window += 1
+                extra = {
+                    "page": page_number,
+                    "window_from": window_from.isoformat(),
+                    "window_to": window_to.isoformat(),
+                    "expected_count": expected,
+                    "requests_made": 1,
+                }
+                try:
+                    if settings.yargitay_delay_seconds:
+                        sleep(settings.yargitay_delay_seconds)
+                    html = scraper.client.fetch_document_html(row.document_id)
+                    extra["requests_made"] = 2
+                    decision = decision_from_portal_row(row, html, base_url=scraper.client.base_url)
+                    missing = self.validate(decision)
+                    if missing:
+                        yield "quarantined", {
+                            **extra,
+                            "external_id": decision.external_id,
+                            "reason": "missing_fields:" + ",".join(missing),
+                            "raw": {"document_id": row.document_id, "missing": missing},
+                        }
+                        failed_in_window += 1
+                        continue
+                    scraper.archive.save(decision)
+                    if dry_run:
+                        yield "created", {**extra, "external_id": decision.external_id, "dry_run": True}
+                        stored_in_window += 1
+                        continue
+                    result = upsert_decision(connection, decision)
+                    outcome: RecordOutcome = result.status  # type: ignore[assignment]
+                    if outcome == "unchanged":
+                        duplicate_in_window += 1
+                    else:
+                        stored_in_window += 1
+                    yield outcome, {
+                        **extra,
+                        "external_id": result.external_id,
+                        "legal_source_id": result.legal_source_id,
+                    }
+                except CaptchaRequiredError:
+                    raise
+                except PortalError as exc:
+                    failed_in_window += 1
+                    yield "failed", {
+                        **extra,
+                        "external_id": f"yargitay:{row.document_id}" if row.document_id else None,
+                        "reason": str(exc),
+                    }
+            if expected and page_number * page_size >= expected:
+                window_complete = True
+                break
+            page_number += 1
+
+        if should_stop():
+            window_complete = False
+
+        next_start = next_month_start(window_from) if window_complete else window_from
+        self.last_cursor = {
+            "page": 1 if window_complete else page_number,
+            "window_from": window_from.isoformat(),
+            "window_to": window_to.isoformat(),
+            "window_complete": window_complete,
+            "next_window_start": next_start.isoformat(),
+            "keyword": keyword,
+            "expected_count": expected,
+            "seen_count": seen_in_window,
+            "stored_count": stored_in_window,
+            "duplicate_count": duplicate_in_window,
+            "failed_count": failed_in_window,
+            "chamber": chamber,
+        }

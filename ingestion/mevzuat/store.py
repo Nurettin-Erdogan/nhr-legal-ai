@@ -18,7 +18,7 @@ from ingestion.yargitay.chunking import DEFAULT_MAX_CHARS, chunk_text
 
 logger = logging.getLogger(__name__)
 
-IngestStatus = Literal["created", "updated", "unchanged"]
+IngestStatus = Literal["created", "updated", "unchanged", "new_version"]
 
 _SELECT_EXISTING = """
 SELECT
@@ -29,14 +29,16 @@ SELECT
         FROM legal_chunks lc
         JOIN citations c ON c.legal_chunk_id = lc.id
         WHERE lc.legal_source_id = ls.id
-    ) AS has_citations
+    ) AS has_citations,
+    ls.revision
 FROM legal_sources ls
 WHERE ls.source_type = 'legislation'
   AND ls.external_id = %s
+  AND ls.is_current
 FOR UPDATE OF ls
 """
 
-_UPSERT_SOURCE = """
+_INSERT_SOURCE = """
 INSERT INTO legal_sources (
     source_type,
     title,
@@ -49,7 +51,17 @@ INSERT INTO legal_sources (
     published_at,
     content_hash,
     ingest_status,
-    last_ingested_at
+    last_ingested_at,
+    effective_from,
+    effective_to,
+    canonical_source_name,
+    official_source_url,
+    ingestion_method,
+    fetched_at,
+    last_verified_at,
+    source_version,
+    revision,
+    is_current
 )
 VALUES (
     'legislation',
@@ -63,20 +75,62 @@ VALUES (
     %(published_at)s,
     %(content_hash)s,
     'ready',
-    NOW()
+    NOW(),
+    %(effective_from)s,
+    %(effective_to)s,
+    'Mevzuat Bilgi Sistemi',
+    %(source_url)s,
+    'bedesten_public_json_http',
+    COALESCE(%(fetched_at)s, NOW()),
+    COALESCE(%(fetched_at)s, NOW()),
+    %(source_version)s,
+    %(revision)s,
+    TRUE
 )
-ON CONFLICT (source_type, external_id) WHERE external_id IS NOT NULL
-DO UPDATE SET
-    title = EXCLUDED.title,
-    source_url = COALESCE(EXCLUDED.source_url, legal_sources.source_url),
-    authority = EXCLUDED.authority,
-    raw_text = EXCLUDED.raw_text,
-    metadata = legal_sources.metadata || EXCLUDED.metadata,
-    published_at = EXCLUDED.published_at,
-    content_hash = EXCLUDED.content_hash,
-    ingest_status = 'ready',
-    last_ingested_at = NOW()
 RETURNING id
+"""
+
+_TOUCH_SOURCE = """
+UPDATE legal_sources
+SET title = %(title)s,
+    source_url = COALESCE(%(source_url)s, source_url),
+    official_source_url = COALESCE(%(source_url)s, official_source_url),
+    metadata = metadata || %(metadata)s,
+    published_at = COALESCE(%(published_at)s, published_at),
+    last_ingested_at = NOW(),
+    fetched_at = COALESCE(%(fetched_at)s, NOW()),
+    last_verified_at = COALESCE(%(fetched_at)s, NOW()),
+    ingest_status = 'ready'
+WHERE id = %(id)s
+"""
+
+_UPSERT_IDENTITY = """
+INSERT INTO legislation_identities (
+    legislation_type, law_no, article_no, canonical_name
+)
+VALUES (%s, %s, %s, %s)
+ON CONFLICT (legislation_type, law_no, article_no) DO UPDATE
+SET canonical_name = EXCLUDED.canonical_name, updated_at = NOW()
+RETURNING id
+"""
+
+_SNAPSHOT_SOURCE = """
+INSERT INTO legal_source_revisions (
+    legal_source_id, revision, source_version, content_hash, raw_text,
+    metadata, provenance, recorded_at
+)
+SELECT id, revision, source_version, content_hash, raw_text, metadata,
+       jsonb_strip_nulls(jsonb_build_object(
+           'authority', authority,
+           'canonical_source_name', canonical_source_name,
+           'official_source_url', official_source_url,
+           'external_id', external_id,
+           'ingestion_method', ingestion_method,
+           'fetched_at', fetched_at,
+           'last_verified_at', last_verified_at
+       )), fetched_at
+FROM legal_sources WHERE id = %s
+ON CONFLICT (legal_source_id, revision) DO NOTHING
 """
 
 _UPSERT_DETAILS = """
@@ -89,7 +143,10 @@ INSERT INTO legislation_details (
     article_title,
     official_gazette_no,
     official_gazette_date,
-    version_date
+    version_date,
+    legislation_identity_id,
+    version_identity,
+    amendment_source
 )
 VALUES (
     %(legal_source_id)s,
@@ -100,7 +157,10 @@ VALUES (
     %(article_title)s,
     %(official_gazette_no)s,
     %(official_gazette_date)s,
-    %(version_date)s
+    %(version_date)s,
+    %(legislation_identity_id)s,
+    %(version_identity)s,
+    %(amendment_source)s
 )
 ON CONFLICT (legal_source_id) DO UPDATE SET
     legislation_type = EXCLUDED.legislation_type,
@@ -110,7 +170,10 @@ ON CONFLICT (legal_source_id) DO UPDATE SET
     article_title = EXCLUDED.article_title,
     official_gazette_no = EXCLUDED.official_gazette_no,
     official_gazette_date = EXCLUDED.official_gazette_date,
-    version_date = EXCLUDED.version_date
+    version_date = EXCLUDED.version_date,
+    legislation_identity_id = EXCLUDED.legislation_identity_id,
+    version_identity = EXCLUDED.version_identity,
+    amendment_source = EXCLUDED.amendment_source
 """
 
 _COUNT_CHUNKS = "SELECT count(*) FROM legal_chunks WHERE legal_source_id = %s"
@@ -142,16 +205,18 @@ class IngestSummary:
     created: int = 0
     updated: int = 0
     unchanged: int = 0
+    new_version: int = 0
 
     @property
     def total(self) -> int:
-        return self.created + self.updated + self.unchanged
+        return self.created + self.updated + self.unchanged + self.new_version
 
     def with_result(self, result: IngestResult) -> IngestSummary:
         return IngestSummary(
             created=self.created + (result.status == "created"),
             updated=self.updated + (result.status == "updated"),
             unchanged=self.unchanged + (result.status == "unchanged"),
+            new_version=self.new_version + (result.status == "new_version"),
         )
 
 
@@ -201,15 +266,8 @@ def upsert_legislation(
         cursor.execute(_SELECT_EXISTING, (record.external_id,))
         existing = cursor.fetchone()
         content_changed = existing is None or existing[1] != record.content_hash
-        if existing is not None and content_changed and existing[2]:
-            raise CitedLegislationChangedError(
-                "Atıf verilmiş mevzuat metni değişti; parçalar korunarak aktarım durduruldu: "
-                f"{record.external_id}"
-            )
-
-        cursor.execute(
-            _UPSERT_SOURCE,
-            {
+        version_identity = f"{record.version_date or 'undated'}:{record.content_hash}"
+        source_values = {
                 "title": record.title,
                 "source_url": record.source_url,
                 "external_id": record.external_id,
@@ -218,9 +276,50 @@ def upsert_legislation(
                 "metadata": Jsonb(record.metadata),
                 "published_at": record.official_gazette_date,
                 "content_hash": record.content_hash,
-            },
+                "effective_from": record.effective_from,
+                "effective_to": record.effective_to,
+                "fetched_at": record.scraped_at,
+                "source_version": version_identity,
+                "revision": 1 if existing is None else existing[3] + 1,
+            }
+        cursor.execute(
+            _UPSERT_IDENTITY,
+            (record.legislation_type, record.law_no, record.article_no, record.law_name),
         )
-        legal_source_id = cursor.fetchone()[0]
+        legislation_identity_id = cursor.fetchone()[0]
+
+        if existing is not None and not content_changed:
+            legal_source_id = existing[0]
+            cursor.execute(_TOUCH_SOURCE, {**source_values, "id": legal_source_id})
+            status: IngestStatus = "unchanged"
+        elif existing is not None:
+            cursor.execute(_SNAPSHOT_SOURCE, (existing[0],))
+            cursor.execute(
+                """
+                UPDATE legal_sources
+                SET is_current = FALSE,
+                    effective_to = COALESCE(
+                        effective_to,
+                        CAST(%s AS date),
+                        CURRENT_DATE
+                    )
+                WHERE id = %s
+                """,
+                (record.effective_from, existing[0]),
+            )
+            cursor.execute(_INSERT_SOURCE, source_values)
+            legal_source_id = cursor.fetchone()[0]
+            cursor.execute(
+                "UPDATE legal_sources SET superseded_by_id = %s WHERE id = %s",
+                (legal_source_id, existing[0]),
+            )
+            cursor.execute(_SNAPSHOT_SOURCE, (legal_source_id,))
+            status = "new_version"
+        else:
+            cursor.execute(_INSERT_SOURCE, source_values)
+            legal_source_id = cursor.fetchone()[0]
+            cursor.execute(_SNAPSHOT_SOURCE, (legal_source_id,))
+            status = "created"
         cursor.execute(
             _UPSERT_DETAILS,
             {
@@ -233,19 +332,15 @@ def upsert_legislation(
                 "official_gazette_no": record.official_gazette_no,
                 "official_gazette_date": record.official_gazette_date,
                 "version_date": record.version_date,
+                "legislation_identity_id": legislation_identity_id,
+                "version_identity": version_identity,
+                "amendment_source": record.amendment_source,
             },
         )
         cursor.execute(_COUNT_CHUNKS, (legal_source_id,))
         chunk_count = cursor.fetchone()[0]
-        if content_changed or chunk_count == 0:
+        if status != "unchanged" or chunk_count == 0:
             chunk_count = _write_chunks(cursor, legal_source_id, record, max_chunk_chars)
-
-        if existing is None:
-            status: IngestStatus = "created"
-        elif content_changed:
-            status = "updated"
-        else:
-            status = "unchanged"
 
     return IngestResult(
         external_id=record.external_id,

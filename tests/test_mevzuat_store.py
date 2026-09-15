@@ -136,12 +136,17 @@ def test_changed_text_does_not_replace_cited_chunks(connection):
             (message_id, chunk_id, "İş Kanunu m. 25"),
         )
 
-    with pytest.raises(CitedLegislationChangedError, match="Atıf verilmiş"):
-        upsert_legislation(connection, _record(raw_text=original.raw_text + "\n\nDeğişen metin."))
+    second = upsert_legislation(
+        connection, _record(raw_text=original.raw_text + "\n\nDeğişen metin.")
+    )
 
-    stored_hash, = _fetch_one(
+    assert second.status == "new_version"
+    assert second.legal_source_id != first.legal_source_id
+
+    stored_hash, is_current = _fetch_one(
         connection,
-        "SELECT content_hash FROM legal_sources WHERE id = %s",
+        "SELECT content_hash, is_current FROM legal_sources WHERE id = %s",
         (first.legal_source_id,),
     )
     assert stored_hash == original.content_hash
+    assert is_current is False

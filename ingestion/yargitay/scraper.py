@@ -39,6 +39,7 @@ class ScraperConfig:
     timeout_seconds: float = 30
     max_retries: int = 3
     refresh_existing: bool = False
+    start_page: int = 1
 
 
 @dataclass(slots=True)
@@ -169,7 +170,7 @@ class YargitayScraper:
         initial_filters = _search_filters(self.config, page_number=1, page_size=first_page_size)
         await asyncio.to_thread(self.client.begin_detailed_search, initial_filters)
 
-        page_number = 1
+        page_number = max(1, self.config.start_page)
         while stats.processed < self.config.max_decisions:
             remaining = self.config.max_decisions - stats.processed
             page_size = min(self.config.page_size, remaining)

@@ -30,6 +30,9 @@ class LegislationRecord:
     official_gazette_no: str | None = None
     official_gazette_date: date | None = None
     version_date: date | None = None
+    effective_from: date | None = None
+    effective_to: date | None = None
+    amendment_source: str | None = None
     scraped_at: datetime | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -51,6 +54,9 @@ class LegislationRecord:
                 self.official_gazette_date.isoformat() if self.official_gazette_date else None
             ),
             "version_date": self.version_date.isoformat() if self.version_date else None,
+            "effective_from": self.effective_from.isoformat() if self.effective_from else None,
+            "effective_to": self.effective_to.isoformat() if self.effective_to else None,
+            "amendment_source": self.amendment_source,
             "scraped_at": self.scraped_at.isoformat() if self.scraped_at else None,
             "metadata": self.metadata,
         }
@@ -60,6 +66,8 @@ class LegislationRecord:
         gazette_date = payload.get("official_gazette_date")
         version_date = payload.get("version_date")
         scraped_at = payload.get("scraped_at")
+        effective_from = payload.get("effective_from")
+        effective_to = payload.get("effective_to")
         return cls(
             record_type=payload.get("record_type") or "legislation",
             legislation_type=payload["legislation_type"],
@@ -77,6 +85,9 @@ class LegislationRecord:
                 date.fromisoformat(gazette_date) if gazette_date else None
             ),
             version_date=date.fromisoformat(version_date) if version_date else None,
+            effective_from=date.fromisoformat(effective_from) if effective_from else None,
+            effective_to=date.fromisoformat(effective_to) if effective_to else None,
+            amendment_source=payload.get("amendment_source"),
             scraped_at=datetime.fromisoformat(scraped_at) if scraped_at else None,
             metadata=payload.get("metadata") or {},
         )

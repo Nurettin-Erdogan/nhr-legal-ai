@@ -48,6 +48,7 @@ ranked AS (
     CROSS JOIN search_query
     WHERE ls.source_type IN ('court_decision', 'legislation')
       AND ls.deleted_at IS NULL
+      AND ls.is_current
       AND search_query.value IS NOT NULL
       AND chunk.search_vector @@ search_query.value
     ORDER BY ls.id, rank DESC, chunk.chunk_index
@@ -117,6 +118,7 @@ def corpus_stats() -> CorpusStats:
                 LEFT JOIN legal_chunks chunk ON chunk.legal_source_id = ls.id
                 WHERE ls.source_type IN ('court_decision', 'legislation')
                   AND ls.deleted_at IS NULL
+                  AND ls.is_current
                 """
             ).fetchone()
     except psycopg.Error as exc:

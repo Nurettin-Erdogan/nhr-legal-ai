@@ -45,6 +45,28 @@ madde numarası değişmeden portal kimliği değişirse aynı satır güncellen
 | Kanun no `2709` (Anayasa) | `constitution` |
 | diğer | `other` |
 
+## Toplayıcı
+
+Tek komut hem mevzuatı hem Yargıtay'ı çeker:
+
+```powershell
+# Kısa deneme (İş Kanunu 5 madde + 3 karar)
+.\.venv\Scripts\python.exe -m ingestion.cli collect --profile smoke --ingest
+
+# Başlangıç korpusu (Anayasa, TMK, TBK, HMK, TCK, CMK, İş, İİK + örnek Yargıtay aramaları)
+.\.venv\Scripts\python.exe -m ingestion.cli collect --profile starter --ingest
+```
+
+`--only mevzuat` veya `--only yargitay` ile tek kaynak seçilir. Çekim önce
+`data/mevzuat` ve `data/yargitay` arşivine yazar; `--ingest` veritabanına aktarır.
+
+Tek kanun veya tek arama için:
+
+```powershell
+.\.venv\Scripts\python.exe -m ingestion.cli fetch mevzuat --law-no 4857
+.\.venv\Scripts\python.exe -m ingestion.cli fetch yargitay --keyword "kıdem tazminatı" --chamber "9. Hukuk Dairesi"
+```
+
 ## Kullanım
 
 İş Kanunu maddelerini çek (ilk deneme için madde sayısı sınırlı tutulur):

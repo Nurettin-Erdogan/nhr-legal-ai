@@ -129,16 +129,8 @@ def _run_fetch_mevzuat(args: argparse.Namespace) -> int:
     return 0 if stats.saved or stats.duplicates else 1
 
 
-def _run_ingest(args: argparse.Namespace) -> int:
+def _ingest_archive(source: str, archive_dir: Path, database_url: str, max_chunk_chars: int) -> int:
     import psycopg
-
-    database_url = _resolve_database_url(args.database_url)
-    source = args.source
-    archive_dir = args.archive_dir
-    if archive_dir is None:
-        archive_dir = (
-            DEFAULT_MEVZUAT_ARCHIVE_DIR if source == "mevzuat" else DEFAULT_ARCHIVE_DIR
-        )
 
     if source == "mevzuat":
         from ingestion.mevzuat.archive import LegislationArchive
@@ -152,7 +144,7 @@ def _run_ingest(args: argparse.Namespace) -> int:
             summary = ingest_legislation(
                 connection,
                 archive.iter_records(),
-                max_chunk_chars=args.max_chunk_chars,
+                max_chunk_chars=max_chunk_chars,
             )
     else:
         from ingestion.yargitay.store import ingest_decisions
@@ -165,16 +157,66 @@ def _run_ingest(args: argparse.Namespace) -> int:
             summary = ingest_decisions(
                 connection,
                 archive.iter_decisions(),
-                max_chunk_chars=args.max_chunk_chars,
+                max_chunk_chars=max_chunk_chars,
             )
 
     logger.info(
-        "Aktarım bitti | yeni=%s | güncellenen=%s | değişmeyen=%s | toplam=%s",
+        "Aktarım bitti | kaynak=%s | yeni=%s | güncellenen=%s | değişmeyen=%s | toplam=%s",
+        source,
         summary.created,
         summary.updated,
         summary.unchanged,
         summary.total,
     )
+    return 0
+
+
+def _run_ingest(args: argparse.Namespace) -> int:
+    database_url = _resolve_database_url(args.database_url)
+    source = args.source
+    archive_dir = args.archive_dir
+    if archive_dir is None:
+        archive_dir = (
+            DEFAULT_MEVZUAT_ARCHIVE_DIR if source == "mevzuat" else DEFAULT_ARCHIVE_DIR
+        )
+    return _ingest_archive(source, archive_dir, database_url, args.max_chunk_chars)
+
+
+def _run_collect(args: argparse.Namespace) -> int:
+    from ingestion.collect import CollectOptions, CorpusCollector
+
+    collector = CorpusCollector(
+        CollectOptions(
+            profile=args.profile,
+            only=args.only,
+            delay=args.delay,
+            mevzuat_dir=args.mevzuat_dir,
+            yargitay_dir=args.yargitay_dir,
+            refresh_existing=args.refresh_existing,
+        )
+    )
+    report = asyncio.run(collector.run())
+    mevzuat_saved = sum(stats.saved for _, stats in report.mevzuat)
+    yargitay_saved = sum(stats.saved for _, stats in report.yargitay)
+    logger.info(
+        "Toplama bitti | profil=%s | mevzuat_yeni=%s | yargitay_yeni=%s | hata=%s",
+        report.profile,
+        mevzuat_saved,
+        yargitay_saved,
+        len(report.errors),
+    )
+    for error in report.errors:
+        logger.error("%s", error)
+
+    if args.ingest:
+        database_url = _resolve_database_url(args.database_url)
+        if args.only in {"all", "mevzuat"}:
+            _ingest_archive("mevzuat", args.mevzuat_dir, database_url, DEFAULT_MAX_CHARS)
+        if args.only in {"all", "yargitay"}:
+            _ingest_archive("yargitay", args.yargitay_dir, database_url, DEFAULT_MAX_CHARS)
+
+    if report.saved_count == 0:
+        return 2 if report.errors else 1
     return 0
 
 
@@ -307,6 +349,53 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mevzuat.set_defaults(handler=_run_fetch_mevzuat)
 
+    yargitay = fetch_sources.add_parser("yargitay", help="Yargıtay karar arama portalından çek")
+    yargitay.add_argument("--keyword", default="", help="Arama kelimesi")
+    yargitay.add_argument("--chamber", default="", help="Daire adı, ör. '9. Hukuk Dairesi'")
+    yargitay.add_argument(
+        "--decision-date-from",
+        type=_parse_date_arg,
+        default=None,
+        help="Karar tarihi başlangıcı (YYYY-MM-DD veya GG.AA.YYYY)",
+    )
+    yargitay.add_argument(
+        "--decision-date-to",
+        type=_parse_date_arg,
+        default=None,
+        help="Karar tarihi bitişi (YYYY-MM-DD veya GG.AA.YYYY)",
+    )
+    yargitay.add_argument("--max-decisions", type=int, default=50)
+    yargitay.add_argument("--archive-dir", type=Path, default=DEFAULT_ARCHIVE_DIR)
+    yargitay.add_argument("--delay", type=float, default=1.5)
+    yargitay.add_argument("--page-size", type=int, default=20)
+    yargitay.add_argument("--timeout", type=float, default=30)
+    yargitay.add_argument("--max-retries", type=int, default=3)
+    yargitay.add_argument("--refresh-existing", action="store_true")
+    yargitay.set_defaults(handler=_run_scrape)
+
+    collect = subparsers.add_parser(
+        "collect",
+        help="Başlangıç korpusunu Yargıtay ve mevzuattan sırayla çek",
+    )
+    collect.add_argument(
+        "--profile",
+        choices=("smoke", "starter"),
+        default="starter",
+        help="smoke: kısa deneme; starter: temel kanunlar + örnek Yargıtay aramaları",
+    )
+    collect.add_argument("--only", choices=("all", "mevzuat", "yargitay"), default="all")
+    collect.add_argument("--delay", type=float, default=None, help="İstekler arası bekleme (sn)")
+    collect.add_argument("--mevzuat-dir", type=Path, default=DEFAULT_MEVZUAT_ARCHIVE_DIR)
+    collect.add_argument("--yargitay-dir", type=Path, default=DEFAULT_ARCHIVE_DIR)
+    collect.add_argument("--refresh-existing", action="store_true")
+    collect.add_argument(
+        "--ingest",
+        action="store_true",
+        help="Çekimden sonra arşivi veritabanına yaz",
+    )
+    collect.add_argument("--database-url", default=None, help="Varsayılan: DATABASE_ADMIN_URL")
+    collect.set_defaults(handler=_run_collect)
+
     ingest = subparsers.add_parser("ingest", help="JSON arşivini veritabanına aktar")
     ingest.add_argument(
         "--source",
@@ -342,6 +431,21 @@ def build_parser() -> argparse.ArgumentParser:
     embed.add_argument("--max-retries", type=int, default=4)
     embed.add_argument("--retry-backoff", type=float, default=15)
     embed.set_defaults(handler=_run_embed)
+
+    def _run_worker(ns: argparse.Namespace) -> int:
+        from worker.runner import main as worker_main
+
+        argv = list(ns.worker_argv)
+        if ns.verbose and "-v" not in argv:
+            argv.insert(0, "-v")
+        return worker_main(argv)
+
+    worker = subparsers.add_parser(
+        "worker",
+        help="Ingestion worker (python -m worker.runner ile aynı)",
+    )
+    worker.add_argument("worker_argv", nargs=argparse.REMAINDER)
+    worker.set_defaults(handler=_run_worker)
 
     return parser
 

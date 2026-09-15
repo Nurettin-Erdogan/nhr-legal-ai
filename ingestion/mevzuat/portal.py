@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin
-from urllib.request import Request, build_opener
+from ingestion.http import is_retryable_status, retry_wait_seconds
 
 BASE_URL = "https://bedesten.adalet.gov.tr/mevzuat/"
 APP_NAME = "UyapMevzuat"
@@ -84,20 +84,21 @@ class MevzuatPortalClient:
                 break
             except HTTPError as exc:
                 retry_after = exc.headers.get("Retry-After") if exc.headers else None
-                retryable = exc.code == 429 or 500 <= exc.code < 600
+                retryable = is_retryable_status(exc.code)
                 if not retryable or attempt == self.max_retries:
                     raise MevzuatPortalError(f"Bedesten HTTP hatası: {exc.code} ({url})") from exc
-                wait = self.retry_backoff_seconds * attempt
-                if retry_after:
-                    try:
-                        wait = max(wait, float(retry_after))
-                    except ValueError:
-                        pass
+                wait = retry_wait_seconds(
+                    attempt,
+                    base_seconds=self.retry_backoff_seconds,
+                    retry_after=retry_after,
+                )
                 time.sleep(wait)
             except URLError as exc:
                 if attempt == self.max_retries:
                     raise MevzuatPortalError(f"Bedesten bağlantı hatası ({url}): {exc.reason}") from exc
-                time.sleep(self.retry_backoff_seconds * attempt)
+                time.sleep(
+                    retry_wait_seconds(attempt, base_seconds=self.retry_backoff_seconds)
+                )
         else:
             raise AssertionError("unreachable")
 

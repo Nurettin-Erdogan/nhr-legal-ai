@@ -74,10 +74,10 @@ def test_search_payload_routes_hukuk_chamber_to_correct_field(tmp_path):
 
 
 def test_retry_wait_is_exponential_and_respects_retry_after():
-    assert _retry_wait_seconds(1, base_seconds=2) == 2
-    assert _retry_wait_seconds(3, base_seconds=2) == 8
-    assert _retry_wait_seconds(2, base_seconds=2, retry_after="12") == 12
-    assert _retry_wait_seconds(2, base_seconds=2, retry_after="invalid") == 4
+    assert _retry_wait_seconds(1, base_seconds=2, jitter=False) == 2
+    assert _retry_wait_seconds(3, base_seconds=2, jitter=False) == 8
+    assert _retry_wait_seconds(2, base_seconds=2, retry_after="12", jitter=False) == 12
+    assert _retry_wait_seconds(2, base_seconds=2, retry_after="invalid", jitter=False) == 4
 
 
 class _FakeClient:

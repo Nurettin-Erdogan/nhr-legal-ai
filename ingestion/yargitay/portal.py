@@ -11,6 +11,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
+from ingestion.http import is_retryable_status, retry_wait_seconds
 from ingestion.text import html_to_text
 
 __all__ = [
@@ -88,20 +89,7 @@ def parse_portal_date(value: str) -> date | None:
     return None
 
 
-def _retry_wait_seconds(
-    attempt: int,
-    *,
-    base_seconds: float,
-    retry_after: str | None = None,
-) -> float:
-    """Üstel bekleme süresini üretir ve sayısal Retry-After değerini gözetir."""
-    wait = max(0.0, base_seconds) * (2 ** max(0, attempt - 1))
-    if retry_after:
-        try:
-            wait = max(wait, float(retry_after))
-        except ValueError:
-            pass
-    return wait
+_retry_wait_seconds = retry_wait_seconds
 
 
 def _metadata_message(payload: Mapping[str, Any]) -> str:
@@ -159,7 +147,7 @@ class YargitayPortalClient:
                 with self.opener.open(request, timeout=self.timeout_seconds) as response:
                     return response.read()
             except HTTPError as exc:
-                retryable = exc.code == 429 or 500 <= exc.code < 600
+                retryable = is_retryable_status(exc.code)
                 if not retryable or attempt == self.max_retries:
                     raise PortalError(f"Yargitay HTTP hatasi: {exc.code} ({url})") from exc
                 wait = _retry_wait_seconds(

@@ -168,15 +168,24 @@ def test_changed_text_does_not_replace_cited_chunks(connection):
             (message_id, chunk_id, "Test kararı"),
         )
 
-    with pytest.raises(CitedDecisionChangedError, match="Atif verilmis"):
-        upsert_decision(connection, _decision(raw_text=BODY + "\n\nDeğişen metin."))
+    second = upsert_decision(connection, _decision(raw_text=BODY + "\n\nDeğişen metin."))
 
-    stored_hash, = _fetch_one(
+    assert second.status == "new_version"
+    assert second.legal_source_id != first.legal_source_id
+
+    stored_hash, is_current = _fetch_one(
         connection,
-        "SELECT content_hash FROM legal_sources WHERE id = %s",
+        "SELECT content_hash, is_current FROM legal_sources WHERE id = %s",
         (first.legal_source_id,),
     )
     assert stored_hash == content_hash(BODY)
+    assert is_current is False
+    chunk_count, = _fetch_one(
+        connection,
+        "SELECT count(*) FROM legal_chunks WHERE legal_source_id = %s",
+        (first.legal_source_id,),
+    )
+    assert chunk_count >= 1
 
 
 def test_chunks_are_searchable_via_turkish_full_text_index(connection):

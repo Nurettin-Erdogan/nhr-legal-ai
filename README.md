@@ -10,9 +10,24 @@ Kurulum, V2 migration, RLS, embedding indeksleri ve test adımları için [verit
 
 ## Veri aktarımı
 
-Yargıtay kararları ve mevzuat maddeleri `ingestion` paketiyle toplanır.
-Ayrıntılar için [Yargıtay](docs/ingestion-yargitay.md) ve
-[mevzuat](docs/ingestion-mevzuat.md) aktarım dokümanlarına bakın.
+Yargıtay kararları ve mevzuat maddeleri `ingestion` paketi ve `worker`
+servisiyle toplanır. Worker, web uygulamasından bağımsız çalışır.
+
+```powershell
+.\.venv\Scripts\python.exe -m worker.runner status
+.\.venv\Scripts\python.exe -m worker.runner run --source yargitay --date-from 2026-01-01 --date-to 2026-01-31
+.\.venv\Scripts\python.exe -m worker.runner daemon
+```
+
+Eski tek seferlik toplayıcı hâlâ durur:
+
+```powershell
+.\.venv\Scripts\python.exe -m ingestion.cli collect --profile smoke --ingest
+```
+
+Ayrıntılar için [ingestion worker](docs/ingestion-worker.md),
+[Yargıtay](docs/ingestion-yargitay.md) ve
+[mevzuat](docs/ingestion-mevzuat.md) dokümanlarına bakın.
 
 ## Web uygulaması
 

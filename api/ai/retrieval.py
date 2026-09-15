@@ -52,6 +52,7 @@ JOIN legal_sources ls ON ls.id = chunk.legal_source_id
 {_DETAIL_JOINS}
 CROSS JOIN search_query
 WHERE ls.deleted_at IS NULL
+  AND ls.is_current
   AND search_query.value IS NOT NULL
   AND chunk.search_vector @@ search_query.value
 ORDER BY rank DESC, {_RECENCY_ORDER}
@@ -77,6 +78,7 @@ lexical AS (
     JOIN legal_sources ls ON ls.id = chunk.legal_source_id
     CROSS JOIN search_query
     WHERE ls.deleted_at IS NULL
+      AND ls.is_current
       AND search_query.value IS NOT NULL
       AND chunk.search_vector @@ search_query.value
     ORDER BY position
@@ -88,6 +90,7 @@ semantic AS (
     FROM legal_chunks chunk
     JOIN legal_sources ls ON ls.id = chunk.legal_source_id
     WHERE ls.deleted_at IS NULL
+      AND ls.is_current
       AND chunk.embedding IS NOT NULL
       AND chunk.embedding_model = %(embedding_model)s
     ORDER BY position

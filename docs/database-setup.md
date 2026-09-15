@@ -69,7 +69,9 @@ Init dosyaları yalnızca boş PostgreSQL volume ilk kez oluşturulurken otomati
 4. `database/init/004_rls.sql`
 5. `database/init/005_v2_hardening.sql`
 6. `database/init/006_v2_integrity_fixes.sql`
-7. `database/init/007_message_ordering.sql`
+7. `database/init/006_legal_data_layer.sql` (hukuk provenance / sürüm tabloları)
+8. `database/init/007_message_ordering.sql`
+9. `database/init/008_ingestion_worker.sql` (checkpoint, coverage, run genişletmesi)
 
 V2 toplam 17 tablo içerir:
 
@@ -104,6 +106,12 @@ Get-Content -Raw .\database\init\006_v2_integrity_fixes.sql |
   docker compose exec -T db psql -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1
 
 Get-Content -Raw .\database\init\007_message_ordering.sql |
+  docker compose exec -T db psql -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1
+
+Get-Content -Raw .\database\migrations\006_legal_data_layer.sql |
+  docker compose exec -T db psql -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1
+
+Get-Content -Raw .\database\migrations\007_ingestion_worker.sql |
   docker compose exec -T db psql -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1
 ```
 

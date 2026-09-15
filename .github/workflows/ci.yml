@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - feature/legal-ai
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.6-pg16
+        env:
+          POSTGRES_USER: nhr_app
+          POSTGRES_PASSWORD: ci-test-only
+          POSTGRES_DB: nhr_legal_ai
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nhr_app -d nhr_legal_ai"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NHR_TEST_DATABASE_URL: postgresql://nhr_app:ci-test-only@localhost:5432/nhr_legal_ai
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+      - name: Apply database schema
+        env:
+          PGPASSWORD: ci-test-only
+        run: |
+          set -e
+          for f in \
+            database/init/001_extensions.sql \
+            database/init/002_schema.sql \
+            database/init/003_v2_schema.sql \
+            database/init/004_rls.sql \
+            database/init/005_v2_hardening.sql \
+            database/init/006_v2_integrity_fixes.sql \
+            database/init/007_message_ordering.sql \
+            database/migrations/006_legal_data_layer.sql \
+            database/migrations/007_ingestion_worker.sql
+          do
+            psql -h localhost -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1 -f "$f"
+          done
+      - name: Pytest
+        run: python -m pytest -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run build

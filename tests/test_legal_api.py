@@ -33,9 +33,15 @@ def _seed_legislation(connection):
     source_id = connection.execute(
         """
         INSERT INTO legal_sources (
-            source_type, title, external_id, authority, raw_text, ingest_status
+            source_type, title, external_id, authority, raw_text, ingest_status,
+            canonical_source_name, ingestion_method, source_version,
+            fetched_at, last_verified_at
         )
-        VALUES ('legislation', %s, %s, 'Mevzuat Bilgi Sistemi', %s, 'ready')
+        VALUES (
+            'legislation', %s, %s, 'Mevzuat Bilgi Sistemi', %s, 'ready',
+            'Mevzuat Bilgi Sistemi', 'bedesten_public_json_http', '1',
+            NOW(), NOW()
+        )
         RETURNING id
         """,
         (

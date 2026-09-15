@@ -4,6 +4,7 @@ import psycopg
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.admin_ingestion import router as admin_ingestion_router
 from api.ai.routes import router as ai_router
 from api.auth.routes import router as auth_router
 from api.config import get_settings
@@ -33,6 +34,7 @@ app.include_router(ai_router)
 app.include_router(auth_router)
 app.include_router(projects_router)
 app.include_router(documents_router)
+app.include_router(admin_ingestion_router)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["system"])
