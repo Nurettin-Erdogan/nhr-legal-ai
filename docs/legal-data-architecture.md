@@ -62,6 +62,13 @@ zenginleştirmedir.
 Resmî Gazete ve KDK sınıfları yalnızca açık biçimde `blocked` dönen
 iskeletlerdir.
 
+AYM için kurumun web istemcisinin kullandığı `POST /api/core/public/search`
+public JSON sözleşmesi doğrulanmış ve `ingestion/aym/portal.py` içinde ağdan
+bağımsız test edilebilir istemci olarak uygulanmıştır. Bu yalnız keşif ve
+yapılandırılmış metadata katmanıdır. Tam karar indirme akışı
+`X-Captcha-Verified` güvenlik doğrulaması istediğinden otomatik olarak taklit
+edilmez; tam metin güvenilir biçimde alınmadan adapter ACTIVE yapılmaz.
+
 ## Provenance standardı
 
 Her `legal_sources` satırında aşağıdaki çekirdek alanlar korunur:

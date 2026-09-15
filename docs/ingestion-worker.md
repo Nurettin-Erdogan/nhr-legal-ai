@@ -22,7 +22,7 @@ Worker hata verse bile FastAPI ve Next.js ayakta kalır. Korpus yazımı
 | **ACTIVE** | Yargıtay | https://karararama.yargitay.gov.tr | JSON/HTTP: `/detayliArama`, `/aramadetaylist`, `/getDokuman?id=` |
 | **ACTIVE** | Mevzuat | https://bedesten.adalet.gov.tr/mevzuat | JSON/HTTP: `searchDocuments`, `mevzuatMaddeTree`, `getDocumentContent` |
 | PLANNED / VERIFICATION | Danıştay | https://karararama.danistay.gov.tr | Uç sözleşmesi doğrulanmadı; skeleton only |
-| PLANNED / VERIFICATION | AYM | https://kararlarbilgibankasi.anayasa.gov.tr | Uç sözleşmesi doğrulanmadı; skeleton only |
+| PLANNED / VERIFICATION | AYM | https://kararlarbilgibankasi.anayasa.gov.tr | Public arama JSON'u doğrulandı; tam metin güvenlik doğrulaması bekliyor |
 | PLANNED / VERIFICATION | Resmî Gazete | https://www.resmigazete.gov.tr | Canonical verification; uydurma scraper yok |
 | PLANNED / VERIFICATION | KDK | https://kararlar.ombudsman.gov.tr | Resmî karar portalı; ingestion sözleşmesi doğrulanacak |
 | PLANNED | Mevzuat canonical | resmi mevzuat sistemi / Resmî Gazete | Bedesten transport kaynağıdır, hukuki kanon değildir |
