@@ -42,7 +42,7 @@ yerel `.env` dosyasına ekleyin:
 
 ```env
 AI_PROVIDER=gemini
-AI_MODEL=gemini-3.8-flash
+AI_MODEL=gemini-3.5-flash-lite
 GEMINI_API_KEY=buraya_kendi_anahtariniz
 RAG_TOP_K=6
 EMBEDDING_PROVIDER=gemini
@@ -102,3 +102,21 @@ icra, danışmanlık ve araştırma projelerini listeler. Yeni proje oluşturulu
 kullanıcı `owner` üye olarak eklenir. API, JWT içindeki kullanıcı kimliğini
 transaction boyunca `app.user_id` PostgreSQL ayarına aktarır; proje ve belge
 görünürlüğünü mevcut RLS politikaları sınırlar.
+
+## Kullanıcı belgeleri
+
+`http://localhost:3000/documents` ekranında PDF, DOCX ve UTF-8 TXT belgeleri
+yüklenebilir. Dosyalar varsayılan olarak `uploads/` altında kullanıcı kimliğiyle
+ayrılmış özel dizinlere kaydedilir; bu dizin Git'e eklenmez. Belge metni yükleme
+sırasında parçalanarak `document_chunks` tablosuna yazılır. Listeleme ve ekleme
+işlemleri `nhr_runtime` bağlantısı ve PostgreSQL RLS politikalarıyla korunur.
+
+Boyut ve saklama yolu `.env` içinden ayarlanabilir:
+
+```env
+DOCUMENT_STORAGE_DIR=uploads
+MAX_DOCUMENT_SIZE_MB=10
+```
+
+Taranmış veya yalnız görüntü içeren PDF'ler henüz OCR'dan geçirilmez; API bu
+dosyaları boş belge olarak kaydetmek yerine açık bir hata döndürür.

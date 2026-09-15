@@ -25,6 +25,8 @@ class Settings:
     jwt_expire_minutes: int
     auth_cookie_secure: bool
     allow_registration: bool
+    document_storage_dir: str
+    max_document_size_bytes: int
 
 
 def _database_url() -> str:
@@ -82,4 +84,11 @@ def get_settings() -> Settings:
         in {"1", "true", "yes"},
         allow_registration=os.getenv("ALLOW_REGISTRATION", "true").lower()
         in {"1", "true", "yes"},
+        document_storage_dir=os.getenv("DOCUMENT_STORAGE_DIR", "uploads").strip()
+        or "uploads",
+        max_document_size_bytes=max(
+            1, min(int(os.getenv("MAX_DOCUMENT_SIZE_MB", "10")), 50)
+        )
+        * 1024
+        * 1024,
     )

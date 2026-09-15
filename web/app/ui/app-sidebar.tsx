@@ -22,7 +22,7 @@ export function Brand() {
   );
 }
 
-export default function AppSidebar({ active }: { active: "research" | "assistant" | "projects" | "auth" }) {
+export default function AppSidebar({ active }: { active: "research" | "assistant" | "projects" | "documents" | "auth" }) {
   return (
     <aside className="sidebar">
       <Brand />
@@ -37,7 +37,9 @@ export default function AppSidebar({ active }: { active: "research" | "assistant
         <Link className={`nav-item ${active === "projects" ? "active" : ""}`} href="/projects">
           <Icon name="folder"/>Projeler
         </Link>
-        <a className="nav-item muted"><Icon name="file"/>Belgeler<span>Yakında</span></a>
+        <Link className={`nav-item ${active === "documents" ? "active" : ""}`} href="/documents">
+          <Icon name="file"/>Belgeler
+        </Link>
       </nav>
       <div className="sidebar-bottom">
         <Link className={`nav-item ${active === "auth" ? "active" : ""}`} href="/auth">
