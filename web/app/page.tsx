@@ -50,15 +50,15 @@ export default function Home() {
       <section className="workspace">
         <header className="topbar">
           <div><span className="eyebrow">NHR ARAŞTIRMA</span><h1>Hukuk araştırması</h1></div>
-          <div className="corpus-pill"><span>{stats?.source_count ?? "—"}</span> karar · <span>{stats?.chunk_count ?? "—"}</span> parça</div>
+          <div className="corpus-pill"><span>{stats?.decision_count ?? "—"}</span> karar · <span>{stats?.legislation_count ?? "—"}</span> mevzuat · <span>{stats?.chunk_count ?? "—"}</span> parça</div>
         </header>
 
         <div className="content">
           <section className="hero-panel">
             <div>
-              <span className="section-kicker">YARGITAY İÇTİHATLARI</span>
+              <span className="section-kicker">MEVZUAT VE YARGITAY İÇTİHATLARI</span>
               <h2>Aradığınız hukuki dayanağa<br/>doğrudan ulaşın.</h2>
-              <p>Karar metinlerinde Türkçe kök tabanlı arama yapın; esas, karar ve tarih bilgileriyle kaynağa gidin.</p>
+              <p>Mevzuat maddeleri ve karar metinlerinde Türkçe kök tabanlı arama yapın; doğrulanabilir resmî kaynağa gidin.</p>
             </div>
             <div className="hero-stat"><small>En güncel karar</small><strong>{stats?.latest_decision_date ? new Date(stats.latest_decision_date).toLocaleDateString("tr-TR") : "—"}</strong></div>
           </section>
@@ -72,22 +72,25 @@ export default function Home() {
           {error && <div className="error-banner">{error}</div>}
 
           <div className="results-heading">
-            <div><h3>Karar sonuçları</h3><p>{results ? `“${results.query}” için ${results.total} karar` : "Korpus içinde arama yapın"}</p></div>
+            <div><h3>Hukuk kaynakları</h3><p>{results ? `“${results.query}” için ${results.total} kaynak` : "Korpus içinde arama yapın"}</p></div>
             <span className="method-badge">Türkçe tam metin</span>
           </div>
 
           <div className="result-list">
-            {results?.results.map((result) => (
+            {results?.results.map((result) => {
+              const isLegislation = result.source_type === "legislation";
+              const sourceDate = isLegislation ? result.official_gazette_date ?? result.version_date : result.decision_date;
+              return (
               <article className="result-card" key={result.id}>
-                <div className="result-meta"><span>{result.chamber ?? "Yargıtay"}</span><time>{result.decision_date ? new Date(result.decision_date).toLocaleDateString("tr-TR") : "Tarih yok"}</time></div>
+                <div className="result-meta"><span>{isLegislation ? `${result.law_name ?? "Mevzuat"} · Madde ${result.article_no ?? "—"}` : result.chamber ?? result.court_name ?? "Yargıtay"}</span><time>{sourceDate ? new Date(sourceDate).toLocaleDateString("tr-TR") : "Tarih yok"}</time></div>
                 <Link href={`/decisions/${result.id}`}><h4>{result.title}</h4></Link>
                 <p>{result.excerpt}</p>
                 <footer>
-                  <div><code>E. {result.docket_no ?? "—"}</code><code>K. {result.decision_no ?? "—"}</code></div>
-                  <Link href={`/decisions/${result.id}`}>Kararı incele <span>→</span></Link>
+                  <div>{isLegislation ? <><code>Kanun {result.law_no ?? "—"}</code><code>m. {result.article_no ?? "—"}</code></> : <><code>E. {result.docket_no ?? "—"}</code><code>K. {result.decision_no ?? "—"}</code></>}</div>
+                  <Link href={`/decisions/${result.id}`}>Kaynağı incele <span>→</span></Link>
                 </footer>
               </article>
-            ))}
+            )})}
             {!loading && results && results.results.length === 0 && (
               <div className="empty-state"><Icon name="search"/><h4>Sonuç bulunamadı</h4><p>Daha kısa veya farklı bir hukuki ifade deneyin.</p></div>
             )}

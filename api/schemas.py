@@ -15,17 +15,29 @@ class HealthResponse(BaseModel):
 class CorpusStats(BaseModel):
     source_count: int
     chunk_count: int
+    decision_count: int
+    legislation_count: int
     latest_decision_date: date | None
 
 
 class LegalSearchHit(BaseModel):
     id: UUID
+    source_type: str
     title: str
     source_url: str | None
+    authority: str | None
+    court_name: str | None
     chamber: str | None
     docket_no: str | None
     decision_no: str | None
     decision_date: date | None
+    legislation_type: str | None
+    law_name: str | None
+    law_no: str | None
+    article_no: str | None
+    article_title: str | None
+    official_gazette_date: date | None
+    version_date: date | None
     excerpt: str
     rank: float
 
@@ -46,14 +58,24 @@ class LegalChunk(BaseModel):
 
 class LegalSourceDetail(BaseModel):
     id: UUID
+    source_type: str
     title: str
     source_url: str | None
     external_id: str | None
     authority: str | None
+    court_name: str | None
     chamber: str | None
     docket_no: str | None
     decision_no: str | None
     decision_date: date | None
+    legislation_type: str | None
+    law_name: str | None
+    law_no: str | None
+    article_no: str | None
+    article_title: str | None
+    official_gazette_no: str | None
+    official_gazette_date: date | None
+    version_date: date | None
     raw_text: str
     metadata: dict[str, Any] = Field(default_factory=dict)
     chunks: list[LegalChunk]

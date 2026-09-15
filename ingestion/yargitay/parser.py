@@ -6,17 +6,13 @@ Bu modül ağ veya tarayıcı kullanmaz; portal HTML'i değişse bile metin
 
 from __future__ import annotations
 
-import hashlib
 import re
 from datetime import date, datetime
 
+from ingestion.text import content_hash, normalize_text, tr_casefold
 from ingestion.yargitay.models import CourtDecision
 
 DEFAULT_COURT_NAME = "Yargıtay"
-
-# Python'un varsayılan case-folding'i Türkçe İ/I çiftini beklendiği gibi
-# eşlemediği için desenler bu tabloyla katlanmış metne uygulanır.
-_TR_FOLD = str.maketrans({"İ": "i", "I": "ı"})
 
 _CASE_NUMBER = r"(\d{4})\s*/\s*(\d{1,6})"
 _DATE = r"(\d{1,2})\s*[./-]\s*(\d{1,2})\s*[./-]\s*(\d{4})"
@@ -43,8 +39,6 @@ _CHAMBER_PATTERN = re.compile(r"(\d{1,2})\s*\.\s*(hukuk|ceza)\s*dairesi")
 _CHAMBER_ABBREVIATION_PATTERN = re.compile(r"(\d{1,2})\s*\.\s*(h|c)\s*d\b")
 _ASSEMBLY_PATTERN = re.compile(r"(hukuk|ceza|büyük)\s+genel\s+kurulu")
 
-_INLINE_WHITESPACE = re.compile(r"[ \t\u00a0\u200b]+")
-_EXCESS_BLANK_LINES = re.compile(r"\n{3,}")
 _SLUG_SEPARATOR = re.compile(r"[^a-z0-9]+")
 
 _CHAMBER_KIND_NAMES = {
@@ -54,23 +48,6 @@ _CHAMBER_KIND_NAMES = {
     "c": "Ceza",
     "büyük": "Büyük",
 }
-
-
-def tr_casefold(text: str) -> str:
-    """Türkçe İ/I harflerini koruyarak küçük harfe çevirir."""
-    return text.translate(_TR_FOLD).lower()
-
-
-def normalize_text(text: str) -> str:
-    """Satır sonlarını ve boşlukları tekilleştirir."""
-    unified = text.replace("\r\n", "\n").replace("\r", "\n")
-    collapsed = _INLINE_WHITESPACE.sub(" ", unified)
-    stripped = "\n".join(line.strip() for line in collapsed.split("\n"))
-    return _EXCESS_BLANK_LINES.sub("\n\n", stripped).strip()
-
-
-def content_hash(text: str) -> str:
-    return hashlib.sha256(normalize_text(text).encode("utf-8")).hexdigest()
 
 
 def _first_case_number(text: str, patterns: tuple[re.Pattern[str], ...]) -> str | None:

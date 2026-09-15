@@ -1,6 +1,6 @@
-"""Yargıtay korpusu için komut satırı arayüzü.
+"""Hukuk korpusu için komut satırı arayüzü.
 
-Tarama ve veritabanına aktarım ayrı adımlardır; portal yeniden taranmadan
+Tarama ve veritabanına aktarım ayrı adımlardır; kaynak yeniden taranmadan
 arşivden aktarım tekrarlanabilir.
 """
 
@@ -19,6 +19,7 @@ from ingestion.yargitay.archive import DecisionArchive
 from ingestion.yargitay.chunking import DEFAULT_MAX_CHARS
 
 DEFAULT_ARCHIVE_DIR = Path("data/yargitay")
+DEFAULT_MEVZUAT_ARCHIVE_DIR = Path("data/mevzuat")
 
 logger = logging.getLogger("ingestion")
 
@@ -77,24 +78,81 @@ def _run_scrape(args: argparse.Namespace) -> int:
     return 0 if stats.saved or stats.duplicates else 1
 
 
+def _run_fetch_mevzuat(args: argparse.Namespace) -> int:
+    from ingestion.mevzuat.fetcher import FetcherConfig, MevzuatFetcher
+    from ingestion.mevzuat.portal import MevzuatPortalError
+
+    types = tuple(item.strip().upper() for item in args.types.split(",") if item.strip())
+    config = FetcherConfig(
+        law_no=args.law_no,
+        title=args.title,
+        types=types or ("KANUN",),
+        max_documents=args.max_documents,
+        max_articles=args.max_articles,
+        output_dir=args.archive_dir,
+        page_size=args.page_size,
+        delay_seconds=args.delay,
+        timeout_seconds=args.timeout,
+        max_retries=args.max_retries,
+        refresh_existing=args.refresh_existing,
+    )
+    fetcher = MevzuatFetcher(config)
+    try:
+        stats = asyncio.run(fetcher.run())
+    except MevzuatPortalError as exc:
+        logger.error("Mevzuat aktarımı durdu: %s", exc)
+        return 2
+
+    logger.info(
+        "Arşiv: %s | belgeler=%s | işlenen=%s | yeni/güncel=%s | aynı=%s | hatalı=%s",
+        fetcher.archive.root,
+        stats.documents,
+        stats.processed,
+        stats.saved,
+        stats.duplicates,
+        stats.failed,
+    )
+    return 0 if stats.saved or stats.duplicates else 1
+
+
 def _run_ingest(args: argparse.Namespace) -> int:
     import psycopg
 
-    from ingestion.yargitay.store import ingest_decisions
-
     database_url = _resolve_database_url(args.database_url)
-    archive = DecisionArchive(args.archive_dir)
-
-    if len(archive) == 0:
-        logger.warning("Arşiv boş: %s", archive.root)
-        return 1
-
-    with psycopg.connect(database_url) as connection:
-        summary = ingest_decisions(
-            connection,
-            archive.iter_decisions(),
-            max_chunk_chars=args.max_chunk_chars,
+    source = args.source
+    archive_dir = args.archive_dir
+    if archive_dir is None:
+        archive_dir = (
+            DEFAULT_MEVZUAT_ARCHIVE_DIR if source == "mevzuat" else DEFAULT_ARCHIVE_DIR
         )
+
+    if source == "mevzuat":
+        from ingestion.mevzuat.archive import LegislationArchive
+        from ingestion.mevzuat.store import ingest_legislation
+
+        archive = LegislationArchive(archive_dir)
+        if len(archive) == 0:
+            logger.warning("Arşiv boş: %s", archive.root)
+            return 1
+        with psycopg.connect(database_url) as connection:
+            summary = ingest_legislation(
+                connection,
+                archive.iter_records(),
+                max_chunk_chars=args.max_chunk_chars,
+            )
+    else:
+        from ingestion.yargitay.store import ingest_decisions
+
+        archive = DecisionArchive(archive_dir)
+        if len(archive) == 0:
+            logger.warning("Arşiv boş: %s", archive.root)
+            return 1
+        with psycopg.connect(database_url) as connection:
+            summary = ingest_decisions(
+                connection,
+                archive.iter_decisions(),
+                max_chunk_chars=args.max_chunk_chars,
+            )
 
     logger.info(
         "Aktarım bitti | yeni=%s | güncellenen=%s | değişmeyen=%s | toplam=%s",
@@ -152,7 +210,7 @@ def _run_embed(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ingestion",
-        description="Yargıtay kararlarını topla ve veritabanına aktar.",
+        description="Hukuk korpusunu topla ve veritabanına aktar.",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Ayrıntılı log")
 
@@ -174,8 +232,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     scrape.set_defaults(handler=_run_scrape)
 
+    fetch = subparsers.add_parser("fetch", help="Kaynak JSON uçlarından arşive yaz")
+    fetch_sources = fetch.add_subparsers(dest="source", required=True)
+    mevzuat = fetch_sources.add_parser("mevzuat", help="Bedesten mevzuat maddelerini çek")
+    mevzuat.add_argument("--law-no", default="", help="Kanun / mevzuat numarası, ör. 4857")
+    mevzuat.add_argument("--title", default="", help="Mevzuat adı araması")
+    mevzuat.add_argument(
+        "--types",
+        default="KANUN",
+        help="Virgülle ayrılmış Bedesten türleri, ör. KANUN,KHK",
+    )
+    mevzuat.add_argument("--max-documents", type=int, default=5)
+    mevzuat.add_argument("--max-articles", type=int, default=50)
+    mevzuat.add_argument("--archive-dir", type=Path, default=DEFAULT_MEVZUAT_ARCHIVE_DIR)
+    mevzuat.add_argument("--delay", type=float, default=1.0)
+    mevzuat.add_argument("--page-size", type=int, default=10)
+    mevzuat.add_argument("--timeout", type=float, default=30)
+    mevzuat.add_argument("--max-retries", type=int, default=3)
+    mevzuat.add_argument(
+        "--refresh-existing",
+        action="store_true",
+        help="Arşivdeki madde metinlerini yeniden çek",
+    )
+    mevzuat.set_defaults(handler=_run_fetch_mevzuat)
+
     ingest = subparsers.add_parser("ingest", help="JSON arşivini veritabanına aktar")
-    ingest.add_argument("--archive-dir", type=Path, default=DEFAULT_ARCHIVE_DIR)
+    ingest.add_argument(
+        "--source",
+        choices=("yargitay", "mevzuat"),
+        default="yargitay",
+    )
+    ingest.add_argument("--archive-dir", type=Path, default=None)
     ingest.add_argument("--database-url", default=None, help="Varsayılan: DATABASE_ADMIN_URL")
     ingest.add_argument("--max-chunk-chars", type=int, default=DEFAULT_MAX_CHARS)
     ingest.set_defaults(handler=_run_ingest)

@@ -95,7 +95,7 @@ export default function AssistantPage() {
           <form className="question-card" onSubmit={ask}>
             <label htmlFor="legal-question">Hukuki sorunuz</label>
             <textarea id="legal-question" value={question} onChange={(event) => setQuestion(event.target.value)} rows={5} placeholder="Somut hukuki sorunuzu yazın…"/>
-            <div className="question-actions"><small>Yanıtlar mevcut Yargıtay kararlarıyla sınırlandırılır.</small><button disabled={loading || !status?.configured}>{loading ? "Kaynaklar inceleniyor…" : "Kaynaklı cevap üret"}</button></div>
+            <div className="question-actions"><small>Yanıtlar mevcut mevzuat ve karar kaynaklarıyla sınırlandırılır.</small><button disabled={loading || !status?.configured}>{loading ? "Kaynaklar inceleniyor…" : "Kaynaklı cevap üret"}</button></div>
           </form>
 
           <div className="suggestion-row">

@@ -10,7 +10,9 @@ Kurulum, V2 migration, RLS, embedding indeksleri ve test adımları için [verit
 
 ## Veri aktarımı
 
-Yargıtay kararları `ingestion` paketiyle toplanır ve hukuk tablolarına aktarılır. Ayrıntılar için [Yargıtay karar aktarımı dokümanına](docs/ingestion-yargitay.md) bakın.
+Yargıtay kararları ve mevzuat maddeleri `ingestion` paketiyle toplanır.
+Ayrıntılar için [Yargıtay](docs/ingestion-yargitay.md) ve
+[mevzuat](docs/ingestion-mevzuat.md) aktarım dokümanlarına bakın.
 
 ## Web uygulaması
 
@@ -49,8 +51,8 @@ EMBEDDING_DIMENSIONS=768
 ```
 
 API'yi yeniden başlattıktan sonra `http://localhost:3000/assistant` adresindeki
-ekran etkinleşir. Asistan önce PostgreSQL tam metin indeksinden ilgili karar
-parçalarını seçer, ardından bu parçaları sabit `[K1]`, `[K2]` kaynak işaretleriyle
+ekran etkinleşir. Asistan önce korpusta ilgili mevzuat ve karar parçalarını
+seçer, ardından bu parçaları sabit `[K1]`, `[K2]` kaynak işaretleriyle
 Gemini'ye gönderir. API anahtarı frontend'e aktarılmaz.
 
 ### Semantik arama

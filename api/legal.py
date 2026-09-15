@@ -12,51 +12,82 @@ router = APIRouter(prefix="/api/legal", tags=["legal"])
 
 _SEARCH_SQL = """
 WITH search_query AS (
-    SELECT plainto_tsquery('turkish', %(query)s) AS value
+    SELECT to_tsquery(
+        'turkish',
+        array_to_string(
+            tsvector_to_array(to_tsvector('turkish', %(query)s)),
+            ' | '
+        )
+    ) AS value
 ),
 ranked AS (
     SELECT DISTINCT ON (ls.id)
         ls.id,
+        ls.source_type,
         ls.title,
         ls.source_url,
-        details.chamber,
-        details.docket_no,
-        details.decision_no,
-        details.decision_date,
+        ls.authority,
+        decision.court_name,
+        decision.chamber,
+        decision.docket_no,
+        decision.decision_no,
+        decision.decision_date,
+        legislation.legislation_type,
+        legislation.law_name,
+        legislation.law_no,
+        legislation.article_no,
+        legislation.article_title,
+        legislation.official_gazette_date,
+        legislation.version_date,
         left(chunk.content, 700) AS excerpt,
         ts_rank_cd(chunk.search_vector, search_query.value) AS rank
     FROM legal_sources ls
-    JOIN court_decision_details details ON details.legal_source_id = ls.id
+    LEFT JOIN court_decision_details decision ON decision.legal_source_id = ls.id
+    LEFT JOIN legislation_details legislation ON legislation.legal_source_id = ls.id
     JOIN legal_chunks chunk ON chunk.legal_source_id = ls.id
     CROSS JOIN search_query
-    WHERE ls.source_type = 'court_decision'
+    WHERE ls.source_type IN ('court_decision', 'legislation')
       AND ls.deleted_at IS NULL
+      AND search_query.value IS NOT NULL
       AND chunk.search_vector @@ search_query.value
     ORDER BY ls.id, rank DESC, chunk.chunk_index
 )
 SELECT ranked.*, count(*) OVER () AS total
 FROM ranked
-ORDER BY rank DESC, decision_date DESC NULLS LAST, title
+ORDER BY rank DESC,
+         COALESCE(decision_date, official_gazette_date, version_date) DESC NULLS LAST,
+         title
 LIMIT %(limit)s OFFSET %(offset)s
 """
 
 _DETAIL_SQL = """
 SELECT
     ls.id,
+    ls.source_type,
     ls.title,
     ls.source_url,
     ls.external_id,
     ls.authority,
-    details.chamber,
-    details.docket_no,
-    details.decision_no,
-    details.decision_date,
+    decision.court_name,
+    decision.chamber,
+    decision.docket_no,
+    decision.decision_no,
+    decision.decision_date,
+    legislation.legislation_type,
+    legislation.law_name,
+    legislation.law_no,
+    legislation.article_no,
+    legislation.article_title,
+    legislation.official_gazette_no,
+    legislation.official_gazette_date,
+    legislation.version_date,
     COALESCE(ls.raw_text, '') AS raw_text,
     ls.metadata
 FROM legal_sources ls
-JOIN court_decision_details details ON details.legal_source_id = ls.id
+LEFT JOIN court_decision_details decision ON decision.legal_source_id = ls.id
+LEFT JOIN legislation_details legislation ON legislation.legal_source_id = ls.id
 WHERE ls.id = %s
-  AND ls.source_type = 'court_decision'
+  AND ls.source_type IN ('court_decision', 'legislation')
   AND ls.deleted_at IS NULL
 """
 
@@ -74,11 +105,18 @@ def corpus_stats() -> CorpusStats:
                 SELECT
                     count(DISTINCT ls.id)::int AS source_count,
                     count(chunk.id)::int AS chunk_count,
+                    count(DISTINCT ls.id) FILTER (
+                        WHERE ls.source_type = 'court_decision'
+                    )::int AS decision_count,
+                    count(DISTINCT ls.id) FILTER (
+                        WHERE ls.source_type = 'legislation'
+                    )::int AS legislation_count,
                     max(details.decision_date) AS latest_decision_date
                 FROM legal_sources ls
-                JOIN court_decision_details details ON details.legal_source_id = ls.id
+                LEFT JOIN court_decision_details details ON details.legal_source_id = ls.id
                 LEFT JOIN legal_chunks chunk ON chunk.legal_source_id = ls.id
-                WHERE ls.source_type = 'court_decision' AND ls.deleted_at IS NULL
+                WHERE ls.source_type IN ('court_decision', 'legislation')
+                  AND ls.deleted_at IS NULL
                 """
             ).fetchone()
     except psycopg.Error as exc:
@@ -121,7 +159,7 @@ def legal_source_detail(source_id: UUID) -> LegalSourceDetail:
         with database_connection() as connection:
             source = connection.execute(_DETAIL_SQL, (source_id,)).fetchone()
             if source is None:
-                raise HTTPException(status_code=404, detail="Karar bulunamadı")
+                raise HTTPException(status_code=404, detail="Hukuk kaynağı bulunamadı")
             chunks = connection.execute(
                 """
                 SELECT id, chunk_index, content

@@ -57,7 +57,8 @@ eklerken kimliği uygulamada üret, `RETURNING id` kullanma — gerekçesi
 
 Veritabanı PostgreSQL 16 + pgvector, Docker ile `localhost:5433`. Kurulum ve
 migration adımları için [docs/database-setup.md](docs/database-setup.md),
-korpus aktarımı için [docs/ingestion-yargitay.md](docs/ingestion-yargitay.md).
+korpus aktarımı için [docs/ingestion-yargitay.md](docs/ingestion-yargitay.md)
+ve [docs/ingestion-mevzuat.md](docs/ingestion-mevzuat.md).
 
 Testler ağ ve veritabanı olmadan çalışır; veritabanı testleri
 `NHR_TEST_DATABASE_URL` tanımlıysa devreye girer ve yazdıklarını geri alır.

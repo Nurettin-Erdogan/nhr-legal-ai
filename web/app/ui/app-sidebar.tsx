@@ -43,7 +43,7 @@ export default function AppSidebar({ active }: { active: "research" | "assistant
         <Link className={`nav-item ${active === "auth" ? "active" : ""}`} href="/auth">
           <Icon name="user"/>Oturum
         </Link>
-        <div className="sidebar-status"><i/><div><strong>Yerel geliştirme</strong><span>PostgreSQL + Yargıtay</span></div></div>
+        <div className="sidebar-status"><i/><div><strong>Yerel geliştirme</strong><span>PostgreSQL + hukuk korpusu</span></div></div>
       </div>
     </aside>
   );

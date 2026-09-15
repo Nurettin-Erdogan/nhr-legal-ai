@@ -4,12 +4,26 @@ import json
 import time
 from dataclasses import dataclass
 from datetime import date, datetime
-from html.parser import HTMLParser
 from http.cookiejar import CookieJar
 from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin
 from urllib.request import HTTPCookieProcessor, Request, build_opener
+
+from ingestion.text import html_to_text
+
+__all__ = [
+    "BASE_URL",
+    "CaptchaRequiredError",
+    "PortalDecisionRow",
+    "PortalError",
+    "SearchPage",
+    "YargitayPortalClient",
+    "document_url",
+    "html_to_text",
+    "parse_portal_date",
+    "portal_external_id",
+]
 
 
 BASE_URL = "https://karararama.yargitay.gov.tr/"
@@ -70,50 +84,6 @@ def parse_portal_date(value: str) -> date | None:
         except ValueError:
             continue
     return None
-
-
-class _TextExtractor(HTMLParser):
-    block_tags = {
-        "address", "article", "blockquote", "div", "footer", "h1", "h2",
-        "h3", "h4", "h5", "h6", "header", "li", "main", "p", "section",
-        "table", "tr",
-    }
-    ignored_tags = {"script", "style"}
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.parts: list[str] = []
-        self.ignored_depth = 0
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        tag = tag.lower()
-        if tag in self.ignored_tags:
-            self.ignored_depth += 1
-        elif self.ignored_depth == 0 and (tag in self.block_tags or tag == "br"):
-            self.parts.append("\n")
-
-    def handle_endtag(self, tag: str) -> None:
-        tag = tag.lower()
-        if tag in self.ignored_tags and self.ignored_depth:
-            self.ignored_depth -= 1
-        elif self.ignored_depth == 0 and tag in self.block_tags:
-            self.parts.append("\n")
-
-    def handle_data(self, data: str) -> None:
-        if self.ignored_depth == 0:
-            self.parts.append(data)
-
-
-def html_to_text(value: str) -> str:
-    parser = _TextExtractor()
-    parser.feed(value)
-    parser.close()
-    paragraphs = []
-    for line in "".join(parser.parts).splitlines():
-        cleaned = " ".join(line.split())
-        if cleaned:
-            paragraphs.append(cleaned)
-    return "\n\n".join(paragraphs)
 
 
 def _metadata_message(payload: Mapping[str, Any]) -> str:
