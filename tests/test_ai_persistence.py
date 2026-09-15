@@ -112,6 +112,49 @@ def _seed_decision(conn) -> None:
     )
 
 
+def _seed_historical_legislation(conn) -> tuple[str, str]:
+    source_ids = []
+    versions = (
+        (False, "2021-01-01", "2022-12-31", "2021-01-01", 1, "ESKISURUM"),
+        (True, "2023-01-01", None, "2023-01-01", 2, "YENISURUM"),
+    )
+    for is_current, effective_from, effective_to, version_date, revision, text in versions:
+        source_id = conn.execute(
+            """
+            INSERT INTO legal_sources (
+                source_type, title, external_id, authority, raw_text, ingest_status,
+                canonical_source_name, ingestion_method, source_version, revision,
+                effective_from, effective_to, is_current, fetched_at, last_verified_at
+            )
+            VALUES (
+                'legislation', 'Tarihsel Test Kanunu m. 8',
+                'test/PYTESTTARIH/law/999980/8', 'Mevzuat Bilgi Sistemi', %s, 'ready',
+                'Mevzuat Bilgi Sistemi', 'test_fixture', %s, %s,
+                %s, %s, %s, NOW(), NOW()
+            )
+            RETURNING id
+            """,
+            (f"PYTESTTARIH {text}", version_date, revision,
+             effective_from, effective_to, is_current),
+        ).fetchone()["id"]
+        conn.execute(
+            """
+            INSERT INTO legislation_details (
+                legal_source_id, legislation_type, law_name, law_no, article_no,
+                version_date
+            ) VALUES (%s, 'law', 'Tarihsel Test Kanunu', '999980', '8', %s)
+            """,
+            (source_id, version_date),
+        )
+        conn.execute(
+            "INSERT INTO legal_chunks (legal_source_id, chunk_index, content) "
+            "VALUES (%s, 0, %s)",
+            (source_id, f"PYTESTTARIH {text}"),
+        )
+        source_ids.append(source_id)
+    return source_ids[0], source_ids[1]
+
+
 def _seed_user(conn) -> str:
     return conn.execute(
         """
@@ -185,6 +228,36 @@ def test_retrieval_builds_readable_references_per_source_type(connection):
     assert references["court_decision"] == (
         "Yargıtay 9. Hukuk Dairesi, E. 2026/1, K. 2026/2, T. 02.01.2026"
     )
+
+
+def test_historical_retrieval_selects_the_effective_legislation_version(connection):
+    old_source_id, current_source_id = _seed_historical_legislation(connection)
+
+    historical = retrieve_contexts(
+        connection,
+        question="PYTESTTARIH",
+        top_k=10,
+        as_of=date(2022, 6, 1),
+    )
+    current = retrieve_contexts(connection, question="PYTESTTARIH", top_k=10)
+
+    assert [context.source_id for context in historical] == [old_source_id]
+    assert historical[0].effective_from == date(2021, 1, 1)
+    assert historical[0].effective_to == date(2022, 12, 31)
+    assert [context.source_id for context in current] == [current_source_id]
+
+
+def test_historical_retrieval_does_not_guess_an_unknown_effective_date(connection):
+    _seed_legislation(connection)
+
+    contexts = retrieve_contexts(
+        connection,
+        question=QUESTION,
+        top_k=10,
+        as_of=date(2022, 6, 1),
+    )
+
+    assert all(TOKEN not in context.content for context in contexts)
 
 
 def test_project_document_retrieval_builds_page_reference(connection):

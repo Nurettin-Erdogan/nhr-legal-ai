@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
@@ -38,12 +38,17 @@ class LegalSearchHit(BaseModel):
     article_title: str | None
     official_gazette_date: date | None
     version_date: date | None
+    effective_from: date | None
+    effective_to: date | None
+    source_version: str | None
+    revision: int
     excerpt: str
     rank: float
 
 
 class LegalSearchResponse(BaseModel):
     query: str
+    as_of: date | None = None
     total: int
     limit: int
     offset: int
@@ -76,6 +81,18 @@ class LegalSourceDetail(BaseModel):
     official_gazette_no: str | None
     official_gazette_date: date | None
     version_date: date | None
+    effective_from: date | None
+    effective_to: date | None
+    canonical_source_name: str | None
+    official_source_url: str | None
+    ingestion_method: str | None
+    fetched_at: datetime | None
+    last_verified_at: datetime | None
+    content_hash: str | None
+    source_version: str | None
+    revision: int
+    is_current: bool
+    superseded_by_id: UUID | None
     raw_text: str
     metadata: dict[str, Any] = Field(default_factory=dict)
     chunks: list[LegalChunk]
@@ -93,6 +110,7 @@ class AIAnswerRequest(BaseModel):
     question: str = Field(min_length=5, max_length=2000)
     conversation_id: UUID | None = None
     project_id: UUID | None = None
+    as_of: date | None = None
 
 
 class AICitation(BaseModel):
@@ -112,12 +130,18 @@ class AICitation(BaseModel):
     law_no: str | None = None
     article_no: str | None = None
     page_number: int | None = None
+    version_date: date | None = None
+    effective_from: date | None = None
+    effective_to: date | None = None
+    source_version: str | None = None
+    revision: int | None = None
     excerpt: str
     rank: float
 
 
 class AIAnswerResponse(BaseModel):
     question: str
+    as_of: date | None = None
     answer: str
     provider: str
     model: str

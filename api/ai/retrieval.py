@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 import psycopg
 
 from api.ai.embeddings import vector_literal
@@ -24,6 +26,11 @@ _SELECT_COLUMNS = """
     legislation.law_no,
     legislation.article_no,
     legislation.article_title,
+    legislation.version_date,
+    ls.effective_from,
+    ls.effective_to,
+    ls.source_version,
+    ls.revision,
     chunk.content
 """
 
@@ -33,6 +40,37 @@ LEFT JOIN legislation_details legislation ON legislation.legal_source_id = ls.id
 """
 
 _RECENCY_ORDER = "COALESCE(decision.decision_date, ls.published_at) DESC NULLS LAST"
+
+# Historical legislation is returned only when the official validity interval is
+# known. `version_date` is useful audit metadata but is not treated as a legal
+# effective date. Court decisions are bounded by their own decision date.
+_TEMPORAL_FILTER = """
+(
+    (CAST(%(as_of)s AS date) IS NULL AND ls.is_current)
+    OR
+    (
+        CAST(%(as_of)s AS date) IS NOT NULL
+        AND (
+            (
+                ls.source_type = 'legislation'
+                AND ls.effective_from IS NOT NULL
+                AND ls.effective_from <= CAST(%(as_of)s AS date)
+                AND (
+                    ls.effective_to IS NULL
+                    OR ls.effective_to >= CAST(%(as_of)s AS date)
+                )
+            )
+            OR
+            (
+                ls.source_type = 'court_decision'
+                AND ls.is_current
+                AND decision.decision_date IS NOT NULL
+                AND decision.decision_date <= CAST(%(as_of)s AS date)
+            )
+        )
+    )
+)
+"""
 
 LEXICAL_RETRIEVAL_SQL = f"""
 WITH search_query AS (
@@ -52,7 +90,7 @@ JOIN legal_sources ls ON ls.id = chunk.legal_source_id
 {_DETAIL_JOINS}
 CROSS JOIN search_query
 WHERE ls.deleted_at IS NULL
-  AND ls.is_current
+  AND {_TEMPORAL_FILTER}
   AND search_query.value IS NOT NULL
   AND chunk.search_vector @@ search_query.value
 ORDER BY rank DESC, {_RECENCY_ORDER}
@@ -76,9 +114,10 @@ lexical AS (
            ) AS position
     FROM legal_chunks chunk
     JOIN legal_sources ls ON ls.id = chunk.legal_source_id
+    {_DETAIL_JOINS}
     CROSS JOIN search_query
     WHERE ls.deleted_at IS NULL
-      AND ls.is_current
+      AND {_TEMPORAL_FILTER}
       AND search_query.value IS NOT NULL
       AND chunk.search_vector @@ search_query.value
     ORDER BY position
@@ -89,8 +128,9 @@ semantic AS (
            row_number() OVER (ORDER BY chunk.embedding <=> %(embedding)s::vector) AS position
     FROM legal_chunks chunk
     JOIN legal_sources ls ON ls.id = chunk.legal_source_id
+    {_DETAIL_JOINS}
     WHERE ls.deleted_at IS NULL
-      AND ls.is_current
+      AND {_TEMPORAL_FILTER}
       AND chunk.embedding IS NOT NULL
       AND chunk.embedding_model = %(embedding_model)s
     ORDER BY position
@@ -144,6 +184,11 @@ SELECT
     NULL::text AS law_no,
     NULL::text AS article_no,
     chunk.section_title AS article_title,
+    NULL::date AS version_date,
+    NULL::date AS effective_from,
+    NULL::date AS effective_to,
+    NULL::text AS source_version,
+    NULL::integer AS revision,
     chunk.content,
     ts_rank_cd(chunk.search_vector, search_query.value) AS rank,
     chunk.page_number
@@ -226,6 +271,11 @@ SELECT
     NULL::text AS law_no,
     NULL::text AS article_no,
     chunk.section_title AS article_title,
+    NULL::date AS version_date,
+    NULL::date AS effective_from,
+    NULL::date AS effective_to,
+    NULL::text AS source_version,
+    NULL::integer AS revision,
     chunk.content,
     ranked.score AS rank,
     chunk.page_number
@@ -243,23 +293,24 @@ def retrieve_contexts(
     top_k: int,
     query_embedding: list[float] | None = None,
     embedding_model: str | None = None,
+    as_of: date | None = None,
 ) -> list[RAGContext]:
+    params = {
+        "question": question,
+        "top_k": top_k,
+        "candidate_limit": max(top_k * 4, 20),
+        "as_of": as_of,
+    }
     if query_embedding is not None and embedding_model:
-        rows = connection.execute(
-            HYBRID_RETRIEVAL_SQL,
+        params.update(
             {
-                "question": question,
-                "top_k": top_k,
-                "candidate_limit": max(top_k * 4, 20),
                 "embedding": vector_literal(query_embedding),
                 "embedding_model": embedding_model,
-            },
-        ).fetchall()
+            }
+        )
+        rows = connection.execute(HYBRID_RETRIEVAL_SQL, params).fetchall()
     else:
-        rows = connection.execute(
-            LEXICAL_RETRIEVAL_SQL,
-            {"question": question, "top_k": top_k},
-        ).fetchall()
+        rows = connection.execute(LEXICAL_RETRIEVAL_SQL, params).fetchall()
     return [RAGContext(**row) for row in rows]
 
 

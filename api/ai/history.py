@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from uuid import UUID, uuid4
 
 import psycopg
@@ -33,6 +34,13 @@ def _locator(context: RAGContext) -> dict[str, str]:
         "law_name": context.law_name,
         "law_no": context.law_no,
         "article_no": context.article_no,
+        "version_date": context.version_date.isoformat() if context.version_date else None,
+        "effective_from": (
+            context.effective_from.isoformat() if context.effective_from else None
+        ),
+        "effective_to": context.effective_to.isoformat() if context.effective_to else None,
+        "source_version": context.source_version,
+        "revision": str(context.revision) if context.revision is not None else None,
         "page_number": str(context.page_number) if context.page_number else None,
     }
     return {key: value for key, value in fields.items() if value}
@@ -51,6 +59,7 @@ def record_exchange(
     question: str,
     answer: VerifiedAnswer,
     model_name: str,
+    as_of: date | None = None,
 ) -> tuple[UUID, UUID]:
     """Persist the question, the verified answer and the sources it relied on.
 
@@ -92,6 +101,7 @@ def record_exchange(
                 {
                     "grounded": answer.grounded,
                     "unverified_markers": list(answer.unverified_markers),
+                    "as_of": as_of.isoformat() if as_of else None,
                 }
             ),
         ),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from uuid import UUID
 
 import psycopg
@@ -39,6 +40,10 @@ ranked AS (
         legislation.article_title,
         legislation.official_gazette_date,
         legislation.version_date,
+        ls.effective_from,
+        ls.effective_to,
+        ls.source_version,
+        ls.revision,
         left(chunk.content, 700) AS excerpt,
         ts_rank_cd(chunk.search_vector, search_query.value) AS rank
     FROM legal_sources ls
@@ -48,7 +53,29 @@ ranked AS (
     CROSS JOIN search_query
     WHERE ls.source_type IN ('court_decision', 'legislation')
       AND ls.deleted_at IS NULL
-      AND ls.is_current
+      AND (
+          (CAST(%(as_of)s AS date) IS NULL AND ls.is_current)
+          OR (
+              CAST(%(as_of)s AS date) IS NOT NULL
+              AND (
+                  (
+                      ls.source_type = 'legislation'
+                      AND ls.effective_from IS NOT NULL
+                      AND ls.effective_from <= CAST(%(as_of)s AS date)
+                      AND (
+                          ls.effective_to IS NULL
+                          OR ls.effective_to >= CAST(%(as_of)s AS date)
+                      )
+                  )
+                  OR (
+                      ls.source_type = 'court_decision'
+                      AND ls.is_current
+                      AND decision.decision_date IS NOT NULL
+                      AND decision.decision_date <= CAST(%(as_of)s AS date)
+                  )
+              )
+          )
+      )
       AND search_query.value IS NOT NULL
       AND chunk.search_vector @@ search_query.value
     ORDER BY ls.id, rank DESC, chunk.chunk_index
@@ -82,6 +109,18 @@ SELECT
     legislation.official_gazette_no,
     legislation.official_gazette_date,
     legislation.version_date,
+    ls.effective_from,
+    ls.effective_to,
+    ls.canonical_source_name,
+    ls.official_source_url,
+    ls.ingestion_method,
+    ls.fetched_at,
+    ls.last_verified_at,
+    ls.content_hash,
+    ls.source_version,
+    ls.revision,
+    ls.is_current,
+    ls.superseded_by_id,
     COALESCE(ls.raw_text, '') AS raw_text,
     ls.metadata
 FROM legal_sources ls
@@ -131,13 +170,14 @@ def search_legal_sources(
     q: str = Query(min_length=2, max_length=300),
     limit: int = Query(default=10, ge=1, le=50),
     offset: int = Query(default=0, ge=0),
+    as_of: date | None = None,
 ) -> LegalSearchResponse:
     query = " ".join(q.split())
     try:
         with database_connection() as connection:
             rows = connection.execute(
                 _SEARCH_SQL,
-                {"query": query, "limit": limit, "offset": offset},
+                {"query": query, "limit": limit, "offset": offset, "as_of": as_of},
             ).fetchall()
     except psycopg.Error as exc:
         raise _database_unavailable(exc) from exc
@@ -148,6 +188,7 @@ def search_legal_sources(
         result.pop("total", None)
     return LegalSearchResponse(
         query=query,
+        as_of=as_of,
         total=total,
         limit=limit,
         offset=offset,

@@ -66,6 +66,11 @@ def _as_citation(position: int, context: RAGContext) -> AICitation:
         law_no=context.law_no,
         article_no=context.article_no,
         page_number=context.page_number,
+        version_date=context.version_date,
+        effective_from=context.effective_from,
+        effective_to=context.effective_to,
+        source_version=context.source_version,
+        revision=context.revision,
         excerpt=context.content[:500],
         rank=context.rank,
     )
@@ -105,6 +110,7 @@ def _persist(
                 question=request.question,
                 answer=answer,
                 model_name=model_name,
+                as_of=request.as_of,
             )
     except InsufficientPrivilege as exc:
         raise HTTPException(
@@ -167,6 +173,7 @@ async def answer_question(
                     top_k=settings.rag_top_k,
                     query_embedding=query_embedding,
                     embedding_model=settings.embedding_model,
+                    as_of=request.as_of,
                 )
                 document_contexts = retrieve_document_contexts(
                     connection,
@@ -189,6 +196,7 @@ async def answer_question(
                     top_k=settings.rag_top_k,
                     query_embedding=query_embedding,
                     embedding_model=settings.embedding_model,
+                    as_of=request.as_of,
                 )
     except HTTPException:
         raise
@@ -222,6 +230,7 @@ async def answer_question(
 
     return AIAnswerResponse(
         question=request.question,
+        as_of=request.as_of,
         answer=answer.text,
         provider=provider.name,
         model=provider.model,

@@ -46,6 +46,11 @@ class RAGContext:
     content: str
     rank: float
     page_number: int | None = None
+    version_date: date | None = None
+    effective_from: date | None = None
+    effective_to: date | None = None
+    source_version: str | None = None
+    revision: int | None = None
 
     @property
     def kind_label(self) -> str:
@@ -87,15 +92,33 @@ class RAGContext:
             return f"{self.title} — {self.authority}"
         return self.title
 
+    @property
+    def temporal_line(self) -> str | None:
+        if self.source_type != "legislation":
+            return None
+        parts = []
+        if self.effective_from:
+            parts.append(f"yürürlük başlangıcı: {self.effective_from.isoformat()}")
+        if self.effective_to:
+            parts.append(f"yürürlük sonu: {self.effective_to.isoformat()}")
+        if self.version_date:
+            parts.append(f"sürüm tarihi: {self.version_date.isoformat()}")
+        return "; ".join(parts) or None
+
 
 def build_grounded_prompt(question: str, contexts: list[RAGContext]) -> str:
     source_blocks = []
     for index, context in enumerate(contexts, start=1):
+        temporal = (
+            f"\nTarihsel metadata: {context.temporal_line}"
+            if context.temporal_line
+            else ""
+        )
         source_blocks.append(
             "\n".join(
                 (
                     f"[K{index}] {context.reference_line}",
-                    f"Tür: {context.kind_label}",
+                    f"Tür: {context.kind_label}{temporal}",
                     f"Metin:\n{context.content}",
                 )
             )
