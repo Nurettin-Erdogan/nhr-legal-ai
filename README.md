@@ -25,7 +25,9 @@ Eski tek seferlik toplayıcı hâlâ durur:
 .\.venv\Scripts\python.exe -m ingestion.cli collect --profile smoke --ingest
 ```
 
-Ayrıntılar için [ingestion worker](docs/ingestion-worker.md),
+Kaynak/provenance ve versiyonlama kuralları için
+[NHR Legal Data Layer](docs/legal-data-architecture.md); operasyon ayrıntıları için
+[ingestion worker](docs/ingestion-worker.md),
 [Yargıtay](docs/ingestion-yargitay.md) ve
 [mevzuat](docs/ingestion-mevzuat.md) dokümanlarına bakın.
 

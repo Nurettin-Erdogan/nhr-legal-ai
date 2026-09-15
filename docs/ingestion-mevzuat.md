@@ -31,8 +31,15 @@ Doğal anahtar:
 mevzuat:kanun:4857:m.25
 ```
 
-Portal `mevzuatId` ve `maddeId` değerleri `metadata` içinde saklanır; kanun veya
-madde numarası değişmeden portal kimliği değişirse aynı satır güncellenir.
+Portal `mevzuatId` ve `maddeId` değerleri `metadata` içinde saklanır. Aynı doğal
+kimlik ve aynı içerik hash'i tekrar geldiğinde kayıt değişmez. Metin değişmişse
+eski satır overwrite edilmez; tarihsel sürüm olarak korunur ve yeni current
+sürüm oluşturulur. Güncel sürüm doğal anahtarı veritabanında tekildir.
+
+Portalın güncelleme/yayımlanma tarihi otomatik olarak hukuki yürürlük tarihi
+sayılmaz. Doğrulanmış `effective_from` yoksa sistem tarih uydurmaz; bu kayıt
+`as_of` tarihli RAG sorgularına dahil edilmez. Ayrıntılar için
+[`legal-data-architecture.md`](legal-data-architecture.md) belgesine bakın.
 
 ### Tür eşlemesi
 

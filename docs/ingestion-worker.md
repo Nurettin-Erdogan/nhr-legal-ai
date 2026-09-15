@@ -141,6 +141,8 @@ Get-Content -Raw .\database\migrations\006_legal_data_layer.sql |
   docker compose exec -T db psql -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1
 Get-Content -Raw .\database\migrations\007_ingestion_worker.sql |
   docker compose exec -T db psql -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1
+Get-Content -Raw .\database\migrations\008_current_source_integrity.sql |
+  docker compose exec -T db psql -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1
 ```
 
 ## Bilinen sınırlar
