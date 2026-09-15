@@ -8,7 +8,7 @@ from ingestion.yargitay.models import CourtDecision
 from ingestion.yargitay.parser import content_hash
 from ingestion.yargitay.portal import CaptchaRequiredError, PortalDecisionRow, SearchPage
 from worker.adapters import get_adapter
-from worker.adapters.planned import DanistaySourceAdapter
+from worker.adapters.danistay import DanistaySourceAdapter
 from worker.adapters.yargitay import YargitaySourceAdapter
 from worker.locks import JobLockedError, source_job_lock
 from worker.models import Checkpoint, RunCounters, SyncRequest
@@ -72,25 +72,9 @@ def test_yargitay_resume_uses_incomplete_window_cursor():
     assert window == (date(2026, 2, 1), date(2026, 2, 28))
 
 
-def test_planned_sources_are_blocked_not_fake_success():
-    adapter = DanistaySourceAdapter()
-    health = adapter.health_check()
-    assert health.state == "blocked"
-    assert health.active is False
-    with pytest.raises(RuntimeError, match="ACTIVE değil"):
-        next(
-            adapter.sync(
-                SyncRequest(source="danistay"),
-                cursor={},
-                connection=None,
-                dry_run=True,
-                should_stop=lambda: False,
-            )
-        )
-
-
 def test_adapter_registry_exposes_active_sources():
     assert get_adapter("yargitay").source_name == "yargitay"
+    assert get_adapter("danistay").active is True
     assert get_adapter("mevzuat").source_name == "mevzuat"
     assert get_adapter("aym").active is False
     assert get_adapter("resmi_gazete").active is False

@@ -75,9 +75,9 @@ VALUES (
     %(content_hash)s,
     'ready',
     NOW(),
-    'Yargıtay Karar Arama',
+    %(canonical_source_name)s,
     %(source_url)s,
-    'yargitay_public_json_http',
+    %(ingestion_method)s,
     COALESCE(%(fetched_at)s, NOW()),
     COALESCE(%(fetched_at)s, NOW()),
     %(source_version)s,
@@ -92,6 +92,8 @@ UPDATE legal_sources
 SET title = %(title)s,
     source_url = COALESCE(%(source_url)s, source_url),
     official_source_url = COALESCE(%(source_url)s, official_source_url),
+    canonical_source_name = %(canonical_source_name)s,
+    ingestion_method = %(ingestion_method)s,
     metadata = metadata || %(metadata)s,
     last_ingested_at = NOW(),
     fetched_at = COALESCE(%(fetched_at)s, NOW()),
@@ -105,6 +107,8 @@ UPDATE legal_sources
 SET title = %(title)s,
     source_url = COALESCE(%(source_url)s, source_url),
     official_source_url = COALESCE(%(source_url)s, official_source_url),
+    canonical_source_name = %(canonical_source_name)s,
+    ingestion_method = %(ingestion_method)s,
     raw_text = %(raw_text)s,
     metadata = metadata || %(metadata)s,
     published_at = %(decision_date)s,
@@ -234,7 +238,12 @@ def _write_chunks(
                 chunk.paragraph_start,
                 chunk.paragraph_end,
                 chunk.content_hash,
-                Jsonb({"source": "yargitay", "external_id": decision.external_id}),
+                Jsonb(
+                    {
+                        "source": decision.metadata.get("source_adapter", "yargitay"),
+                        "external_id": decision.external_id,
+                    }
+                ),
             ),
         )
 
@@ -269,6 +278,12 @@ def upsert_decision(
                 "fetched_at": decision.scraped_at,
                 "source_version": f"sha256:{decision.content_hash[:16]}",
                 "revision": 1 if existing is None else existing[3] + 1,
+                "canonical_source_name": decision.metadata.get(
+                    "canonical_source_name", "Yargıtay Karar Arama"
+                ),
+                "ingestion_method": decision.metadata.get(
+                    "ingestion_method", "yargitay_public_json_http"
+                ),
             }
 
         if existing is not None and not content_changed:

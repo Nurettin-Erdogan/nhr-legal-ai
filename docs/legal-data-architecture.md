@@ -19,8 +19,8 @@ metadata'sı olarak tutulur.
 | --- | --- | --- | --- |
 | Yargıtay | ACTIVE | `karararama.yargitay.gov.tr` JSON/HTTP | Yargıtay Karar Arama / Yargıtay |
 | Mevzuat | ACTIVE | `bedesten.adalet.gov.tr/mevzuat` JSON/HTTP | Mevzuat Bilgi Sistemi; Resmî Gazete teyidi ayrıca gerekir |
-| Danıştay | PLANNED | Doğrulanmış sözleşme yok | Danıştay |
-| AYM | PLANNED | Doğrulanmış sözleşme yok | Anayasa Mahkemesi Kararlar Bilgi Bankası |
+| Danıştay | ACTIVE | `karararama.danistay.gov.tr` JSON/HTTP | Danıştay Karar Arama / Danıştay |
+| AYM | PLANNED | Public arama JSON'u doğrulandı; tam metin güvenlik doğrulaması istiyor | Anayasa Mahkemesi Kararlar Bilgi Bankası |
 | Resmî Gazete | PLANNED / VERIFICATION | Doğrulanmış otomasyon yok | Resmî Gazete |
 | KDK | PLANNED / VERIFICATION | `kararlar.ombudsman.gov.tr` | Kamu Denetçiliği Kurumu |
 
@@ -58,9 +58,9 @@ zenginleştirmedir.
 - `provenance`: kaynak ve çekim zinciri;
 - `sync`: checkpoint ile devam edebilen toplama işlemi.
 
-`YargitaySourceAdapter` ve `MevzuatSourceAdapter` aktiftir. Danıştay, AYM,
-Resmî Gazete ve KDK sınıfları yalnızca açık biçimde `blocked` dönen
-iskeletlerdir.
+`YargitaySourceAdapter`, `DanistaySourceAdapter` ve `MevzuatSourceAdapter`
+aktiftir. AYM, Resmî Gazete ve KDK sınıfları tam ingestion sözleşmesi
+doğrulanana kadar açık biçimde `blocked` döner.
 
 AYM için kurumun web istemcisinin kullandığı `POST /api/core/public/search`
 public JSON sözleşmesi doğrulanmış ve `ingestion/aym/portal.py` içinde ağdan
@@ -125,6 +125,22 @@ Yargıtay aylık tarih pencereleriyle taranır. `source_coverage_windows` tarih
 aralığı, daire, portalın bildirdiği sayı, görülen, saklanan, duplicate, başarısız
 ve tamamlanma bilgisini tutar. `source_sync_checkpoints` son başarılı sync,
 sayfa/pencere cursor'u, hata sayısı ve health durumunu saklar.
+
+## Danıştay akışı
+
+Danıştay adapter'ı resmî arayüzün oturumlu akışını kullanır:
+
+1. `GET /` ile oturum;
+2. `POST /detayliArama` ile tarih/daire arama bağlamı;
+3. `POST /aramadetaylist` ile yapılandırılmış künye;
+4. `GET /getDokuman?id=...` ile tam karar HTML'i.
+
+`daireKurul`, `esasNo`, `kararNo` ve `kararTarihi` liste JSON'undan; karar
+metni sayfadaki `hiddencontent` alanından alınır. Kimlik
+`danistay:<document_id>` biçimindedir. CAPTCHA istenirse bypass uygulanmaz,
+run `captcha_required` durumunda durur. Detaylı arama ucu serbest kelime
+filtresi sunmadığından bu adapter şimdilik tarih ve daire pencereleriyle
+çalışır.
 
 ## Mevzuat kimliği ve hukuki versiyonlama
 
@@ -253,7 +269,8 @@ fixture/sözleşme testleri güncellenir ve uyumsuz kayıtlar quarantine edilir.
 1. Resmî Gazete adapter'ı doğrulanmış transport sözleşmesiyle ACTIVE değildir.
 2. Bedesten verilerinde birçok madde için açık yürürlük aralığı bulunmadığından
    tarihsel RAG kapsaması şimdilik düşüktür; sistem tarih tahmin etmez.
-3. Danıştay ve AYM adapter'ları yalnız iskelettir.
+3. Danıştay tarih/daire bazlı aktiftir; serbest kelime araması bu transport
+   sözleşmesinde yoktur. AYM tam metin güvenlik doğrulaması nedeniyle planlıdır.
 4. KDK karar portalı kataloğa eklendi; arama ve tam metin sözleşmesi henüz
    fixture'larla doğrulanmadığı için ACTIVE değildir.
 5. Portalda kaybolan kayıtların güvenli “erişilemiyor” yaşam döngüsü için art

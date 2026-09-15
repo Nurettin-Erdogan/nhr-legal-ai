@@ -56,6 +56,11 @@ def test_ingestion_sources_visible_to_admin(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["active"][0]["source"] == "yargitay"
+    assert {item["source"] for item in body["active"]} == {
+        "yargitay",
+        "danistay",
+        "mevzuat",
+    }
     assert body["planned"][0]["status"] == "blocked"
 
 
@@ -74,7 +79,7 @@ def test_run_rejects_planned_source(monkeypatch):
 
     monkeypatch.setattr(admin_ingestion, "authenticated_database_connection", fake_auth)
     client = TestClient(_app())
-    response = client.post("/api/admin/ingestion/run/danistay")
+    response = client.post("/api/admin/ingestion/run/aym")
     assert response.status_code == 400
 
 

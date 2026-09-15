@@ -83,6 +83,12 @@ def ingestion_sources(_admin: UUID = Depends(require_admin)) -> dict:
                 "transport": "karararama.yargitay.gov.tr JSON/HTTP",
             },
             {
+                "source": "danistay",
+                "authority": "Danıştay",
+                "official_source_url": "https://karararama.danistay.gov.tr",
+                "transport": "karararama.danistay.gov.tr JSON/HTTP",
+            },
+            {
                 "source": "mevzuat",
                 "authority": "Adalet Bakanlığı / Bedesten",
                 "official_source_url": "https://bedesten.adalet.gov.tr/mevzuat/",
@@ -92,16 +98,10 @@ def ingestion_sources(_admin: UUID = Depends(require_admin)) -> dict:
         ],
         "planned": [
             {
-                "source": "danistay",
-                "official_source_url": "https://karararama.danistay.gov.tr",
-                "status": "blocked",
-                "note": "Resmi uç sözleşmesi doğrulanmadan adapter yazılmadı",
-            },
-            {
                 "source": "aym",
                 "official_source_url": "https://kararlarbilgibankasi.anayasa.gov.tr",
                 "status": "blocked",
-                "note": "Resmi uç sözleşmesi doğrulanmadan adapter yazılmadı",
+                "note": "Public arama doğrulandı; tam metin güvenlik doğrulaması istiyor",
             },
             {
                 "source": "resmi_gazete",

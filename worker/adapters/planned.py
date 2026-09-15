@@ -55,12 +55,6 @@ class PlannedSourceAdapter:
         )
 
 
-class DanistaySourceAdapter(PlannedSourceAdapter):
-    source_name = "danistay"
-    authority = "Danıştay"
-    official_source_url = "https://karararama.danistay.gov.tr"
-
-
 class AymSourceAdapter(PlannedSourceAdapter):
     source_name = "aym"
     authority = "Anayasa Mahkemesi"

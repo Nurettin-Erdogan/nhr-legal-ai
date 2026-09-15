@@ -10,12 +10,13 @@ Kurulum, V2 migration, RLS, embedding indeksleri ve test adımları için [verit
 
 ## Veri aktarımı
 
-Yargıtay kararları ve mevzuat maddeleri `ingestion` paketi ve `worker`
+Yargıtay/Danıştay kararları ve mevzuat maddeleri `ingestion` paketi ve `worker`
 servisiyle toplanır. Worker, web uygulamasından bağımsız çalışır.
 
 ```powershell
 .\.venv\Scripts\python.exe -m worker.runner status
 .\.venv\Scripts\python.exe -m worker.runner run --source yargitay --date-from 2026-01-01 --date-to 2026-01-31
+.\.venv\Scripts\python.exe -m worker.runner run --source danistay --date-from 2025-01-01 --date-to 2025-01-31
 .\.venv\Scripts\python.exe -m worker.runner daemon
 ```
 

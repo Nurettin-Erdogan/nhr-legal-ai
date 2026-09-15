@@ -21,11 +21,11 @@ def _should_stop_never() -> bool:
 
 def _interval_for(source_name: str) -> timedelta:
     settings = get_worker_settings()
-    minutes = (
-        settings.yargitay_interval_minutes
-        if source_name == "yargitay"
-        else settings.mevzuat_interval_minutes
-    )
+    minutes = {
+        "yargitay": settings.yargitay_interval_minutes,
+        "danistay": settings.danistay_interval_minutes,
+        "mevzuat": settings.mevzuat_interval_minutes,
+    }[source_name]
     return timedelta(minutes=minutes)
 
 

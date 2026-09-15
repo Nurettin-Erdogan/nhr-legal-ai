@@ -1,8 +1,9 @@
 # NHR Legal Data Collector / Ingestion Worker
 
 Web uygulamasından bağımsız çalışan hukuk veri toplama servisi. Tarayıcı
-açık tutulmaz; masaüstü scraper yoktur. Mevcut `ingestion/yargitay` ve
-`ingestion/mevzuat` HTTP/JSON istemcileri worker tarafından orkestre edilir.
+açık tutulmaz; masaüstü scraper yoktur. `ingestion/yargitay`,
+`ingestion/danistay` ve `ingestion/mevzuat` HTTP/JSON istemcileri worker
+tarafından orkestre edilir.
 
 ## Mimari
 
@@ -20,8 +21,8 @@ Worker hata verse bile FastAPI ve Next.js ayakta kalır. Korpus yazımı
 | Durum | Kaynak | Resmi adres | Transport |
 | --- | --- | --- | --- |
 | **ACTIVE** | Yargıtay | https://karararama.yargitay.gov.tr | JSON/HTTP: `/detayliArama`, `/aramadetaylist`, `/getDokuman?id=` |
+| **ACTIVE** | Danıştay | https://karararama.danistay.gov.tr | Oturumlu JSON/HTTP: `/detayliArama`, `/aramadetaylist`, `/getDokuman?id=` |
 | **ACTIVE** | Mevzuat | https://bedesten.adalet.gov.tr/mevzuat | JSON/HTTP: `searchDocuments`, `mevzuatMaddeTree`, `getDocumentContent` |
-| PLANNED / VERIFICATION | Danıştay | https://karararama.danistay.gov.tr | Uç sözleşmesi doğrulanmadı; skeleton only |
 | PLANNED / VERIFICATION | AYM | https://kararlarbilgibankasi.anayasa.gov.tr | Public arama JSON'u doğrulandı; tam metin güvenlik doğrulaması bekliyor |
 | PLANNED / VERIFICATION | Resmî Gazete | https://www.resmigazete.gov.tr | Canonical verification; uydurma scraper yok |
 | PLANNED / VERIFICATION | KDK | https://kararlar.ombudsman.gov.tr | Resmî karar portalı; ingestion sözleşmesi doğrulanacak |
@@ -36,13 +37,17 @@ yoracak kadar sık değildir.
 | Değişken | Varsayılan | Anlam |
 | --- | --- | --- |
 | `YARGITAY_SYNC_INTERVAL_MINUTES` | 360 | Yargıtay turları arası |
+| `DANISTAY_SYNC_INTERVAL_MINUTES` | 720 | Danıştay turları arası |
 | `MEVZUAT_SYNC_INTERVAL_MINUTES` | 720 | Mevzuat turları arası |
 | `WORKER_POLL_SECONDS` | 30 | Daemon beklerken kontrol sıklığı |
 | `YARGITAY_DELAY_SECONDS` | 1.5 | İstek arası bekleme |
+| `DANISTAY_DELAY_SECONDS` | 2.0 | Danıştay istekleri arası bekleme |
 | `MEVZUAT_DELAY_SECONDS` | 1.0 | İstek arası bekleme |
 | `YARGITAY_MAX_RECORDS_PER_RUN` | 40 | Bir turda en fazla karar |
+| `DANISTAY_MAX_RECORDS_PER_RUN` | 30 | Bir turda en fazla Danıştay kararı |
 | `MEVZUAT_MAX_ARTICLES_PER_RUN` | 30 | Bir turda en fazla madde |
 | `YARGITAY_CORPUS_START` | 2020-01-01 | Tam korpus için ilk ay penceresi |
+| `DANISTAY_CORPUS_START` | 2020-01-01 | Danıştay için ilk ay penceresi |
 
 İlk daemon turu `next_run_at` boşsa kaynağı due sayar; sonraki turlar
 interval kadar bekler.
@@ -51,7 +56,7 @@ interval kadar bekler.
 
 Tablo: `source_sync_checkpoints`.
 
-Yargıtay cursor: tarih penceresi (`window_from` / `window_to`), sayfa,
+Yargıtay ve Danıştay cursor: tarih penceresi (`window_from` / `window_to`), sayfa,
 `last_external_id`, `window_complete`, `next_window_start`.
 
 Mevzuat cursor: `law_index`, `last_article_no`.
@@ -64,8 +69,8 @@ pencere/sayfada kalır. Yeniden başlatma `--no-resume` yoksa kaldığı yerden 
 `source_sync_runs` her turu sayaçlarla tutar (`queued`/`running`/`success`/
 `partial`/`failed`/`cancelled`/`captcha_required`).
 
-Aynı kaynak için PostgreSQL advisory lock (`pg_try_advisory_lock`). Yargıtay ve
-mevzuat birbirini bloklamaz.
+Aynı kaynak için PostgreSQL advisory lock (`pg_try_advisory_lock`). Yargıtay,
+Danıştay ve mevzuat birbirini bloklamaz.
 
 ## Retry / backoff / CAPTCHA
 
@@ -79,9 +84,9 @@ mevzuat birbirini bloklamaz.
 
 `content_hash` karşılaştırması:
 
-| Sonuç | Yargıtay | Mevzuat |
+| Sonuç | Yargıtay / Danıştay | Mevzuat |
 | --- | --- | --- |
-| created | yeni `external_id` (`yargitay:<document_id>`) | yeni madde |
+| created | yeni `external_id` (`yargitay:<id>` / `danistay:<id>`) | yeni madde |
 | unchanged | aynı hash; atıflı chunk'lara dokunulmaz | aynı hash |
 | updated | atıfsız karar yerinde revision | — |
 | new_version | atıflı karar: eski `is_current=false`, yeni current satır | içerik değişince yeni historical satır; eski `effective_to` kapanır |
@@ -102,10 +107,12 @@ yazılmaz.
 
 Ham yanıtlar `data/raw/` altına gider; Git'e girmez.
 
-## Yargıtay tam korpus
+## Yargıtay ve Danıştay karar korpusu
 
 Aylık pencereler. Tamamlanan pencere `source_coverage_windows.complete=true`.
-Daemon her turda bir pencereyi (ve `YARGITAY_MAX_RECORDS_PER_RUN` kaydı) işler.
+Daemon her turda kaynağa ait limitle bir pencereyi işler. Danıştay detaylı
+arama transportu serbest kelime filtresi sunmadığı için tarih ve isteğe bağlı
+daire filtresi kullanılır.
 
 ## Embedding
 
@@ -128,6 +135,7 @@ Frontend admin paneli bu sprintte yok.
 ```powershell
 .\.venv\Scripts\python.exe -m worker.runner run --source yargitay
 .\.venv\Scripts\python.exe -m worker.runner run --source yargitay --date-from 2026-01-01 --date-to 2026-01-31
+.\.venv\Scripts\python.exe -m worker.runner run --source danistay --date-from 2025-01-01 --date-to 2025-01-31
 .\.venv\Scripts\python.exe -m worker.runner run --source mevzuat
 .\.venv\Scripts\python.exe -m worker.runner run --source all --dry-run
 .\.venv\Scripts\python.exe -m worker.runner status
@@ -146,14 +154,16 @@ Get-Content -Raw .\database\migrations\008_current_source_integrity.sql |
   docker compose exec -T db psql -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1
 Get-Content -Raw .\database\migrations\009_kdk_source_checkpoint.sql |
   docker compose exec -T db psql -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1
+Get-Content -Raw .\database\migrations\010_activate_danistay_source.sql |
+  docker compose exec -T db psql -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1
 ```
 
 ## Bilinen sınırlar
 
-- Danıştay / AYM / Resmî Gazete / KDK için tam ingestion sözleşmesi yok;
-  çalışan sahte adapter yok. AYM public arama JSON'u doğrulandı ancak tam karar
+- AYM / Resmî Gazete / KDK için tam ingestion sözleşmesi yok; çalışan
+  sahte adapter yok. AYM public arama JSON'u doğrulandı ancak tam karar
   indirme güvenlik doğrulaması otomatik aşılmaz.
-- Yargıtay CAPTCHA sonrası insan müdahalesi gerekir.
+- Yargıtay ve Danıştay CAPTCHA sonrası insan müdahalesi gerekir.
 - Portal `recordsFiltered` her daire/anahtar kelime aramasına bağlıdır; "tüm Yargıtay 2020–2026" tek bir sayı değildir. Coverage pencereleri anahtar kelime `karar` ile taranır; daire bazlı taramayı CLI `--chamber` ile verin.
 - Büyük korpus Git'te tutulmaz.
 - Embedding kota hataları ingestion'ı geri almaz; backfill tekrarlanır.
