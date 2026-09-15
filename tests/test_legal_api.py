@@ -19,6 +19,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 TOKEN = "pytest987654"
+TEST_LAW_NO = "999992"
 
 
 @pytest.fixture
@@ -46,7 +47,7 @@ def _seed_legislation(connection):
         """,
         (
             "İş Kanunu m. 25 — Haklı fesih",
-            f"test/{TOKEN}/law/4857/25",
+            f"test/{TOKEN}/law/{TEST_LAW_NO}/25",
             f"{TOKEN} işveren haklı nedenle derhal feshedebilir.",
         ),
     ).fetchone()["id"]
@@ -56,9 +57,9 @@ def _seed_legislation(connection):
             legal_source_id, legislation_type, law_name, law_no, article_no,
             article_title, official_gazette_no
         )
-        VALUES (%s, 'law', 'İş Kanunu', '4857', '25', 'Haklı fesih', '25134')
+        VALUES (%s, 'law', 'İş Kanunu', %s, '25', 'Haklı fesih', '25134')
         """,
-        (source_id,),
+        (source_id, TEST_LAW_NO),
     )
     connection.execute(
         """
@@ -91,7 +92,7 @@ def test_search_returns_legislation_metadata(connection, monkeypatch):
     result = next(item for item in response.results if item.id == source_id)
     assert result.source_type == "legislation"
     assert result.law_name == "İş Kanunu"
-    assert result.law_no == "4857"
+    assert result.law_no == TEST_LAW_NO
     assert result.article_no == "25"
     assert result.chamber is None
 

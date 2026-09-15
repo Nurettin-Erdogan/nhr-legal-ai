@@ -298,11 +298,7 @@ def upsert_legislation(
                 """
                 UPDATE legal_sources
                 SET is_current = FALSE,
-                    effective_to = COALESCE(
-                        effective_to,
-                        CAST(%s AS date),
-                        CURRENT_DATE
-                    )
+                    effective_to = COALESCE(effective_to, CAST(%s AS date) - 1)
                 WHERE id = %s
                 """,
                 (record.effective_from, existing[0]),

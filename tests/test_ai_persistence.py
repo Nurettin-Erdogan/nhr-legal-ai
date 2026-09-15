@@ -28,6 +28,7 @@ pytestmark = pytest.mark.skipif(
 # the only match however large the ingested corpus grows.
 TOKEN = "PYTESTKORPUS"
 QUESTION = TOKEN
+TEST_LAW_NO = "999991"
 
 
 @pytest.fixture
@@ -55,7 +56,7 @@ def _seed_legislation(conn) -> None:
         """,
         (
             "İş Kanunu madde 25",
-            f"test/{TOKEN}/law/4857/25",
+            f"test/{TOKEN}/law/{TEST_LAW_NO}/25",
             f"{TOKEN} işveren haklı nedenle derhal feshedebilir.",
         ),
     ).fetchone()["id"]
@@ -64,9 +65,9 @@ def _seed_legislation(conn) -> None:
         INSERT INTO legislation_details (
             legal_source_id, legislation_type, law_name, law_no, article_no, article_title
         )
-        VALUES (%s, 'law', 'İş Kanunu', '4857', '25', 'İşverenin haklı nedenle fesih hakkı')
+        VALUES (%s, 'law', 'İş Kanunu', %s, '25', 'İşverenin haklı nedenle fesih hakkı')
         """,
-        (source_id,),
+        (source_id, TEST_LAW_NO),
     )
     conn.execute(
         "INSERT INTO legal_chunks (legal_source_id, chunk_index, content) VALUES (%s, 0, %s)",
@@ -179,7 +180,7 @@ def test_retrieval_builds_readable_references_per_source_type(connection):
     }
 
     assert references["legislation"] == (
-        "İş Kanunu (4857) m. 25 — İşverenin haklı nedenle fesih hakkı"
+        f"İş Kanunu ({TEST_LAW_NO}) m. 25 — İşverenin haklı nedenle fesih hakkı"
     )
     assert references["court_decision"] == (
         "Yargıtay 9. Hukuk Dairesi, E. 2026/1, K. 2026/2, T. 02.01.2026"
