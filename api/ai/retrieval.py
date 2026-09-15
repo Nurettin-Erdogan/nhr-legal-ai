@@ -6,17 +6,33 @@ from api.ai.embeddings import vector_literal
 from api.ai.rag import RAGContext
 
 
+# Both legal source subtypes are joined optionally so legislation and court
+# decisions compete in the same ranking; a source carries exactly one of them.
 _SELECT_COLUMNS = """
     chunk.id AS chunk_id,
     ls.id AS source_id,
+    ls.source_type,
     ls.title,
     ls.source_url,
-    details.chamber,
-    details.docket_no,
-    details.decision_no,
-    details.decision_date,
+    ls.authority,
+    decision.court_name,
+    decision.chamber,
+    decision.docket_no,
+    decision.decision_no,
+    decision.decision_date,
+    legislation.law_name,
+    legislation.law_no,
+    legislation.article_no,
+    legislation.article_title,
     chunk.content
 """
+
+_DETAIL_JOINS = """
+LEFT JOIN court_decision_details decision ON decision.legal_source_id = ls.id
+LEFT JOIN legislation_details legislation ON legislation.legal_source_id = ls.id
+"""
+
+_RECENCY_ORDER = "COALESCE(decision.decision_date, ls.published_at) DESC NULLS LAST"
 
 LEXICAL_RETRIEVAL_SQL = f"""
 WITH search_query AS (
@@ -33,13 +49,12 @@ SELECT
     ts_rank_cd(chunk.search_vector, search_query.value) AS rank
 FROM legal_chunks chunk
 JOIN legal_sources ls ON ls.id = chunk.legal_source_id
-JOIN court_decision_details details ON details.legal_source_id = ls.id
+{_DETAIL_JOINS}
 CROSS JOIN search_query
-WHERE ls.source_type = 'court_decision'
-  AND ls.deleted_at IS NULL
+WHERE ls.deleted_at IS NULL
   AND search_query.value IS NOT NULL
   AND chunk.search_vector @@ search_query.value
-ORDER BY rank DESC, details.decision_date DESC NULLS LAST
+ORDER BY rank DESC, {_RECENCY_ORDER}
 LIMIT %(top_k)s
 """
 
@@ -61,8 +76,7 @@ lexical AS (
     FROM legal_chunks chunk
     JOIN legal_sources ls ON ls.id = chunk.legal_source_id
     CROSS JOIN search_query
-    WHERE ls.source_type = 'court_decision'
-      AND ls.deleted_at IS NULL
+    WHERE ls.deleted_at IS NULL
       AND search_query.value IS NOT NULL
       AND chunk.search_vector @@ search_query.value
     ORDER BY position
@@ -73,8 +87,7 @@ semantic AS (
            row_number() OVER (ORDER BY chunk.embedding <=> %(embedding)s::vector) AS position
     FROM legal_chunks chunk
     JOIN legal_sources ls ON ls.id = chunk.legal_source_id
-    WHERE ls.source_type = 'court_decision'
-      AND ls.deleted_at IS NULL
+    WHERE ls.deleted_at IS NULL
       AND chunk.embedding IS NOT NULL
       AND chunk.embedding_model = %(embedding_model)s
     ORDER BY position
@@ -98,8 +111,8 @@ SELECT
 FROM ranked
 JOIN legal_chunks chunk ON chunk.id = ranked.id
 JOIN legal_sources ls ON ls.id = chunk.legal_source_id
-JOIN court_decision_details details ON details.legal_source_id = ls.id
-ORDER BY ranked.score DESC, details.decision_date DESC NULLS LAST
+{_DETAIL_JOINS}
+ORDER BY ranked.score DESC, {_RECENCY_ORDER}
 """
 
 

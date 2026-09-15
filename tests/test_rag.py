@@ -1,24 +1,11 @@
 from __future__ import annotations
 
-from datetime import date
-from uuid import UUID
-
 from api.ai.providers import GeminiProvider
-from api.ai.rag import RAGContext, build_grounded_prompt, generate_grounded_answer
+from api.ai.rag import build_grounded_prompt, generate_grounded_answer
+from tests.factories import court_decision_context, legislation_context
 
-
-CONTEXT = RAGContext(
-    chunk_id=UUID("00000000-0000-0000-0000-000000000001"),
-    source_id=UUID("00000000-0000-0000-0000-000000000002"),
-    title="Yargıtay 9. Hukuk Dairesi, E. 2026/1, K. 2026/2",
-    source_url="https://example.test/decision/1",
-    chamber="9. Hukuk Dairesi",
-    docket_no="2026/1",
-    decision_no="2026/2",
-    decision_date=date(2026, 1, 2),
-    content="İşçi, haklı nedenle fesih hâlinde kıdem tazminatına hak kazanır.",
-    rank=0.5,
-)
+DECISION = court_decision_context()
+LEGISLATION = legislation_context()
 
 
 class FakeProvider:
@@ -36,13 +23,26 @@ class FakeProvider:
 
 
 def test_prompt_contains_question_and_stable_source_marker():
-    prompt = build_grounded_prompt("Kıdem tazminatı alınabilir mi?", [CONTEXT])
+    prompt = build_grounded_prompt("Kıdem tazminatı alınabilir mi?", [DECISION])
 
     assert "KULLANICI SORUSU" in prompt
     assert "Kıdem tazminatı alınabilir mi?" in prompt
-    assert "[K1]" in prompt
-    assert "Esas: 2026/1 | Karar: 2026/2" in prompt
-    assert CONTEXT.content in prompt
+    assert "[K1] Yargıtay 9. Hukuk Dairesi, E. 2026/1, K. 2026/2, T. 02.01.2026" in prompt
+    assert "Tür: Mahkeme kararı" in prompt
+    assert DECISION.content in prompt
+
+
+def test_prompt_labels_legislation_with_law_and_article():
+    prompt = build_grounded_prompt("Haklı fesih nedir?", [LEGISLATION])
+
+    assert "[K1] İş Kanunu (4857) m. 25 — İşverenin haklı nedenle derhal fesih hakkı" in prompt
+    assert "Tür: Mevzuat" in prompt
+
+
+def test_prompt_numbers_mixed_source_types_in_order():
+    prompt = build_grounded_prompt("Fesih", [LEGISLATION, DECISION])
+
+    assert prompt.index("[K1] İş Kanunu") < prompt.index("[K2] Yargıtay")
 
 
 def test_provider_receives_grounding_rules_and_context():
@@ -51,12 +51,13 @@ def test_provider_receives_grounding_rules_and_context():
     answer = generate_grounded_answer(
         provider,
         question="Haklı fesih nedir?",
-        contexts=[CONTEXT],
+        contexts=[DECISION],
     )
 
     assert answer.endswith("[K1]")
-    assert "bilgi veya karar uydurma" in provider.system_instruction
-    assert CONTEXT.title in provider.prompt
+    assert "bilgi, karar veya madde uydurma" in provider.system_instruction
+    assert "olmayan bir kaynağa atıf yapma" in provider.system_instruction
+    assert DECISION.content in provider.prompt
 
 
 def test_gemini_provider_classifies_transient_errors():

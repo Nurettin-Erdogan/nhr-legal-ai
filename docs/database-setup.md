@@ -7,7 +7,7 @@ NHR Legal AI, PostgreSQL 16 ve sabitlenmiş `pgvector 0.8.6` image'ını kullan�
 ```powershell
 git clone https://github.com/Nurettin-Erdogan/nhr-legal-ai.git
 cd nhr-legal-ai
-git checkout setup/database-foundation
+git checkout feature/legal-ai
 Copy-Item .env.example .env
 ```
 
@@ -69,6 +69,7 @@ Init dosyaları yalnızca boş PostgreSQL volume ilk kez oluşturulurken otomati
 4. `database/init/004_rls.sql`
 5. `database/init/005_v2_hardening.sql`
 6. `database/init/006_v2_integrity_fixes.sql`
+7. `database/init/007_message_ordering.sql`
 
 V2 toplam 17 tablo içerir:
 
@@ -101,6 +102,9 @@ Get-Content -Raw .\database\init\005_v2_hardening.sql |
 
 Get-Content -Raw .\database\init\006_v2_integrity_fixes.sql |
   docker compose exec -T db psql -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1
+
+Get-Content -Raw .\database\init\007_message_ordering.sql |
+  docker compose exec -T db psql -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1
 ```
 
 `003_v2_schema.sql` transaction içinde çalışır. V1 sahiplik ilişkilerini `created_by`, `uploaded_by` ve `project_members` alanlarına taşır. Her citation için önceden belirlenmiş tam bir chunk hedefi ister; keyfî olarak ilk chunk'ı seçmez. Eski hukuk metadata'sı tiplenmiş tablolara ek olarak `metadata.legacy_legal_fields` altında korunur. Veri güvenli biçimde dönüştürülemiyorsa migration rollback yaparak açık hata verir.
@@ -108,6 +112,8 @@ Get-Content -Raw .\database\init\006_v2_integrity_fixes.sql |
 `005_v2_hardening.sql`; proje owner bütünlüğünü, hukuk kaynağı subtype bütünlüğünü, kritik sahiplik alanlarını ve citation hedef erişimini koruyan constraint/trigger'ları ekler. Ayrıca RLS altında kullanılacak `nhr_runtime` rolünü `NOLOGIN` olarak hazırlar.
 
 `006_v2_integrity_fixes.sql`; proje oluştururken müvekkil erişimini, owner-only proje soft-delete kuralını, subtype detayının kaynaklar arasında taşınmasını ve eşzamanlı mesaj/citation yazımlarını korur.
+
+`007_message_ordering.sql`; `messages.created_at` varsayılanını `clock_timestamp()` yapar. `NOW()` bir transaction boyunca sabit kaldığı için aynı transaction'da yazılan soru ve cevap aynı zaman damgasını alıyor, sohbet sırası rastgele UUID karşılaştırmasına kalıyordu.
 
 Bir migration başarıyla uygulanmış veritabanında aynı migration'ı tekrar çalıştırma. İleride migration runner eklendiğinde dosya sürümleri ayrıca takip edilmelidir.
 
@@ -137,23 +143,17 @@ V2 migration ayrıca iki chunk tablosunda Türkçe full-text `search_vector` kol
 
 Kullanıcıya ait tablolarda Row-Level Security etkindir. Uygulama `nhr_app` ile değil, tablo sahibi olmayan `nhr_runtime` rolüyle bağlanmalıdır.
 
-Yeni veya yükseltilmiş veritabanında runtime şifresini `.env` içine yazdıktan sonra rolün login özelliğini bir kez etkinleştir:
+Yeni veya yükseltilmiş veritabanında rolü bir kez etkinleştir:
 
 ```powershell
-$RuntimePassword = (
-  Get-Content .env |
-  Where-Object { $_ -match '^NHR_RUNTIME_DB_PASSWORD=' }
-).Split('=', 2)[1]
-
-Get-Content -Raw .\database\migrations\005_configure_runtime_role.sql |
-  docker compose exec -T db psql -U nhr_app -d nhr_legal_ai `
-    -v ON_ERROR_STOP=1 `
-    -v runtime_password="$RuntimePassword"
-
-Remove-Variable RuntimePassword
+.\.venv\Scripts\python.exe scripts\enable_runtime_role.py
 ```
 
-Şifreyi komut satırına düz metin olarak yazma. `.env` içindeki `DATABASE_URL`, `nhr_runtime`; `DATABASE_ADMIN_URL` ise yalnız migration işlemleri için `nhr_app` kullanır.
+Betik; `nhr_runtime` rolüne şifre atar (`.env` içinde geçerli bir şifre varsa onu kullanır, yoksa üretir), `.env` içindeki `DATABASE_URL` ve `DATABASE_ADMIN_URL` değerlerini yazar ve yeni bağlantıda RLS'in gerçekten filtrelediğini doğrular. Oturum bağlamı olmadan tek bir kullanıcı satırı bile görünüyorsa hata verir.
+
+Aynı işi elle yapmak gerekirse `database/migrations/005_configure_runtime_role.sql` dosyası `-v runtime_password=...` parametresiyle çalıştırılabilir; şifreyi komut geçmişine düşürmemeye dikkat et.
+
+`.env` içindeki `DATABASE_URL`, `nhr_runtime`; `DATABASE_ADMIN_URL` ise migration, korpus aktarımı ve kimlik doğrulama öncesi sorgular için `nhr_app` kullanır.
 
 Her uygulama transaction'ı başında doğrulanmış kullanıcı UUID'si yerel ayar olarak verilmelidir:
 
@@ -166,7 +166,11 @@ COMMIT;
 
 `SET LOCAL` connection pool üzerinde kullanıcı bağlamının sonraki isteğe sızmasını engeller. UUID yalnızca doğrulanmış oturum bilgisinden gelmeli; istemciden gelen ham değer doğrudan kullanılmamalıdır.
 
-Docker'daki `nhr_app` veritabanı sahibidir ve PostgreSQL tablo sahipleri varsayılan olarak RLS'yi bypass eder. Bu hesap yalnız migration ve yerel yönetim içindir. `nhr_runtime` süper kullanıcı değildir, `BYPASSRLS` yetkisi yoktur ve RLS politikalarına tabidir. `FORCE ROW LEVEL SECURITY` ancak migration/operasyon bağlantısı tamamen ayrıldıktan sonra değerlendirilmelidir.
+Docker'daki `nhr_app` veritabanı sahibi ve süper kullanıcıdır; PostgreSQL'de hem tablo sahipleri hem süper kullanıcılar RLS'yi bypass eder. Bu hesap yalnız migration ve yerel yönetim içindir. `nhr_runtime` süper kullanıcı değildir, `BYPASSRLS` yetkisi yoktur ve RLS politikalarına tabidir. `FORCE ROW LEVEL SECURITY` eklemek bu tabloda işe yaramaz; süper kullanıcı onu da aşar. Koruma tamamen uygulamanın `nhr_runtime` ile bağlanmasına dayanır.
+
+### RLS altında `INSERT ... RETURNING`
+
+Kullanıcıya ait tablolara satır eklerken kimliği uygulama tarafında üret; `RETURNING id` kullanma. PostgreSQL dönen satıra SELECT politikasını da uygular ve `conversations`, `projects`, `clients`, `documents` politikaları erişimi tablonun kendisini sorgulayan fonksiyonlarla belirler. O anki komutun eklediği satır bu sorguya henüz görünmediğinden `RETURNING`, satır tamamen geçerli olsa bile `new row violates row-level security policy` hatası verir.
 
 ## 8. Güvenlik ve KVKK
 

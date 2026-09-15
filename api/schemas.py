@@ -69,18 +69,26 @@ class AIStatusResponse(BaseModel):
 
 class AIAnswerRequest(BaseModel):
     question: str = Field(min_length=5, max_length=2000)
+    conversation_id: UUID | None = None
+    project_id: UUID | None = None
 
 
 class AICitation(BaseModel):
     marker: str
     source_id: UUID
     chunk_id: UUID
+    source_type: str
     title: str
+    reference: str
     source_url: str | None
-    chamber: str | None
-    docket_no: str | None
-    decision_no: str | None
-    decision_date: date | None
+    court_name: str | None = None
+    chamber: str | None = None
+    docket_no: str | None = None
+    decision_no: str | None = None
+    decision_date: date | None = None
+    law_name: str | None = None
+    law_no: str | None = None
+    article_no: str | None = None
     excerpt: str
     rank: float
 
@@ -91,3 +99,7 @@ class AIAnswerResponse(BaseModel):
     provider: str
     model: str
     citations: list[AICitation]
+    grounded: bool
+    unverified_markers: list[str] = Field(default_factory=list)
+    conversation_id: UUID | None = None
+    message_id: UUID | None = None

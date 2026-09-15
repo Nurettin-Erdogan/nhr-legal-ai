@@ -118,6 +118,20 @@ def current_user_id(
         ) from exc
 
 
+def optional_current_user_id(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
+    cookie_token: Annotated[str | None, Cookie(alias=COOKIE_NAME)] = None,
+) -> UUID | None:
+    """Resolve the caller when a session exists, without demanding one."""
+    token = credentials.credentials if credentials else cookie_token
+    if not token:
+        return None
+    try:
+        return decode_access_token(token, secret=_auth_secret())
+    except TokenError:
+        return None
+
+
 @router.get("/status", response_model=AuthStatusResponse)
 def auth_status() -> AuthStatusResponse:
     settings = get_settings()

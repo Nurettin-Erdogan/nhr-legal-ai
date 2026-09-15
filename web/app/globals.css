@@ -134,6 +134,8 @@ button, input { font: inherit; }
 .answer-heading span { color: var(--gold); font-size: 10px; font-weight: 700; letter-spacing: 1px; }
 .answer-heading small { margin-top: 4px; color: var(--muted); font-size: 9px; }
 .answer-text { padding-top: 22px; white-space: pre-wrap; font: 14px/1.8 Georgia, serif; }
+.ungrounded-notice { margin-top: 18px; padding: 11px 14px; border: 1px solid #e4b6aa; background: #fff3ef; color: #8b3f2c; font-size: 12px; line-height: 1.6; }
+.answer-footnote { display: block; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; line-height: 1.6; }
 .citation-panel { padding: 22px; }
 .citation-panel h3 { margin: 0; font: 18px Georgia, serif; }
 .citation-panel > p { margin: 5px 0 17px; color: var(--muted); font-size: 10px; }

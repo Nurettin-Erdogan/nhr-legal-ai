@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime
 from typing import Annotated, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,6 +11,8 @@ from pydantic import BaseModel, Field
 
 from api.auth.routes import current_user_id
 from api.db import authenticated_database_connection
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -81,6 +84,7 @@ def list_projects(
                 _PROJECT_SELECT + " ORDER BY project.updated_at DESC"
             ).fetchall()
     except psycopg.Error as exc:
+        logger.exception("Projeler alınamadı")
         raise HTTPException(status_code=503, detail="Projeler alınamadı") from exc
     return [ProjectResponse(**row) for row in rows]
 
@@ -92,16 +96,20 @@ def create_project(
 ) -> ProjectResponse:
     try:
         with authenticated_database_connection(str(user_id)) as connection:
-            project = connection.execute(
+            # The id is generated here instead of read back with RETURNING: the
+            # select policy is applied to the returned row and cannot yet see a
+            # project the current statement is inserting.
+            project_id = uuid4()
+            connection.execute(
                 """
                 INSERT INTO projects (
-                    name, description, created_by, matter_type, reference_no,
+                    id, name, description, created_by, matter_type, reference_no,
                     court_name, chamber, docket_no, opened_on
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
+                    project_id,
                     request.name.strip(),
                     request.description.strip() if request.description else None,
                     user_id,
@@ -112,18 +120,19 @@ def create_project(
                     request.docket_no,
                     request.opened_on,
                 ),
-            ).fetchone()
+            )
             connection.execute(
                 """
                 INSERT INTO project_members (project_id, user_id, member_role, added_by)
                 VALUES (%s, %s, 'owner', %s)
                 """,
-                (project["id"], user_id, user_id),
+                (project_id, user_id, user_id),
             )
             row = connection.execute(
-                _PROJECT_SELECT + " AND project.id = %s", (project["id"],)
+                _PROJECT_SELECT + " AND project.id = %s", (project_id,)
             ).fetchone()
     except psycopg.Error as exc:
+        logger.exception("Proje oluşturulamadı")
         raise HTTPException(status_code=503, detail="Proje oluşturulamadı") from exc
     return ProjectResponse(**row)
 

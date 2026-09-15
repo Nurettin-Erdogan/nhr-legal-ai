@@ -9,14 +9,19 @@ type AIStatus = { provider: string; model: string; configured: boolean };
 type Citation = {
   marker: string;
   source_id: string;
+  source_type: string;
   title: string;
-  chamber: string | null;
-  docket_no: string | null;
-  decision_no: string | null;
-  decision_date: string | null;
+  reference: string;
   excerpt: string;
 };
-type AIAnswer = { answer: string; provider: string; model: string; citations: Citation[] };
+type AIAnswer = {
+  answer: string;
+  provider: string;
+  model: string;
+  citations: Citation[];
+  grounded: boolean;
+  unverified_markers: string[];
+};
 
 const suggestions = [
   "Kıdem tazminatına hak kazanma şartları nelerdir?",
@@ -48,6 +53,7 @@ export default function AssistantPage() {
       const response = await fetch(`${API_URL}/api/ai/answer`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ question: question.trim() }),
       });
       const payload = await response.json();
@@ -76,7 +82,7 @@ export default function AssistantPage() {
             <div className="assistant-symbol"><Icon name="spark"/></div>
             <span className="section-kicker">NHR LEGAL AI</span>
             <h2>Hukuki sorunuzu kaynaklarıyla değerlendirin.</h2>
-            <p>Asistan önce Yargıtay korpusunda ilgili karar parçalarını bulur, sonra yalnızca bu kaynaklara dayanarak cevap üretir.</p>
+            <p>Asistan önce hukuk korpusunda ilgili mevzuat ve karar parçalarını bulur, sonra yalnızca bu kaynaklara dayanarak cevap üretir.</p>
           </section>
 
           {!status?.configured && status && (
@@ -102,15 +108,25 @@ export default function AssistantPage() {
             <section className="answer-layout">
               <article className="answer-card">
                 <div className="answer-heading"><Icon name="spark"/><div><span>AI DEĞERLENDİRMESİ</span><small>{result.provider} · {result.model}</small></div></div>
+                {!result.grounded && (
+                  <div className="ungrounded-notice">
+                    Bu yanıt korpustaki hiçbir kaynağa atıf yapmıyor; hukuki dayanak olarak kullanmayın.
+                  </div>
+                )}
                 <div className="answer-text">{result.answer}</div>
+                {result.unverified_markers.length > 0 && (
+                  <small className="answer-footnote">
+                    Modelin ürettiği {result.unverified_markers.join(", ")} atfı korpusta karşılık bulmadığı için metinden çıkarıldı.
+                  </small>
+                )}
               </article>
               <aside className="citation-panel">
                 <h3>Başvurulan kaynaklar</h3>
-                <p>{result.citations.length} karar parçası</p>
+                <p>{result.citations.length} kaynak parçası</p>
                 {result.citations.map((citation) => (
                   <Link href={`/decisions/${citation.source_id}`} className="citation-card" key={citation.marker}>
-                    <span>[{citation.marker}] {citation.chamber}</span>
-                    <strong>E. {citation.docket_no} · K. {citation.decision_no}</strong>
+                    <span>[{citation.marker}] {citation.source_type === "legislation" ? "Mevzuat" : "Karar"}</span>
+                    <strong>{citation.reference}</strong>
                     <small>{citation.excerpt.slice(0, 130)}…</small>
                   </Link>
                 ))}
