@@ -14,7 +14,7 @@ import pytest
 psycopg = pytest.importorskip("psycopg")
 
 from api.ai.history import record_exchange
-from api.ai.retrieval import retrieve_contexts
+from api.ai.retrieval import retrieve_contexts, retrieve_document_contexts
 from api.ai.verification import verify_answer
 
 DATABASE_URL = os.getenv("NHR_TEST_DATABASE_URL")
@@ -110,6 +110,41 @@ def _seed_user(conn) -> str:
     ).fetchone()["id"]
 
 
+def _seed_project_document(conn, user_id: str) -> tuple[str, str]:
+    project_id = conn.execute(
+        "INSERT INTO projects (name, created_by) VALUES (%s, %s) RETURNING id",
+        ("Test Projesi", user_id),
+    ).fetchone()["id"]
+    conn.execute(
+        """
+        INSERT INTO project_members (project_id, user_id, member_role, added_by)
+        VALUES (%s, %s, 'owner', %s)
+        """,
+        (project_id, user_id, user_id),
+    )
+    document_id = conn.execute(
+        """
+        INSERT INTO documents (
+            project_id, uploaded_by, file_name, status, processed_at
+        )
+        VALUES (%s, %s, 'is_sozlesmesi.txt', 'ready', NOW())
+        RETURNING id
+        """,
+        (project_id, user_id),
+    ).fetchone()["id"]
+    chunk_id = conn.execute(
+        """
+        INSERT INTO document_chunks (
+            document_id, chunk_index, content, page_number, section_title
+        )
+        VALUES (%s, 0, %s, 2, 'Fesih')
+        RETURNING id
+        """,
+        (document_id, f"{TOKEN} sözleşme 15 Ocak tarihinde feshedildi."),
+    ).fetchone()["id"]
+    return project_id, chunk_id
+
+
 def test_retrieval_returns_both_legislation_and_decisions(connection):
     _seed_legislation(connection)
     _seed_decision(connection)
@@ -137,6 +172,23 @@ def test_retrieval_builds_readable_references_per_source_type(connection):
     assert references["court_decision"] == (
         "Yargıtay 9. Hukuk Dairesi, E. 2026/1, K. 2026/2, T. 02.01.2026"
     )
+
+
+def test_project_document_retrieval_builds_page_reference(connection):
+    user_id = _seed_user(connection)
+    project_id, chunk_id = _seed_project_document(connection, user_id)
+
+    contexts = retrieve_document_contexts(
+        connection,
+        question=QUESTION,
+        project_id=str(project_id),
+        top_k=5,
+    )
+
+    assert len(contexts) == 1
+    assert contexts[0].chunk_id == chunk_id
+    assert contexts[0].source_type == "document"
+    assert contexts[0].reference_line == "is_sozlesmesi.txt, s. 2, Fesih"
 
 
 def test_record_exchange_persists_only_cited_sources(connection):
@@ -204,3 +256,36 @@ def test_record_exchange_stores_verification_outcome(connection):
 
     assert metadata["grounded"] is True
     assert metadata["unverified_markers"] == ["K9"]
+
+
+def test_record_exchange_persists_document_citation_target(connection):
+    user_id = _seed_user(connection)
+    project_id, chunk_id = _seed_project_document(connection, user_id)
+    contexts = retrieve_document_contexts(
+        connection,
+        question=QUESTION,
+        project_id=str(project_id),
+        top_k=5,
+    )
+    answer = verify_answer("Belgede fesih tarihi yer alır. [K1]", contexts)
+
+    _, message_id = record_exchange(
+        connection,
+        user_id=user_id,
+        conversation_id=None,
+        project_id=project_id,
+        question=QUESTION,
+        answer=answer,
+        model_name="test-model",
+    )
+
+    citation = connection.execute(
+        """
+        SELECT document_chunk_id, legal_chunk_id, source_locator
+        FROM citations WHERE message_id = %s
+        """,
+        (message_id,),
+    ).fetchone()
+    assert citation["document_chunk_id"] == chunk_id
+    assert citation["legal_chunk_id"] is None
+    assert citation["source_locator"]["page_number"] == "2"

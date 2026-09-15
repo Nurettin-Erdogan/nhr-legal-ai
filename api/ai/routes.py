@@ -13,7 +13,7 @@ from api.ai.embeddings import EmbeddingProviderError, create_embedding_provider
 from api.ai.history import record_exchange
 from api.ai.providers import AIProviderError, create_provider
 from api.ai.rag import RAGContext, generate_grounded_answer
-from api.ai.retrieval import retrieve_contexts
+from api.ai.retrieval import retrieve_contexts, retrieve_document_contexts
 from api.ai.verification import VerifiedAnswer, verify_answer
 from api.auth.routes import optional_current_user_id
 from api.config import get_settings
@@ -65,6 +65,7 @@ def _as_citation(position: int, context: RAGContext) -> AICitation:
         law_name=context.law_name,
         law_no=context.law_no,
         article_no=context.article_no,
+        page_number=context.page_number,
         excerpt=context.content[:500],
         rank=context.rank,
     )
@@ -117,12 +118,34 @@ def _persist(
         return None, None
 
 
+def _require_project_access(user_id: UUID | None, project_id: UUID | None) -> None:
+    if project_id is None:
+        return
+    if user_id is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Proje belgeleriyle çalışmak için oturum açmalısınız",
+        )
+    try:
+        with authenticated_database_connection(str(user_id)) as connection:
+            project = connection.execute(
+                "SELECT id FROM projects WHERE id = %s AND deleted_at IS NULL",
+                (project_id,),
+            ).fetchone()
+    except psycopg.Error as exc:
+        raise HTTPException(status_code=503, detail="Proje erişimi doğrulanamadı") from exc
+    if project is None:
+        # RLS intentionally makes a missing and an inaccessible project identical.
+        raise HTTPException(status_code=404, detail="Proje bulunamadı")
+
+
 @router.post("/answer", response_model=AIAnswerResponse)
 async def answer_question(
     request: AIAnswerRequest,
     user_id: Annotated[UUID | None, Depends(optional_current_user_id)],
 ) -> AIAnswerResponse:
     settings = get_settings()
+    _require_project_access(user_id, request.project_id)
     try:
         provider = create_provider(
             provider_name=settings.ai_provider,
@@ -135,14 +158,40 @@ async def answer_question(
     query_embedding = await _embed_question(request.question)
 
     try:
-        with database_connection() as connection:
-            contexts = retrieve_contexts(
-                connection,
-                question=request.question,
-                top_k=settings.rag_top_k,
-                query_embedding=query_embedding,
-                embedding_model=settings.embedding_model,
-            )
+        if request.project_id is not None:
+            assert user_id is not None  # `_require_project_access` already enforced this.
+            with authenticated_database_connection(str(user_id)) as connection:
+                legal_contexts = retrieve_contexts(
+                    connection,
+                    question=request.question,
+                    top_k=settings.rag_top_k,
+                    query_embedding=query_embedding,
+                    embedding_model=settings.embedding_model,
+                )
+                document_contexts = retrieve_document_contexts(
+                    connection,
+                    question=request.question,
+                    project_id=str(request.project_id),
+                    top_k=settings.rag_top_k,
+                    query_embedding=query_embedding,
+                    embedding_model=settings.embedding_model,
+                )
+                contexts = sorted(
+                    (*legal_contexts, *document_contexts),
+                    key=lambda context: context.rank,
+                    reverse=True,
+                )[: settings.rag_top_k]
+        else:
+            with database_connection() as connection:
+                contexts = retrieve_contexts(
+                    connection,
+                    question=request.question,
+                    top_k=settings.rag_top_k,
+                    query_embedding=query_embedding,
+                    embedding_model=settings.embedding_model,
+                )
+    except HTTPException:
+        raise
     except psycopg.Error as exc:
         raise HTTPException(status_code=503, detail="Hukuk kaynakları aranamadı") from exc
 

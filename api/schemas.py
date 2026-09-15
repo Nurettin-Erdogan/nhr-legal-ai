@@ -111,6 +111,7 @@ class AICitation(BaseModel):
     law_name: str | None = None
     law_no: str | None = None
     article_no: str | None = None
+    page_number: int | None = None
     excerpt: str
     rank: float
 

@@ -60,3 +60,32 @@ def legislation_context(
         content=content,
         rank=rank,
     )
+
+
+def document_context(
+    *,
+    chunk_id: str = "00000000-0000-0000-0000-000000000021",
+    document_id: str = "00000000-0000-0000-0000-000000000022",
+    content: str = "Müvekkilin iş sözleşmesi 15 Ocak 2026 tarihinde feshedilmiştir.",
+    rank: float = 0.6,
+) -> RAGContext:
+    return RAGContext(
+        chunk_id=UUID(chunk_id),
+        source_id=UUID(document_id),
+        source_type="document",
+        title="iş_sözleşmesi.pdf",
+        source_url=None,
+        authority="Kullanıcı belgesi",
+        court_name=None,
+        chamber=None,
+        docket_no=None,
+        decision_no=None,
+        decision_date=None,
+        law_name=None,
+        law_no=None,
+        article_no=None,
+        article_title="Fesih",
+        content=content,
+        rank=rank,
+        page_number=3,
+    )

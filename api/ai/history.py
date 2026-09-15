@@ -33,6 +33,7 @@ def _locator(context: RAGContext) -> dict[str, str]:
         "law_name": context.law_name,
         "law_no": context.law_no,
         "article_no": context.article_no,
+        "page_number": str(context.page_number) if context.page_number else None,
     }
     return {key: value for key, value in fields.items() if value}
 
@@ -101,6 +102,7 @@ def record_exchange(
             """
             INSERT INTO citations (
                 message_id,
+                document_chunk_id,
                 legal_chunk_id,
                 citation_order,
                 marker,
@@ -109,11 +111,12 @@ def record_exchange(
                 snippet,
                 relevance_score
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 message_id,
-                context.chunk_id,
+                context.chunk_id if context.source_type == "document" else None,
+                context.chunk_id if context.source_type != "document" else None,
                 position,
                 f"K{position}",
                 context.reference_line,

@@ -14,6 +14,7 @@ type Citation = {
   reference: string;
   excerpt: string;
 };
+type Project = { id: string; name: string; document_count: number };
 type AIAnswer = {
   answer: string;
   provider: string;
@@ -35,12 +36,18 @@ export default function AssistantPage() {
   const [result, setResult] = useState<AIAnswer | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [projectId, setProjectId] = useState("");
 
   useEffect(() => {
     fetch(`${API_URL}/api/ai/status`)
       .then((response) => response.ok ? response.json() : Promise.reject())
       .then(setStatus)
       .catch(() => setError("AI servisinin durumuna ulaşılamadı."));
+    fetch(`${API_URL}/api/projects`, { credentials: "include" })
+      .then((response) => response.ok ? response.json() : [])
+      .then(setProjects)
+      .catch(() => setProjects([]));
   }, []);
 
   async function ask(event: FormEvent) {
@@ -54,7 +61,10 @@ export default function AssistantPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ question: question.trim() }),
+        body: JSON.stringify({
+          question: question.trim(),
+          project_id: projectId || null,
+        }),
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.detail ?? "AI yanıtı üretilemedi");
@@ -82,7 +92,7 @@ export default function AssistantPage() {
             <div className="assistant-symbol"><Icon name="spark"/></div>
             <span className="section-kicker">NHR LEGAL AI</span>
             <h2>Hukuki sorunuzu kaynaklarıyla değerlendirin.</h2>
-            <p>Asistan önce hukuk korpusunda ilgili mevzuat ve karar parçalarını bulur, sonra yalnızca bu kaynaklara dayanarak cevap üretir.</p>
+            <p>Asistan hukuk korpusundaki mevzuat ve kararları, proje seçildiğinde de yalnızca o projeye ait belgeleri tarar; cevabı getirilen kaynaklarla sınırlar.</p>
           </section>
 
           {!status?.configured && status && (
@@ -95,7 +105,16 @@ export default function AssistantPage() {
           <form className="question-card" onSubmit={ask}>
             <label htmlFor="legal-question">Hukuki sorunuz</label>
             <textarea id="legal-question" value={question} onChange={(event) => setQuestion(event.target.value)} rows={5} placeholder="Somut hukuki sorunuzu yazın…"/>
-            <div className="question-actions"><small>Yanıtlar mevcut mevzuat ve karar kaynaklarıyla sınırlandırılır.</small><button disabled={loading || !status?.configured}>{loading ? "Kaynaklar inceleniyor…" : "Kaynaklı cevap üret"}</button></div>
+            {projects.length > 0 && (
+              <div className="assistant-project-row">
+                <label htmlFor="assistant-project">Çalışma kapsamı</label>
+                <select id="assistant-project" value={projectId} onChange={(event) => setProjectId(event.target.value)}>
+                  <option value="">Yalnız merkezi hukuk korpusu</option>
+                  {projects.map((project) => <option key={project.id} value={project.id}>{project.name} · {project.document_count} belge</option>)}
+                </select>
+              </div>
+            )}
+            <div className="question-actions"><small>{projectId ? "Mevzuat, kararlar ve seçili proje belgeleri birlikte aranır." : "Yanıtlar mevcut mevzuat ve karar kaynaklarıyla sınırlandırılır."}</small><button disabled={loading || !status?.configured}>{loading ? "Kaynaklar inceleniyor…" : "Kaynaklı cevap üret"}</button></div>
           </form>
 
           <div className="suggestion-row">
@@ -123,13 +142,14 @@ export default function AssistantPage() {
               <aside className="citation-panel">
                 <h3>Başvurulan kaynaklar</h3>
                 <p>{result.citations.length} kaynak parçası</p>
-                {result.citations.map((citation) => (
-                  <Link href={`/decisions/${citation.source_id}`} className="citation-card" key={citation.marker}>
-                    <span>[{citation.marker}] {citation.source_type === "legislation" ? "Mevzuat" : "Karar"}</span>
-                    <strong>{citation.reference}</strong>
-                    <small>{citation.excerpt.slice(0, 130)}…</small>
-                  </Link>
-                ))}
+                {result.citations.map((citation) => {
+                  const content = <><span>[{citation.marker}] {citation.source_type === "legislation" ? "Mevzuat" : citation.source_type === "document" ? "Proje belgesi" : "Karar"}</span><strong>{citation.reference}</strong><small>{citation.excerpt.slice(0, 130)}…</small></>;
+                  return citation.source_type === "document" ? (
+                    <div className="citation-card" key={citation.marker}>{content}</div>
+                  ) : (
+                    <Link href={`/decisions/${citation.source_id}`} className="citation-card" key={citation.marker}>{content}</Link>
+                  );
+                })}
               </aside>
             </section>
           )}

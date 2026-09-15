@@ -120,3 +120,8 @@ MAX_DOCUMENT_SIZE_MB=10
 
 Taranmış veya yalnız görüntü içeren PDF'ler henüz OCR'dan geçirilmez; API bu
 dosyaları boş belge olarak kaydetmek yerine açık bir hata döndürür.
+
+AI asistanında bir proje seçildiğinde merkezi mevzuat/karar korpusu ile yalnız
+o projedeki erişilebilir belge parçaları birlikte sıralanır. Kullanıcı belgesi
+atıfları dosya adı, sayfa ve bölüm bilgisiyle gösterilir; konuşma kaydındaki
+atıf doğrudan ilgili `document_chunk_id` değerine bağlanır.

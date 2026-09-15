@@ -22,6 +22,7 @@ gerekebileceği uyarısını yalnızca gerekli olduğunda ve tek cümleyle belir
 _SOURCE_KIND_LABELS = {
     "court_decision": "Mahkeme kararı",
     "legislation": "Mevzuat",
+    "document": "Kullanıcı belgesi",
 }
 
 
@@ -44,6 +45,7 @@ class RAGContext:
     article_title: str | None
     content: str
     rank: float
+    page_number: int | None = None
 
     @property
     def kind_label(self) -> str:
@@ -72,6 +74,14 @@ class RAGContext:
             if self.article_title:
                 head = f"{head} — {self.article_title}"
             return head
+
+        if self.source_type == "document":
+            details = []
+            if self.page_number:
+                details.append(f"s. {self.page_number}")
+            if self.article_title:
+                details.append(self.article_title)
+            return ", ".join((self.title, *details))
 
         if self.authority:
             return f"{self.title} — {self.authority}"

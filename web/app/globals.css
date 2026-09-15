@@ -118,6 +118,9 @@ button, input { font: inherit; }
 .question-card label { display: block; margin-bottom: 11px; color: var(--forest); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .7px; }
 .question-card textarea { width: 100%; resize: vertical; min-height: 120px; padding: 17px; border: 1px solid #d7d9d2; outline: none; color: var(--ink); background: #fdfcf8; font: 16px/1.6 Georgia, serif; }
 .question-card textarea:focus { border-color: #7c9c91; box-shadow: 0 0 0 3px rgba(36,93,79,.08); }
+.assistant-project-row { margin-top: 13px; display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 12px; align-items: center; }
+.assistant-project-row label { margin: 0; }
+.assistant-project-row select { min-height: 40px; padding: 0 11px; border: 1px solid var(--line); background: #fff; color: var(--ink); font-size: 12px; }
 .question-actions { margin-top: 14px; display: flex; justify-content: space-between; align-items: center; gap: 20px; }
 .question-actions small { color: var(--muted); font-size: 10px; }
 .question-actions button { min-height: 44px; padding: 0 20px; border: 0; border-radius: 3px; background: var(--forest); color: white; cursor: pointer; font-size: 12px; font-weight: 700; }
@@ -238,6 +241,7 @@ button, input { font: inherit; }
   .assistant-content { width: calc(100% - 28px); margin-top: 24px; }
   .assistant-intro h2 { font-size: 27px; }
   .setup-banner, .question-actions { align-items: stretch; flex-direction: column; }
+  .assistant-project-row { grid-template-columns: 1fr; }
   .setup-banner code { align-self: flex-start; }
   .answer-layout { grid-template-columns: 1fr; }
   .sidebar-bottom { margin-top: 12px; }
