@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin
+from urllib.request import Request, build_opener
+
 from ingestion.http import is_retryable_status, retry_wait_seconds
 
 BASE_URL = "https://bedesten.adalet.gov.tr/mevzuat/"

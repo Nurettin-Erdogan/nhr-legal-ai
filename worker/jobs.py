@@ -136,19 +136,22 @@ def run_sync(
             checkpoint.last_successful_sync_at = datetime.now(UTC)
             checkpoint.consecutive_failures = 0
             checkpoint.last_error = None
-            if checkpoint.health_state not in {"blocked", "failed"}:
-                checkpoint.health_state = "healthy"
-                checkpoint.health_detail = None
+            checkpoint.health_state = "healthy"
+            checkpoint.health_detail = None
         elif status == "partial" and not request.dry_run:
             # partial: son başarılı sync damgasını güncelleme.
             checkpoint.consecutive_failures = 0
             checkpoint.last_error = error
-            if checkpoint.health_state not in {"blocked", "failed"}:
+            if checkpoint.health_state != "blocked":
                 checkpoint.health_state = "degraded"
                 checkpoint.health_detail = error
         elif status in {"failed", "captcha_required", "cancelled"}:
             checkpoint.consecutive_failures += 1
             checkpoint.last_error = error
+            if status == "captcha_required":
+                checkpoint.health_state = "blocked"
+            elif status == "failed":
+                checkpoint.health_state = "failed"
 
         checkpoint.next_run_at = datetime.now(UTC) + _interval_for(source)
         if not request.dry_run:
