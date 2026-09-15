@@ -67,6 +67,12 @@ yapılandırılır. Ardından `python -m ingestion.cli embed` komutu eksik veya 
 adı değişmiş vektörleri geri doldurur. İşlem kesilirse daha önce tamamlanan
 parçalar korunur ve sonraki çalıştırma kaldığı yerden devam eder.
 
+Toplu embedding varsayılan olarak batch'ler arasında 7 saniye bekler. Geçici
+429/5xx hatalarında üstel beklemeyle yeniden dener; `--delay`, `--max-retries`
+ve `--retry-backoff` değerleri gerektiğinde değiştirilebilir. Her başarılı
+batch ayrı transaction olarak kalıcılaştırılır; sonraki bir hata daha önce
+üretilmiş vektörleri geri almaz.
+
 RAG katmanı embedding bulunan parçalarda cosine benzerliği ile Türkçe tam metin
 sonuçlarını reciprocal-rank fusion ile birleştirir. Embedding servisi
 kullanılamadığında tam metin araması çalışmaya devam eder.

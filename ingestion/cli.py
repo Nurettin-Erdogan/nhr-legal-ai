@@ -204,13 +204,22 @@ def _run_embed(args: argparse.Namespace) -> int:
         return 2
 
     database_url = _resolve_database_url(args.database_url)
-    with psycopg.connect(database_url) as connection:
-        summary = embed_legal_chunks(
-            connection,
-            provider,
-            limit=args.limit,
-            batch_size=args.batch_size,
-        )
+    try:
+        # Her başarılı batch bağımsız transaction olarak kalıcılaşır. Uzun bir
+        # backfill sonradan kota hatası alırsa önceki vektörler geri alınmaz.
+        with psycopg.connect(database_url, autocommit=True) as connection:
+            summary = embed_legal_chunks(
+                connection,
+                provider,
+                limit=args.limit,
+                batch_size=args.batch_size,
+                delay_seconds=args.delay,
+                max_retries=args.max_retries,
+                retry_backoff_seconds=args.retry_backoff,
+            )
+    except EmbeddingProviderError as exc:
+        logger.error("Embedding aktarımı durdu: %s", exc)
+        return 2
 
     logger.info(
         "Embedding bitti | yazılan=%s | kalan=%s | model=%s",
@@ -302,6 +311,14 @@ def build_parser() -> argparse.ArgumentParser:
     embed.add_argument("--dimensions", type=int, default=int(os.getenv("EMBEDDING_DIMENSIONS", "768")))
     embed.add_argument("--limit", type=int, default=500)
     embed.add_argument("--batch-size", type=int, default=10)
+    embed.add_argument(
+        "--delay",
+        type=float,
+        default=7,
+        help="Embedding batch'leri arası bekleme (sn)",
+    )
+    embed.add_argument("--max-retries", type=int, default=4)
+    embed.add_argument("--retry-backoff", type=float, default=15)
     embed.set_defaults(handler=_run_embed)
 
     return parser
