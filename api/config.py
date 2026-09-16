@@ -7,6 +7,8 @@ from urllib.parse import quote
 
 from dotenv import dotenv_values, load_dotenv
 
+from api.ai.providers import LOCAL_OLLAMA_PROVIDERS
+
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -15,7 +17,6 @@ class Settings:
     cors_origins: tuple[str, ...]
     ai_provider: str
     ai_model: str
-    gemini_api_key: str | None
     ollama_base_url: str
     ollama_timeout_seconds: float
     ollama_max_output_tokens: int
@@ -23,7 +24,6 @@ class Settings:
     embedding_provider: str
     embedding_model: str
     embedding_dimensions: int
-    embedding_api_key: str | None
     jwt_secret: str | None
     jwt_expire_minutes: int
     auth_cookie_secure: bool
@@ -56,8 +56,7 @@ def get_settings() -> Settings:
     load_dotenv()
     file_values = dotenv_values(".env")
     origins = os.getenv("CORS_ORIGINS", "http://localhost:3000")
-    gemini_api_key = os.getenv("GEMINI_API_KEY") or file_values.get("GEMINI_API_KEY") or None
-    ai_provider = os.getenv("AI_PROVIDER", "qwen").strip().lower()
+    ai_provider = os.getenv("AI_PROVIDER", "deepseek").strip().lower()
     return Settings(
         database_url=_database_url(),
         admin_database_url=(
@@ -67,8 +66,7 @@ def get_settings() -> Settings:
         ),
         cors_origins=tuple(value.strip() for value in origins.split(",") if value.strip()),
         ai_provider=ai_provider,
-        ai_model=os.getenv("AI_MODEL", "qwen3:8b").strip(),
-        gemini_api_key=gemini_api_key,
+        ai_model=os.getenv("AI_MODEL", "deepseek-r1:8b").strip(),
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip(),
         ollama_timeout_seconds=max(
             1.0, min(float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180")), 600.0)
@@ -77,17 +75,12 @@ def get_settings() -> Settings:
             64, min(int(os.getenv("OLLAMA_MAX_OUTPUT_TOKENS", "512")), 4096)
         ),
         rag_top_k=max(
-            1, min(int(os.getenv("RAG_TOP_K", "2" if ai_provider == "qwen" else "6")), 12)
+            1, min(int(os.getenv("RAG_TOP_K", "2" if ai_provider in LOCAL_OLLAMA_PROVIDERS else "6")), 12)
         ),
-        embedding_provider=os.getenv("EMBEDDING_PROVIDER", "qwen").strip().lower(),
-        embedding_model=os.getenv("EMBEDDING_MODEL", "qwen3-embedding:0.6b").strip(),
+        embedding_provider=os.getenv("EMBEDDING_PROVIDER", "ollama").strip().lower(),
+        embedding_model=os.getenv("EMBEDDING_MODEL", "nomic-embed-text").strip(),
         embedding_dimensions=max(
             1, min(int(os.getenv("EMBEDDING_DIMENSIONS", "768")), 2000)
-        ),
-        embedding_api_key=(
-            os.getenv("EMBEDDING_API_KEY")
-            or file_values.get("EMBEDDING_API_KEY")
-            or gemini_api_key
         ),
         jwt_secret=os.getenv("JWT_SECRET") or file_values.get("JWT_SECRET") or None,
         jwt_expire_minutes=max(

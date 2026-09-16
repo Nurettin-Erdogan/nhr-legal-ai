@@ -55,36 +55,38 @@ Uygulama `http://localhost:3000`, API dokümantasyonu
 kullanacaksa `web/.env.local.example` dosyasını `.env.local` adıyla kopyalayıp
 değeri değiştirin.
 
-## Qwen kaynaklı cevaplar (yerel Ollama)
+## DeepSeek kaynaklı cevaplar (yerel Ollama)
 
-Ollama'yı yerel makinede başlatın ve iki modeli yükleyin:
+Ollama'yı yerel makinede başlatın ve sohbet ile embedding modellerini yükleyin:
 
 ```powershell
-ollama pull qwen3:8b
-ollama pull qwen3-embedding:0.6b
+ollama pull deepseek-r1:8b
+ollama pull nomic-embed-text
 ```
 
-Proje kökündeki `.env` dosyasında üretim ve embedding için Qwen'i seçin:
+Proje kökündeki `.env` dosyasında sohbet için DeepSeek'i seçin. Embedding
+DeepSeek API'sinde yoktur; 768 boyutlu vektörler Ollama'daki `nomic-embed-text`
+ile üretilir.
 
 ```env
-AI_PROVIDER=qwen
-AI_MODEL=qwen3:8b
+AI_PROVIDER=deepseek
+AI_MODEL=deepseek-r1:8b
 OLLAMA_BASE_URL=http://127.0.0.1:11434
 OLLAMA_TIMEOUT_SECONDS=180
 OLLAMA_MAX_OUTPUT_TOKENS=512
 RAG_TOP_K=2
-EMBEDDING_PROVIDER=qwen
-EMBEDDING_MODEL=qwen3-embedding:0.6b
+EMBEDDING_PROVIDER=ollama
+EMBEDDING_MODEL=nomic-embed-text
 EMBEDDING_DIMENSIONS=768
 ```
 
 API'yi yeniden başlattıktan sonra `http://localhost:3000/assistant` adresindeki
 ekran etkinleşir. Asistan önce korpusta ilgili mevzuat ve karar parçalarını
 seçer, ardından bu parçaları sabit `[K1]`, `[K2]` kaynak işaretleriyle
-Qwen'e gönderir. API, cevaptaki atıfları getirilen kaynaklara karşı ayrıca
+DeepSeek'e gönderir. API, cevaptaki atıfları getirilen kaynaklara karşı ayrıca
 doğrular. Yerel Ollama için API anahtarı gerekmez; servisi kimlik doğrulamasız
 internete açmayın. Ollama geçici olarak çalışmazsa embedding yerine sözcüksel
-arama devam eder, fakat Qwen yanıtı üretilemez.
+arama devam eder, fakat DeepSeek yanıtı üretilemez.
 Yerel CPU kurulumunda iki kaynak ve 512 çıktı tokenı yanıt süresini makul tutar;
 daha güçlü donanımda bu iki sınır artırılabilir.
 

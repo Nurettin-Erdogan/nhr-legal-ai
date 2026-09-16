@@ -22,7 +22,7 @@ Bunlar alternatif değil, aynı platformun birlikte geliştirilen parçalarıdı
 5. Sohbet geçmişi
 6. Müvekkil / proje / belge / sohbet ilişkileri
 7. Belge üretme ve analiz akışları
-8. Gemini/Claude/OpenAI çoklu sağlayıcı yönlendirmesi
+8. Çoklu sağlayıcı yönlendirmesi
 
 ## Değişmez kurallar
 
@@ -31,9 +31,9 @@ mevzuat maddesi veya hukuki sonuç uydurulamaz. Kaynak yetersizse bu açıkça
 söylenir. Bu kural model promptunda kalmaz; üretilen cevabın gerçekten
 getirilen kaynaklara dayandığı kod tarafında doğrulanır.
 
-**AI katmanı sağlayıcıdan bağımsız kalır.** İlk geliştirme Gemini ile devam
-eder ama üretim ve embedding çağrıları arayüz arkasında tutulur. Model sıfırdan
-eğitilmez.
+**AI katmanı sağlayıcıdan bağımsız kalır.** Yerel üretim DeepSeek (Ollama)
+üzerinden gider; üretim ve embedding çağrıları arayüz arkasında tutulur. Model
+sıfırdan eğitilmez.
 
 **Güvenlik ve KVKK sonradan eklenmez.** Kullanıcı izolasyonu, RLS, denetim
 kaydı ve secret yönetimi mimarinin parçasıdır. Yeni bir tablo veya uç nokta

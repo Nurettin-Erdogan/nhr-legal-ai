@@ -83,7 +83,7 @@ export default function AssistantPage() {
         <header className="topbar">
           <div><span className="eyebrow">KAYNAKLI HUKUK ASİSTANI</span><h1>AI asistanı</h1></div>
           <div className={`ai-status ${status?.configured ? "ready" : "waiting"}`}>
-            <i/><span>{status?.configured ? `${status.provider} · ${status.model}` : "Ollama / Qwen3 bekleniyor"}</span>
+            <i/><span>{status?.configured ? `${status.provider} · ${status.model}` : "Ollama / DeepSeek bekleniyor"}</span>
           </div>
         </header>
 
@@ -97,7 +97,7 @@ export default function AssistantPage() {
 
           {!status?.configured && status && (
             <div className="setup-banner">
-              <div><strong>Qwen3 modeli Ollama'da hazır değil</strong><span>Ollama'yı başlatın, seçili modeli indirin ve API'yi yeniden başlatın.</span></div><code>ollama pull {status.model}</code>
+              <div><strong>DeepSeek modeli Ollama'da hazır değil</strong><span>Ollama'yı başlatın, seçili modeli indirin ve API'yi yeniden başlatın.</span></div><code>ollama pull {status.model}</code>
             </div>
           )}
 

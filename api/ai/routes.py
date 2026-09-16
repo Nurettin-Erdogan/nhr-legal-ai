@@ -11,7 +11,12 @@ from psycopg.errors import InsufficientPrivilege
 
 from api.ai.embeddings import EmbeddingProviderError, create_embedding_provider
 from api.ai.history import record_exchange
-from api.ai.providers import AIProviderError, QwenProvider, create_provider
+from api.ai.providers import (
+    AIProviderError,
+    LOCAL_OLLAMA_PROVIDERS,
+    OllamaProvider,
+    create_provider,
+)
 from api.ai.rag import RAGContext, generate_grounded_answer
 from api.ai.retrieval import retrieve_contexts, retrieve_document_contexts
 from api.ai.verification import VerifiedAnswer, verify_answer
@@ -39,11 +44,12 @@ def ai_status() -> AIStatusResponse:
             )
     except psycopg.Error:
         semantic_search_ready = False
-    configured = bool(settings.gemini_api_key) if settings.ai_provider == "gemini" else False
-    if settings.ai_provider == "qwen":
+    configured = False
+    if settings.ai_provider in LOCAL_OLLAMA_PROVIDERS:
         try:
-            configured = QwenProvider(
+            configured = OllamaProvider(
                 model=settings.ai_model,
+                name=settings.ai_provider,
                 base_url=settings.ollama_base_url,
                 timeout_seconds=settings.ollama_timeout_seconds,
             ).is_available()
@@ -91,7 +97,6 @@ async def _embed_question(question: str) -> list[float] | None:
     try:
         provider = create_embedding_provider(
             provider_name=settings.embedding_provider,
-            api_key=settings.embedding_api_key,
             model=settings.embedding_model,
             dimensions=settings.embedding_dimensions,
             ollama_base_url=settings.ollama_base_url,
@@ -163,7 +168,6 @@ async def answer_question(
     try:
         provider = create_provider(
             provider_name=settings.ai_provider,
-            api_key=settings.gemini_api_key,
             model=settings.ai_model,
             ollama_base_url=settings.ollama_base_url,
             ollama_timeout_seconds=settings.ollama_timeout_seconds,

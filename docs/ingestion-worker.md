@@ -161,7 +161,7 @@ olarak gösterilir. Güvenlik doğrulaması isteyen PDF üretim ucu kullanılmaz
 
 ## Embedding
 
-Fetch sırasında Gemini çağrılmaz. `python -m ingestion.cli embed --target legal`
+Fetch sırasında model çağrılmaz. `python -m ingestion.cli embed --target legal`
 ayrı backfill'dir. Embedding düşse hukuk satırı kalır.
 
 ## Monitoring API

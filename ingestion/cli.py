@@ -14,7 +14,7 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 
-from dotenv import dotenv_values, load_dotenv
+from dotenv import load_dotenv
 
 from ingestion.yargitay.archive import DecisionArchive
 from ingestion.yargitay.chunking import DEFAULT_MAX_CHARS
@@ -227,17 +227,9 @@ def _run_embed(args: argparse.Namespace) -> int:
     from ingestion.embeddings import embed_document_chunks, embed_legal_chunks
 
     load_dotenv()
-    file_values = dotenv_values(".env")
-    api_key = (
-        os.getenv("EMBEDDING_API_KEY")
-        or file_values.get("EMBEDDING_API_KEY")
-        or os.getenv("GEMINI_API_KEY")
-        or file_values.get("GEMINI_API_KEY")
-    )
     try:
         provider = create_embedding_provider(
             provider_name=args.provider,
-            api_key=api_key,
             model=args.model,
             dimensions=args.dimensions,
             ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
@@ -413,8 +405,8 @@ def build_parser() -> argparse.ArgumentParser:
         "embed", help="Hukuk veya kullanıcı belgesi parçaları için embedding üret"
     )
     embed.add_argument("--database-url", default=None, help="Varsayılan: DATABASE_ADMIN_URL")
-    embed.add_argument("--provider", default=os.getenv("EMBEDDING_PROVIDER", "qwen"))
-    embed.add_argument("--model", default=os.getenv("EMBEDDING_MODEL", "qwen3-embedding:0.6b"))
+    embed.add_argument("--provider", default=os.getenv("EMBEDDING_PROVIDER", "ollama"))
+    embed.add_argument("--model", default=os.getenv("EMBEDDING_MODEL", "nomic-embed-text"))
     embed.add_argument("--dimensions", type=int, default=int(os.getenv("EMBEDDING_DIMENSIONS", "768")))
     embed.add_argument("--limit", type=int, default=500)
     embed.add_argument(

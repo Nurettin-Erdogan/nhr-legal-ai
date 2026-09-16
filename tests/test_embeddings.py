@@ -7,7 +7,7 @@ import pytest
 
 from api.ai.embeddings import (
     EmbeddingProviderError,
-    QwenEmbeddingProvider,
+    OllamaEmbeddingProvider,
     create_embedding_provider,
     vector_literal,
 )
@@ -29,23 +29,47 @@ def test_vector_literal_rejects_non_finite_values():
         vector_literal([float("nan")])
 
 
-def test_qwen_embedding_provider_needs_no_api_key():
+def test_ollama_embedding_provider_needs_no_api_key():
     provider = create_embedding_provider(
-        provider_name="qwen",
-        api_key=None,
-        model="qwen3-embedding:0.6b",
+        provider_name="ollama",
+        model="nomic-embed-text",
         dimensions=3,
     )
-    assert isinstance(provider, QwenEmbeddingProvider)
-    assert provider.name == "qwen"
+    assert isinstance(provider, OllamaEmbeddingProvider)
+    assert provider.name == "ollama"
 
 
-def test_qwen_embedding_calls_ollama_embed_with_configured_dimensions():
+def test_deepseek_embedding_alias_uses_ollama():
+    provider = create_embedding_provider(
+        provider_name="deepseek",
+        model="nomic-embed-text",
+        dimensions=3,
+    )
+    assert isinstance(provider, OllamaEmbeddingProvider)
+    assert provider.name == "deepseek"
+
+
+def test_cloud_embedding_providers_are_rejected():
+    with pytest.raises(EmbeddingProviderError, match="Desteklenmeyen"):
+        create_embedding_provider(
+            provider_name="qwen",
+            model="qwen3-embedding:0.6b",
+            dimensions=3,
+        )
+    with pytest.raises(EmbeddingProviderError, match="Desteklenmeyen"):
+        create_embedding_provider(
+            provider_name="gemini",
+            model="gemini-embedding-2",
+            dimensions=3,
+        )
+
+
+def test_ollama_embedding_calls_embed_with_configured_dimensions():
     def respond(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/embed"
         body = json.loads(request.content)
         assert body == {
-            "model": "qwen3-embedding:0.6b",
+            "model": "nomic-embed-text",
             "input": ["hukuk", "karar"],
             "dimensions": 3,
             "truncate": True,
@@ -55,8 +79,8 @@ def test_qwen_embedding_calls_ollama_embed_with_configured_dimensions():
             json={"embeddings": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]},
         )
 
-    provider = QwenEmbeddingProvider(
-        model="qwen3-embedding:0.6b",
+    provider = OllamaEmbeddingProvider(
+        model="nomic-embed-text",
         dimensions=3,
         transport=httpx.MockTransport(respond),
     )
@@ -66,13 +90,13 @@ def test_qwen_embedding_calls_ollama_embed_with_configured_dimensions():
     ]
 
 
-def test_qwen_embedding_missing_model_has_safe_error():
-    provider = QwenEmbeddingProvider(
-        model="qwen3-embedding:0.6b",
+def test_ollama_embedding_missing_model_has_safe_error():
+    provider = OllamaEmbeddingProvider(
+        model="nomic-embed-text",
         dimensions=3,
         transport=httpx.MockTransport(lambda request: httpx.Response(404, text="private")),
     )
-    with pytest.raises(EmbeddingProviderError, match="ollama pull qwen3-embedding:0.6b"):
+    with pytest.raises(EmbeddingProviderError, match="ollama pull nomic-embed-text"):
         provider.embed_query("hukuk")
 
 
@@ -130,14 +154,14 @@ def test_embedding_cli_keeps_private_documents_opt_in():
     assert parser.parse_args(["embed", "--target", "documents"]).target == "documents"
 
 
-def test_embedding_cli_defaults_to_qwen_without_provider_env(monkeypatch):
+def test_embedding_cli_defaults_to_ollama_without_provider_env(monkeypatch):
     monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
     monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
 
     args = build_parser().parse_args(["embed"])
 
-    assert args.provider == "qwen"
-    assert args.model == "qwen3-embedding:0.6b"
+    assert args.provider == "ollama"
+    assert args.model == "nomic-embed-text"
     assert args.dimensions == 768
 
 
