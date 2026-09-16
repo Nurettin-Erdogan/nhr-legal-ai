@@ -167,6 +167,7 @@ async def answer_question(
             model=settings.ai_model,
             ollama_base_url=settings.ollama_base_url,
             ollama_timeout_seconds=settings.ollama_timeout_seconds,
+            ollama_max_output_tokens=settings.ollama_max_output_tokens,
         )
     except AIProviderError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

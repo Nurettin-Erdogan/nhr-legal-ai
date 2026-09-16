@@ -70,8 +70,9 @@ Proje kökündeki `.env` dosyasında üretim ve embedding için Qwen'i seçin:
 AI_PROVIDER=qwen
 AI_MODEL=qwen3:8b
 OLLAMA_BASE_URL=http://127.0.0.1:11434
-OLLAMA_TIMEOUT_SECONDS=120
-RAG_TOP_K=6
+OLLAMA_TIMEOUT_SECONDS=180
+OLLAMA_MAX_OUTPUT_TOKENS=512
+RAG_TOP_K=2
 EMBEDDING_PROVIDER=qwen
 EMBEDDING_MODEL=qwen3-embedding:0.6b
 EMBEDDING_DIMENSIONS=768
@@ -84,6 +85,8 @@ Qwen'e gönderir. API, cevaptaki atıfları getirilen kaynaklara karşı ayrıca
 doğrular. Yerel Ollama için API anahtarı gerekmez; servisi kimlik doğrulamasız
 internete açmayın. Ollama geçici olarak çalışmazsa embedding yerine sözcüksel
 arama devam eder, fakat Qwen yanıtı üretilemez.
+Yerel CPU kurulumunda iki kaynak ve 512 çıktı tokenı yanıt süresini makul tutar;
+daha güçlü donanımda bu iki sınır artırılabilir.
 
 ### Semantik arama
 

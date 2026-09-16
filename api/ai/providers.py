@@ -100,7 +100,8 @@ class GeminiProvider:
 class QwenProvider:
     model: str
     base_url: str = "http://127.0.0.1:11434"
-    timeout_seconds: float = 120.0
+    timeout_seconds: float = 180.0
+    max_output_tokens: int = 512
     name: str = "qwen"
     transport: httpx.BaseTransport | None = None
 
@@ -153,7 +154,10 @@ class QwenProvider:
                         ],
                         "stream": False,
                         "think": False,
-                        "options": {"temperature": 0.15, "num_predict": 1800},
+                        "options": {
+                            "temperature": 0.15,
+                            "num_predict": self.max_output_tokens,
+                        },
                     },
                 )
                 response.raise_for_status()
@@ -179,7 +183,8 @@ class QwenProvider:
 def create_provider(
     *, provider_name: str, api_key: str | None, model: str,
     ollama_base_url: str = "http://127.0.0.1:11434",
-    ollama_timeout_seconds: float = 120.0,
+    ollama_timeout_seconds: float = 180.0,
+    ollama_max_output_tokens: int = 512,
 ) -> AIProvider:
     if provider_name == "gemini":
         if not api_key:
@@ -190,5 +195,6 @@ def create_provider(
             model=model,
             base_url=ollama_base_url,
             timeout_seconds=ollama_timeout_seconds,
+            max_output_tokens=ollama_max_output_tokens,
         )
     raise AIProviderError(f"Desteklenmeyen AI sağlayıcısı: {provider_name}")

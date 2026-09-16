@@ -18,6 +18,7 @@ class Settings:
     gemini_api_key: str | None
     ollama_base_url: str
     ollama_timeout_seconds: float
+    ollama_max_output_tokens: int
     rag_top_k: int
     embedding_provider: str
     embedding_model: str
@@ -70,9 +71,14 @@ def get_settings() -> Settings:
         gemini_api_key=gemini_api_key,
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip(),
         ollama_timeout_seconds=max(
-            1.0, min(float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "120")), 600.0)
+            1.0, min(float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180")), 600.0)
         ),
-        rag_top_k=max(1, min(int(os.getenv("RAG_TOP_K", "6")), 12)),
+        ollama_max_output_tokens=max(
+            64, min(int(os.getenv("OLLAMA_MAX_OUTPUT_TOKENS", "512")), 4096)
+        ),
+        rag_top_k=max(
+            1, min(int(os.getenv("RAG_TOP_K", "2" if ai_provider == "qwen" else "6")), 12)
+        ),
         embedding_provider=os.getenv("EMBEDDING_PROVIDER", "qwen").strip().lower(),
         embedding_model=os.getenv("EMBEDDING_MODEL", "qwen3-embedding:0.6b").strip(),
         embedding_dimensions=max(
