@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -76,6 +77,15 @@ def test_qwen_rejects_invalid_base_url():
 
 
 def test_question_embedding_uses_supported_provider_arguments(monkeypatch):
+    monkeypatch.setattr(routes, "get_settings", lambda: SimpleNamespace(
+        embedding_provider="qwen",
+        embedding_api_key=None,
+        embedding_model="qwen3-embedding:0.6b",
+        embedding_dimensions=768,
+        ollama_base_url="http://127.0.0.1:11434",
+        ollama_timeout_seconds=180.0,
+    ))
+
     class StubEmbeddingProvider:
         def embed_query(self, question: str) -> list[float]:
             assert question == "Hukuki soru?"
