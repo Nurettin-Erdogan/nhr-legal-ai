@@ -7,6 +7,11 @@ import pytest
 from ingestion.yargitay.models import CourtDecision
 from ingestion.yargitay.parser import content_hash
 from ingestion.yargitay.portal import CaptchaRequiredError, PortalDecisionRow, PortalError, SearchPage
+from ingestion.danistay.portal import (
+    DanistayPortalError,
+    PortalDecisionRow as DanistayDecisionRow,
+    SearchPage as DanistaySearchPage,
+)
 from worker.adapters import get_adapter
 from worker.adapters.danistay import DanistaySourceAdapter
 from worker.adapters.yargitay import YargitaySourceAdapter
@@ -142,6 +147,80 @@ def test_yargitay_empty_page_with_reported_results_is_not_complete(monkeypatch, 
                 should_stop=lambda: False,
             )
         )
+
+
+def test_danistay_empty_page_with_reported_results_is_not_complete(monkeypatch, tmp_path):
+    from worker.config import get_worker_settings
+
+    class _Client:
+        def begin_detailed_search(self, filters):
+            pass
+
+        def search_page(self, filters):
+            return DanistaySearchPage(rows=(), records_total=12, records_filtered=12)
+
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
+    get_worker_settings.cache_clear()
+    adapter = DanistaySourceAdapter(client=_Client())
+    with pytest.raises(DanistayPortalError, match="sayfa boş"):
+        list(
+            adapter.sync(
+                SyncRequest(source="danistay", date_from=date(2026, 1, 1),
+                            date_to=date(2026, 1, 31), max_records=1),
+                cursor={}, connection=None, dry_run=True, should_stop=lambda: False,
+            )
+        )
+
+
+def test_danistay_quarantined_row_is_retried_before_window_advances(monkeypatch, tmp_path):
+    from worker.adapters import danistay as adapter_module
+    from worker.config import get_worker_settings
+
+    class _Client:
+        base_url = "https://karararama.danistay.gov.tr/"
+
+        def begin_detailed_search(self, filters):
+            pass
+
+        def search_page(self, filters):
+            return DanistaySearchPage(
+                rows=(
+                    DanistayDecisionRow("1", "1. Daire", "2026/1", "2026/1", "01.01.2026"),
+                    DanistayDecisionRow("2", "1. Daire", "2026/2", "2026/2", "01.01.2026"),
+                ),
+                records_total=2,
+                records_filtered=2,
+            )
+
+        def fetch_document_html(self, document_id, *, keyword):
+            return f"<p>{document_id}</p>"
+
+    def make_decision(row, _html, *, base_url):
+        return CourtDecision(
+            court_name="Danıştay", chamber=row.chamber, docket_no=row.docket_no,
+            decision_no=row.decision_no, decision_date=date(2026, 1, 1),
+            title="Karar", raw_text="" if row.document_id == "1" else "Karar metni",
+            external_id=f"danistay:{row.document_id}",
+            content_hash=content_hash(row.document_id),
+            source_url=f"{base_url}getDokuman?id={row.document_id}",
+        )
+
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("DANISTAY_DELAY_SECONDS", "0")
+    monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
+    get_worker_settings.cache_clear()
+    monkeypatch.setattr(adapter_module, "decision_from_portal_row", make_decision)
+    adapter = DanistaySourceAdapter(client=_Client())
+    outcomes = list(adapter.sync(
+        SyncRequest(source="danistay", date_from=date(2026, 1, 1),
+                    date_to=date(2026, 1, 31), max_records=2),
+        cursor={}, connection=None, dry_run=True, should_stop=lambda: False,
+    ))
+    assert [status for status, _ in outcomes] == ["quarantined"]
+    assert adapter.last_cursor["page"] == 1
+    assert adapter.last_cursor["row_offset"] == 0
+    assert adapter.last_cursor["window_complete"] is False
 
 
 def test_adapter_registry_exposes_active_sources():

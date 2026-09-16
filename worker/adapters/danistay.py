@@ -161,6 +161,10 @@ class DanistaySourceAdapter:
             page = client.search_page(search_filters(config, page_number=page_number, page_size=page_size))
             expected = page.records_filtered
             if not page.rows:
+                if (page_number - 1) * page_size < expected:
+                    raise DanistayPortalError(
+                        f"Danıştay {page_number}. sayfa boş, ancak portal {expected} sonuç bildiriyor"
+                    )
                 window_complete = True
                 break
             for row_index, row in enumerate(page.rows[row_offset:], start=row_offset):
@@ -192,8 +196,10 @@ class DanistaySourceAdapter:
                             "reason": "missing_fields:" + ",".join(missing),
                             "raw": {"document_id": row.document_id, "missing": missing},
                         }
-                        row_offset = row_index + 1
-                        continue
+                        # Keep the cursor on this row. A later run can retry it;
+                        # otherwise the coverage window would silently skip it.
+                        halted_on_failure = True
+                        break
                     archive.save(decision)
                     if dry_run:
                         stored += 1
