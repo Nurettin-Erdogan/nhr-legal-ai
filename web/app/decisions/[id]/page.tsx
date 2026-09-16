@@ -9,6 +9,7 @@ export default async function DecisionPage({ params }: { params: Promise<{ id: s
 
   const isLegislation = source.source_type === "legislation";
   const isAdministrative = source.source_type === "other";
+  const isConstitutionalCourt = source.court_name === "Anayasa Mahkemesi";
   const facts = isLegislation
     ? [
         ["Mevzuat", source.law_name ?? "—"],
@@ -25,7 +26,7 @@ export default async function DecisionPage({ params }: { params: Promise<{ id: s
       ]
     : [
         ["Daire", source.chamber ?? source.court_name ?? "—"],
-        ["Esas no", source.docket_no ?? "—"],
+        [isConstitutionalCourt ? "Başvuru no" : "Esas no", source.docket_no ?? "—"],
         ["Karar no", source.decision_no ?? "—"],
         ["Karar tarihi", source.decision_date ? new Date(source.decision_date).toLocaleDateString("tr-TR") : "—"],
       ];

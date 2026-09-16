@@ -80,6 +80,7 @@ export default function Home() {
             {results?.results.map((result) => {
               const isLegislation = result.source_type === "legislation";
               const isAdministrative = result.source_type === "other";
+              const isConstitutionalCourt = result.court_name === "Anayasa Mahkemesi";
               const sourceDate = isLegislation ? result.official_gazette_date ?? result.version_date : result.decision_date;
               return (
               <article className="result-card" key={result.id}>
@@ -87,7 +88,7 @@ export default function Home() {
                 <Link href={`/decisions/${result.id}`}><h4>{result.title}</h4></Link>
                 <p>{result.excerpt}</p>
                 <footer>
-                  <div>{isLegislation ? <><code>Kanun {result.law_no ?? "—"}</code><code>m. {result.article_no ?? "—"}</code></> : isAdministrative ? <code>Karar {result.decision_no ?? "—"}</code> : <><code>E. {result.docket_no ?? "—"}</code><code>K. {result.decision_no ?? "—"}</code></>}</div>
+                  <div>{isLegislation ? <><code>Kanun {result.law_no ?? "—"}</code><code>m. {result.article_no ?? "—"}</code></> : isAdministrative ? <code>Karar {result.decision_no ?? "—"}</code> : isConstitutionalCourt ? <code>B. No: {result.docket_no ?? "—"}</code> : <><code>E. {result.docket_no ?? "—"}</code><code>K. {result.decision_no ?? "—"}</code></>}</div>
                   <Link href={`/decisions/${result.id}`}>Kaynağı incele <span>→</span></Link>
                 </footer>
               </article>

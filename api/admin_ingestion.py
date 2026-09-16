@@ -101,6 +101,12 @@ def ingestion_sources(_admin: UUID = Depends(require_admin)) -> dict:
                 "official_source_url": "https://kararlar.ombudsman.gov.tr",
                 "transport": "KDK public DataTables JSON + resmî PDF",
             },
+            {
+                "source": "aym",
+                "authority": "Anayasa Mahkemesi",
+                "official_source_url": "https://kararlarbilgibankasi.anayasa.gov.tr",
+                "transport": "AYM public JSON + public UDF attachment",
+            },
         ],
         "verification": [
             {
@@ -111,14 +117,7 @@ def ingestion_sources(_admin: UUID = Depends(require_admin)) -> dict:
                 "note": "Tarih, sayı ve mevzuat numarası resmî arşivle doğrulanır",
             }
         ],
-        "planned": [
-            {
-                "source": "aym",
-                "official_source_url": "https://kararlarbilgibankasi.anayasa.gov.tr",
-                "status": "blocked",
-                "note": "Public arama doğrulandı; tam metin güvenlik doğrulaması istiyor",
-            },
-        ],
+        "planned": [],
     }
 
 

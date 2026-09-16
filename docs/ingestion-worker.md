@@ -2,7 +2,8 @@
 
 Web uygulamasından bağımsız çalışan hukuk veri toplama servisi. Tarayıcı
 açık tutulmaz; masaüstü scraper yoktur. `ingestion/yargitay`,
-`ingestion/danistay`, `ingestion/mevzuat` ve `ingestion/kdk` HTTP istemcileri worker
+`ingestion/danistay`, `ingestion/mevzuat`, `ingestion/kdk` ve
+`ingestion/aym` HTTP istemcileri worker
 tarafından orkestre edilir.
 
 ## Mimari
@@ -23,7 +24,7 @@ Worker hata verse bile FastAPI ve Next.js ayakta kalır. Korpus yazımı
 | **ACTIVE** | Yargıtay | https://karararama.yargitay.gov.tr | JSON/HTTP: `/detayliArama`, `/aramadetaylist`, `/getDokuman?id=` |
 | **ACTIVE** | Danıştay | https://karararama.danistay.gov.tr | Oturumlu JSON/HTTP: `/detayliArama`, `/aramadetaylist`, `/getDokuman?id=` |
 | **ACTIVE** | Mevzuat | https://bedesten.adalet.gov.tr/mevzuat | JSON/HTTP: `searchDocuments`, `mevzuatMaddeTree`, `getDocumentContent` |
-| PLANNED / VERIFICATION | AYM | https://kararlarbilgibankasi.anayasa.gov.tr | Public arama JSON'u doğrulandı; tam metin güvenlik doğrulaması bekliyor |
+| **ACTIVE** | AYM | https://kararlarbilgibankasi.anayasa.gov.tr | Public arama JSON'u + public UDF karar dosyası |
 | **ACTIVE / VERIFICATION** | Resmî Gazete | https://www.resmigazete.gov.tr | Mevzuat sync içinde `/Home/Filter` + resmî arşiv künye teyidi |
 | ACTIVE | KDK | https://kararlar.ombudsman.gov.tr | Public DataTables JSON künyesi + resmî karar PDF'i |
 | PLANNED | Mevzuat canonical | resmi mevzuat sistemi / Resmî Gazete | Bedesten transport kaynağıdır, hukuki kanon değildir |
@@ -40,15 +41,18 @@ yoracak kadar sık değildir.
 | `DANISTAY_SYNC_INTERVAL_MINUTES` | 720 | Danıştay turları arası |
 | `MEVZUAT_SYNC_INTERVAL_MINUTES` | 720 | Mevzuat turları arası |
 | `KDK_SYNC_INTERVAL_MINUTES` | 1440 | KDK turları arası |
+| `AYM_SYNC_INTERVAL_MINUTES` | 1440 | AYM turları arası |
 | `WORKER_POLL_SECONDS` | 30 | Daemon beklerken kontrol sıklığı |
 | `YARGITAY_DELAY_SECONDS` | 1.5 | İstek arası bekleme |
 | `DANISTAY_DELAY_SECONDS` | 2.0 | Danıştay istekleri arası bekleme |
 | `MEVZUAT_DELAY_SECONDS` | 1.0 | İstek arası bekleme |
 | `KDK_DELAY_SECONDS` | 2.0 | KDK istekleri arası bekleme |
+| `AYM_DELAY_SECONDS` | 2.0 | AYM kayıtları arası bekleme |
 | `YARGITAY_MAX_RECORDS_PER_RUN` | 40 | Bir turda en fazla karar |
 | `DANISTAY_MAX_RECORDS_PER_RUN` | 30 | Bir turda en fazla Danıştay kararı |
 | `MEVZUAT_MAX_ARTICLES_PER_RUN` | 30 | Bir turda en fazla madde |
 | `KDK_MAX_RECORDS_PER_RUN` | 20 | Bir turda en fazla KDK kararı |
+| `AYM_MAX_RECORDS_PER_RUN` | 20 | Bir turda en fazla AYM kararı |
 | `YARGITAY_CORPUS_START` | 2020-01-01 | Tam korpus için ilk ay penceresi |
 | `DANISTAY_CORPUS_START` | 2020-01-01 | Danıştay için ilk ay penceresi |
 | `KDK_CORPUS_START` | 2020-01-01 | KDK için ilk ay penceresi |
@@ -66,6 +70,8 @@ Yargıtay ve Danıştay cursor: tarih penceresi (`window_from` / `window_to`), s
 KDK cursor: tarih penceresi, DataTables `offset`, `window_complete` ve
 `next_window_start`.
 
+AYM cursor: global sonuç sırasındaki `page` ve sayfa içi `row_offset`.
+
 Mevzuat cursor: `law_index`, `last_article_no`.
 
 Süreç CTRL+C ile durursa run `cancelled`/`partial` olur; checkpoint son güvenli
@@ -77,7 +83,7 @@ pencere/sayfada kalır. Yeniden başlatma `--no-resume` yoksa kaldığı yerden 
 `partial`/`failed`/`cancelled`/`captcha_required`).
 
 Aynı kaynak için PostgreSQL advisory lock (`pg_try_advisory_lock`). Yargıtay,
-Danıştay, mevzuat ve KDK birbirini bloklamaz.
+Danıştay, mevzuat, KDK ve AYM birbirini bloklamaz.
 
 ## Retry / backoff / CAPTCHA
 
@@ -130,6 +136,15 @@ numarası, tarihi, türü, şikâyet numarası, konu ve şikâyet edilen kurum
 `metadata` içinde korunur. Tam metin yalnız resmî PDF'den çıkarılır; karar
 künyesi portalın yapılandırılmış JSON alanlarından alınır.
 
+## AYM karar korpusu
+
+AYM bireysel başvuru künyesi public arama JSON'undan alınır. Tam metin,
+public karar-dosyaları listesinin gösterdiği UDF attachment içindeki
+`content.xml` dosyasından çıkarılır. UDF'deki başvuru numarası JSON künyesiyle
+eşleşmeden kayıt korpusa alınmaz. Bireysel başvurularda olmayan bir karar
+numarası üretilmez; `docket_no` başvuru numarasıdır ve kullanıcıya `B. No:`
+olarak gösterilir. Güvenlik doğrulaması isteyen PDF üretim ucu kullanılmaz.
+
 ## Embedding
 
 Fetch sırasında Gemini çağrılmaz. `python -m ingestion.cli embed --target legal`
@@ -154,6 +169,8 @@ Frontend admin paneli bu sprintte yok.
 .\.venv\Scripts\python.exe -m worker.runner run --source danistay --date-from 2025-01-01 --date-to 2025-01-31
 .\.venv\Scripts\python.exe -m worker.runner run --source mevzuat
 .\.venv\Scripts\python.exe -m worker.runner run --source kdk --date-from 2026-09-01 --date-to 2026-09-30 --max-records 10
+.\.venv\Scripts\python.exe -m worker.runner run --source aym --max-records 10
+.\.venv\Scripts\python.exe -m worker.runner run --source aym --keyword "2024/31235" --max-records 1 --no-resume
 .\.venv\Scripts\python.exe -m worker.runner run --source all --dry-run
 .\.venv\Scripts\python.exe -m worker.runner status
 .\.venv\Scripts\python.exe -m worker.runner daemon
@@ -177,12 +194,14 @@ Get-Content -Raw .\database\migrations\011_activate_resmi_gazete_verification.sq
   docker compose exec -T db psql -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1
 Get-Content -Raw .\database\migrations\012_activate_kdk_source.sql |
   docker compose exec -T db psql -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1
+Get-Content -Raw .\database\migrations\013_activate_aym_source.sql |
+  docker compose exec -T db psql -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1
 ```
 
 ## Bilinen sınırlar
 
-- AYM public arama JSON'u doğrulandı ancak tam karar
-  indirme güvenlik doğrulaması otomatik aşılmaz.
+- AYM PDF üretim ucu güvenlik doğrulaması ister; worker bu ucu kullanmaz ve
+  yalnız açık public UDF attachment akışıyla çalışır.
 - Yargıtay ve Danıştay CAPTCHA sonrası insan müdahalesi gerekir.
 - Portal `recordsFiltered` her daire/anahtar kelime aramasına bağlıdır; "tüm Yargıtay 2020–2026" tek bir sayı değildir. Coverage pencereleri anahtar kelime `karar` ile taranır; daire bazlı taramayı CLI `--chamber` ile verin.
 - Büyük korpus Git'te tutulmaz.

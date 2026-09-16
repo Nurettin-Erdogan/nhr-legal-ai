@@ -36,12 +36,13 @@ def run_daemon(
     settings = get_worker_settings()
     interval = poll_seconds or settings.poll_seconds
     logger.info(
-        "ingestion daemon started poll=%ss yargitay=%smin danistay=%smin mevzuat=%smin kdk=%smin",
+        "ingestion daemon started poll=%ss yargitay=%smin danistay=%smin mevzuat=%smin kdk=%smin aym=%smin",
         interval,
         settings.yargitay_interval_minutes,
         settings.danistay_interval_minutes,
         settings.mevzuat_interval_minutes,
         settings.kdk_interval_minutes,
+        settings.aym_interval_minutes,
     )
     while not should_stop():
         try:

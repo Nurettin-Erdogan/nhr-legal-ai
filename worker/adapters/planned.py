@@ -55,16 +55,6 @@ class PlannedSourceAdapter:
         )
 
 
-class AymSourceAdapter(PlannedSourceAdapter):
-    source_name = "aym"
-    authority = "Anayasa Mahkemesi"
-    official_source_url = "https://kararlarbilgibankasi.anayasa.gov.tr"
-    verification_detail = (
-        "Public arama JSON sözleşmesi doğrulandı; tam karar indirme akışı "
-        "güvenlik doğrulaması istediği için otomatikleştirilmedi"
-    )
-
-
 class ResmiGazeteSourceAdapter(PlannedSourceAdapter):
     source_name = "resmi_gazete"
     authority = "Resmî Gazete"

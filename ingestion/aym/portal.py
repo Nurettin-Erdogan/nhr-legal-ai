@@ -1,19 +1,21 @@
-"""AYM Kararlar Bilgi Bankası public arama JSON istemcisi.
+"""AYM Kararlar Bilgi Bankası public arama ve UDF karar istemcisi.
 
-Tam karar indirme akışı resmî istemcide güvenlik doğrulaması ister. Bu modül
-doğrulamayı taklit etmez veya aşmaz; yalnız doğrulanmış public arama sözleşmesini
-uygular.
+PDF üretim ucu güvenlik doğrulaması ister ve kullanılmaz. Tam metin, portalın
+kendi istemcisinin de doğrulama olmadan kullandığı public UDF attachment
+ucundan alınır.
 """
 
 from __future__ import annotations
 
+import base64
 import json
+import re
 import time
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urljoin, urlparse
 from urllib.request import Request, build_opener
 
 from ingestion.http import is_retryable_status, retry_wait_seconds
@@ -29,6 +31,10 @@ class AymPortalError(RuntimeError):
 
 class AymSecurityVerificationRequired(AymPortalError):
     """Tam karar için etkileşimli/güvenlik doğrulaması gerektiğini bildirir."""
+
+
+class AymFullTextUnavailable(AymPortalError):
+    """Yayımlanmış kaydın public UDF tam metni henüz yok."""
 
 
 def parse_portal_date(value: Any) -> date | None:
@@ -50,11 +56,16 @@ def application_external_id(application_no: str) -> str:
     return f"aym:bb:{normalized}"
 
 
-def decision_url(application_no: str, *, base_url: str = BASE_URL) -> str:
-    normalized = application_no.strip()
+def decision_url(official_id: str, *, base_url: str = BASE_URL) -> str:
+    normalized = official_id.strip()
     if not normalized:
-        raise ValueError("AYM başvuru numarası boş olamaz")
-    return urljoin(base_url.rstrip("/") + "/", f"kbb/BB/{quote(normalized, safe='/')}")
+        raise ValueError("AYM resmî karar kimliği boş olamaz")
+    encoded = base64.b64encode(f"kbb:{normalized}".encode("utf-8")).decode("ascii")
+    return urljoin(
+        base_url.rstrip("/") + "/",
+        "kbb/pages/search/BireyselBasvuru?"
+        f"id={quote(encoded, safe='')}&type=BireyselBasvuru",
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,7 +105,38 @@ class AymDecisionRow:
 
     @property
     def source_url(self) -> str:
-        return decision_url(self.application_no)
+        return decision_url(self.official_id)
+
+
+@dataclass(frozen=True, slots=True)
+class AymDecisionFile:
+    file_id: str
+    decision_id: str
+    folder: str
+    filename: str
+    source_kind: str
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> AymDecisionFile:
+        raw_url = str(value.get("url") or "").strip()
+        parsed = urlparse(raw_url)
+        parts = [part for part in parsed.path.split("/") if part]
+        try:
+            files_index = parts.index("files")
+            folder, filename = parts[files_index + 1 : files_index + 3]
+        except (ValueError, IndexError) as exc:
+            raise AymPortalError("AYM UDF dosya yolu beklenen yapıda değil") from exc
+        if not filename.lower().endswith(".udf"):
+            raise AymPortalError("AYM karar dosyası UDF formatında değil")
+        if folder != "bireysel-basvuru" or not re.fullmatch(r"[A-Za-z0-9_.-]+", filename):
+            raise AymPortalError("AYM UDF dosya yolu güvenli değil")
+        return cls(
+            file_id=str(value.get("id") or "").strip(),
+            decision_id=str(value.get("kararId") or "").strip(),
+            folder=folder,
+            filename=filename,
+            source_kind=str(value.get("kaynak") or "").strip(),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,23 +165,14 @@ class AymPortalClient:
         self.retry_backoff_seconds = max(0, retry_backoff_seconds)
         self.opener = opener or build_opener()
 
-    def _request(self, body: Mapping[str, Any]) -> Mapping[str, Any]:
-        url = urljoin(self.base_url, SEARCH_PATH)
-        data = json.dumps(dict(body), ensure_ascii=False).encode("utf-8")
-        headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json; charset=utf-8",
-            "Origin": self.base_url.rstrip("/"),
-            "Referer": urljoin(self.base_url, "kbb/"),
-            "User-Agent": "nhr-legal-ai/0.1 (official-public-source-ingestion)",
-        }
-
+    def _open(self, request: Request) -> bytes:
+        url = request.full_url
+        if urlparse(url).hostname != urlparse(self.base_url).hostname:
+            raise AymPortalError("AYM isteği resmî alan adına ait değil")
         for attempt in range(1, self.max_retries + 1):
-            request = Request(url, data=data, headers=headers, method="POST")
             try:
                 with self.opener.open(request, timeout=self.timeout_seconds) as response:
-                    raw = response.read()
-                break
+                    return response.read()
             except HTTPError as exc:
                 if not is_retryable_status(exc.code) or attempt == self.max_retries:
                     raise AymPortalError(f"AYM HTTP hatası: {exc.code} ({url})") from exc
@@ -153,11 +186,22 @@ class AymPortalClient:
             except URLError as exc:
                 if attempt == self.max_retries:
                     raise AymPortalError(f"AYM bağlantı hatası ({url}): {exc.reason}") from exc
-                time.sleep(
-                    retry_wait_seconds(attempt, base_seconds=self.retry_backoff_seconds)
-                )
-        else:
-            raise AssertionError("unreachable")
+                time.sleep(retry_wait_seconds(attempt, base_seconds=self.retry_backoff_seconds))
+        raise AssertionError("unreachable")
+
+    def _request(self, body: Mapping[str, Any]) -> Mapping[str, Any]:
+        url = urljoin(self.base_url, SEARCH_PATH)
+        data = json.dumps(dict(body), ensure_ascii=False).encode("utf-8")
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json; charset=utf-8",
+            "Origin": self.base_url.rstrip("/"),
+            "Referer": urljoin(self.base_url, "kbb/"),
+            "User-Agent": "nhr-legal-ai/0.1 (official-public-source-ingestion)",
+        }
+
+        request = Request(url, data=data, headers=headers, method="POST")
+        raw = self._open(request)
 
         try:
             parsed = json.loads(raw.decode("utf-8-sig"))
@@ -210,8 +254,58 @@ class AymPortalClient:
             raise AymPortalError("AYM arama sayfalama metadata'sı geçersiz") from exc
         return SearchPage(rows=rows, total=total, page=response_page, page_size=response_size)
 
+    def list_decision_files(self, row: AymDecisionRow) -> tuple[AymDecisionFile, ...]:
+        path = (
+            f"api/core/public/kararlar/{quote(row.official_id)}/dosyalar?"
+            f"kararTipi={quote(row.decision_type)}"
+        )
+        url = urljoin(self.base_url, path)
+        request = Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                "Referer": urljoin(self.base_url, "kbb/"),
+                "User-Agent": "nhr-legal-ai/0.1 (official-public-source-ingestion)",
+            },
+        )
+        try:
+            payload = json.loads(self._open(request).decode("utf-8-sig"))
+            data = payload["data"]
+        except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
+            raise AymPortalError("AYM karar dosyaları yanıtı geçersiz") from exc
+        if not isinstance(data, list):
+            raise AymPortalError("AYM karar dosyaları listesi bulunamadı")
+        files = tuple(
+            AymDecisionFile.from_mapping(value)
+            for value in data
+            if isinstance(value, Mapping)
+            and str(value.get("url") or "").lower().endswith(".udf")
+        )
+        if not files:
+            raise AymFullTextUnavailable("AYM kararı için public UDF tam metni bulunamadı")
+        return files
+
+    def download_udf(self, decision_file: AymDecisionFile) -> tuple[bytes, str]:
+        path = (
+            "api/core/public/files/download-attachment/"
+            f"{quote(decision_file.folder, safe='')}/{quote(decision_file.filename, safe='')}"
+        )
+        url = urljoin(self.base_url, path)
+        request = Request(
+            url,
+            headers={
+                "Accept": "application/octet-stream",
+                "Referer": urljoin(self.base_url, "kbb/"),
+                "User-Agent": "nhr-legal-ai/0.1 (official-public-source-ingestion)",
+            },
+        )
+        raw = self._open(request)
+        if not raw.startswith(b"PK"):
+            raise AymPortalError("AYM public UDF yanıtı geçerli ZIP arşivi değil")
+        return raw, url
+
     def fetch_full_text(self, _row: AymDecisionRow) -> str:
         raise AymSecurityVerificationRequired(
-            "AYM tam karar indirme akışı güvenlik doğrulaması istiyor; "
-            "otomatik bypass uygulanmadı"
+            "AYM PDF üretim akışı güvenlik doğrulaması istiyor; "
+            "public UDF akışı kullanılmalıdır"
         )

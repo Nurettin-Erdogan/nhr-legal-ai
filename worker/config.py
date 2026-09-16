@@ -36,15 +36,18 @@ class WorkerSettings:
     danistay_interval_minutes: int
     mevzuat_interval_minutes: int
     kdk_interval_minutes: int
+    aym_interval_minutes: int
     poll_seconds: int
     yargitay_delay_seconds: float
     danistay_delay_seconds: float
     mevzuat_delay_seconds: float
     kdk_delay_seconds: float
+    aym_delay_seconds: float
     yargitay_max_records: int
     danistay_max_records: int
     mevzuat_max_articles: int
     kdk_max_records: int
+    aym_max_records: int
     yargitay_corpus_start: date
     danistay_corpus_start: date
     kdk_corpus_start: date
@@ -64,15 +67,18 @@ def get_worker_settings() -> WorkerSettings:
         danistay_interval_minutes=_int_env("DANISTAY_SYNC_INTERVAL_MINUTES", 720),
         mevzuat_interval_minutes=_int_env("MEVZUAT_SYNC_INTERVAL_MINUTES", 720),
         kdk_interval_minutes=_int_env("KDK_SYNC_INTERVAL_MINUTES", 1440),
+        aym_interval_minutes=_int_env("AYM_SYNC_INTERVAL_MINUTES", 1440),
         poll_seconds=_int_env("WORKER_POLL_SECONDS", 30),
         yargitay_delay_seconds=_float_env("YARGITAY_DELAY_SECONDS", 1.5),
         danistay_delay_seconds=_float_env("DANISTAY_DELAY_SECONDS", 2.0),
         mevzuat_delay_seconds=_float_env("MEVZUAT_DELAY_SECONDS", 1.0),
         kdk_delay_seconds=_float_env("KDK_DELAY_SECONDS", 2.0),
+        aym_delay_seconds=_float_env("AYM_DELAY_SECONDS", 2.0),
         yargitay_max_records=_int_env("YARGITAY_MAX_RECORDS_PER_RUN", 40),
         danistay_max_records=_int_env("DANISTAY_MAX_RECORDS_PER_RUN", 30),
         mevzuat_max_articles=_int_env("MEVZUAT_MAX_ARTICLES_PER_RUN", 30),
         kdk_max_records=_int_env("KDK_MAX_RECORDS_PER_RUN", 20),
+        aym_max_records=_int_env("AYM_MAX_RECORDS_PER_RUN", 20),
         yargitay_corpus_start=_date_env("YARGITAY_CORPUS_START", date(2020, 1, 1)),
         danistay_corpus_start=_date_env("DANISTAY_CORPUS_START", date(2020, 1, 1)),
         kdk_corpus_start=_date_env("KDK_CORPUS_START", date(2020, 1, 1)),

@@ -19,7 +19,7 @@ class CourtDecision:
     court_name: str
     chamber: str | None
     docket_no: str
-    decision_no: str
+    decision_no: str | None
     decision_date: date | None
     title: str
     raw_text: str

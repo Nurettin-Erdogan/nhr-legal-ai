@@ -20,7 +20,7 @@ metadata'sı olarak tutulur.
 | Yargıtay | ACTIVE | `karararama.yargitay.gov.tr` JSON/HTTP | Yargıtay Karar Arama / Yargıtay |
 | Mevzuat | ACTIVE | `bedesten.adalet.gov.tr/mevzuat` JSON/HTTP | Mevzuat Bilgi Sistemi; Resmî Gazete teyidi ayrıca gerekir |
 | Danıştay | ACTIVE | `karararama.danistay.gov.tr` JSON/HTTP | Danıştay Karar Arama / Danıştay |
-| AYM | PLANNED | Public arama JSON'u doğrulandı; tam metin güvenlik doğrulaması istiyor | Anayasa Mahkemesi Kararlar Bilgi Bankası |
+| AYM | ACTIVE | Public arama JSON'u + public karar-dosyaları/UDF attachment | Anayasa Mahkemesi Kararlar Bilgi Bankası |
 | Resmî Gazete | ACTIVE / VERIFICATION | `/Home/Filter` JSON + resmî arşiv HTML | Resmî Gazete |
 | KDK | ACTIVE | `kararlar.ombudsman.gov.tr` public JSON + resmî PDF | Kamu Denetçiliği Kurumu |
 
@@ -58,16 +58,17 @@ zenginleştirmedir.
 - `provenance`: kaynak ve çekim zinciri;
 - `sync`: checkpoint ile devam edebilen toplama işlemi.
 
-`YargitaySourceAdapter`, `DanistaySourceAdapter` ve `MevzuatSourceAdapter`
-aktiftir. AYM, Resmî Gazete ve KDK sınıfları tam ingestion sözleşmesi
-doğrulanana kadar açık biçimde `blocked` döner.
+`YargitaySourceAdapter`, `DanistaySourceAdapter`, `MevzuatSourceAdapter`,
+`KdkSourceAdapter` ve `AymSourceAdapter` aktiftir. Resmî Gazete bağımsız
+korpus adapter'ı değil, mevzuat doğrulama katmanıdır.
 
-AYM için kurumun web istemcisinin kullandığı `POST /api/core/public/search`
-public JSON sözleşmesi doğrulanmış ve `ingestion/aym/portal.py` içinde ağdan
-bağımsız test edilebilir istemci olarak uygulanmıştır. Bu yalnız keşif ve
-yapılandırılmış metadata katmanıdır. Tam karar indirme akışı
-`X-Captcha-Verified` güvenlik doğrulaması istediğinden otomatik olarak taklit
-edilmez; tam metin güvenilir biçimde alınmadan adapter ACTIVE yapılmaz.
+AYM için `POST /api/core/public/search` ile yapılandırılmış künye,
+`GET /api/core/public/kararlar/{id}/dosyalar` ile yayımlanmış dosya listesi ve
+`GET /api/core/public/files/download-attachment/{folder}/{filename}` ile UDF
+karar dosyası alınır. UDF içindeki `content.xml` güvenli boyut ve yapı
+kontrollerinden sonra ayrıştırılır; başvuru numarası arama künyesiyle
+eşleşmezse kayıt reddedilir. Güvenlik doğrulaması isteyen PDF üretim ucu
+kullanılmaz ve doğrulama başlığı taklit edilmez.
 
 ## Provenance standardı
 
@@ -271,9 +272,9 @@ fixture/sözleşme testleri güncellenir ve uyumsuz kayıtlar quarantine edilir.
 2. Bedesten verilerinde birçok madde için açık yürürlük aralığı bulunmadığından
    tarihsel RAG kapsaması şimdilik düşüktür; sistem tarih tahmin etmez.
 3. Danıştay tarih/daire bazlı aktiftir; serbest kelime araması bu transport
-   sözleşmesinde yoktur. AYM tam metin güvenlik doğrulaması nedeniyle planlıdır.
-4. KDK karar portalı kataloğa eklendi; arama ve tam metin sözleşmesi henüz
-   fixture'larla doğrulanmadığı için ACTIVE değildir.
+   sözleşmesinde yoktur.
+4. AYM tarih filtresinin public arama sözleşmesi henüz sabitlenmediği için
+   geriye dönük tarama sayfa cursor'uyla yapılır; PDF üretim ucu kullanılmaz.
 5. Portalda kaybolan kayıtların güvenli “erişilemiyor” yaşam döngüsü için art
    arda doğrulama ve insan incelemesi politikası tamamlanmalıdır.
 6. Büyük ölçekli korpus kapsamı daire, tarih penceresi ve arama filtresi bazında

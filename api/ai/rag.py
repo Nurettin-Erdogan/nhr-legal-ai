@@ -64,7 +64,8 @@ class RAGContext:
             head = " ".join(part for part in (self.court_name, self.chamber) if part)
             details = []
             if self.docket_no:
-                details.append(f"E. {self.docket_no}")
+                prefix = "B. No:" if self.court_name == "Anayasa Mahkemesi" else "E."
+                details.append(f"{prefix} {self.docket_no}")
             if self.decision_no:
                 details.append(f"K. {self.decision_no}")
             if self.decision_date:

@@ -1,8 +1,8 @@
+from worker.adapters.aym import AymSourceAdapter
 from worker.adapters.danistay import DanistaySourceAdapter
 from worker.adapters.kdk import KdkSourceAdapter
 from worker.adapters.mevzuat import MevzuatSourceAdapter
 from worker.adapters.planned import (
-    AymSourceAdapter,
     ResmiGazeteSourceAdapter,
 )
 from worker.adapters.yargitay import YargitaySourceAdapter
@@ -12,10 +12,10 @@ ACTIVE_ADAPTERS = {
     "danistay": DanistaySourceAdapter,
     "mevzuat": MevzuatSourceAdapter,
     "kdk": KdkSourceAdapter,
+    "aym": AymSourceAdapter,
 }
 
 PLANNED_ADAPTERS = {
-    "aym": AymSourceAdapter,
     "resmi_gazete": ResmiGazeteSourceAdapter,
 }
 

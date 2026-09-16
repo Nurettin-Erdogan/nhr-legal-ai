@@ -61,13 +61,14 @@ def test_ingestion_sources_visible_to_admin(monkeypatch):
         "danistay",
         "mevzuat",
         "kdk",
+        "aym",
     }
     assert body["verification"][0]["source"] == "resmi_gazete"
     assert body["verification"][0]["status"] == "active"
-    assert body["planned"][0]["status"] == "blocked"
+    assert body["planned"] == []
 
 
-def test_run_rejects_planned_source(monkeypatch):
+def test_run_rejects_non_corpus_verification_source(monkeypatch):
     @contextmanager
     def fake_auth(_user_id: str):
         class Connection:
@@ -82,7 +83,7 @@ def test_run_rejects_planned_source(monkeypatch):
 
     monkeypatch.setattr(admin_ingestion, "authenticated_database_connection", fake_auth)
     client = TestClient(_app())
-    response = client.post("/api/admin/ingestion/run/aym")
+    response = client.post("/api/admin/ingestion/run/resmi_gazete")
     assert response.status_code == 400
 
 

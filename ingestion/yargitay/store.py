@@ -149,7 +149,8 @@ INSERT INTO court_decision_details (
     docket_no,
     decision_no,
     decision_date,
-    decision_type
+    decision_type,
+    outcome
 )
 VALUES (
     %(legal_source_id)s,
@@ -158,7 +159,8 @@ VALUES (
     %(docket_no)s,
     %(decision_no)s,
     %(decision_date)s,
-    %(decision_type)s
+    %(decision_type)s,
+    %(outcome)s
 )
 ON CONFLICT (legal_source_id) DO UPDATE SET
     court_name = EXCLUDED.court_name,
@@ -166,7 +168,8 @@ ON CONFLICT (legal_source_id) DO UPDATE SET
     docket_no = EXCLUDED.docket_no,
     decision_no = EXCLUDED.decision_no,
     decision_date = EXCLUDED.decision_date,
-    decision_type = EXCLUDED.decision_type
+    decision_type = EXCLUDED.decision_type,
+    outcome = EXCLUDED.outcome
 """
 
 _COUNT_CHUNKS = "SELECT count(*) FROM legal_chunks WHERE legal_source_id = %s"
@@ -332,6 +335,7 @@ def upsert_decision(
                 "decision_no": decision.decision_no,
                 "decision_date": decision.decision_date,
                 "decision_type": decision.metadata.get("decision_type"),
+                "outcome": decision.metadata.get("outcome"),
             },
         )
 

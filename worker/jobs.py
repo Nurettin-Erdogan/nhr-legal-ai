@@ -26,6 +26,7 @@ def _interval_for(source_name: str) -> timedelta:
         "danistay": settings.danistay_interval_minutes,
         "mevzuat": settings.mevzuat_interval_minutes,
         "kdk": settings.kdk_interval_minutes,
+        "aym": settings.aym_interval_minutes,
     }[source_name]
     return timedelta(minutes=minutes)
 

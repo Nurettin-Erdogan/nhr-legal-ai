@@ -4,5 +4,5 @@ from __future__ import annotations
 
 __all__ = ["ACTIVE_SOURCES", "PLANNED_SOURCES"]
 
-ACTIVE_SOURCES = ("yargitay", "danistay", "mevzuat", "kdk")
-PLANNED_SOURCES = ("aym", "resmi_gazete")
+ACTIVE_SOURCES = ("yargitay", "danistay", "mevzuat", "kdk", "aym")
+PLANNED_SOURCES = ("resmi_gazete",)

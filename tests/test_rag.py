@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from uuid import uuid4
 
 import pytest
@@ -44,6 +45,21 @@ def test_prompt_labels_legislation_with_law_and_article():
 
     assert "[K1] İş Kanunu (4857) m. 25 — İşverenin haklı nedenle derhal fesih hakkı" in prompt
     assert "Tür: Mevzuat" in prompt
+
+
+def test_aym_reference_uses_application_number_not_fake_case_number():
+    context = replace(
+        DECISION,
+        court_name="Anayasa Mahkemesi",
+        chamber="İkinci Bölüm",
+        docket_no="2099/123",
+        decision_no=None,
+    )
+
+    assert context.reference_line.startswith(
+        "Anayasa Mahkemesi İkinci Bölüm, B. No: 2099/123"
+    )
+    assert "E. 2099/123" not in context.reference_line
 
 
 def test_prompt_numbers_mixed_source_types_in_order():
