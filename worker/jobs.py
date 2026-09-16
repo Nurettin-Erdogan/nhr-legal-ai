@@ -21,6 +21,17 @@ def _should_stop_never() -> bool:
     return False
 
 
+def _carry_backfill_horizon(
+    previous: dict[str, Any], current: dict[str, Any], lane: str
+) -> dict[str, Any]:
+    """Keep the verified start marker when a page adapter replaces its cursor."""
+    if lane == "backfill":
+        for key in ("full_horizon_start", "horizon_audit_version"):
+            if key in previous:
+                current[key] = previous[key]
+    return current
+
+
 def _interval_for(
     source_name: str,
     *,
@@ -151,7 +162,11 @@ def run_sync(
                     status = "cancelled"
                     error = "shutdown"
                     break
-            cursor = dict(getattr(adapter, "last_cursor", {}) or {})
+            cursor = _carry_backfill_horizon(
+                checkpoint.last_cursor,
+                dict(getattr(adapter, "last_cursor", {}) or {}),
+                lane,
+            )
             if cursor.get("window_from"):
                 checkpoint.last_date_from = date.fromisoformat(cursor["window_from"])
                 checkpoint.last_date_to = date.fromisoformat(cursor["window_to"])

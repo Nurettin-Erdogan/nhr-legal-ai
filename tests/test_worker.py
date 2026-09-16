@@ -16,7 +16,7 @@ from worker.adapters import get_adapter
 from worker.adapters.danistay import DanistaySourceAdapter
 from worker.adapters.yargitay import YargitaySourceAdapter
 from worker.locks import JobLockedError, source_job_lock
-from worker.jobs import _interval_for
+from worker.jobs import _carry_backfill_horizon, _interval_for
 from worker.models import Checkpoint, RunCounters, SyncRequest
 from worker.windows import iter_month_windows, month_window, next_month_start
 
@@ -47,6 +47,20 @@ def test_backfill_cadence_only_when_more_work_and_previous_run_succeeded(monkeyp
     assert _interval_for("yargitay", cursor=completed_current, today=today) == timedelta(minutes=360)
     assert _interval_for("mevzuat", cursor={"complete": False}, today=today) == timedelta(minutes=120)
     assert _interval_for("danistay", cursor={}, today=today) == timedelta(minutes=720)
+
+
+def test_backfill_horizon_survives_adapter_cursor_replacement():
+    previous = {
+        "full_horizon_start": "1982-01-01",
+        "horizon_audit_version": 1,
+        "next_window_start": "1982-01-01",
+    }
+    next_page = {"window_from": "1982-01-01", "next_window_start": "1982-02-01"}
+    carried = _carry_backfill_horizon(previous, dict(next_page), "backfill")
+    assert carried["full_horizon_start"] == "1982-01-01"
+    assert carried["horizon_audit_version"] == 1
+    assert carried["next_window_start"] == "1982-02-01"
+    assert _carry_backfill_horizon(previous, dict(next_page), "current") == next_page
 
 
 def test_run_counters_classify_outcomes():
