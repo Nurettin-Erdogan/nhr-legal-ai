@@ -14,7 +14,7 @@ Bu klasör yalnızca kaynakları proje ağacında **tek tek görünür** kılan 
 
 İlk beş kaynak gerçek corpus ingestion kaynağıdır. Son iki kaynak aynı mevzuatı tekrar DB'ye yazmaz; Bedesten kaydını bağımsız resmî kaynaklarla çapraz doğrular.
 
-Örnek:
+Örnek (proje kökünden):
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\official_sources\01_yargitay.py
@@ -27,3 +27,16 @@ Bu klasör yalnızca kaynakları proje ağacında **tek tek görünür** kılan 
 ```
 
 `DATABASE_ADMIN_URL` yerel `.env` içinde tanımlı olmalıdır. Kaynak başına üretim rate-limit/backoff/checkpoint kuralları worker tarafından uygulanır.
+
+İlk beş script `worker.runner run --source ...` girişidir. Worker'ın seçeneklerini
+aynen kabul eder; örneğin tek kaynağı sınırlı ve yazmadan denemek için:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\official_sources\01_yargitay.py --dry-run --max-records 3
+```
+
+`--help` seçenekleri listeler. Bu scriptleri sınırsız ve eşzamanlı çalıştırmayın;
+resmî portalların hız sınırları ve CAPTCHA durumlarında worker durur veya
+sonraki tura bırakır. 6 ve 7 numaralı scriptler **yalnızca smoke doğrulaması**
+yapar: örnek mevzuat künyesini sorgular, korpusa yazmaz, doğrulama başarısızsa
+çıkış kodu `1` döndürür. Gerçek mevzuat kaydı doğrulaması 5 numaralı akıştadır.

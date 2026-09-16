@@ -2,7 +2,7 @@
 
 Gerçek toplama mantığı ingestion/kdk ve worker/adapters/kdk.py içindedir.
 """
-from worker.runner import main
+from _entrypoint import run_ingestion
 
 if __name__ == "__main__":
-    raise SystemExit(main(["run", "--source", "kdk"]))
+    raise SystemExit(run_ingestion("kdk"))

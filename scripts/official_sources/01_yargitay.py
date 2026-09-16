@@ -2,7 +2,7 @@
 
 Gerçek toplama mantığı ingestion/yargitay ve worker/adapters/yargitay.py içindedir.
 """
-from worker.runner import main
+from _entrypoint import run_ingestion
 
 if __name__ == "__main__":
-    raise SystemExit(main(["run", "--source", "yargitay"]))
+    raise SystemExit(run_ingestion("yargitay"))
