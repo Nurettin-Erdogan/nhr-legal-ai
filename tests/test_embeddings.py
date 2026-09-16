@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
+
+import httpx
 import pytest
 
 from api.ai.embeddings import (
     EmbeddingProviderError,
+    QwenEmbeddingProvider,
     create_embedding_provider,
     vector_literal,
 )
@@ -25,14 +29,51 @@ def test_vector_literal_rejects_non_finite_values():
         vector_literal([float("nan")])
 
 
-def test_provider_requires_api_key():
-    with pytest.raises(EmbeddingProviderError, match="API_KEY"):
-        create_embedding_provider(
-            provider_name="gemini",
-            api_key=None,
-            model="gemini-embedding-2",
-            dimensions=768,
+def test_qwen_embedding_provider_needs_no_api_key():
+    provider = create_embedding_provider(
+        provider_name="qwen",
+        api_key=None,
+        model="qwen3-embedding:0.6b",
+        dimensions=3,
+    )
+    assert isinstance(provider, QwenEmbeddingProvider)
+    assert provider.name == "qwen"
+
+
+def test_qwen_embedding_calls_ollama_embed_with_configured_dimensions():
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/embed"
+        body = json.loads(request.content)
+        assert body == {
+            "model": "qwen3-embedding:0.6b",
+            "input": ["hukuk", "karar"],
+            "dimensions": 3,
+            "truncate": True,
+        }
+        return httpx.Response(
+            200,
+            json={"embeddings": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]},
         )
+
+    provider = QwenEmbeddingProvider(
+        model="qwen3-embedding:0.6b",
+        dimensions=3,
+        transport=httpx.MockTransport(respond),
+    )
+    assert provider.embed_documents(["hukuk", "karar"]) == [
+        [0.1, 0.2, 0.3],
+        [0.4, 0.5, 0.6],
+    ]
+
+
+def test_qwen_embedding_missing_model_has_safe_error():
+    provider = QwenEmbeddingProvider(
+        model="qwen3-embedding:0.6b",
+        dimensions=3,
+        transport=httpx.MockTransport(lambda request: httpx.Response(404, text="private")),
+    )
+    with pytest.raises(EmbeddingProviderError, match="ollama pull qwen3-embedding:0.6b"):
+        provider.embed_query("hukuk")
 
 
 class _TransientProvider:
@@ -70,9 +111,9 @@ def test_embedding_batch_retries_transient_quota_error():
 def test_embedding_batch_does_not_retry_permanent_error():
     class PermanentProvider(_TransientProvider):
         def embed_documents(self, texts: list[str]) -> list[list[float]]:
-            raise EmbeddingProviderError("invalid API key")
+            raise EmbeddingProviderError("invalid model")
 
-    with pytest.raises(EmbeddingProviderError, match="invalid API key"):
+    with pytest.raises(EmbeddingProviderError, match="invalid model"):
         _embed_batch_with_retry(
             PermanentProvider(),
             ["metin"],

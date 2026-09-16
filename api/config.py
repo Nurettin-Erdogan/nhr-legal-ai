@@ -56,7 +56,7 @@ def get_settings() -> Settings:
     file_values = dotenv_values(".env")
     origins = os.getenv("CORS_ORIGINS", "http://localhost:3000")
     gemini_api_key = os.getenv("GEMINI_API_KEY") or file_values.get("GEMINI_API_KEY") or None
-    ai_provider = os.getenv("AI_PROVIDER", "gemini").strip().lower()
+    ai_provider = os.getenv("AI_PROVIDER", "qwen").strip().lower()
     return Settings(
         database_url=_database_url(),
         admin_database_url=(
@@ -66,17 +66,15 @@ def get_settings() -> Settings:
         ),
         cors_origins=tuple(value.strip() for value in origins.split(",") if value.strip()),
         ai_provider=ai_provider,
-        ai_model=os.getenv(
-            "AI_MODEL", "qwen3:8b" if ai_provider == "qwen" else "gemini-3.5-flash-lite"
-        ).strip(),
+        ai_model=os.getenv("AI_MODEL", "qwen3:8b").strip(),
         gemini_api_key=gemini_api_key,
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip(),
         ollama_timeout_seconds=max(
             1.0, min(float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "120")), 600.0)
         ),
         rag_top_k=max(1, min(int(os.getenv("RAG_TOP_K", "6")), 12)),
-        embedding_provider=os.getenv("EMBEDDING_PROVIDER", "gemini").strip().lower(),
-        embedding_model=os.getenv("EMBEDDING_MODEL", "gemini-embedding-2").strip(),
+        embedding_provider=os.getenv("EMBEDDING_PROVIDER", "qwen").strip().lower(),
+        embedding_model=os.getenv("EMBEDDING_MODEL", "qwen3-embedding:0.6b").strip(),
         embedding_dimensions=max(
             1, min(int(os.getenv("EMBEDDING_DIMENSIONS", "768")), 2000)
         ),

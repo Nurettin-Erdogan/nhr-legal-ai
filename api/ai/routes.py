@@ -88,18 +88,19 @@ def _as_citation(position: int, context: RAGContext) -> AICitation:
 
 async def _embed_question(question: str) -> list[float] | None:
     settings = get_settings()
-    if not settings.embedding_api_key:
-        return None
     try:
         provider = create_embedding_provider(
             provider_name=settings.embedding_provider,
             api_key=settings.embedding_api_key,
             model=settings.embedding_model,
             dimensions=settings.embedding_dimensions,
+            ollama_base_url=settings.ollama_base_url,
+            ollama_timeout_seconds=settings.ollama_timeout_seconds,
         )
         return await asyncio.to_thread(provider.embed_query, question)
     except EmbeddingProviderError:
         # Semantic retrieval is an enhancement; lexical RAG remains available.
+        logger.warning("Soru embedding'i üretilemedi; lexical RAG kullanılacak")
         return None
 
 
@@ -128,8 +129,6 @@ def _persist(
             detail="Bu konuşmaya veya projeye yazma yetkiniz yok",
         ) from exc
     except psycopg.Error:
-        # The answer is already grounded and verified; deliver it but make the
-        # missing audit trail visible through the null conversation identifiers.
         logger.exception("Sohbet geçmişi kaydedilemedi")
         return None, None
 
@@ -151,7 +150,6 @@ def _require_project_access(user_id: UUID | None, project_id: UUID | None) -> No
     except psycopg.Error as exc:
         raise HTTPException(status_code=503, detail="Proje erişimi doğrulanamadı") from exc
     if project is None:
-        # RLS intentionally makes a missing and an inaccessible project identical.
         raise HTTPException(status_code=404, detail="Proje bulunamadı")
 
 
@@ -177,7 +175,7 @@ async def answer_question(
 
     try:
         if request.project_id is not None:
-            assert user_id is not None  # `_require_project_access` already enforced this.
+            assert user_id is not None
             with authenticated_database_connection(str(user_id)) as connection:
                 legal_contexts = retrieve_contexts(
                     connection,
