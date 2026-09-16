@@ -11,6 +11,7 @@ from worker import ACTIVE_SOURCES
 from worker.adapters import get_adapter
 from worker.checkpoints import CheckpointStore
 from worker.config import get_worker_settings
+from worker.lanes import CURRENT_LANE_SOURCES, checkpoint_name
 from worker.locks import JobLockedError, source_job_lock
 from worker.models import RunCounters, SyncRequest
 from worker.repository import SyncRepository
@@ -26,8 +27,28 @@ def _interval_for(
     cursor: dict[str, Any] | None = None,
     status: str = "success",
     today: date | None = None,
+    lane: str = "backfill",
 ) -> timedelta:
     settings = get_worker_settings()
+    if lane == "current":
+        regular = settings.current_interval_minutes
+        retry = settings.current_retry_interval_minutes
+        if status != "success" or not cursor:
+            return timedelta(minutes=regular)
+        complete = cursor.get("window_complete", cursor.get("complete"))
+        if complete is False:
+            return timedelta(minutes=retry)
+        next_start = cursor.get("next_window_start")
+        window_from = cursor.get("window_from")
+        # Lookback içindeki sonraki aya geç: kısa aralık. Ufka sarılınca uzun aralık.
+        if (
+            complete is True
+            and isinstance(next_start, str)
+            and isinstance(window_from, str)
+            and date.fromisoformat(next_start) > date.fromisoformat(window_from)
+        ):
+            return timedelta(minutes=retry)
+        return timedelta(minutes=regular)
     regular_minutes = {
         "yargitay": settings.yargitay_interval_minutes,
         "danistay": settings.danistay_interval_minutes,
@@ -60,16 +81,26 @@ def run_sync(
     adapter: Any | None = None,
 ) -> dict[str, Any]:
     source = request.source.strip().lower()
+    lane = request.lane if request.lane in {"backfill", "current"} else "backfill"
+    if lane == "current" and source not in CURRENT_LANE_SOURCES:
+        return {
+            "source": source,
+            "lane": lane,
+            "status": "failed",
+            "error": f"{source} current şeridine sahip değil",
+        }
     adapter = adapter or get_adapter(source)
     if source not in ACTIVE_SOURCES:
         health = adapter.health_check()
         return {
             "source": source,
+            "lane": lane,
             "status": "failed",
             "error": health.detail,
             "health": health.state,
         }
 
+    job_key = checkpoint_name(source, lane)
     repo = SyncRepository(connection)
     store = CheckpointStore(repo)
     targeted_law = source == "mevzuat" and bool(request.law_no.strip())
@@ -77,18 +108,18 @@ def run_sync(
         lock = source_job_lock(connection, source)
         lock.__enter__()
     except JobLockedError as exc:
-        return {"source": source, "status": "failed", "error": str(exc)}
+        return {"source": source, "lane": lane, "status": "failed", "error": str(exc)}
 
     try:
-        checkpoint = store.load(source)
+        checkpoint = store.load(job_key)
         original_checkpoint = checkpoint if targeted_law else None
         if targeted_law:
             checkpoint = deepcopy(checkpoint)
         counters = RunCounters()
         run = repo.start_run(
-            source,
+            job_key,
             checkpoint_before=checkpoint.as_json(),
-            metadata={"dry_run": request.dry_run, "resume": request.resume},
+            metadata={"dry_run": request.dry_run, "resume": request.resume, "lane": lane},
         )
         checkpoint.last_attempt_at = datetime.now(UTC)
         status = "success"
@@ -138,7 +169,7 @@ def run_sync(
                         stored_count=int(cursor.get("stored_count") or 0),
                         duplicate_count=int(cursor.get("duplicate_count") or 0),
                         failed_count=int(cursor.get("failed_count") or 0),
-                        complete=bool(cursor.get("window_complete")),
+                        complete=bool(cursor.get("window_complete")) and lane != "current",
                     )
             checkpoint.last_cursor = cursor
             checkpoint.last_external_id = last_external_id
@@ -181,13 +212,13 @@ def run_sync(
                 checkpoint.health_state = "failed"
 
         if targeted_law:
-            # A one-law import must not replace the starter catalog cursor or
+            # A one-law import must not replace the catalog cursor or
             # postpone its next scheduled pass. The run itself is still logged.
             assert original_checkpoint is not None
             checkpoint = original_checkpoint
         else:
             checkpoint.next_run_at = datetime.now(UTC) + _interval_for(
-                source, cursor=checkpoint.last_cursor, status=status
+                source, cursor=checkpoint.last_cursor, status=status, lane=lane
             )
             if not request.dry_run:
                 store.save(checkpoint)
@@ -197,10 +228,16 @@ def run_sync(
             counters=counters,
             last_error=error,
             checkpoint_after=checkpoint.as_json(),
-            metadata={"dry_run": request.dry_run, "targeted_law": request.law_no or None},
+            metadata={
+                "dry_run": request.dry_run,
+                "targeted_law": request.law_no or None,
+                "lane": lane,
+            },
         )
         return {
             "source": source,
+            "lane": lane,
+            "job": job_key,
             "status": status,
             "run_id": str(run.id),
             "counters": counters.as_json(),

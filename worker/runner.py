@@ -1,6 +1,7 @@
 """NHR Legal Data Collector CLI.
 
 python -m worker.runner run --source yargitay
+python -m worker.runner backfill --source all
 python -m worker.runner daemon
 python -m worker.runner status
 """
@@ -20,8 +21,10 @@ import psycopg
 from dotenv import load_dotenv
 
 from worker import ACTIVE_SOURCES, PLANNED_SOURCES
+from worker.backfill import run_full_backfill
 from worker.config import get_worker_settings
 from worker.jobs import run_sync
+from worker.lanes import CURRENT_LANE_SOURCES
 from worker.models import SyncRequest
 from worker.monitoring import format_status
 from worker.scheduler import run_daemon
@@ -63,7 +66,17 @@ def _should_stop() -> bool:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
-    sources = list(ACTIVE_SOURCES) if args.source == "all" else [args.source]
+    lane = args.lane
+    if args.source == "all":
+        sources = (
+            [item for item in ACTIVE_SOURCES if item in CURRENT_LANE_SOURCES]
+            if lane == "current"
+            else list(ACTIVE_SOURCES)
+        )
+    else:
+        sources = [args.source]
+        if lane == "current" and args.source not in CURRENT_LANE_SOURCES:
+            raise SystemExit(f"{args.source} current şeridine sahip değil")
     results = []
     with psycopg.connect(_database_url(args.database_url), autocommit=True) as connection:
         for source in sources:
@@ -79,12 +92,14 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 keyword=args.keyword or "",
                 chamber=args.chamber or "",
                 law_no=args.law_no or "",
+                lane=lane,
             )
             result = run_sync(connection, request, should_stop=_should_stop)
             results.append(result)
             logging.getLogger("worker").info(
-                "sync finished source=%s status=%s run_id=%s",
+                "sync finished source=%s lane=%s status=%s run_id=%s",
                 source,
+                lane,
                 result.get("status"),
                 result.get("run_id"),
             )
@@ -97,6 +112,38 @@ def _cmd_run(args: argparse.Namespace) -> int:
 def _cmd_status(args: argparse.Namespace) -> int:
     with psycopg.connect(_database_url(args.database_url), autocommit=True) as connection:
         print(format_status(connection))
+    return 0
+
+
+def _cmd_backfill(args: argparse.Namespace) -> int:
+    get_worker_settings.cache_clear()
+    sources = list(ACTIVE_SOURCES) if args.source == "all" else [args.source]
+    with psycopg.connect(_database_url(args.database_url), autocommit=True) as connection:
+        summary = run_full_backfill(
+            connection,
+            sources,
+            should_stop=_should_stop,
+            embed=not args.no_embed,
+            then_incremental=not args.no_incremental,
+        )
+    printable = dict(summary)
+    printable.pop("runs", None)
+    printable["runs"] = [
+        {
+            "source": item.get("source"),
+            "status": item.get("status"),
+            "run_id": item.get("run_id"),
+            "counters": item.get("counters"),
+            "error": item.get("error"),
+            "embedding": item.get("embedding"),
+        }
+        for item in summary.get("runs", [])
+    ]
+    print(json.dumps(printable, default=str, ensure_ascii=False, indent=2))
+    if summary.get("blocked") or any(
+        item.get("status") in {"failed", "captcha_required"} for item in summary.get("runs", [])
+    ):
+        return 2
     return 0
 
 
@@ -127,6 +174,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--keyword", default="")
     run.add_argument("--chamber", default="")
     run.add_argument("--law-no", default="")
+    run.add_argument(
+        "--lane",
+        choices=("backfill", "current"),
+        default="backfill",
+        help="backfill: arşiv imlecinden devam; current: son ayları yeniden tara",
+    )
     run.set_defaults(handler=_cmd_run)
 
     status = sub.add_parser("status", help="Checkpoint ve son run özeti")
@@ -135,6 +188,27 @@ def build_parser() -> argparse.ArgumentParser:
     daemon = sub.add_parser("daemon", help="Periyodik sync döngüsü")
     daemon.add_argument("--poll-seconds", type=int, default=None)
     daemon.set_defaults(handler=_cmd_daemon)
+
+    backfill = sub.add_parser(
+        "backfill",
+        help="Tarihsel korpusu checkpoint/resume ile doldur, bitince incremental daemon",
+    )
+    backfill.add_argument(
+        "--source",
+        default="all",
+        choices=(*ACTIVE_SOURCES, "all"),
+    )
+    backfill.add_argument(
+        "--no-embed",
+        action="store_true",
+        help="Tur sonunda yeni chunk'ları embed etme",
+    )
+    backfill.add_argument(
+        "--no-incremental",
+        action="store_true",
+        help="Full backfill bitince daemon'a geçme",
+    )
+    backfill.set_defaults(handler=_cmd_backfill)
     return parser
 
 

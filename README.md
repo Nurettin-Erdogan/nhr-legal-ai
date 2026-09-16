@@ -16,7 +16,9 @@ Mevzuat künyeleri ayrıca T.C. Resmî Gazete arşiviyle otomatik çapraz
 doğrulanır; doğrulama kanıtı kaynak metadata'sında saklanır.
 
 ```powershell
+.\.venv\Scripts\python.exe -m worker.runner backfill --source all
 .\.venv\Scripts\python.exe -m worker.runner status
+.\.venv\Scripts\python.exe -m worker.runner run --source yargitay --lane current
 .\.venv\Scripts\python.exe -m worker.runner run --source yargitay --date-from 2026-01-01 --date-to 2026-01-31
 .\.venv\Scripts\python.exe -m worker.runner run --source danistay --date-from 2025-01-01 --date-to 2025-01-31
 .\.venv\Scripts\python.exe -m worker.runner daemon

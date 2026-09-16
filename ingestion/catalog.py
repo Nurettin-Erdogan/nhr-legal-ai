@@ -1,7 +1,8 @@
-"""Çekilecek ilk hukuk korpusunun sabit kataloğu.
+"""Örnek `collect` profilleri.
 
-Bu liste ürünün 'başlangıç kütüphanesi'dir; tek tek CLI bayrağı ezberlemeye
-gerek kalmadan `collect` komutu buradaki işleri sırayla çalıştırır.
+Worker tam korpusu Bedesten `searchDocuments` keşfiyle çeker; bu listedeki
+kanunlar yalnız `ingestion.cli collect --profile starter|smoke` için örnek
+başlangıç işleridir.
 """
 
 from __future__ import annotations

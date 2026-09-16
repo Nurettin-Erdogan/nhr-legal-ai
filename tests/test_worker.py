@@ -548,6 +548,44 @@ class _MevzuatClientSuccessThenQuarantine:
         return f"<p>Madde gövdesi {madde_id} yeterli uzunlukta metin.</p>"
 
 
+def _law_document(law_no: str, mevzuat_id: str, name: str) -> dict:
+    return {
+        "mevzuatId": mevzuat_id,
+        "mevzuatNo": law_no,
+        "mevzuatAdi": name,
+        "mevzuatTur": {"name": "KANUN"},
+    }
+
+
+class _TwoLawCatalog(_MevzuatClientSuccessThenQuarantine):
+    def search_page(self, **kwargs):
+        from ingestion.mevzuat.portal import SearchPage
+
+        laws = (
+            _law_document("4857", "1", "İş Kanunu"),
+            _law_document("4721", "2", "Türk Medeni Kanunu"),
+        )
+        law_no = kwargs.get("law_no")
+        if law_no:
+            match = next((item for item in laws if item["mevzuatNo"] == law_no), None)
+            return SearchPage(
+                documents=(match,) if match else (),
+                total=1 if match else 0,
+                start=0,
+            )
+        page_number = int(kwargs.get("page_number") or 1)
+        page_size = int(kwargs.get("page_size") or 10)
+        start = (page_number - 1) * page_size
+        return SearchPage(
+            documents=laws[start : start + page_size],
+            total=len(laws),
+            start=start,
+        )
+
+    def fetch_article_html(self, madde_id):
+        return f"<p>Geçerli madde metni {madde_id}.</p>"
+
+
 def test_mevzuat_checkpoint_does_not_advance_past_quarantined_article(
     monkeypatch, tmp_path
 ):
@@ -672,16 +710,13 @@ def test_mevzuat_limit_at_law_boundary_advances_without_skipping_next_law(
     from worker.adapters.mevzuat import MevzuatSourceAdapter
     from worker.config import get_worker_settings
 
-    class AllGood(_MevzuatClientSuccessThenQuarantine):
-        def fetch_article_html(self, madde_id):
-            return f"<p>Geçerli madde metni {madde_id}.</p>"
-
     monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
     monkeypatch.setenv("MEVZUAT_DELAY_SECONDS", "0")
+    monkeypatch.setenv("MEVZUAT_DISCOVERY_TYPES", "KANUN")
     monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
     get_worker_settings.cache_clear()
     adapter = MevzuatSourceAdapter(
-        client=AllGood(), verify_gazette=False, verify_mbs=False
+        client=_TwoLawCatalog(), verify_gazette=False, verify_mbs=False
     )
     cursor = {}
     for expected_article in ("1", "2", "3"):
@@ -693,10 +728,11 @@ def test_mevzuat_limit_at_law_boundary_advances_without_skipping_next_law(
             should_stop=lambda: False,
         ))
         assert [payload["article_no"] for _, payload in outcomes] == [expected_article]
+        assert outcomes[0][1]["law_no"] == "4857"
         cursor = adapter.last_cursor
 
-    assert cursor["law_index"] == 1
-    assert cursor["law_no"] == "4721"
+    assert cursor["mode"] == "discovery"
+    assert cursor["catalog_offset"] == 1
     assert cursor["last_article_no"] == ""
     outcomes = list(adapter.sync(
         SyncRequest(source="mevzuat", max_records=1),
@@ -713,16 +749,13 @@ def test_mevzuat_legacy_cursor_restarts_law_instead_of_skipping(monkeypatch, tmp
     from worker.adapters.mevzuat import MevzuatSourceAdapter
     from worker.config import get_worker_settings
 
-    class AllGood(_MevzuatClientSuccessThenQuarantine):
-        def fetch_article_html(self, madde_id):
-            return f"<p>Geçerli madde metni {madde_id}.</p>"
-
     monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
     monkeypatch.setenv("MEVZUAT_DELAY_SECONDS", "0")
+    monkeypatch.setenv("MEVZUAT_DISCOVERY_TYPES", "KANUN")
     monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
     get_worker_settings.cache_clear()
     adapter = MevzuatSourceAdapter(
-        client=AllGood(), verify_gazette=False, verify_mbs=False
+        client=_TwoLawCatalog(), verify_gazette=False, verify_mbs=False
     )
     outcomes = list(adapter.sync(
         SyncRequest(source="mevzuat", max_records=1),
@@ -731,8 +764,9 @@ def test_mevzuat_legacy_cursor_restarts_law_instead_of_skipping(monkeypatch, tmp
         dry_run=True,
         should_stop=lambda: False,
     ))
-    assert outcomes[0][1]["law_no"] == "4721"
+    assert outcomes[0][1]["law_no"] == "4857"
     assert outcomes[0][1]["article_no"] == "1"
+    assert adapter.last_cursor["mode"] == "discovery"
 
 
 def test_mevzuat_sync_attaches_official_gazette_verification(monkeypatch, tmp_path):
@@ -1071,3 +1105,196 @@ def test_yargitay_coverage_deltas_are_written_every_run(monkeypatch):
     assert coverage_calls[0]["seen_count"] == 10
     assert coverage_calls[0]["stored_count"] == 7
     assert coverage_calls[0]["complete"] is False
+
+
+def test_current_lane_windows_wrap_to_lookback_horizon():
+    from worker.lanes import (
+        advance_window_start,
+        checkpoint_name,
+        daemon_jobs,
+        resolve_sync_window,
+        wrap_current_next_start,
+    )
+
+    today = date(2026, 9, 16)
+    request = SyncRequest(source="yargitay", lane="current")
+    corpus = date(2020, 1, 1)
+    assert checkpoint_name("yargitay", "current") == "yargitay:current"
+    assert checkpoint_name("yargitay", "backfill") == "yargitay"
+    jobs = daemon_jobs()
+    assert jobs[0] == ("yargitay", "current")
+    assert jobs[1] == ("yargitay", "backfill")
+    assert ("mevzuat", "current") not in jobs
+    assert resolve_sync_window(
+        request,
+        {},
+        corpus_start=corpus,
+        today=today,
+        lookback_days=45,
+    ) == (date(2026, 8, 1), date(2026, 8, 31))
+    assert resolve_sync_window(
+        request,
+        {
+            "window_from": "2026-09-01",
+            "window_to": "2026-09-30",
+            "window_complete": False,
+        },
+        corpus_start=corpus,
+        today=today,
+        lookback_days=45,
+    ) == (date(2026, 9, 1), date(2026, 9, 30))
+    assert wrap_current_next_start(
+        date(2026, 9, 1), today=today, lookback_days=45
+    ) == date(2026, 8, 1)
+    assert advance_window_start(
+        date(2026, 8, 1), True, request, today=today, lookback_days=45
+    ) == date(2026, 9, 1)
+    backfill = SyncRequest(source="yargitay", lane="backfill")
+    assert resolve_sync_window(
+        backfill,
+        {"next_window_start": "2020-03-01", "window_complete": True},
+        corpus_start=corpus,
+        today=today,
+    ) == (date(2020, 3, 1), date(2020, 3, 31))
+
+
+def test_current_lane_cadence_and_coverage_never_complete(monkeypatch):
+    from datetime import timedelta
+    from uuid import uuid4
+
+    from worker import jobs
+    from worker.config import get_worker_settings
+    from worker.models import Checkpoint
+
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("CURRENT_SYNC_INTERVAL_MINUTES", "180")
+    monkeypatch.setenv("CURRENT_RETRY_INTERVAL_MINUTES", "60")
+    get_worker_settings.cache_clear()
+    pending = {"window_complete": False, "next_window_start": "2026-09-01"}
+    assert _interval_for(
+        "yargitay", cursor=pending, lane="current"
+    ) == timedelta(minutes=60)
+    advancing = {
+        "window_complete": True,
+        "window_from": "2026-08-01",
+        "next_window_start": "2026-09-01",
+    }
+    assert _interval_for(
+        "yargitay", cursor=advancing, lane="current"
+    ) == timedelta(minutes=60)
+    wrapped = {
+        "window_complete": True,
+        "window_from": "2026-09-01",
+        "next_window_start": "2026-08-01",
+    }
+    assert _interval_for(
+        "yargitay", cursor=wrapped, lane="current"
+    ) == timedelta(minutes=180)
+    assert _interval_for(
+        "yargitay", cursor=pending, status="failed", lane="current"
+    ) == timedelta(minutes=180)
+
+    coverage_calls: list[dict] = []
+    loaded: list[str] = []
+    started: list[str] = []
+
+    class _Repo:
+        def get_checkpoint(self, source_name):
+            loaded.append(source_name)
+            return Checkpoint(source_name=source_name, last_cursor={})
+
+        def start_run(self, source_name, *, checkpoint_before, metadata=None):
+            from worker.models import IngestionRun
+
+            started.append(source_name)
+            return IngestionRun(
+                id=uuid4(),
+                source_name=source_name,
+                status="running",
+                checkpoint_before=checkpoint_before,
+                metadata=metadata or {},
+            )
+
+        def finish_run(self, *args, **kwargs):
+            return None
+
+        def save_checkpoint(self, checkpoint):
+            return None
+
+        def upsert_coverage(self, source_name, date_from, date_to, **kwargs):
+            coverage_calls.append({"source": source_name, **kwargs})
+
+    class _Store:
+        def __init__(self, repo):
+            self.repo = repo
+
+        def load(self, source_name):
+            return self.repo.get_checkpoint(source_name)
+
+        def save(self, checkpoint):
+            self.repo.save_checkpoint(checkpoint)
+
+    class _Adapter:
+        source_name = "yargitay"
+        last_cursor = {
+            "window_from": "2026-09-01",
+            "window_to": "2026-09-30",
+            "window_complete": True,
+            "page": 1,
+            "seen_count": 4,
+            "stored_count": 3,
+            "duplicate_count": 1,
+            "failed_count": 0,
+            "chamber": "",
+        }
+
+        def sync(self, request, *, cursor, connection, dry_run, should_stop):
+            assert request.lane == "current"
+            yield "created", {"external_id": "yargitay:1", "requests_made": 1}
+
+    class _Conn:
+        def cursor(self):
+            return _LockCursor(True)
+
+    monkeypatch.setattr(jobs, "SyncRepository", lambda _c: _Repo())
+    monkeypatch.setattr(jobs, "CheckpointStore", _Store)
+    result = jobs.run_sync(
+        _Conn(),
+        SyncRequest(source="yargitay", lane="current", dry_run=False, resume=True),
+        adapter=_Adapter(),
+    )
+    assert result["status"] == "success"
+    assert result["job"] == "yargitay:current"
+    assert loaded == ["yargitay:current"]
+    assert started == ["yargitay:current"]
+    assert coverage_calls[0]["source"] == "yargitay"
+    assert coverage_calls[0]["complete"] is False
+
+
+def test_due_jobs_runs_current_before_backfill(monkeypatch):
+    from datetime import UTC, datetime
+
+    from worker.models import Checkpoint
+    from worker.scheduler import due_jobs
+
+    now = datetime(2026, 9, 16, tzinfo=UTC)
+    due_names = {"yargitay:current", "yargitay", "mevzuat"}
+
+    class Repo:
+        def __init__(self, _connection):
+            return None
+
+        def get_checkpoint(self, source_name):
+            checkpoint = Checkpoint(source_name=source_name)
+            if source_name in due_names:
+                checkpoint.next_run_at = None
+            else:
+                checkpoint.next_run_at = datetime(2099, 1, 1, tzinfo=UTC)
+            return checkpoint
+
+    monkeypatch.setattr("worker.scheduler.SyncRepository", Repo)
+    jobs = due_jobs(object(), now=now)
+    assert jobs[0] == ("yargitay", "current")
+    assert jobs.index(("yargitay", "current")) < jobs.index(("yargitay", "backfill"))
+    assert ("mevzuat", "backfill") in jobs
+    assert ("mevzuat", "current") not in jobs

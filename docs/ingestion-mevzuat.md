@@ -61,7 +61,9 @@ sayılmaz. Doğrulanmış `effective_from` yoksa sistem tarih uydurmaz; bu kayı
 
 ## Toplayıcı
 
-Tek komut hem mevzuatı hem Yargıtay'ı çeker:
+Worker tam korpusu sabit kanun listesi olmadan Bedesten `searchDocuments`
+keşfiyle çeker (`python -m worker.runner backfill --source all`). Aşağıdaki
+`collect --profile starter` komutu yalnız örnek/duman testidir.
 
 ```powershell
 # Kısa deneme (İş Kanunu 5 madde + 3 karar)

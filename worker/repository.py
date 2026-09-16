@@ -200,6 +200,25 @@ class SyncRepository:
             cursor.execute(sql, params)
             return list(cursor.fetchall())
 
+    def list_coverage(
+        self, *, source_name: str | None = None, limit: int = 80
+    ) -> list[dict[str, Any]]:
+        sql = """
+            SELECT source_name, date_from, date_to, chamber, expected_count,
+                   seen_count, stored_count, duplicate_count, failed_count,
+                   complete, completed_at, updated_at
+            FROM source_coverage_windows
+        """
+        params: list[Any] = []
+        if source_name:
+            sql += " WHERE source_name = %s"
+            params.append(source_name)
+        sql += " ORDER BY source_name, date_from DESC, chamber LIMIT %s"
+        params.append(max(1, min(limit, 500)))
+        with self.connection.cursor(row_factory=dict_row) as cursor:
+            cursor.execute(sql, params)
+            return list(cursor.fetchall())
+
     def quarantine(
         self,
         source_name: str,

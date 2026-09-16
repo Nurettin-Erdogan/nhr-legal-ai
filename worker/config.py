@@ -29,6 +29,33 @@ def _date_env(name: str, default: date) -> date:
     return date.fromisoformat(raw.strip())
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _csv_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
+DEFAULT_MEVZUAT_DISCOVERY_TYPES = (
+    "KANUN",
+    "KHK",
+    "CB_KARARNAME",
+    "TUZUK",
+    "YONETMELIK",
+    "CB_YONETMELIK",
+    "TEBLIGLER",
+    "CB_KARAR",
+    "CB_GENELGE",
+)
+
+
 @dataclass(frozen=True, slots=True)
 class WorkerSettings:
     database_url: str
@@ -58,6 +85,16 @@ class WorkerSettings:
     kdk_corpus_start: date
     snapshot_dir: str
     max_retries: int
+    current_lookback_days: int
+    current_interval_minutes: int
+    current_retry_interval_minutes: int
+    full_corpus_start: date
+    backfill_pause_seconds: float
+    mevzuat_discovery_types: tuple[str, ...]
+    embed_after_sync: bool
+    embed_limit_per_run: int
+    embed_batch_size: int
+    embed_delay_seconds: float
 
 
 @lru_cache(maxsize=1)
@@ -94,4 +131,16 @@ def get_worker_settings() -> WorkerSettings:
         kdk_corpus_start=_date_env("KDK_CORPUS_START", date(2020, 1, 1)),
         snapshot_dir=os.getenv("INGESTION_SNAPSHOT_DIR", "data/raw").strip() or "data/raw",
         max_retries=_int_env("INGESTION_MAX_RETRIES", 3),
+        current_lookback_days=_int_env("CURRENT_LOOKBACK_DAYS", 45),
+        current_interval_minutes=_int_env("CURRENT_SYNC_INTERVAL_MINUTES", 180),
+        current_retry_interval_minutes=_int_env("CURRENT_RETRY_INTERVAL_MINUTES", 60),
+        full_corpus_start=_date_env("FULL_CORPUS_START", date(1980, 1, 1)),
+        backfill_pause_seconds=_float_env("BACKFILL_PAUSE_SECONDS", 2.0),
+        mevzuat_discovery_types=_csv_env(
+            "MEVZUAT_DISCOVERY_TYPES", DEFAULT_MEVZUAT_DISCOVERY_TYPES
+        ),
+        embed_after_sync=_bool_env("EMBED_AFTER_SYNC", True),
+        embed_limit_per_run=_int_env("EMBED_LIMIT_PER_RUN", 200),
+        embed_batch_size=_int_env("EMBED_BATCH_SIZE", 10),
+        embed_delay_seconds=_float_env("EMBED_DELAY_SECONDS", 0.0),
     )

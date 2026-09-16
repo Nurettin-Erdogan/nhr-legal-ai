@@ -45,7 +45,7 @@ yoracak kadar sık değildir.
 | `AYM_SYNC_INTERVAL_MINUTES` | 1440 | AYM turları arası |
 | `YARGITAY_BACKFILL_INTERVAL_MINUTES` | 60 | Eksik Yargıtay penceresinde başarılı turlar arası |
 | `DANISTAY_BACKFILL_INTERVAL_MINUTES` | 90 | Eksik Danıştay penceresinde başarılı turlar arası |
-| `MEVZUAT_BACKFILL_INTERVAL_MINUTES` | 120 | Eksik başlangıç mevzuat kataloğunda başarılı turlar arası |
+| `MEVZUAT_BACKFILL_INTERVAL_MINUTES` | 120 | Eksik mevzuat keşif kataloğunda başarılı turlar arası |
 | `KDK_BACKFILL_INTERVAL_MINUTES` | 180 | Eksik KDK penceresinde başarılı turlar arası |
 | `AYM_BACKFILL_INTERVAL_MINUTES` | 180 | Eksik AYM sayfalarında başarılı turlar arası |
 | `WORKER_POLL_SECONDS` | 30 | Daemon beklerken kontrol sıklığı |
@@ -62,14 +62,38 @@ yoracak kadar sık değildir.
 | `YARGITAY_CORPUS_START` | 2020-01-01 | Tam korpus için ilk ay penceresi |
 | `DANISTAY_CORPUS_START` | 2020-01-01 | Danıştay için ilk ay penceresi |
 | `KDK_CORPUS_START` | 2020-01-01 | KDK için ilk ay penceresi |
+| `CURRENT_LOOKBACK_DAYS` | 45 | Güncel şeridin taradığı son gün sayısı |
+| `CURRENT_SYNC_INTERVAL_MINUTES` | 180 | Güncel şerit lookback turunu bitirip ufuğa sarıldıktan sonra |
+| `CURRENT_RETRY_INTERVAL_MINUTES` | 60 | Güncel şerit ayı bitirmediyse veya lookback içinde sonraki aya geçiyorsa |
+| `FULL_CORPUS_START` | 1980-01-01 | `backfill` komutunun tarihsel ufku |
+| `BACKFILL_PAUSE_SECONDS` | 2 | Full backfill turları arası kısa bekleme |
+| `MEVZUAT_DISCOVERY_TYPES` | KANUN,KHK,... | Bedesten keşif türleri |
+| `EMBED_LIMIT_PER_RUN` | 200 | Her sync sonrası en fazla yeni chunk embedding |
 
-İlk daemon turu `next_run_at` boşsa kaynağı due sayar. Başarılı turdan sonra
-tamamlanmamış tarih/sayfa penceresi veya geçmişte kalan sonraki pencere varsa
-backfill aralığı kullanılır. Hata, kısmi başarı veya CAPTCHA sonrasında
-normal uzun aralık korunur; portalı sıkıştırmak için otomatik retry yapılmaz.
-Backfill tamamlandığında normal periyodik aralık devreye girer. Mevcut
-`next_run_at` kayıtları geriye dönük değiştirilmez; yeni aralık, sonraki
-başarılı turda uygulanır.
+`python -m worker.runner backfill --source all` tarihsel korpusu checkpoint ile
+doldurur: Yargıtay/Danıştay/KDK aylık pencereler `FULL_CORPUS_START` tarihinden
+bugüne, AYM global sayfa, mevzuat Bedesten `searchDocuments` keşfi. Tur başına
+mevcut rate-limit ve `*_MAX_*` tavanları korunur; süreç kesilirse aynı komut
+kaldığı yerden devam eder. Her başarılı turdan sonra `legal_chunks` içindeki
+yeni parçalar embed edilir. Kaynak tarihsel olarak bitince incremental
+`daemon` moduna geçer (güncel şerit + periyodik tarama). CAPTCHA olan kaynak
+atlanır, bypass yoktur.
+
+İlk daemon turu `next_run_at` boşsa işi due sayar. Yargıtay, Danıştay ve KDK
+iki şeritte yürür: `backfill` arşivi doldurur, `current` son
+`CURRENT_LOOKBACK_DAYS` içindeki takvim aylarını yeniden tarar. Daemon her
+kaynakta önce current, sonra backfill çalıştırır. Aynı resmi portal için
+advisory lock kanonik kaynak adındadır; iki şerit paralel vurmaz.
+Checkpoint'ler ayrıdır (`yargitay` / `yargitay:current`). Coverage kanonik
+kaynağa yazılır; current şerit `complete=true` yazmaz, çünkü içinde
+bulunduğumuz ay kapanmış sayılmaz.
+
+Başarılı turdan sonra tamamlanmamış tarih/sayfa penceresi veya geçmişte kalan
+sonraki pencere varsa backfill aralığı kullanılır. Hata, kısmi başarı veya
+CAPTCHA sonrasında normal uzun aralık korunur; portalı sıkıştırmak için
+otomatik retry yapılmaz. Backfill tamamlandığında normal periyodik aralık
+devreye girer. Mevcut `next_run_at` kayıtları geriye dönük değiştirilmez; yeni
+aralık, sonraki başarılı turda uygulanır.
 
 ## Checkpoint / resume
 
@@ -89,11 +113,12 @@ KDK cursor: tarih penceresi, DataTables `offset`, `window_complete` ve
 
 AYM cursor: global sonuç sırasındaki `page` ve sayfa içi `row_offset`.
 
-Mevzuat cursor: `law_index`, `law_no`, `last_article_no`. Madde limiti bir
-kanunun ortasında biterse aynı kanundan devam eder; tam sınırda biterse sonraki
-kanuna geçerken `last_article_no` temizlenir. `law_no` içermeyen eski cursor
-ilgili kanunu baştan tarar; mevcut maddeler hash ile tekilleştirilir. Böylece
-önceki kanunun madde numarası yeni kanunun başını atlatamaz.
+Mevzuat cursor: `mode=discovery`, `type_index`, `catalog_page`,
+`catalog_offset`, `law_no`, `last_article_no`. Bedesten kataloğu kanun/KHK/
+yönetmelik türlerinde sayfalanır; sabit starter liste worker'da kullanılmaz.
+Madde limiti bir metnin ortasında biterse aynı `law_no` üzerinden devam eder.
+`law_no` içermeyen eski starter cursor keşfe geçer; mevcut maddeler hash ile
+tekilleştirilir. `--law-no` ile tek metin aktarımı keşif imlecini değiştirmez.
 
 Süreç CTRL+C ile durursa run `cancelled`/`partial` olur; checkpoint son güvenli
 pencere/sayfada kalır. Yeniden başlatma `--no-resume` yoksa kaldığı yerden devam eder.
@@ -103,8 +128,9 @@ pencere/sayfada kalır. Yeniden başlatma `--no-resume` yoksa kaldığı yerden 
 `source_sync_runs` her turu sayaçlarla tutar (`queued`/`running`/`success`/
 `partial`/`failed`/`cancelled`/`captcha_required`).
 
-Aynı kaynak için PostgreSQL advisory lock (`pg_try_advisory_lock`). Yargıtay,
-Danıştay, mevzuat, KDK ve AYM birbirini bloklamaz.
+Aynı kanonik kaynak için PostgreSQL advisory lock (`pg_try_advisory_lock`).
+Backfill ve current aynı portal kilidini paylaşır. Yargıtay, Danıştay,
+mevzuat, KDK ve AYM birbirini bloklamaz.
 
 ## Retry / backoff / CAPTCHA
 
@@ -152,10 +178,12 @@ Ham yanıtlar `data/raw/` altına gider; Git'e girmez.
 
 ## Yargıtay ve Danıştay karar korpusu
 
-Aylık pencereler. Tamamlanan pencere `source_coverage_windows.complete=true`.
-Daemon her turda kaynağa ait limitle bir pencereyi işler. Danıştay detaylı
-arama transportu serbest kelime filtresi sunmadığı için tarih ve isteğe bağlı
-daire filtresi kullanılır.
+Aylık pencereler. Backfill şeridinde tamamlanan pencere
+`source_coverage_windows.complete=true`. Daemon her turda kaynağa ait limitle
+bir pencereyi işler. Güncel şerit aynı ayları lookback ufku içinde yeniden
+tarar ve ay bitince ufuğun başına döner. Danıştay detaylı arama transportu
+serbest kelime filtresi sunmadığı için tarih ve isteğe bağlı daire filtresi
+kullanılır.
 
 ## KDK karar korpusu
 
@@ -175,24 +203,29 @@ olarak gösterilir. Güvenlik doğrulaması isteyen PDF üretim ucu kullanılmaz
 
 ## Embedding
 
-Fetch sırasında model çağrılmaz. `python -m ingestion.cli embed --target legal`
-ayrı backfill'dir. Embedding düşse hukuk satırı kalır.
+`python -m worker.runner backfill` her başarılı turdan sonra `legal_chunks`
+içinde vektörü olmayan parçaları embed eder. Embedding düşse hukuk satırı
+kalır; sonraki tur yeniden dener. Elle: `python -m ingestion.cli embed --target legal`.
 
 ## Monitoring API
 
 Yalnız `admin` rolü:
 
 - `GET /api/admin/ingestion/status`
+- `GET /api/admin/ingestion/coverage`
 - `GET /api/admin/ingestion/runs`
 - `GET /api/admin/ingestion/sources`
 - `POST /api/admin/ingestion/run/{source}` — daemon kuyruğu (`next_run_at=now`)
+- `POST /api/admin/ingestion/run/{source}?lane=current` — güncel şerit kuyruğu
 
 Frontend admin paneli bu sprintte yok.
 
 ## Manuel komutlar
 
 ```powershell
+.\.venv\Scripts\python.exe -m worker.runner backfill --source all
 .\.venv\Scripts\python.exe -m worker.runner run --source yargitay
+.\.venv\Scripts\python.exe -m worker.runner run --source yargitay --lane current
 .\.venv\Scripts\python.exe -m worker.runner run --source yargitay --date-from 2026-01-01 --date-to 2026-01-31
 .\.venv\Scripts\python.exe -m worker.runner run --source danistay --date-from 2025-01-01 --date-to 2025-01-31
 .\.venv\Scripts\python.exe -m worker.runner run --source mevzuat

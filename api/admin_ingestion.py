@@ -6,7 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from api.auth.routes import current_user_id
 from api.db import authenticated_database_connection, admin_database_connection
-from worker import ACTIVE_SOURCES, PLANNED_SOURCES
+from worker import ACTIVE_SOURCES
+from worker.lanes import CURRENT_LANE_SOURCES, canonical_source, checkpoint_name
+from worker.monitoring import coverage_payload
 from worker.repository import SyncRepository
 
 router = APIRouter(prefix="/api/admin/ingestion", tags=["admin-ingestion"])
@@ -30,16 +32,20 @@ def ingestion_status(_admin: UUID = Depends(require_admin)) -> dict:
     with admin_database_connection() as connection:
         repo = SyncRepository(connection)
         checkpoints = repo.list_checkpoints()
-        latest_runs = {
-            source: (repo.list_runs(source_name=source, limit=1) or [None])[0]
-            for source in (*ACTIVE_SOURCES, *PLANNED_SOURCES)
-        }
+        latest_runs = {}
+        for checkpoint in checkpoints:
+            latest_runs[checkpoint.source_name] = (
+                repo.list_runs(source_name=checkpoint.source_name, limit=1) or [None]
+            )[0]
     sources = []
     for checkpoint in checkpoints:
         run = latest_runs.get(checkpoint.source_name)
+        job_name = checkpoint.source_name
         sources.append(
             {
-                "source": checkpoint.source_name,
+                "source": canonical_source(job_name),
+                "job": job_name,
+                "lane": "current" if job_name.endswith(":current") else "backfill",
                 "status": run["status"] if run else "idle",
                 "health": checkpoint.health_state,
                 "health_detail": checkpoint.health_detail,
@@ -131,27 +137,47 @@ def ingestion_sources(_admin: UUID = Depends(require_admin)) -> dict:
     }
 
 
+@router.get("/coverage")
+def ingestion_coverage(
+    source: str | None = None,
+    _admin: UUID = Depends(require_admin),
+) -> dict:
+    with admin_database_connection() as connection:
+        return coverage_payload(connection, source_name=source)
+
+
 @router.post("/run/{source}")
 def request_ingestion_run(
     source: str,
+    lane: str = "backfill",
     _admin: UUID = Depends(require_admin),
 ) -> dict:
     source = source.strip().lower()
-    if source not in ACTIVE_SOURCES:
+    job_lane = "current" if source.endswith(":current") or lane == "current" else "backfill"
+    canonical = canonical_source(source)
+    if canonical not in ACTIVE_SOURCES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Yalnız ACTIVE kaynaklar kuyruğa alınabilir",
         )
+    if job_lane == "current" and canonical not in CURRENT_LANE_SOURCES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{canonical} current şeridine sahip değil",
+        )
     from datetime import UTC, datetime
 
+    job = checkpoint_name(canonical, job_lane)
     with admin_database_connection() as connection:
         repo = SyncRepository(connection)
-        checkpoint = repo.get_checkpoint(source)
+        checkpoint = repo.get_checkpoint(job)
         checkpoint.next_run_at = datetime.now(UTC)
         repo.save_checkpoint(checkpoint)
         connection.commit()
     return {
-        "source": source,
+        "source": canonical,
+        "lane": job_lane,
+        "job": job,
         "queued": True,
-        "detail": "Daemon bir sonraki turda bu kaynağı çalıştırır",
+        "detail": "Daemon bir sonraki turda bu işi çalıştırır",
     }

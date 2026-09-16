@@ -10,8 +10,8 @@ from ingestion.kdk.parser import decision_from_row
 from ingestion.kdk.portal import BASE_URL, KdkPortalClient, KdkPortalError, search_form
 from ingestion.kdk.store import upsert_decision
 from worker.config import get_worker_settings
+from worker.lanes import advance_window_start, resolve_sync_window
 from worker.models import AdapterHealth, RecordOutcome, SyncRequest
-from worker.windows import month_window, next_month_start
 
 
 class KdkSourceAdapter:
@@ -85,16 +85,19 @@ class KdkSourceAdapter:
         }
 
     def resolve_window(self, request: SyncRequest, cursor: dict[str, Any]) -> tuple[date, date]:
-        if request.date_from and request.date_to:
-            return request.date_from, request.date_to
-        if cursor.get("window_from") and cursor.get("window_to") and not cursor.get("window_complete"):
-            return date.fromisoformat(cursor["window_from"]), date.fromisoformat(cursor["window_to"])
-        start = request.date_from or (
-            date.fromisoformat(cursor["next_window_start"])
-            if cursor.get("next_window_start")
-            else self._settings().kdk_corpus_start
+        try:
+            settings = self._settings()
+            corpus_start = settings.kdk_corpus_start
+            lookback_days = settings.current_lookback_days
+        except RuntimeError:
+            corpus_start = date(2020, 1, 1)
+            lookback_days = 45
+        return resolve_sync_window(
+            request,
+            cursor,
+            corpus_start=corpus_start,
+            lookback_days=lookback_days,
         )
-        return month_window(start)
 
     def sync(
         self,
@@ -198,7 +201,12 @@ class KdkSourceAdapter:
 
         if should_stop():
             window_complete = False
-        next_start = next_month_start(window_from) if window_complete else window_from
+        next_start = advance_window_start(
+            window_from,
+            window_complete,
+            request,
+            lookback_days=self._settings().current_lookback_days,
+        )
         self.last_cursor = {
             "offset": 0 if window_complete else offset,
             "page": 1 + (offset // page_size) if page_size else 1,

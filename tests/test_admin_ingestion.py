@@ -91,5 +91,24 @@ def test_run_rejects_non_corpus_verification_source(monkeypatch):
     assert response.status_code == 400
 
 
+def test_run_rejects_current_lane_for_mevzuat(monkeypatch):
+    @contextmanager
+    def fake_auth(_user_id: str):
+        class Connection:
+            def execute(self, _sql):
+                class Result:
+                    def fetchone(self):
+                        return {"is_admin": True}
+
+                return Result()
+
+        yield Connection()
+
+    monkeypatch.setattr(admin_ingestion, "authenticated_database_connection", fake_auth)
+    client = TestClient(_app())
+    response = client.post("/api/admin/ingestion/run/mevzuat?lane=current")
+    assert response.status_code == 400
+
+
 def test_require_admin_helper_is_exported():
     assert require_admin.__name__ == "require_admin"

@@ -113,6 +113,7 @@ class SyncRequest:
     keyword: str = ""
     chamber: str = ""
     law_no: str = ""
+    lane: Literal["backfill", "current"] = "backfill"
 
 
 @dataclass(frozen=True, slots=True)
