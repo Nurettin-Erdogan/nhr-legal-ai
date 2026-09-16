@@ -577,6 +577,7 @@ def test_mevzuat_limit_at_law_boundary_advances_without_skipping_next_law(
         def fetch_article_html(self, madde_id):
             return f"<p>Geçerli madde metni {madde_id}.</p>"
 
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
     monkeypatch.setenv("MEVZUAT_DELAY_SECONDS", "0")
     monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
     get_worker_settings.cache_clear()
@@ -617,6 +618,7 @@ def test_mevzuat_legacy_cursor_restarts_law_instead_of_skipping(monkeypatch, tmp
         def fetch_article_html(self, madde_id):
             return f"<p>Geçerli madde metni {madde_id}.</p>"
 
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
     monkeypatch.setenv("MEVZUAT_DELAY_SECONDS", "0")
     monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
     get_worker_settings.cache_clear()
