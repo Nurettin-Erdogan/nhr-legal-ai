@@ -42,6 +42,8 @@ STARTER_LAWS = (
     LawJob("5271", "Ceza Muhakemesi Kanunu"),
     LawJob("4857", "İş Kanunu"),
     LawJob("2004", "İcra ve İflas Kanunu"),
+    # Append to keep existing law_index checkpoints valid.
+    LawJob("1475", "İş Kanunu (kıdem tazminatı hükümleri)"),
 )
 
 STARTER_YARGITAY = (

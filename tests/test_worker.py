@@ -554,7 +554,7 @@ def test_mevzuat_resume_retries_after_last_successful_article(monkeypatch, tmp_p
                 max_records=10,
                 resume=True,
             ),
-            cursor={"law_index": 0, "last_article_no": "1"},
+            cursor={"law_index": 0, "law_no": "4857", "last_article_no": "1"},
             connection=None,
             dry_run=True,
             should_stop=lambda: False,
@@ -563,7 +563,75 @@ def test_mevzuat_resume_retries_after_last_successful_article(monkeypatch, tmp_p
     article_nos = [payload["article_no"] for _, payload in outcomes]
     assert "1" not in article_nos
     assert article_nos[0] == "2"
-    assert adapter.last_cursor["last_article_no"] == "3"
+    assert adapter.last_cursor["last_article_no"] == ""
+    assert adapter.last_cursor["complete"] is True
+
+
+def test_mevzuat_limit_at_law_boundary_advances_without_skipping_next_law(
+    monkeypatch, tmp_path
+):
+    from worker.adapters.mevzuat import MevzuatSourceAdapter
+    from worker.config import get_worker_settings
+
+    class AllGood(_MevzuatClientSuccessThenQuarantine):
+        def fetch_article_html(self, madde_id):
+            return f"<p>Geçerli madde metni {madde_id}.</p>"
+
+    monkeypatch.setenv("MEVZUAT_DELAY_SECONDS", "0")
+    monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
+    get_worker_settings.cache_clear()
+    adapter = MevzuatSourceAdapter(
+        client=AllGood(), verify_gazette=False, verify_mbs=False
+    )
+    cursor = {}
+    for expected_article in ("1", "2", "3"):
+        outcomes = list(adapter.sync(
+            SyncRequest(source="mevzuat", max_records=1),
+            cursor=cursor,
+            connection=None,
+            dry_run=True,
+            should_stop=lambda: False,
+        ))
+        assert [payload["article_no"] for _, payload in outcomes] == [expected_article]
+        cursor = adapter.last_cursor
+
+    assert cursor["law_index"] == 1
+    assert cursor["law_no"] == "4721"
+    assert cursor["last_article_no"] == ""
+    outcomes = list(adapter.sync(
+        SyncRequest(source="mevzuat", max_records=1),
+        cursor=cursor,
+        connection=None,
+        dry_run=True,
+        should_stop=lambda: False,
+    ))
+    assert outcomes[0][1]["law_no"] == "4721"
+    assert outcomes[0][1]["article_no"] == "1"
+
+
+def test_mevzuat_legacy_cursor_restarts_law_instead_of_skipping(monkeypatch, tmp_path):
+    from worker.adapters.mevzuat import MevzuatSourceAdapter
+    from worker.config import get_worker_settings
+
+    class AllGood(_MevzuatClientSuccessThenQuarantine):
+        def fetch_article_html(self, madde_id):
+            return f"<p>Geçerli madde metni {madde_id}.</p>"
+
+    monkeypatch.setenv("MEVZUAT_DELAY_SECONDS", "0")
+    monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
+    get_worker_settings.cache_clear()
+    adapter = MevzuatSourceAdapter(
+        client=AllGood(), verify_gazette=False, verify_mbs=False
+    )
+    outcomes = list(adapter.sync(
+        SyncRequest(source="mevzuat", max_records=1),
+        cursor={"law_index": 1, "last_article_no": "31"},
+        connection=None,
+        dry_run=True,
+        should_stop=lambda: False,
+    ))
+    assert outcomes[0][1]["law_no"] == "4721"
+    assert outcomes[0][1]["article_no"] == "1"
 
 
 def test_mevzuat_sync_attaches_official_gazette_verification(monkeypatch, tmp_path):
@@ -763,6 +831,61 @@ def test_last_successful_sync_at_only_on_success(monkeypatch):
     assert success["status"] == "success"
     assert calls[-1].last_successful_sync_at is not None
     assert calls[-1].last_successful_sync_at != prior
+
+
+def test_targeted_mevzuat_run_preserves_starter_checkpoint(monkeypatch):
+    from contextlib import nullcontext
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from worker import jobs
+    from worker.models import IngestionRun
+
+    next_run = datetime(2026, 9, 17, tzinfo=UTC)
+    checkpoint = Checkpoint(
+        source_name="mevzuat",
+        last_cursor={"profile": "starter", "law_index": 1, "last_article_no": "31"},
+        next_run_at=next_run,
+    )
+    saved = []
+    finished = []
+    seen_cursors = []
+
+    class Repo:
+        def get_checkpoint(self, source_name):
+            return checkpoint
+
+        def start_run(self, source_name, *, checkpoint_before, metadata=None):
+            return IngestionRun(
+                id=uuid4(), source_name=source_name, status="running",
+                checkpoint_before=checkpoint_before,
+            )
+
+        def finish_run(self, *args, **kwargs):
+            finished.append(kwargs)
+
+        def save_checkpoint(self, value):
+            saved.append(value)
+
+    class Adapter:
+        last_cursor = {"law_index": 0, "last_article_no": "14", "complete": True}
+
+        def sync(self, request, *, cursor, connection, dry_run, should_stop):
+            seen_cursors.append(cursor)
+            yield "created", {"external_id": "mevzuat:1475:14", "requests_made": 1}
+
+    monkeypatch.setattr(jobs, "SyncRepository", lambda connection: Repo())
+    monkeypatch.setattr(jobs, "source_job_lock", lambda connection, source: nullcontext())
+    result = jobs.run_sync(
+        object(), SyncRequest(source="mevzuat", law_no="1475"), adapter=Adapter()
+    )
+
+    assert result["status"] == "success"
+    assert seen_cursors == [{}]
+    assert saved == []
+    assert result["checkpoint"]["last_cursor"] == checkpoint.last_cursor
+    assert checkpoint.next_run_at == next_run
+    assert finished[0]["metadata"]["targeted_law"] == "1475"
 
 
 def test_yargitay_coverage_deltas_are_written_every_run(monkeypatch):

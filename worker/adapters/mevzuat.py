@@ -141,14 +141,20 @@ class MevzuatSourceAdapter:
         )
         archive = LegislationArchive(settings.snapshot_dir + "/mevzuat")
         processed = 0
-        law_index = start_index
-        last_successful_article = str(cursor.get("last_article_no") or "")
-        skip_until_article = last_successful_article if request.resume else ""
+        next_index = start_index
+        cursor_law_no = str(cursor.get("law_no") or "")
+        skip_until_article = (
+            str(cursor.get("last_article_no") or "")
+            if request.resume and cursor_law_no == jobs[start_index].law_no
+            else ""
+        )
+        last_successful_article = skip_until_article
         stopped_on_unfinished = False
 
         for law_index in range(start_index, len(jobs)):
             if processed >= max_articles or should_stop() or stopped_on_unfinished:
                 break
+            next_index = law_index
             job = jobs[law_index]
             page = client.search_page(
                 page_number=1,
@@ -163,9 +169,8 @@ class MevzuatSourceAdapter:
                     "law_no": job.law_no,
                     "requests_made": 1,
                 }
-                # Kanun bulunamadı: sonraki kanuna geç; madde checkpoint'i ilerletme.
-                skip_until_article = ""
-                continue
+                stopped_on_unfinished = True
+                break
             document = page.documents[0]
             gazette_verification: dict[str, Any] = {
                 "verified": False,
@@ -224,9 +229,20 @@ class MevzuatSourceAdapter:
                     }
             tree = client.fetch_article_tree(str(document.get("mevzuatId")))
             articles = list(iter_article_nodes(tree))
+            if not articles:
+                yield "failed", {
+                    "external_id": None,
+                    "reason": f"Madde ağacı boş: {job.law_no}",
+                    "law_no": job.law_no,
+                    "requests_made": 2 + pending_verification_requests,
+                }
+                stopped_on_unfinished = True
+                break
             skipping = bool(skip_until_article)
+            law_finished = True
             for article in articles:
                 if processed >= max_articles or should_stop():
+                    law_finished = False
                     break
                 article_no = str(article.get("maddeNo") or "").strip()
                 if skipping:
@@ -282,6 +298,7 @@ class MevzuatSourceAdapter:
                         }
                         # Checkpoint ilerletme; resume aynı maddeyi yeniden dener.
                         stopped_on_unfinished = True
+                        law_finished = False
                         pending_verification_requests = 0
                         break
                     archive.save(record)
@@ -306,17 +323,29 @@ class MevzuatSourceAdapter:
                     yield "failed", {**extra, "reason": str(exc)}
                     pending_verification_requests = 0
                     stopped_on_unfinished = True
+                    law_finished = False
                     break
+            if skipping:
+                # A changed official article tree must not silently complete a law.
+                yield "failed", {
+                    "external_id": None,
+                    "reason": f"Resume maddesi bulunamadı: {job.law_no} m.{skip_until_article}",
+                    "law_no": job.law_no,
+                    "requests_made": 0,
+                }
+                stopped_on_unfinished = True
+                law_finished = False
+                last_successful_article = ""
+            if law_finished:
+                next_index = law_index + 1
+                last_successful_article = ""
             skip_until_article = ""
 
-        complete = (
-            not stopped_on_unfinished
-            and not should_stop()
-            and law_index >= len(jobs) - 1
-            and processed < max_articles
-        )
+        complete = not stopped_on_unfinished and next_index >= len(jobs)
+        cursor_index = 0 if complete else min(next_index, len(jobs) - 1)
         self.last_cursor = {
-            "law_index": 0 if complete else law_index,
+            "law_index": cursor_index,
+            "law_no": jobs[cursor_index].law_no,
             "last_article_no": last_successful_article,
             "profile": "starter",
             "complete": complete,

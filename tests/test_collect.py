@@ -12,7 +12,7 @@ from ingestion.yargitay.scraper import ScrapeStats, ScraperConfig
 def test_starter_profile_covers_core_codes_without_duplicates():
     numbers = [job.law_no for job in STARTER_LAWS]
     assert len(set(numbers)) == len(numbers)
-    assert {"2709", "4857", "6098", "5237"} <= set(numbers)
+    assert {"2709", "4857", "6098", "5237", "1475"} <= set(numbers)
     assert "starter" in PROFILES
     assert "smoke" in PROFILES
 

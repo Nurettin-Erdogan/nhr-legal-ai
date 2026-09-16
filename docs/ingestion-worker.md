@@ -79,7 +79,11 @@ KDK cursor: tarih penceresi, DataTables `offset`, `window_complete` ve
 
 AYM cursor: global sonuç sırasındaki `page` ve sayfa içi `row_offset`.
 
-Mevzuat cursor: `law_index`, `last_article_no`.
+Mevzuat cursor: `law_index`, `law_no`, `last_article_no`. Madde limiti bir
+kanunun ortasında biterse aynı kanundan devam eder; tam sınırda biterse sonraki
+kanuna geçerken `last_article_no` temizlenir. `law_no` içermeyen eski cursor
+ilgili kanunu baştan tarar; mevcut maddeler hash ile tekilleştirilir. Böylece
+önceki kanunun madde numarası yeni kanunun başını atlatamaz.
 
 Süreç CTRL+C ile durursa run `cancelled`/`partial` olur; checkpoint son güvenli
 pencere/sayfada kalır. Yeniden başlatma `--no-resume` yoksa kaldığı yerden devam eder.
@@ -182,6 +186,7 @@ Frontend admin paneli bu sprintte yok.
 .\.venv\Scripts\python.exe -m worker.runner run --source yargitay --date-from 2026-01-01 --date-to 2026-01-31
 .\.venv\Scripts\python.exe -m worker.runner run --source danistay --date-from 2025-01-01 --date-to 2025-01-31
 .\.venv\Scripts\python.exe -m worker.runner run --source mevzuat
+.\.venv\Scripts\python.exe -m worker.runner run --source mevzuat --law-no 1475 --max-records 10
 .\.venv\Scripts\python.exe -m worker.runner run --source kdk --date-from 2026-09-01 --date-to 2026-09-30 --max-records 10
 .\.venv\Scripts\python.exe -m worker.runner run --source aym --max-records 10
 .\.venv\Scripts\python.exe -m worker.runner run --source aym --keyword "2024/31235" --max-records 1 --no-resume
@@ -190,6 +195,11 @@ Frontend admin paneli bu sprintte yok.
 .\.venv\Scripts\python.exe -m worker.runner daemon
 .\.venv\Scripts\python.exe -m ingestion.cli worker run --source yargitay
 ```
+
+`--law-no` ile tek kanun aktarımı starter mevzuat checkpoint'ini ve sonraki
+zamanlanmış turu değiştirmez; her çağrıda ilgili kanunu baştan tarar ve aynı
+maddeleri içerik kimliğiyle tekilleştirir. 1475 sayılı kanun starter kataloğuna
+sona eklenmiştir; mevcut `law_index` değerleri korunur.
 
 Migration (mevcut volume):
 

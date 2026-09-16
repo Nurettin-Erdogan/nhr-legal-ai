@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Callable
 
@@ -51,6 +52,7 @@ def run_sync(
 
     repo = SyncRepository(connection)
     store = CheckpointStore(repo)
+    targeted_law = source == "mevzuat" and bool(request.law_no.strip())
     try:
         lock = source_job_lock(connection, source)
         lock.__enter__()
@@ -59,6 +61,9 @@ def run_sync(
 
     try:
         checkpoint = store.load(source)
+        original_checkpoint = checkpoint if targeted_law else None
+        if targeted_law:
+            checkpoint = deepcopy(checkpoint)
         counters = RunCounters()
         run = repo.start_run(
             source,
@@ -73,7 +78,7 @@ def run_sync(
         try:
             events = adapter.sync(
                 request,
-                cursor=checkpoint.last_cursor if request.resume else {},
+                cursor=checkpoint.last_cursor if request.resume and not targeted_law else {},
                 connection=connection,
                 dry_run=request.dry_run,
                 should_stop=should_stop,
@@ -155,16 +160,22 @@ def run_sync(
             elif status == "failed":
                 checkpoint.health_state = "failed"
 
-        checkpoint.next_run_at = datetime.now(UTC) + _interval_for(source)
-        if not request.dry_run:
-            store.save(checkpoint)
+        if targeted_law:
+            # A one-law import must not replace the starter catalog cursor or
+            # postpone its next scheduled pass. The run itself is still logged.
+            assert original_checkpoint is not None
+            checkpoint = original_checkpoint
+        else:
+            checkpoint.next_run_at = datetime.now(UTC) + _interval_for(source)
+            if not request.dry_run:
+                store.save(checkpoint)
         repo.finish_run(
             run,
             status=status,
             counters=counters,
             last_error=error,
             checkpoint_after=checkpoint.as_json(),
-            metadata={"dry_run": request.dry_run},
+            metadata={"dry_run": request.dry_run, "targeted_law": request.law_no or None},
         )
         return {
             "source": source,
