@@ -285,3 +285,33 @@ def test_adapter_resumes_inside_partially_consumed_page(monkeypatch):
         )
     )
     assert second_events[0][1]["external_id"] == "aym:bb:2099/4"
+
+
+def test_completed_one_off_aym_search_does_not_pin_next_corpus_run(monkeypatch):
+    class Client:
+        def __init__(self):
+            self.calls = []
+
+        def search_page(self, **kwargs):
+            self.calls.append(kwargs)
+            return SearchPage((), total=0, page=1, page_size=20)
+
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    from worker.config import get_worker_settings
+
+    get_worker_settings.cache_clear()
+    client = Client()
+    adapter = AymSourceAdapter(client=client)
+    list(
+        adapter.sync(
+            SyncRequest(source="aym", max_records=1),
+            cursor={"page": 1, "row_offset": 0, "complete": True, "keyword": "2024/31235"},
+            connection=None,
+            dry_run=True,
+            should_stop=lambda: False,
+        )
+    )
+
+    assert client.calls[0]["keyword"] is None
+    assert client.calls[0]["application_no"] is None
+    assert adapter.last_cursor["keyword"] == ""

@@ -102,9 +102,12 @@ class AymSourceAdapter:
             )
         settings = self._settings()
         client = self._client()
-        page_number = int(cursor.get("page") or 1) if request.resume else 1
-        row_offset = int(cursor.get("row_offset") or 0) if request.resume else 0
-        keyword = request.keyword.strip() or str(cursor.get("keyword") or "")
+        # A completed one-off application search must not pin future corpus
+        # runs to the same application number forever.
+        resume_cursor = cursor if request.resume and not cursor.get("complete") else {}
+        page_number = int(resume_cursor.get("page") or 1)
+        row_offset = int(resume_cursor.get("row_offset") or 0)
+        keyword = request.keyword.strip() or str(resume_cursor.get("keyword") or "")
         max_records = request.max_records or settings.aym_max_records
         page_size = 20
         application_no = keyword if keyword.replace("/", "").isdigit() and "/" in keyword else None
