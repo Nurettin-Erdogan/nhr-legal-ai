@@ -3,6 +3,7 @@ from worker.adapters.danistay import DanistaySourceAdapter
 from worker.adapters.kdk import KdkSourceAdapter
 from worker.adapters.mevzuat import MevzuatSourceAdapter
 from worker.adapters.planned import (
+    MevzuatBilgiSistemiSourceAdapter,
     ResmiGazeteSourceAdapter,
 )
 from worker.adapters.yargitay import YargitaySourceAdapter
@@ -17,6 +18,7 @@ ACTIVE_ADAPTERS = {
 
 PLANNED_ADAPTERS = {
     "resmi_gazete": ResmiGazeteSourceAdapter,
+    "mevzuat_bilgi_sistemi": MevzuatBilgiSistemiSourceAdapter,
 }
 
 

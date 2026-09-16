@@ -11,6 +11,7 @@ from ingestion.mevzuat.models import LegislationRecord
 from ingestion.mevzuat.parser import iter_article_nodes, parse_portal_date, record_from_article
 from ingestion.mevzuat.portal import BASE_URL, MevzuatPortalClient, MevzuatPortalError
 from ingestion.mevzuat.store import upsert_legislation
+from ingestion.mevzuat_bilgi_sistemi.portal import MbsClient, MbsError
 from ingestion.resmi_gazete.portal import ResmiGazeteClient, ResmiGazeteError
 from worker.config import get_worker_settings
 from worker.models import AdapterHealth, RecordOutcome, SyncRequest
@@ -27,11 +28,15 @@ class MevzuatSourceAdapter:
         *,
         client: MevzuatPortalClient | None = None,
         gazette_client: ResmiGazeteClient | None = None,
+        mbs_client: MbsClient | None = None,
         verify_gazette: bool = True,
+        verify_mbs: bool = True,
     ) -> None:
         self.client = client
         self.gazette_client = gazette_client
+        self.mbs_client = mbs_client
         self.verify_gazette = verify_gazette
+        self.verify_mbs = verify_mbs
         self.last_cursor: dict[str, Any] = {}
 
     def _settings(self):
@@ -107,6 +112,8 @@ class MevzuatSourceAdapter:
             "official_gazette_verification": record.metadata.get(
                 "official_gazette_verification"
             ),
+            "verified_against_mbs": bool(record.metadata.get("verified_against_mbs", False)),
+            "mbs_verification": record.metadata.get("mbs_verification"),
         }
 
     def _jobs(self, request: SyncRequest) -> tuple[LawJob, ...]:
@@ -190,6 +197,31 @@ class MevzuatSourceAdapter:
                         "requested_issue_no": gazette_no,
                         "law_no": job.law_no,
                     }
+            mbs_verification: dict[str, Any] = {
+                "verified": False,
+                "detail": "MBS doğrulaması çalıştırılmadı",
+                "law_no": job.law_no,
+            }
+            if self.verify_mbs:
+                # Public DataTables araması + resmî detay sayfası.
+                pending_verification_requests += 2
+                mbs = self.mbs_client or MbsClient(
+                    max_retries=settings.max_retries,
+                    retry_backoff_seconds=max(1.0, settings.mevzuat_delay_seconds),
+                )
+                try:
+                    mbs_verification = mbs.verify_legislation(
+                        law_no=job.law_no,
+                        law_name=law_name,
+                        publication_date=gazette_date,
+                        issue_no=gazette_no,
+                    ).to_json()
+                except MbsError as exc:
+                    mbs_verification = {
+                        "verified": False,
+                        "detail": str(exc),
+                        "law_no": job.law_no,
+                    }
             tree = client.fetch_article_tree(str(document.get("mevzuatId")))
             articles = list(iter_article_nodes(tree))
             skipping = bool(skip_until_article)
@@ -232,6 +264,12 @@ class MevzuatSourceAdapter:
                             ),
                             "official_gazette_url": gazette_verification.get("archive_url"),
                             "official_gazette_verification": gazette_verification,
+                            "verified_against_mbs": bool(
+                                mbs_verification.get("verified", False)
+                            ),
+                            "mbs_url": mbs_verification.get("detail_url"),
+                            "mbs_pdf_url": mbs_verification.get("pdf_url"),
+                            "mbs_verification": mbs_verification,
                         },
                     )
                     missing = self.validate(record)

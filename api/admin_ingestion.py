@@ -115,7 +115,17 @@ def ingestion_sources(_admin: UUID = Depends(require_admin)) -> dict:
                 "status": "active",
                 "embedded_in": "mevzuat",
                 "note": "Tarih, sayı ve mevzuat numarası resmî arşivle doğrulanır",
-            }
+            },
+            {
+                "source": "mevzuat_bilgi_sistemi",
+                "official_source_url": "https://www.mevzuat.gov.tr",
+                "status": "active",
+                "embedded_in": "mevzuat",
+                "note": (
+                    "Mevzuat numarası, başlığı, Resmî Gazete künyesi ve resmî "
+                    "konsolide PDF/DOC bağlantıları doğrulanır"
+                ),
+            },
         ],
         "planned": [],
     }

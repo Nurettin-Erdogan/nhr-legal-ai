@@ -65,6 +65,10 @@ def test_ingestion_sources_visible_to_admin(monkeypatch):
     }
     assert body["verification"][0]["source"] == "resmi_gazete"
     assert body["verification"][0]["status"] == "active"
+    assert {item["source"] for item in body["verification"]} == {
+        "resmi_gazete",
+        "mevzuat_bilgi_sistemi",
+    }
     assert body["planned"] == []
 
 

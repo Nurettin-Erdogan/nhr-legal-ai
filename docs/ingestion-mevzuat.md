@@ -4,6 +4,13 @@ Adalet Bakanlığı Bedesten JSON uçlarından (`bedesten.adalet.gov.tr/mevzuat`
 kanun maddelerini toplayıp V2 hukuk tablolarına aktaran ardışık düzen.
 Playwright kullanılmaz; portalın kendi JSON arayüzü konuşulur.
 
+Her kanun aktarımında iki ayrı resmî doğrulama uygulanır: Resmî Gazete
+arşivinden ilk yayım künyesi, Cumhurbaşkanlığı Mevzuat Bilgi Sistemi'nden
+kanun numarası/başlık/künye ve güncel konsolide PDF/DOC bağlantıları kontrol
+edilir. MBS için sitenin kendi JavaScript'inde yayımlanan
+`POST /anasayfa/MevzuatDatatable` sözleşmesi ve sonuçtaki resmî detay sayfası
+kullanılır; tahminî endpoint kullanılmaz.
+
 ## Tasarım
 
 Akış Yargıtay aktarımıyla aynı iki adıma ayrıldı:

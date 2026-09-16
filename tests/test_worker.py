@@ -78,6 +78,7 @@ def test_adapter_registry_exposes_active_sources():
     assert get_adapter("mevzuat").source_name == "mevzuat"
     assert get_adapter("aym").active is True
     assert get_adapter("resmi_gazete").active is False
+    assert get_adapter("mevzuat_bilgi_sistemi").active is False
     assert get_adapter("kdk").active is True
     assert get_adapter("kdk").authority == "Kamu Denetçiliği Kurumu"
 
@@ -252,7 +253,9 @@ def test_mevzuat_checkpoint_does_not_advance_past_quarantined_article(
         def fetch_article_html(self, madde_id):
             return f"<p>Geçerli madde metni {madde_id}.</p>"
 
-    adapter = MevzuatSourceAdapter(client=_AllHtml(), verify_gazette=False)
+    adapter = MevzuatSourceAdapter(
+        client=_AllHtml(), verify_gazette=False, verify_mbs=False
+    )
     real_validate = adapter.validate
 
     def validate_second_quarantine(record):
@@ -292,7 +295,9 @@ def test_mevzuat_checkpoint_does_not_advance_past_failed_article(
 
     get_worker_settings.cache_clear()
     adapter = MevzuatSourceAdapter(
-        client=_MevzuatClientSuccessThenQuarantine(), verify_gazette=False
+        client=_MevzuatClientSuccessThenQuarantine(),
+        verify_gazette=False,
+        verify_mbs=False,
     )
     outcomes = list(
         adapter.sync(
@@ -327,7 +332,9 @@ def test_mevzuat_resume_retries_after_last_successful_article(monkeypatch, tmp_p
         def fetch_article_html(self, madde_id):
             return f"<p>Geçerli madde metni {madde_id}.</p>"
 
-    adapter = MevzuatSourceAdapter(client=_AllGood(), verify_gazette=False)
+    adapter = MevzuatSourceAdapter(
+        client=_AllGood(), verify_gazette=False, verify_mbs=False
+    )
     outcomes = list(
         adapter.sync(
             SyncRequest(
@@ -350,6 +357,7 @@ def test_mevzuat_resume_retries_after_last_successful_article(monkeypatch, tmp_p
 
 def test_mevzuat_sync_attaches_official_gazette_verification(monkeypatch, tmp_path):
     from ingestion.mevzuat.archive import LegislationArchive
+    from ingestion.mevzuat_bilgi_sistemi.portal import MbsVerification
     from ingestion.resmi_gazete.portal import GazetteVerification
     from worker.adapters.mevzuat import MevzuatSourceAdapter
     from worker.config import get_worker_settings
@@ -385,6 +393,26 @@ def test_mevzuat_sync_attaches_official_gazette_verification(monkeypatch, tmp_pa
                 detail="sentetik doğrulama",
             )
 
+    class _MbsVerifier:
+        def verify_legislation(self, **kwargs):
+            assert kwargs["law_no"] == "4857"
+            assert kwargs["issue_no"] == "39999"
+            return MbsVerification(
+                verified=True,
+                law_no="4857",
+                law_name="İş Kanunu",
+                detail_url="https://www.mevzuat.gov.tr/mevzuat?MevzuatNo=4857",
+                pdf_url="https://www.mevzuat.gov.tr/MevzuatMetin/1.5.4857.pdf",
+                doc_url="https://www.mevzuat.gov.tr/MevzuatMetin/1.5.4857.doc",
+                requested_gazette_date=None,
+                observed_gazette_date="2003-06-10",
+                requested_gazette_no="39999",
+                observed_gazette_no="39999",
+                title_matches=True,
+                verified_at="2099-01-02T00:00:00+00:00",
+                detail="sentetik MBS doğrulaması",
+            )
+
     monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
     monkeypatch.setenv("MEVZUAT_DELAY_SECONDS", "0")
     monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
@@ -392,6 +420,7 @@ def test_mevzuat_sync_attaches_official_gazette_verification(monkeypatch, tmp_pa
     adapter = MevzuatSourceAdapter(
         client=_DocumentWithGazette(),
         gazette_client=_GazetteVerifier(),  # type: ignore[arg-type]
+        mbs_client=_MbsVerifier(),  # type: ignore[arg-type]
     )
     list(
         adapter.sync(
@@ -407,6 +436,8 @@ def test_mevzuat_sync_attaches_official_gazette_verification(monkeypatch, tmp_pa
     assert record.official_gazette_date == date(2099, 1, 2)
     assert record.metadata["verified_against_gazette"] is True
     assert record.metadata["official_gazette_url"].endswith("20990102.htm")
+    assert record.metadata["verified_against_mbs"] is True
+    assert record.metadata["mbs_pdf_url"].endswith("1.5.4857.pdf")
 
 
 def test_last_successful_sync_at_only_on_success(monkeypatch):

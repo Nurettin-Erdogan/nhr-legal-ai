@@ -84,3 +84,33 @@ class ResmiGazeteSourceAdapter(PlannedSourceAdapter):
             )
         except Exception as exc:  # noqa: BLE001
             return AdapterHealth(self.source_name, "failed", str(exc), active=False)
+
+
+class MevzuatBilgiSistemiSourceAdapter(PlannedSourceAdapter):
+    source_name = "mevzuat_bilgi_sistemi"
+    authority = "T.C. Cumhurbaşkanlığı Hukuk ve Mevzuat Genel Müdürlüğü"
+    official_source_url = "https://www.mevzuat.gov.tr"
+    verification_detail = (
+        "Bedesten mevzuat kayıtlarının künyesi ve resmî konsolide metin "
+        "bağlantıları mevzuat sync içinde doğrulanır"
+    )
+
+    def health_check(self) -> AdapterHealth:
+        from ingestion.mevzuat_bilgi_sistemi.portal import MbsClient
+
+        try:
+            result = MbsClient(max_retries=1).verify_legislation(
+                law_no="4857",
+                law_name="İş Kanunu",
+                publication_date=None,
+                issue_no="25134",
+            )
+            state = "healthy" if result.verified else "degraded"
+            return AdapterHealth(
+                self.source_name,
+                state,
+                result.detail,
+                active=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return AdapterHealth(self.source_name, "failed", str(exc), active=False)

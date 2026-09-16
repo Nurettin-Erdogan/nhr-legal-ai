@@ -48,7 +48,13 @@ jobs:
             database/init/006_v2_integrity_fixes.sql \
             database/init/007_message_ordering.sql \
             database/migrations/006_legal_data_layer.sql \
-            database/migrations/007_ingestion_worker.sql
+            database/migrations/007_ingestion_worker.sql \
+            database/migrations/008_current_source_integrity.sql \
+            database/migrations/009_kdk_source_checkpoint.sql \
+            database/migrations/010_activate_danistay_source.sql \
+            database/migrations/011_activate_resmi_gazete_verification.sql \
+            database/migrations/012_activate_kdk_source.sql \
+            database/migrations/013_activate_aym_source.sql
           do
             psql -h localhost -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1 -f "$f"
           done

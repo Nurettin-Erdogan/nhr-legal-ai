@@ -3,7 +3,8 @@
 Web uygulamasından bağımsız çalışan hukuk veri toplama servisi. Tarayıcı
 açık tutulmaz; masaüstü scraper yoktur. `ingestion/yargitay`,
 `ingestion/danistay`, `ingestion/mevzuat`, `ingestion/kdk` ve
-`ingestion/aym` HTTP istemcileri worker
+`ingestion/aym` HTTP istemcileri worker; Resmî Gazete ve Mevzuat Bilgi
+Sistemi istemcileri doğrulama katmanı
 tarafından orkestre edilir.
 
 ## Mimari
@@ -26,8 +27,8 @@ Worker hata verse bile FastAPI ve Next.js ayakta kalır. Korpus yazımı
 | **ACTIVE** | Mevzuat | https://bedesten.adalet.gov.tr/mevzuat | JSON/HTTP: `searchDocuments`, `mevzuatMaddeTree`, `getDocumentContent` |
 | **ACTIVE** | AYM | https://kararlarbilgibankasi.anayasa.gov.tr | Public arama JSON'u + public UDF karar dosyası |
 | **ACTIVE / VERIFICATION** | Resmî Gazete | https://www.resmigazete.gov.tr | Mevzuat sync içinde `/Home/Filter` + resmî arşiv künye teyidi |
+| **ACTIVE / VERIFICATION** | Mevzuat Bilgi Sistemi | https://www.mevzuat.gov.tr | Mevzuat sync içinde resmî `/anasayfa/MevzuatDatatable` araması + detay sayfasındaki konsolide PDF/DOC teyidi |
 | ACTIVE | KDK | https://kararlar.ombudsman.gov.tr | Public DataTables JSON künyesi + resmî karar PDF'i |
-| PLANNED | Mevzuat canonical | resmi mevzuat sistemi / Resmî Gazete | Bedesten transport kaynağıdır, hukuki kanon değildir |
 
 ## Scheduler
 
@@ -116,6 +117,13 @@ content_hash, source_version, is_current. Transport (Bedesten) ile hukuki kanon
 Gazete tarih/sayı/mevzuat numarası resmî arşivde eşleşirse arşiv URL'si ve
 doğrulama zamanıyla birlikte `verified_against_gazette=true` yazılır. Bu teyit,
 yayın tarihini kendiliğinden yürürlük tarihi yapmaz.
+
+Mevzuat Bilgi Sistemi doğrulaması aynı sync içinde kanun numarası, başlık ve
+Resmî Gazete künyesini karşılaştırır. Arama sonucundaki resmî detay sayfasında
+tekil konsolide PDF/DOC bağlantısı bulunmadan `verified_against_mbs=true`
+yazılmaz. Sonuç ve URL'ler `mbs_verification`, `mbs_url` ve `mbs_pdf_url`
+metadata alanlarında saklanır. MBS metni ikinci bir mevzuat korpusu olarak
+yazılmaz; böylece Bedesten maddeleriyle mükerrer kaynak oluşmaz.
 
 Eksik kritik alanlar `legal_source_quarantine` kuyruğuna düşer, `legal_sources`'a
 yazılmaz.
