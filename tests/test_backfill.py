@@ -58,12 +58,28 @@ def test_full_horizon_is_a_floor_and_migrates_mevzuat_off_starter():
             "window_from": "2024-05-01",
             "window_complete": True,
             "next_window_start": "2024-06-01",
+            "full_horizon_start": "2020-01-01",
+            "horizon_audit_version": 1,
         },
         horizon=horizon,
     )
     assert kept["next_window_start"] == "2024-06-01"
     assert kept["full_horizon_start"] == "2020-01-01"
     assert apply_full_horizon("yargitay", kept, horizon=horizon) == kept
+
+    unverified_gap = apply_full_horizon(
+        "danistay",
+        {
+            "window_from": "2020-01-01",
+            "window_complete": False,
+            "next_window_start": "2020-01-01",
+            "full_horizon_start": "1982-01-01",
+        },
+        horizon=date(1982, 1, 1),
+    )
+    assert unverified_gap["next_window_start"] == "1982-01-01"
+    assert unverified_gap["horizon_audit_version"] == 1
+    assert apply_full_horizon("danistay", unverified_gap, horizon=date(1982, 1, 1)) == unverified_gap
 
     empty = apply_full_horizon("kdk", {}, horizon=horizon)
     assert empty["next_window_start"] == "2020-01-01"

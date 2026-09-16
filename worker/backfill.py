@@ -20,6 +20,7 @@ from worker.scheduler import run_daemon
 logger = logging.getLogger("worker.backfill")
 
 DATE_WINDOW_SOURCES = frozenset({"yargitay", "danistay", "kdk"})
+HORIZON_AUDIT_VERSION = 1
 
 
 def _should_stop_never() -> bool:
@@ -98,9 +99,14 @@ def apply_full_horizon(
     mark = horizon.isoformat()
     progress = _cursor_progress_date(cursor)
     previous = str(cursor.get("full_horizon_start") or "")
-    if previous and previous > mark:
+    # A legacy cursor at 2020 does not prove that earlier published years were
+    # scanned. Revisit the verified horizon once; upserts remain idempotent.
+    if cursor.get("horizon_audit_version") != HORIZON_AUDIT_VERSION or (
+        previous and previous > mark
+    ):
         return {
             "full_horizon_start": mark,
+            "horizon_audit_version": HORIZON_AUDIT_VERSION,
             "next_window_start": mark,
             "window_complete": True,
             "reconciled": False,
@@ -108,9 +114,11 @@ def apply_full_horizon(
     if progress is not None and progress >= horizon:
         kept = dict(cursor)
         kept["full_horizon_start"] = mark
+        kept["horizon_audit_version"] = HORIZON_AUDIT_VERSION
         return kept
     return {
         "full_horizon_start": mark,
+        "horizon_audit_version": HORIZON_AUDIT_VERSION,
         "next_window_start": mark,
         "window_complete": True,
         "reconciled": False,

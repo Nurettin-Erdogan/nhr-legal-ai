@@ -79,7 +79,10 @@ Resmî portal HTTP 429 döndürürse aynı isteğe kısa aralıkla tekrar yükle
 CAPTCHA görülen kaynak otomatik aşılmaz ve bloklu olarak raporlanır.
 Yargıtay/Danıştay/KDK aylık pencereler kaynak `*_CORPUS_START` değerinden
 (doğrulanmış en eski hit; boş SUCCESS yıllar complete yazılmaz ancak
-taranabilir). Yargıtay tam tarama tarih penceresi + boş `arananKelime`
+taranabilir). Eski checkpoint 2020 gibi daha yeni bir yıldaysa ve eski
+ayların tarandığı kanıtlanamıyorsa, `horizon_audit_version` geçişi imleci
+bir kez resmî başlangıç tarihine geri alır; kayıtlar silinmez, tekrarlar
+tekilleştirilir. Yargıtay tam tarama tarih penceresi + boş `arananKelime`
 kullanır; tarihsiz boş kelime resmi portalde ERROR verir, varsayılan `"karar"`
 filtresi kullanılmaz. Pencere ancak
 `expected = seen = stored+duplicate+quarantined` ve `failed=0` iken
