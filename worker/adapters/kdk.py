@@ -9,9 +9,11 @@ from ingestion.kdk.models import KdkDecision
 from ingestion.kdk.parser import decision_from_row
 from ingestion.kdk.portal import BASE_URL, KdkPortalClient, KdkPortalError, search_form
 from ingestion.kdk.store import upsert_decision
+from ingestion.raw_capture import save_raw_response
 from worker.config import get_worker_settings
 from worker.lanes import advance_window_start, resolve_sync_window
 from worker.models import AdapterHealth, RecordOutcome, SyncRequest
+from worker.reconciliation import coverage_cursor
 
 
 class KdkSourceAdapter:
@@ -90,7 +92,7 @@ class KdkSourceAdapter:
             corpus_start = settings.kdk_corpus_start
             lookback_days = settings.current_lookback_days
         except RuntimeError:
-            corpus_start = date(2020, 1, 1)
+            corpus_start = date(2017, 1, 1)
             lookback_days = 45
         return resolve_sync_window(
             request,
@@ -117,7 +119,19 @@ class KdkSourceAdapter:
         page_size = min(20, max_records)
         client.begin_search(keyword)
 
-        processed = seen = stored = duplicate = failed = 0
+        processed = seen = stored = duplicate = failed = quarantined = 0
+        expected: int | None = None
+        window_complete = False
+        halted_on_failure = False
+        same_window = (
+            request.resume
+            and cursor.get("window_from") == window_from.isoformat()
+            and cursor.get("window_to") == window_to.isoformat()
+        )
+        prior_seen = int(cursor.get("window_seen_total") or 0) if same_window else 0
+        prior_stored = int(cursor.get("window_stored_total") or 0) if same_window else 0
+        prior_dup = int(cursor.get("window_duplicate_total") or 0) if same_window else 0
+        prior_q = int(cursor.get("window_quarantined_total") or 0) if same_window else 0
         expected: int | None = None
         window_complete = False
         halted_on_failure = False
@@ -134,7 +148,6 @@ class KdkSourceAdapter:
             )
             expected = page.records_filtered
             if not page.rows:
-                window_complete = True
                 break
             for row in page.rows:
                 if processed >= max_records or should_stop():
@@ -156,18 +169,28 @@ class KdkSourceAdapter:
                         sleep(settings.kdk_delay_seconds)
                     pdf, source_url = client.download_pdf(publication_path, raw_date)
                     extra["requests_made"] = 2
+                    save_raw_response(
+                        root=settings.snapshot_dir,
+                        source="kdk",
+                        record_id=record_id or publication_path,
+                        url=source_url,
+                        method="GET",
+                        body=pdf,
+                        request={"publication_path": publication_path, "date": raw_date},
+                    )
                     decision = decision_from_row(row, pdf, source_url=source_url)
                     missing = self.validate(decision)
                     if missing:
-                        failed += 1
+                        quarantined += 1
                         yield "quarantined", {
                             **extra,
                             "external_id": decision.external_id,
+                            "reason_code": "missing_fields",
                             "reason": "missing_fields:" + ",".join(missing),
                             "raw": {"record_id": record_id, "missing": missing},
                         }
-                        halted_on_failure = True
-                        break
+                        offset += 1
+                        continue
                     if dry_run:
                         stored += 1
                         yield "created", {**extra, "external_id": decision.external_id, "dry_run": True}
@@ -196,11 +219,17 @@ class KdkSourceAdapter:
             if halted_on_failure:
                 break
             if offset >= (expected or 0) or len(page.rows) < request_length:
-                window_complete = True
                 break
 
-        if should_stop():
-            window_complete = False
+        coverage = coverage_cursor(
+            expected=expected,
+            seen=prior_seen + seen,
+            stored=prior_stored + stored,
+            duplicate=prior_dup + duplicate,
+            quarantined=prior_q + quarantined,
+            failed=failed,
+        )
+        window_complete = bool(coverage["reconciled"]) and not should_stop()
         next_start = advance_window_start(
             window_from,
             window_complete,
@@ -212,13 +241,13 @@ class KdkSourceAdapter:
             "page": 1 + (offset // page_size) if page_size else 1,
             "window_from": window_from.isoformat(),
             "window_to": window_to.isoformat(),
-            "window_complete": window_complete,
             "next_window_start": next_start.isoformat(),
             "keyword": keyword,
-            "expected_count": expected,
-            "seen_count": seen,
-            "stored_count": stored,
-            "duplicate_count": duplicate,
-            "failed_count": failed,
             "chamber": "",
+            "window_seen_total": 0 if window_complete else prior_seen + seen,
+            "window_stored_total": 0 if window_complete else prior_stored + stored,
+            "window_duplicate_total": 0 if window_complete else prior_dup + duplicate,
+            "window_quarantined_total": 0 if window_complete else prior_q + quarantined,
+            **coverage,
+            "window_complete": window_complete,
         }

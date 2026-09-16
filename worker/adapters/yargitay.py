@@ -7,6 +7,7 @@ from pathlib import Path
 from time import sleep
 from typing import Any, Callable
 
+from ingestion.raw_capture import save_raw_response
 from ingestion.yargitay.models import CourtDecision
 from ingestion.yargitay.portal import (
     BASE_URL,
@@ -24,6 +25,7 @@ from ingestion.yargitay.store import upsert_decision
 from worker.config import get_worker_settings
 from worker.lanes import advance_window_start, resolve_sync_window
 from worker.models import AdapterHealth, RecordOutcome, SyncRequest
+from worker.reconciliation import coverage_cursor
 
 logger = logging.getLogger("worker.yargitay")
 
@@ -48,8 +50,9 @@ class YargitaySourceAdapter:
         )
         try:
             client._request("")
+            today = date.today()
             filters = {
-                "arananKelime": "kanun",
+                "arananKelime": "",
                 "birimYrgKurulDaire": "",
                 "birimYrgHukukDaire": "",
                 "birimYrgCezaDaire": "",
@@ -59,8 +62,8 @@ class YargitaySourceAdapter:
                 "kararYil": "",
                 "kararIlkSiraNo": "",
                 "kararSonSiraNo": "",
-                "baslangicTarihi": "",
-                "bitisTarihi": "",
+                "baslangicTarihi": today.replace(day=1).strftime("%d.%m.%Y"),
+                "bitisTarihi": today.strftime("%d.%m.%Y"),
                 "siralama": 3,
                 "siralamaDirection": "desc",
                 "pageSize": 1,
@@ -136,7 +139,7 @@ class YargitaySourceAdapter:
             corpus_start = settings.yargitay_corpus_start
             lookback_days = settings.current_lookback_days
         except RuntimeError:
-            corpus_start = date(2020, 1, 1)
+            corpus_start = date(2000, 1, 1)
             lookback_days = 45
         return resolve_sync_window(
             request,
@@ -165,7 +168,7 @@ class YargitaySourceAdapter:
             row_offset = 0
         settings = self._settings()
         max_records = request.max_records or settings.yargitay_max_records
-        keyword = request.keyword.strip() or str(cursor.get("keyword") or "karar")
+        keyword = request.keyword.strip() or str(cursor.get("keyword") or "")
         chamber = request.chamber.strip() or str(cursor.get("chamber") or "")
         config = ScraperConfig(
             keyword=keyword,
@@ -185,6 +188,16 @@ class YargitaySourceAdapter:
         stored_in_window = 0
         duplicate_in_window = 0
         failed_in_window = 0
+        quarantined_in_window = 0
+        same_window = (
+            request.resume
+            and cursor.get("window_from") == window_from.isoformat()
+            and cursor.get("window_to") == window_to.isoformat()
+        )
+        prior_seen = int(cursor.get("window_seen_total") or 0) if same_window else 0
+        prior_stored = int(cursor.get("window_stored_total") or 0) if same_window else 0
+        prior_dup = int(cursor.get("window_duplicate_total") or 0) if same_window else 0
+        prior_q = int(cursor.get("window_quarantined_total") or 0) if same_window else 0
         expected: int | None = None
         window_complete = False
 
@@ -202,7 +215,6 @@ class YargitaySourceAdapter:
                     raise PortalError(
                         f"Yargıtay {page_number}. sayfa boş, ancak portal {expected} sonuç bildiriyor"
                     )
-                window_complete = True
                 break
             for row_index, row in enumerate(page.rows[row_offset:], start=row_offset):
                 if should_stop() or processed >= max_records:
@@ -221,19 +233,28 @@ class YargitaySourceAdapter:
                         sleep(settings.yargitay_delay_seconds)
                     html = scraper.client.fetch_document_html(row.document_id)
                     extra["requests_made"] = 2
+                    save_raw_response(
+                        root=settings.snapshot_dir,
+                        source="yargitay",
+                        record_id=row.document_id,
+                        url=scraper.client.base_url + f"getDokuman?id={row.document_id}",
+                        method="POST",
+                        body=html.encode("utf-8", errors="replace"),
+                        request={"id": row.document_id, "window_from": window_from.isoformat()},
+                    )
                     decision = decision_from_portal_row(row, html, base_url=scraper.client.base_url)
                     missing = self.validate(decision)
                     if missing:
                         yield "quarantined", {
                             **extra,
                             "external_id": decision.external_id,
+                            "reason_code": "missing_fields",
                             "reason": "missing_fields:" + ",".join(missing),
                             "raw": {"document_id": row.document_id, "missing": missing},
                         }
-                        failed_in_window += 1
-                        # Retry this row next run; never mark a window complete
-                        # while a decision has not been safely persisted.
-                        break
+                        quarantined_in_window += 1
+                        row_offset = row_index + 1
+                        continue
                     scraper.archive.save(decision)
                     if dry_run:
                         yield "created", {**extra, "external_id": decision.external_id, "dry_run": True}
@@ -264,14 +285,20 @@ class YargitaySourceAdapter:
                     break
             if row_offset < len(page.rows):
                 break
-            if page_number * page_size >= expected:
-                window_complete = True
+            if expected is not None and page_number * page_size >= expected:
                 break
             page_number += 1
             row_offset = 0
 
-        if should_stop():
-            window_complete = False
+        coverage = coverage_cursor(
+            expected=expected,
+            seen=prior_seen + seen_in_window,
+            stored=prior_stored + stored_in_window,
+            duplicate=prior_dup + duplicate_in_window,
+            quarantined=prior_q + quarantined_in_window,
+            failed=failed_in_window,
+        )
+        window_complete = bool(coverage["reconciled"]) and not should_stop()
 
         next_start = advance_window_start(
             window_from,
@@ -284,13 +311,13 @@ class YargitaySourceAdapter:
             "row_offset": 0 if window_complete else row_offset,
             "window_from": window_from.isoformat(),
             "window_to": window_to.isoformat(),
-            "window_complete": window_complete,
             "next_window_start": next_start.isoformat(),
             "keyword": keyword,
-            "expected_count": expected,
-            "seen_count": seen_in_window,
-            "stored_count": stored_in_window,
-            "duplicate_count": duplicate_in_window,
-            "failed_count": failed_in_window,
             "chamber": chamber,
+            "window_seen_total": 0 if window_complete else prior_seen + seen_in_window,
+            "window_stored_total": 0 if window_complete else prior_stored + stored_in_window,
+            "window_duplicate_total": 0 if window_complete else prior_dup + duplicate_in_window,
+            "window_quarantined_total": 0 if window_complete else prior_q + quarantined_in_window,
+            **coverage,
+            "window_complete": window_complete,
         }

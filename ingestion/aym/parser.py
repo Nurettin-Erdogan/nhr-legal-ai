@@ -6,7 +6,7 @@ from zipfile import BadZipFile, ZipFile
 import xml.etree.ElementTree as ET
 
 from ingestion.aym.portal import AymDecisionRow, AymPortalError
-from ingestion.text import content_hash, normalize_text
+from ingestion.text import content_hash, html_to_text, normalize_text
 from ingestion.yargitay.models import CourtDecision
 
 MAX_UDF_BYTES = 20 * 1024 * 1024
@@ -54,6 +54,52 @@ def extract_udf_text(raw: bytes) -> str:
     return text
 
 
+def decision_from_file(
+    row: AymDecisionRow,
+    raw: bytes,
+    *,
+    download_url: str,
+    filename: str,
+    fetched_at: datetime | None = None,
+) -> CourtDecision:
+    if filename.lower().endswith(".html"):
+        text = normalize_text(html_to_text(raw.decode("utf-8", errors="replace")))
+        if len(text) < 100:
+            raise AymPortalError("AYM HTML içinde yeterli karar metni bulunamadı")
+        fetched_at = fetched_at or datetime.now(UTC)
+        if not row.decision_date:
+            raise AymPortalError("AYM karar tarihi eksik")
+        docket = row.application_no or str(row.official_id)
+        title = (
+            f"AYM {row.decision_type}, {docket} "
+            f"({row.decision_date.strftime('%d.%m.%Y')})"
+        )
+        metadata = {
+            "source_adapter": "aym",
+            "canonical_source_name": "Anayasa Mahkemesi Kararlar Bilgi Bankası",
+            "ingestion_method": "aym_public_json_html",
+            "source_document_id": row.official_id,
+            "decision_type": row.decision_type,
+            "official_download_url": download_url,
+            "decision_date": row.decision_date.isoformat(),
+        }
+        return CourtDecision(
+            court_name="Anayasa Mahkemesi",
+            chamber=row.chamber or None,
+            docket_no=docket,
+            decision_no=None,
+            decision_date=row.decision_date,
+            title=title,
+            raw_text=text,
+            external_id=row.external_id,
+            content_hash=content_hash(text),
+            source_url=row.source_url,
+            scraped_at=fetched_at,
+            metadata=metadata,
+        )
+    return decision_from_udf(row, raw, download_url=download_url, fetched_at=fetched_at)
+
+
 def decision_from_udf(
     row: AymDecisionRow,
     udf: bytes,
@@ -65,11 +111,13 @@ def decision_from_udf(
         raise AymPortalError("AYM karar tarihi eksik")
     raw_text = extract_udf_text(udf)
     compact = "".join(raw_text.split())
-    if row.application_no not in raw_text and row.application_no.replace("/", "") not in compact:
-        raise AymPortalError("AYM UDF başvuru numarası arama künyesiyle eşleşmiyor")
+    if row.decision_type == "BireyselBasvuru" and row.application_no:
+        if row.application_no not in raw_text and row.application_no.replace("/", "") not in compact:
+            raise AymPortalError("AYM UDF başvuru numarası arama künyesiyle eşleşmiyor")
     fetched_at = fetched_at or datetime.now(UTC)
+    docket = row.application_no or str(row.official_id)
     title = (
-        f"AYM Bireysel Başvuru, B. No: {row.application_no} "
+        f"AYM {row.decision_type}, {docket} "
         f"({row.decision_date.strftime('%d.%m.%Y')})"
     )
     metadata = {
@@ -90,7 +138,7 @@ def decision_from_udf(
     return CourtDecision(
         court_name="Anayasa Mahkemesi",
         chamber=row.chamber or None,
-        docket_no=row.application_no,
+        docket_no=docket,
         decision_no=None,
         decision_date=row.decision_date,
         title=title,

@@ -144,8 +144,12 @@ class YargitayScraper:
             raise ValueError("max_decisions pozitif olmalidir")
         if config.page_size <= 0:
             raise ValueError("page_size pozitif olmalidir")
-        if not config.keyword.strip() and not config.chamber.strip():
-            raise ValueError("En az bir arama kelimesi veya daire verilmelidir")
+        has_dates = config.decision_date_from is not None and config.decision_date_to is not None
+        if not config.keyword.strip() and not config.chamber.strip() and not has_dates:
+            raise ValueError(
+                "Yargıtay tam tarama için tarih penceresi gerekir; "
+                "tarihsiz boş kelime resmi portalde ERROR döner"
+            )
         if (
             config.decision_date_from
             and config.decision_date_to

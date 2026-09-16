@@ -59,13 +59,13 @@ yoracak kadar sık değildir.
 | `MEVZUAT_MAX_ARTICLES_PER_RUN` | 50 | Bir turda en fazla madde |
 | `KDK_MAX_RECORDS_PER_RUN` | 40 | Bir turda en fazla KDK kararı |
 | `AYM_MAX_RECORDS_PER_RUN` | 40 | Bir turda en fazla AYM kararı |
-| `YARGITAY_CORPUS_START` | 2020-01-01 | Tam korpus için ilk ay penceresi |
-| `DANISTAY_CORPUS_START` | 2020-01-01 | Danıştay için ilk ay penceresi |
-| `KDK_CORPUS_START` | 2020-01-01 | KDK için ilk ay penceresi |
+| `YARGITAY_CORPUS_START` | 2000-01-01 | Yargıtay: boş kelime+yıl 2000'de hit, 1995 SUCCESS 0 |
+| `DANISTAY_CORPUS_START` | 1982-01-01 | Danıştay: 1981 SUCCESS 0, 1982 hit |
+| `KDK_CORPUS_START` | 2017-01-01 | KDK IndexPaging tarih filtresi 2017 hit, 2016 SUCCESS 0 |
 | `CURRENT_LOOKBACK_DAYS` | 45 | Güncel şeridin taradığı son gün sayısı |
 | `CURRENT_SYNC_INTERVAL_MINUTES` | 180 | Güncel şerit lookback turunu bitirip ufuğa sarıldıktan sonra |
 | `CURRENT_RETRY_INTERVAL_MINUTES` | 60 | Güncel şerit ayı bitirmediyse veya lookback içinde sonraki aya geçiyorsa |
-| `FULL_CORPUS_START` | 2020-01-01 | `backfill` tarihsel tabanı; daha eski imleç buraya alınır, ileri imleç geri sarılmaz |
+| `FULL_CORPUS_START` | 2000-01-01 | Yalnız AYM gibi tarih penceresi olmayan kaynaklarda yedek; kaynak tabanı ezmez |
 | `BACKFILL_PAUSE_SECONDS` | 2 | Full backfill turları arası kısa bekleme |
 | `MEVZUAT_DISCOVERY_TYPES` | KANUN,KHK,... | Bedesten keşif türleri |
 | `EMBED_LIMIT_PER_RUN` | 200 | Her sync sonrası en fazla yeni chunk embedding |
@@ -73,10 +73,16 @@ yoracak kadar sık değildir.
 `python -m worker.runner backfill --source all` tarihsel korpusu checkpoint ile
 doldurur. `--source all` varsayılan olarak her ACTIVE kaynağı ayrı süreçte
 çalıştırır (aynı portala iki süreç yok). Tek süreç için `--serial`.
-Yargıtay/Danıştay/KDK aylık pencereler `FULL_CORPUS_START` (varsayılan
-2020-01-01) tabanından bugüne; 1980–2019 taranmaz ve `complete` yazılmaz.
-AYM global sayfa, mevzuat Bedesten `searchDocuments` keşfi. Madde ağacı olmayan
-kanunlar karantinaya düşer, uydurma madde yazılmaz, katalog ilerler. Tur başına
+Yargıtay/Danıştay/KDK aylık pencereler kaynak `*_CORPUS_START` değerinden
+(doğrulanmış en eski hit; boş SUCCESS yıllar complete yazılmaz ancak
+taranabilir). Yargıtay tam tarama tarih penceresi + boş `arananKelime`
+kullanır; tarihsiz boş kelime resmi portalde ERROR verir, varsayılan `"karar"`
+filtresi kullanılmaz. Pencere ancak
+`expected = seen = stored+duplicate+quarantined` ve `failed=0` iken
+complete olur. AYM `kararTipi` değerleri resmi search 422 listesidir:
+BireyselBasvuru, NormDenetimi, SiyasiParti, YuceDivan, YasamaDokunulmazligi;
+her tür ayrı partition. CAPTCHA bypass yoktur. Raw yanıtlar `data/raw/<kaynak>/raw`
+altında URL, SHA256, fetched_at ile saklanır.
 mevcut rate-limit ve `*_MAX_*` tavanları korunur; süreç kesilirse aynı komut
 kaldığı yerden devam eder. Her başarılı turdan sonra `legal_chunks` içindeki
 yeni parçalar embed edilir. Kaynak tarihsel olarak bitince incremental

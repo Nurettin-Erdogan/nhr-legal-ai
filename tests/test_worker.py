@@ -237,10 +237,9 @@ def test_danistay_quarantined_row_is_retried_before_window_advances(monkeypatch,
                     date_to=date(2026, 1, 31), max_records=2),
         cursor={}, connection=None, dry_run=True, should_stop=lambda: False,
     ))
-    assert [status for status, _ in outcomes] == ["quarantined"]
-    assert adapter.last_cursor["page"] == 1
-    assert adapter.last_cursor["row_offset"] == 0
-    assert adapter.last_cursor["window_complete"] is False
+    assert [status for status, _ in outcomes] == ["quarantined", "created"]
+    assert adapter.last_cursor["reconciled"] is True
+    assert adapter.last_cursor["window_complete"] is True
 
 
 def test_adapter_registry_exposes_active_sources():
@@ -493,10 +492,11 @@ def test_yargitay_failed_row_is_retried_before_window_advances(monkeypatch, tmp_
             should_stop=lambda: False,
         )
     )
-    assert [status for status, _ in outcomes] == ["quarantined"]
-    assert adapter.last_cursor["page"] == 1
-    assert adapter.last_cursor["row_offset"] == 0
-    assert adapter.last_cursor["window_complete"] is False
+    assert [status for status, _ in outcomes] == ["quarantined", "created"]
+    assert adapter.last_cursor["quarantined_count"] == 1
+    assert adapter.last_cursor["stored_count"] == 1
+    assert adapter.last_cursor["reconciled"] is True
+    assert adapter.last_cursor["window_complete"] is True
 
 
 def test_malformed_schema_health_is_failed():

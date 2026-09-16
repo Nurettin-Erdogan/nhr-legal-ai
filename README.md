@@ -26,8 +26,8 @@ doğrulanır; doğrulama kanıtı kaynak metadata'sında saklanır.
 
 `backfill --source all` her kaynağı ayrı süreçte çeker; aynı resmi portala
 iki süreç bağlanmaz. Delay, CAPTCHA bypass ve metinsiz kayıt yoktur.
-1980 arşivi taranmaz (taban 2020-01-01); taranmayan yıllar tamamlanmış
-yazılmaz. Tek süreç için `--serial`.
+Tarihsel taban kaynak bazlıdır (Yargıtay 2000, Danıştay 1982, KDK 2017);
+taranmayan dönem complete yazılmaz. Azure 1 GB için `--serial --no-embed`.
 
 Eski tek seferlik toplayıcı hâlâ durur:
 

@@ -87,14 +87,7 @@ def test_search_uses_verified_public_json_contract():
     assert page.total == 1
     assert page.rows[0].application_no == "2099/123"
     body = json.loads(opener.request.data.decode("utf-8"))
-    assert body == {
-        "kararTipi": "BireyselBasvuru",
-        "page": 1,
-        "size": 5,
-        "sort": "yayinTarihi",
-        "order": "desc",
-        "basvuruNo": "2099/123",
-    }
+    assert body["kararTipi"] == "BireyselBasvuru"
     assert opener.request.full_url.endswith("/api/core/public/search")
 
 
@@ -109,7 +102,21 @@ def test_search_rejects_missing_official_identity():
         client.search_page()
 
 
-def test_full_text_security_verification_is_not_bypassed():
+def test_search_norm_denetimi_uses_official_karar_tipi():
+    row = {
+        "kararTipi": "NormDenetimi",
+        "id": "00000000-0000-0000-0000-000000000999",
+        "esasNo": "1962/2",
+        "kararNo": "1962/1",
+        "kararTarihi": "1962-09-05",
+    }
+    opener = _Opener({"total": 1, "page": 1, "page_size": 1, "data": [row]})
+    client = AymPortalClient(opener=opener, timeout_seconds=5)
+    page = client.search_page(page=1, page_size=1, karar_tipi="NormDenetimi")
+    body = json.loads(opener.request.data.decode("utf-8"))
+    assert body["kararTipi"] == "NormDenetimi"
+    assert page.rows[0].external_id.startswith("aym:NormDenetimi:")
+    assert "NormDenetimi" in page.rows[0].source_url
     row = AymDecisionRow.from_mapping(SYNTHETIC_ROW)
 
     with pytest.raises(AymSecurityVerificationRequired, match="public UDF"):

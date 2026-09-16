@@ -7,6 +7,12 @@ from functools import lru_cache
 
 from dotenv import load_dotenv
 
+from ingestion.corpus_bounds import (
+    DANISTAY_CORPUS_START,
+    KDK_CORPUS_START,
+    YARGITAY_CORPUS_START,
+)
+
 
 def _int_env(name: str, default: int) -> int:
     raw = os.getenv(name)
@@ -126,15 +132,15 @@ def get_worker_settings() -> WorkerSettings:
         mevzuat_max_articles=_int_env("MEVZUAT_MAX_ARTICLES_PER_RUN", 50),
         kdk_max_records=_int_env("KDK_MAX_RECORDS_PER_RUN", 40),
         aym_max_records=_int_env("AYM_MAX_RECORDS_PER_RUN", 40),
-        yargitay_corpus_start=_date_env("YARGITAY_CORPUS_START", date(2020, 1, 1)),
-        danistay_corpus_start=_date_env("DANISTAY_CORPUS_START", date(2020, 1, 1)),
-        kdk_corpus_start=_date_env("KDK_CORPUS_START", date(2020, 1, 1)),
+        yargitay_corpus_start=_date_env("YARGITAY_CORPUS_START", YARGITAY_CORPUS_START),
+        danistay_corpus_start=_date_env("DANISTAY_CORPUS_START", DANISTAY_CORPUS_START),
+        kdk_corpus_start=_date_env("KDK_CORPUS_START", KDK_CORPUS_START),
         snapshot_dir=os.getenv("INGESTION_SNAPSHOT_DIR", "data/raw").strip() or "data/raw",
         max_retries=_int_env("INGESTION_MAX_RETRIES", 3),
         current_lookback_days=_int_env("CURRENT_LOOKBACK_DAYS", 45),
         current_interval_minutes=_int_env("CURRENT_SYNC_INTERVAL_MINUTES", 180),
         current_retry_interval_minutes=_int_env("CURRENT_RETRY_INTERVAL_MINUTES", 60),
-        full_corpus_start=_date_env("FULL_CORPUS_START", date(2020, 1, 1)),
+        full_corpus_start=_date_env("FULL_CORPUS_START", YARGITAY_CORPUS_START),
         backfill_pause_seconds=_float_env("BACKFILL_PAUSE_SECONDS", 2.0),
         mevzuat_discovery_types=_csv_env(
             "MEVZUAT_DISCOVERY_TYPES", DEFAULT_MEVZUAT_DISCOVERY_TYPES

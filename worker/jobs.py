@@ -169,7 +169,7 @@ def run_sync(
                         stored_count=int(cursor.get("stored_count") or 0),
                         duplicate_count=int(cursor.get("duplicate_count") or 0),
                         failed_count=int(cursor.get("failed_count") or 0),
-                        complete=bool(cursor.get("window_complete")) and lane != "current",
+                        complete=bool(cursor.get("reconciled")) and lane != "current",
                     )
             checkpoint.last_cursor = cursor
             checkpoint.last_external_id = last_external_id

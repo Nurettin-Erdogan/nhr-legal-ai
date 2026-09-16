@@ -602,4 +602,6 @@ class MevzuatSourceAdapter:
             "law_no": pinned_law_no or current_law_no,
             "last_article_no": last_article,
             "complete": complete,
+            "reconciled": complete,
+            "window_complete": complete,
         }

@@ -21,6 +21,8 @@ from urllib.request import Request, build_opener
 from ingestion.http import is_retryable_status, retry_wait_seconds
 from ingestion.text import html_to_text
 
+from ingestion.corpus_bounds import AYM_DECISION_TYPES
+
 BASE_URL = "https://kararlarbilgibankasi.anayasa.gov.tr/"
 SEARCH_PATH = "api/core/public/search"
 
@@ -56,15 +58,17 @@ def application_external_id(application_no: str) -> str:
     return f"aym:bb:{normalized}"
 
 
-def decision_url(official_id: str, *, base_url: str = BASE_URL) -> str:
+def decision_url(official_id: str, *, karar_tipi: str = "BireyselBasvuru", base_url: str = BASE_URL) -> str:
     normalized = official_id.strip()
     if not normalized:
         raise ValueError("AYM resmî karar kimliği boş olamaz")
+    if karar_tipi not in AYM_DECISION_TYPES:
+        raise ValueError(f"AYM kararTipi resmi sözleşmede yok: {karar_tipi}")
     encoded = base64.b64encode(f"kbb:{normalized}".encode("utf-8")).decode("ascii")
     return urljoin(
         base_url.rstrip("/") + "/",
-        "kbb/pages/search/BireyselBasvuru?"
-        f"id={quote(encoded, safe='')}&type=BireyselBasvuru",
+        f"kbb/pages/search/{karar_tipi}?"
+        f"id={quote(encoded, safe='')}&type={quote(karar_tipi, safe='')}",
     )
 
 
@@ -90,7 +94,11 @@ class AymDecisionRow:
             decision_type=str(value.get("kararTipi") or "").strip(),
             application_no=str(value.get("basvuruNo") or "").strip(),
             applicant_name=str(value.get("basvuruAdi") or "").strip(),
-            decision_date=parse_portal_date(value.get("kararTarihi")),
+            decision_date=(
+                parse_portal_date(value.get("kararTarihi"))
+                or parse_portal_date(value.get("resmiGazeteTarihi"))
+                or parse_portal_date(value.get("yayinTarihi"))
+            ),
             application_date=parse_portal_date(value.get("basvuruTarihi")),
             publication_date=parse_portal_date(value.get("yayinTarihi")),
             chamber=str(value.get("kararVerenBirimLabel") or "").strip(),
@@ -101,11 +109,15 @@ class AymDecisionRow:
 
     @property
     def external_id(self) -> str:
-        return application_external_id(self.application_no)
+        if self.decision_type == "BireyselBasvuru" and self.application_no:
+            return application_external_id(self.application_no)
+        if not self.official_id:
+            raise ValueError("AYM resmî karar kimliği boş olamaz")
+        return f"aym:{self.decision_type}:{self.official_id}"
 
     @property
     def source_url(self) -> str:
-        return decision_url(self.official_id)
+        return decision_url(self.official_id, karar_tipi=self.decision_type or "BireyselBasvuru")
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,10 +138,12 @@ class AymDecisionFile:
             folder, filename = parts[files_index + 1 : files_index + 3]
         except (ValueError, IndexError) as exc:
             raise AymPortalError("AYM UDF dosya yolu beklenen yapıda değil") from exc
-        if not filename.lower().endswith(".udf"):
-            raise AymPortalError("AYM karar dosyası UDF formatında değil")
-        if folder != "bireysel-basvuru" or not re.fullmatch(r"[A-Za-z0-9_.-]+", filename):
-            raise AymPortalError("AYM UDF dosya yolu güvenli değil")
+        if not filename.lower().endswith((".udf", ".html")):
+            raise AymPortalError("AYM karar dosyası UDF veya HTML formatında değil")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", folder) or not re.fullmatch(
+            r"[A-Za-z0-9_.-]+", filename
+        ):
+            raise AymPortalError("AYM dosya yolu güvenli değil")
         return cls(
             file_id=str(value.get("id") or "").strip(),
             decision_id=str(value.get("kararId") or "").strip(),
@@ -218,13 +232,16 @@ class AymPortalClient:
         page_size: int = 20,
         application_no: str | None = None,
         keyword: str | None = None,
+        karar_tipi: str = "BireyselBasvuru",
     ) -> SearchPage:
         if page < 1:
             raise ValueError("AYM sayfa numarası en az 1 olmalıdır")
         if not 1 <= page_size <= 100:
             raise ValueError("AYM sayfa boyutu 1 ile 100 arasında olmalıdır")
+        if karar_tipi not in AYM_DECISION_TYPES:
+            raise ValueError(f"AYM kararTipi resmi sözleşmede yok: {karar_tipi}")
         body: dict[str, Any] = {
-            "kararTipi": "BireyselBasvuru",
+            "kararTipi": karar_tipi,
             "page": page,
             "size": page_size,
             "sort": "yayinTarihi",
@@ -244,8 +261,10 @@ class AymPortalClient:
             for item in data
             if isinstance(item, Mapping)
         )
-        if any(not row.official_id or not row.application_no for row in rows):
-            raise AymPortalError("AYM arama sonucunda resmî id veya başvuru no eksik")
+        if any(not row.official_id for row in rows):
+            raise AymPortalError("AYM arama sonucunda resmî id eksik")
+        if karar_tipi == "BireyselBasvuru" and any(not row.application_no for row in rows):
+            raise AymPortalError("AYM bireysel başvuruda başvuru no eksik")
         try:
             total = int(payload.get("total") or 0)
             response_page = int(payload.get("page") or page)
@@ -275,15 +294,20 @@ class AymPortalClient:
             raise AymPortalError("AYM karar dosyaları yanıtı geçersiz") from exc
         if not isinstance(data, list):
             raise AymPortalError("AYM karar dosyaları listesi bulunamadı")
-        files = tuple(
-            AymDecisionFile.from_mapping(value)
-            for value in data
-            if isinstance(value, Mapping)
-            and str(value.get("url") or "").lower().endswith(".udf")
-        )
+        files = []
+        for value in data:
+            if not isinstance(value, Mapping):
+                continue
+            raw_url = str(value.get("url") or "").strip()
+            if not raw_url or raw_url.casefold() == "url":
+                continue
+            try:
+                files.append(AymDecisionFile.from_mapping(value))
+            except AymPortalError:
+                continue
         if not files:
-            raise AymFullTextUnavailable("AYM kararı için public UDF tam metni bulunamadı")
-        return files
+            raise AymFullTextUnavailable("AYM kararı için public tam metin dosyası bulunamadı")
+        return tuple(files)
 
     def download_udf(self, decision_file: AymDecisionFile) -> tuple[bytes, str]:
         path = (
@@ -300,8 +324,10 @@ class AymPortalClient:
             },
         )
         raw = self._open(request)
-        if not raw.startswith(b"PK"):
+        if decision_file.filename.lower().endswith(".udf") and not raw.startswith(b"PK"):
             raise AymPortalError("AYM public UDF yanıtı geçerli ZIP arşivi değil")
+        if decision_file.filename.lower().endswith(".html") and not raw.strip():
+            raise AymPortalError("AYM public HTML tam metni boş")
         return raw, url
 
     def fetch_full_text(self, _row: AymDecisionRow) -> str:

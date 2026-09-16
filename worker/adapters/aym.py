@@ -4,17 +4,20 @@ from collections.abc import Iterator
 from time import sleep
 from typing import Any, Callable
 
-from ingestion.aym.parser import decision_from_udf
+from ingestion.aym.parser import decision_from_file
 from ingestion.aym.portal import (
     BASE_URL,
     AymFullTextUnavailable,
     AymPortalClient,
     AymPortalError,
 )
+from ingestion.corpus_bounds import AYM_DECISION_TYPES
+from ingestion.raw_capture import save_raw_response
 from ingestion.yargitay.models import CourtDecision
 from ingestion.yargitay.store import upsert_decision
 from worker.config import get_worker_settings
 from worker.models import AdapterHealth, RecordOutcome, SyncRequest
+from worker.reconciliation import coverage_cursor
 
 
 class AymSourceAdapter:
@@ -56,7 +59,7 @@ class AymSourceAdapter:
 
     def validate(self, record: CourtDecision) -> list[str]:
         missing = []
-        if not record.external_id.startswith("aym:bb:"):
+        if not record.external_id.startswith("aym:"):
             missing.append("external_id")
         for field_name in ("court_name", "docket_no", "title", "raw_text", "source_url"):
             if not getattr(record, field_name):
@@ -102,30 +105,50 @@ class AymSourceAdapter:
             )
         settings = self._settings()
         client = self._client()
-        # A completed one-off application search must not pin future corpus
-        # runs to the same application number forever.
         resume_cursor = cursor if request.resume and not cursor.get("complete") else {}
-        page_number = int(resume_cursor.get("page") or 1)
-        row_offset = int(resume_cursor.get("row_offset") or 0)
         keyword = request.keyword.strip() or str(resume_cursor.get("keyword") or "")
         max_records = request.max_records or settings.aym_max_records
         page_size = 20
         application_no = keyword if keyword.replace("/", "").isdigit() and "/" in keyword else None
-
-        processed = seen = stored = duplicate = failed = 0
+        types = (
+            ("BireyselBasvuru",)
+            if application_no or keyword
+            else AYM_DECISION_TYPES
+        )
+        type_index = int(resume_cursor.get("type_index") or 0)
+        if type_index >= len(types):
+            type_index = 0
+        page_number = int(resume_cursor.get("page") or 1)
+        row_offset = int(resume_cursor.get("row_offset") or 0)
+        processed = seen = stored = duplicate = failed = quarantined = 0
         expected: int | None = None
-        window_complete = False
         halted_on_failure = False
-        while processed < max_records and not should_stop():
+        partition_complete = False
+
+        while processed < max_records and not should_stop() and type_index < len(types):
+            karar_tipi = types[type_index]
             page = client.search_page(
                 page=page_number,
                 page_size=page_size,
                 application_no=application_no,
                 keyword=None if application_no else keyword or None,
+                karar_tipi=karar_tipi,
             )
             expected = page.total
             if not page.rows:
-                window_complete = True
+                coverage = coverage_cursor(
+                    expected=expected,
+                    seen=seen,
+                    stored=stored,
+                    duplicate=duplicate,
+                    quarantined=quarantined,
+                    failed=failed,
+                )
+                if expected == 0:
+                    type_index += 1
+                    page_number, row_offset = 1, 0
+                    seen = stored = duplicate = failed = quarantined = 0
+                    continue
                 break
             for row_index, row in enumerate(page.rows[row_offset:], start=row_offset):
                 if processed >= max_records or should_stop():
@@ -136,17 +159,32 @@ class AymSourceAdapter:
                     "page": page_number,
                     "expected_count": expected,
                     "requests_made": 1,
+                    "karar_tipi": karar_tipi,
                 }
                 try:
                     files = client.list_decision_files(row)
                     if settings.aym_delay_seconds:
                         sleep(settings.aym_delay_seconds)
-                    udf, download_url = client.download_udf(files[0])
+                    raw, download_url = client.download_udf(files[0])
                     extra["requests_made"] = 3
-                    decision = decision_from_udf(row, udf, download_url=download_url)
+                    save_raw_response(
+                        root=settings.snapshot_dir,
+                        source="aym",
+                        record_id=row.official_id,
+                        url=download_url,
+                        method="GET",
+                        body=raw,
+                        request={"kararTipi": karar_tipi, "official_id": row.official_id},
+                    )
+                    decision = decision_from_file(
+                        row,
+                        raw,
+                        download_url=download_url,
+                        filename=files[0].filename,
+                    )
                     missing = self.validate(decision)
                     if missing:
-                        failed += 1
+                        quarantined += 1
                         yield "quarantined", {
                             **extra,
                             "external_id": row.external_id,
@@ -171,13 +209,13 @@ class AymSourceAdapter:
                         }
                     row_offset = row_index + 1
                 except AymFullTextUnavailable as exc:
-                    failed += 1
+                    quarantined += 1
                     yield "quarantined", {
                         **extra,
                         "external_id": row.external_id,
                         "reason_code": "full_text_unavailable",
                         "reason": "full_text_unavailable:" + str(exc),
-                        "raw": {"official_id": row.official_id},
+                        "raw": {"official_id": row.official_id, "karar_tipi": karar_tipi},
                     }
                     row_offset = row_index + 1
                 except AymPortalError as exc:
@@ -194,19 +232,49 @@ class AymSourceAdapter:
             if row_offset < len(page.rows):
                 break
             if page_number * page_size >= (expected or 0):
-                window_complete = True
+                coverage = coverage_cursor(
+                    expected=expected,
+                    seen=seen,
+                    stored=stored,
+                    duplicate=duplicate,
+                    quarantined=quarantined,
+                    failed=failed,
+                )
+                if coverage["reconciled"]:
+                    type_index += 1
+                    page_number, row_offset = 1, 0
+                    seen = stored = duplicate = failed = quarantined = 0
+                    continue
+                partition_complete = False
                 break
             page_number += 1
             row_offset = 0
 
+        all_done = (
+            type_index >= len(types)
+            and not halted_on_failure
+            and not should_stop()
+        )
+        coverage = coverage_cursor(
+            expected=expected,
+            seen=seen,
+            stored=stored,
+            duplicate=duplicate,
+            quarantined=quarantined,
+            failed=failed,
+        )
+        if all_done:
+            coverage["reconciled"] = True
+            coverage["window_complete"] = True
         self.last_cursor = {
-            "page": 1 if window_complete else page_number,
-            "row_offset": 0 if window_complete else row_offset,
-            "complete": window_complete,
-            "keyword": keyword,
-            "expected_count": expected,
-            "seen_count": seen,
-            "stored_count": stored,
-            "duplicate_count": duplicate,
-            "failed_count": failed,
+            "page": 1 if all_done else page_number,
+            "row_offset": 0 if all_done else row_offset,
+            "type_index": min(type_index, max(0, len(types) - 1)),
+            "karar_tipi": types[min(type_index, len(types) - 1)],
+            "partitions": list(types),
+            "complete": all_done,
+            "keyword": "" if all_done else keyword,
+            **coverage,
+            "reconciled": all_done or bool(coverage["reconciled"]),
+            "window_complete": all_done,
         }

@@ -35,7 +35,7 @@ def corpus_start_for(source: str, *, settings: Any | None = None) -> date:
     }.get(source)
     if per_source is None:
         return settings.full_corpus_start
-    return max(per_source, settings.full_corpus_start)
+    return per_source
 
 
 def is_historical_complete(
@@ -50,9 +50,9 @@ def is_historical_complete(
         complete = cursor.get("window_complete")
         next_start = cursor.get("next_window_start")
         if complete is True and isinstance(next_start, str):
-            return date.fromisoformat(next_start) > today
+            return date.fromisoformat(next_start) > today and cursor.get("reconciled") is True
         return False
-    return bool(cursor.get("complete"))
+    return bool(cursor.get("complete")) and cursor.get("reconciled") is not False
 
 
 def _cursor_progress_date(cursor: dict[str, Any]) -> date | None:
@@ -72,9 +72,10 @@ def apply_full_horizon(
     *,
     horizon: date,
 ) -> dict[str, Any]:
-    """Ufuk bir tabandır: daha eski aylara geri sarılmaz, ufuktan eski imleç ileri alınır.
+    """Kaynağın doğrulanmış corpus_start değerine hizala.
 
-    Taranmayan yıllar `complete` yazılmaz; sadece bu kaynaktan itibaren çekilir.
+    Ufuktan eski imleç ileri alınır. Yeni (daha eski) doğrulanmış taban
+    `full_horizon_start` değişince uygulanır; taranmayan yıllar complete yazılmaz.
     """
     cursor = dict(cursor or {})
     if source == "mevzuat":
@@ -96,15 +97,23 @@ def apply_full_horizon(
         return cursor
     mark = horizon.isoformat()
     progress = _cursor_progress_date(cursor)
+    previous = str(cursor.get("full_horizon_start") or "")
+    if previous and previous > mark:
+        return {
+            "full_horizon_start": mark,
+            "next_window_start": mark,
+            "window_complete": True,
+            "reconciled": False,
+        }
     if progress is not None and progress >= horizon:
-        if cursor.get("full_horizon_start") == mark:
-            return cursor
-        cursor["full_horizon_start"] = mark
-        return cursor
+        kept = dict(cursor)
+        kept["full_horizon_start"] = mark
+        return kept
     return {
         "full_horizon_start": mark,
         "next_window_start": mark,
         "window_complete": True,
+        "reconciled": False,
     }
 
 

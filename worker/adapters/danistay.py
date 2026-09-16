@@ -12,6 +12,7 @@ from ingestion.danistay.portal import (
     DanistayPortalError,
 )
 from ingestion.danistay.scraper import ScraperConfig, decision_from_portal_row, search_filters
+from ingestion.raw_capture import save_raw_response
 from ingestion.yargitay.archive import DecisionArchive
 from ingestion.yargitay.models import CourtDecision
 from ingestion.yargitay.portal import CaptchaRequiredError
@@ -19,6 +20,7 @@ from ingestion.yargitay.store import upsert_decision
 from worker.config import get_worker_settings
 from worker.lanes import advance_window_start, resolve_sync_window
 from worker.models import AdapterHealth, RecordOutcome, SyncRequest
+from worker.reconciliation import coverage_cursor
 
 
 class DanistaySourceAdapter:
@@ -110,7 +112,7 @@ class DanistaySourceAdapter:
             corpus_start = settings.danistay_corpus_start
             lookback_days = settings.current_lookback_days
         except RuntimeError:
-            corpus_start = date(2020, 1, 1)
+            corpus_start = date(1982, 1, 1)
             lookback_days = 45
         return resolve_sync_window(
             request,
@@ -154,7 +156,19 @@ class DanistaySourceAdapter:
         initial = search_filters(config, page_number=page_number, page_size=config.page_size)
         client.begin_detailed_search(initial)
 
-        processed = seen = stored = duplicate = failed = 0
+        processed = seen = stored = duplicate = failed = quarantined = 0
+        expected: int | None = None
+        window_complete = False
+        halted_on_failure = False
+        same_window = (
+            request.resume
+            and cursor.get("window_from") == window_from.isoformat()
+            and cursor.get("window_to") == window_to.isoformat()
+        )
+        prior_seen = int(cursor.get("window_seen_total") or 0) if same_window else 0
+        prior_stored = int(cursor.get("window_stored_total") or 0) if same_window else 0
+        prior_dup = int(cursor.get("window_duplicate_total") or 0) if same_window else 0
+        prior_q = int(cursor.get("window_quarantined_total") or 0) if same_window else 0
         expected: int | None = None
         window_complete = False
         halted_on_failure = False
@@ -168,7 +182,6 @@ class DanistaySourceAdapter:
                     raise DanistayPortalError(
                         f"Danıştay {page_number}. sayfa boş, ancak portal {expected} sonuç bildiriyor"
                     )
-                window_complete = True
                 break
             for row_index, row in enumerate(page.rows[row_offset:], start=row_offset):
                 if should_stop():
@@ -189,20 +202,28 @@ class DanistaySourceAdapter:
                         sleep(settings.danistay_delay_seconds)
                     html = client.fetch_document_html(row.document_id, keyword=row.keyword)
                     extra["requests_made"] = 2
+                    save_raw_response(
+                        root=settings.snapshot_dir,
+                        source="danistay",
+                        record_id=row.document_id,
+                        url=client.base_url + f"getDokuman?id={row.document_id}",
+                        method="GET",
+                        body=html.encode("utf-8", errors="replace"),
+                        request={"id": row.document_id},
+                    )
                     decision = decision_from_portal_row(row, html, base_url=client.base_url)
                     missing = self.validate(decision)
                     if missing:
-                        failed += 1
+                        quarantined += 1
                         yield "quarantined", {
                             **extra,
                             "external_id": decision.external_id,
+                            "reason_code": "missing_fields",
                             "reason": "missing_fields:" + ",".join(missing),
                             "raw": {"document_id": row.document_id, "missing": missing},
                         }
-                        # Keep the cursor on this row. A later run can retry it;
-                        # otherwise the coverage window would silently skip it.
-                        halted_on_failure = True
-                        break
+                        row_offset = row_index + 1
+                        continue
                     archive.save(decision)
                     if dry_run:
                         stored += 1
@@ -239,13 +260,19 @@ class DanistaySourceAdapter:
                 # kayıttan devam et ve değişen pageSize ile kayıt atlama.
                 break
             if expected and page_number * page_size >= expected:
-                window_complete = True
                 break
             page_number += 1
             row_offset = 0
 
-        if should_stop():
-            window_complete = False
+        coverage = coverage_cursor(
+            expected=expected,
+            seen=prior_seen + seen,
+            stored=prior_stored + stored,
+            duplicate=prior_dup + duplicate,
+            quarantined=prior_q + quarantined,
+            failed=failed,
+        )
+        window_complete = bool(coverage["reconciled"]) and not should_stop()
         next_start = advance_window_start(
             window_from,
             window_complete,
@@ -257,13 +284,13 @@ class DanistaySourceAdapter:
             "row_offset": 0 if window_complete else row_offset,
             "window_from": window_from.isoformat(),
             "window_to": window_to.isoformat(),
-            "window_complete": window_complete,
             "next_window_start": next_start.isoformat(),
             "keyword": config.keyword,
-            "expected_count": expected,
-            "seen_count": seen,
-            "stored_count": stored,
-            "duplicate_count": duplicate,
-            "failed_count": failed,
             "chamber": config.chamber,
+            "window_seen_total": 0 if window_complete else prior_seen + seen,
+            "window_stored_total": 0 if window_complete else prior_stored + stored,
+            "window_duplicate_total": 0 if window_complete else prior_dup + duplicate,
+            "window_quarantined_total": 0 if window_complete else prior_q + quarantined,
+            **coverage,
+            "window_complete": window_complete,
         }

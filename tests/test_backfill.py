@@ -20,7 +20,7 @@ def test_historical_complete_uses_next_window_and_catalog_flag():
     assert (
         is_historical_complete(
             "yargitay",
-            {"window_complete": True, "next_window_start": "2026-10-01"},
+            {"window_complete": True, "reconciled": True, "next_window_start": "2026-10-01"},
             today=today,
         )
         is True
@@ -114,6 +114,7 @@ def test_run_full_backfill_loops_embeds_and_switches_to_incremental(monkeypatch)
             "checkpoint": {
                 "last_cursor": {
                     "window_complete": complete,
+                    "reconciled": complete,
                     "next_window_start": "2099-01-01" if complete else "2020-01-01",
                     "complete": complete,
                 }
