@@ -21,6 +21,17 @@ class MevzuatPortalError(RuntimeError):
     """Bedesten mevzuat ucu kullanılamayan bir yanıt döndürdü."""
 
 
+def is_missing_article_tree_error(message: str) -> bool:
+    """Bedesten madde ağacı yok demek; metin uydurulmaz, kanun atlanır."""
+    text = (message or "").casefold()
+    return (
+        "ağaç yapısı mevcut değildir" in message
+        or "agac yapisi mevcut degildir" in text
+        or "madde ağacı boş" in text
+        or "madde agaci bos" in text
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class SearchPage:
     documents: tuple[Mapping[str, Any], ...]

@@ -24,6 +24,11 @@ doğrulanır; doğrulama kanıtı kaynak metadata'sında saklanır.
 .\.venv\Scripts\python.exe -m worker.runner daemon
 ```
 
+`backfill --source all` her kaynağı ayrı süreçte çeker; aynı resmi portala
+iki süreç bağlanmaz. Delay, CAPTCHA bypass ve metinsiz kayıt yoktur.
+1980 arşivi taranmaz (taban 2020-01-01); taranmayan yıllar tamamlanmış
+yazılmaz. Tek süreç için `--serial`.
+
 Eski tek seferlik toplayıcı hâlâ durur:
 
 ```powershell

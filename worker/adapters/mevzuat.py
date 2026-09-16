@@ -9,7 +9,12 @@ from ingestion.catalog import LawJob
 from ingestion.mevzuat.archive import LegislationArchive
 from ingestion.mevzuat.models import LegislationRecord
 from ingestion.mevzuat.parser import iter_article_nodes, parse_portal_date, record_from_article
-from ingestion.mevzuat.portal import BASE_URL, MevzuatPortalClient, MevzuatPortalError
+from ingestion.mevzuat.portal import (
+    BASE_URL,
+    MevzuatPortalClient,
+    MevzuatPortalError,
+    is_missing_article_tree_error,
+)
 from ingestion.mevzuat.store import upsert_legislation
 from ingestion.mevzuat_bilgi_sistemi.portal import MbsClient, MbsError
 from ingestion.resmi_gazete.portal import ResmiGazeteClient, ResmiGazeteError
@@ -45,6 +50,7 @@ class MevzuatSourceAdapter:
             "last_article": "",
             "finished": False,
             "stopped": False,
+            "skipped_missing_tree": False,
         }
 
     def _settings(self):
@@ -156,6 +162,7 @@ class MevzuatSourceAdapter:
         processed: int,
         skip_until_article: str,
         law_index: int,
+        skip_missing_tree: bool,
     ) -> Iterator[tuple[RecordOutcome, dict[str, Any]]]:
         settings = self._settings()
         state = {
@@ -163,15 +170,63 @@ class MevzuatSourceAdapter:
             "last_article": skip_until_article,
             "finished": False,
             "stopped": False,
+            "skipped_missing_tree": False,
         }
         self._law_state = state
+        gazette_date = parse_portal_date(document.get("resmiGazeteTarihi"))
+        gazette_no = str(document.get("resmiGazeteSayisi") or "").strip() or None
+        law_name = str(document.get("mevzuatAdi") or "").strip()
+        mevzuat_id = str(document.get("mevzuatId") or "").strip()
+        try:
+            tree = client.fetch_article_tree(mevzuat_id)
+        except MevzuatPortalError as exc:
+            if not is_missing_article_tree_error(str(exc)):
+                yield "failed", {
+                    "external_id": None,
+                    "reason": str(exc),
+                    "law_no": job.law_no,
+                    "requests_made": 1,
+                }
+                state["stopped"] = True
+                return
+            yield "quarantined", {
+                "external_id": f"mevzuat:{job.law_no}:tree",
+                "reason_code": "missing_article_tree",
+                "reason": str(exc),
+                "law_no": job.law_no,
+                "raw": {
+                    "law_no": job.law_no,
+                    "mevzuat_id": mevzuat_id,
+                    "detail": str(exc),
+                },
+                "requests_made": 1,
+            }
+            if skip_missing_tree:
+                state["finished"] = True
+                state["skipped_missing_tree"] = True
+            else:
+                state["stopped"] = True
+            return
+        articles = list(iter_article_nodes(tree))
+        if not articles:
+            yield "quarantined", {
+                "external_id": f"mevzuat:{job.law_no}:tree",
+                "reason_code": "missing_article_tree",
+                "reason": f"Madde ağacı boş: {job.law_no}",
+                "law_no": job.law_no,
+                "raw": {"law_no": job.law_no, "mevzuat_id": mevzuat_id},
+                "requests_made": 1,
+            }
+            if skip_missing_tree:
+                state["finished"] = True
+                state["skipped_missing_tree"] = True
+            else:
+                state["stopped"] = True
+            return
         gazette_verification: dict[str, Any] = {
             "verified": False,
             "detail": "Resmî Gazete doğrulaması için tarih veya sayı bilgisi eksik",
         }
-        gazette_date = parse_portal_date(document.get("resmiGazeteTarihi"))
-        gazette_no = str(document.get("resmiGazeteSayisi") or "").strip() or None
-        law_name = str(document.get("mevzuatAdi") or "").strip()
         pending_verification_requests = 0
         if self.verify_gazette and (gazette_date or gazette_no):
             pending_verification_requests = 3
@@ -218,17 +273,6 @@ class MevzuatSourceAdapter:
                     "detail": str(exc),
                     "law_no": job.law_no,
                 }
-        tree = client.fetch_article_tree(str(document.get("mevzuatId")))
-        articles = list(iter_article_nodes(tree))
-        if not articles:
-            yield "failed", {
-                "external_id": None,
-                "reason": f"Madde ağacı boş: {job.law_no}",
-                "law_no": job.law_no,
-                "requests_made": 2 + pending_verification_requests,
-            }
-            state["stopped"] = True
-            return
         skipping = bool(skip_until_article)
         law_finished = True
         last_successful_article = skip_until_article
@@ -285,6 +329,7 @@ class MevzuatSourceAdapter:
                     yield "quarantined", {
                         **extra,
                         "external_id": record.external_id,
+                        "reason_code": "missing_fields",
                         "reason": "missing_fields:" + ",".join(missing),
                         "raw": {"article": dict(article), "missing": missing},
                     }
@@ -407,6 +452,7 @@ class MevzuatSourceAdapter:
             processed=0,
             skip_until_article=skip_until_article,
             law_index=0,
+            skip_missing_tree=False,
         )
         state = self._law_state
         self.last_cursor = {
@@ -451,6 +497,7 @@ class MevzuatSourceAdapter:
         )
         processed = 0
         stopped = False
+        skipped_laws = 0
         current_law_no = pinned_law_no
         last_article = skip_until_article
 
@@ -519,6 +566,7 @@ class MevzuatSourceAdapter:
                 processed=processed,
                 skip_until_article=skip_until_article,
                 law_index=type_index * 1_000_000 + catalog_page * DISCOVERY_PAGE_SIZE + catalog_offset,
+                skip_missing_tree=True,
             )
             state = self._law_state
             processed = state["processed"]
@@ -535,6 +583,10 @@ class MevzuatSourceAdapter:
                 catalog_offset += 1
                 last_article = ""
                 current_law_no = ""
+                if state.get("skipped_missing_tree"):
+                    skipped_laws += 1
+                    if skipped_laws >= 40:
+                        break
             else:
                 pinned_law_no = current_law_no
                 skip_until_article = last_article

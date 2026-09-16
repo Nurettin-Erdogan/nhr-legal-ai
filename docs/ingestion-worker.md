@@ -54,25 +54,29 @@ yoracak kadar sık değildir.
 | `MEVZUAT_DELAY_SECONDS` | 1.0 | İstek arası bekleme |
 | `KDK_DELAY_SECONDS` | 2.0 | KDK istekleri arası bekleme |
 | `AYM_DELAY_SECONDS` | 2.0 | AYM kayıtları arası bekleme |
-| `YARGITAY_MAX_RECORDS_PER_RUN` | 40 | Bir turda en fazla karar |
-| `DANISTAY_MAX_RECORDS_PER_RUN` | 30 | Bir turda en fazla Danıştay kararı |
-| `MEVZUAT_MAX_ARTICLES_PER_RUN` | 30 | Bir turda en fazla madde |
-| `KDK_MAX_RECORDS_PER_RUN` | 20 | Bir turda en fazla KDK kararı |
-| `AYM_MAX_RECORDS_PER_RUN` | 20 | Bir turda en fazla AYM kararı |
+| `YARGITAY_MAX_RECORDS_PER_RUN` | 80 | Bir turda en fazla karar |
+| `DANISTAY_MAX_RECORDS_PER_RUN` | 50 | Bir turda en fazla Danıştay kararı |
+| `MEVZUAT_MAX_ARTICLES_PER_RUN` | 50 | Bir turda en fazla madde |
+| `KDK_MAX_RECORDS_PER_RUN` | 40 | Bir turda en fazla KDK kararı |
+| `AYM_MAX_RECORDS_PER_RUN` | 40 | Bir turda en fazla AYM kararı |
 | `YARGITAY_CORPUS_START` | 2020-01-01 | Tam korpus için ilk ay penceresi |
 | `DANISTAY_CORPUS_START` | 2020-01-01 | Danıştay için ilk ay penceresi |
 | `KDK_CORPUS_START` | 2020-01-01 | KDK için ilk ay penceresi |
 | `CURRENT_LOOKBACK_DAYS` | 45 | Güncel şeridin taradığı son gün sayısı |
 | `CURRENT_SYNC_INTERVAL_MINUTES` | 180 | Güncel şerit lookback turunu bitirip ufuğa sarıldıktan sonra |
 | `CURRENT_RETRY_INTERVAL_MINUTES` | 60 | Güncel şerit ayı bitirmediyse veya lookback içinde sonraki aya geçiyorsa |
-| `FULL_CORPUS_START` | 1980-01-01 | `backfill` komutunun tarihsel ufku |
+| `FULL_CORPUS_START` | 2020-01-01 | `backfill` tarihsel tabanı; daha eski imleç buraya alınır, ileri imleç geri sarılmaz |
 | `BACKFILL_PAUSE_SECONDS` | 2 | Full backfill turları arası kısa bekleme |
 | `MEVZUAT_DISCOVERY_TYPES` | KANUN,KHK,... | Bedesten keşif türleri |
 | `EMBED_LIMIT_PER_RUN` | 200 | Her sync sonrası en fazla yeni chunk embedding |
 
 `python -m worker.runner backfill --source all` tarihsel korpusu checkpoint ile
-doldurur: Yargıtay/Danıştay/KDK aylık pencereler `FULL_CORPUS_START` tarihinden
-bugüne, AYM global sayfa, mevzuat Bedesten `searchDocuments` keşfi. Tur başına
+doldurur. `--source all` varsayılan olarak her ACTIVE kaynağı ayrı süreçte
+çalıştırır (aynı portala iki süreç yok). Tek süreç için `--serial`.
+Yargıtay/Danıştay/KDK aylık pencereler `FULL_CORPUS_START` (varsayılan
+2020-01-01) tabanından bugüne; 1980–2019 taranmaz ve `complete` yazılmaz.
+AYM global sayfa, mevzuat Bedesten `searchDocuments` keşfi. Madde ağacı olmayan
+kanunlar karantinaya düşer, uydurma madde yazılmaz, katalog ilerler. Tur başına
 mevcut rate-limit ve `*_MAX_*` tavanları korunur; süreç kesilirse aynı komut
 kaldığı yerden devam eder. Her başarılı turdan sonra `legal_chunks` içindeki
 yeni parçalar embed edilir. Kaynak tarihsel olarak bitince incremental

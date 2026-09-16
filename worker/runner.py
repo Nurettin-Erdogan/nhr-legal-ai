@@ -13,9 +13,12 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import sys
 from datetime import datetime
+from pathlib import Path
 from threading import Event
+from time import sleep
 
 import psycopg
 from dotenv import load_dotenv
@@ -118,6 +121,8 @@ def _cmd_status(args: argparse.Namespace) -> int:
 def _cmd_backfill(args: argparse.Namespace) -> int:
     get_worker_settings.cache_clear()
     sources = list(ACTIVE_SOURCES) if args.source == "all" else [args.source]
+    if args.source == "all" and not args.serial:
+        return _cmd_backfill_parallel(args, sources)
     with psycopg.connect(_database_url(args.database_url), autocommit=True) as connection:
         summary = run_full_backfill(
             connection,
@@ -126,6 +131,10 @@ def _cmd_backfill(args: argparse.Namespace) -> int:
             embed=not args.no_embed,
             then_incremental=not args.no_incremental,
         )
+    return _print_backfill_summary(summary)
+
+
+def _print_backfill_summary(summary: dict) -> int:
     printable = dict(summary)
     printable.pop("runs", None)
     printable["runs"] = [
@@ -145,6 +154,100 @@ def _cmd_backfill(args: argparse.Namespace) -> int:
     ):
         return 2
     return 0
+
+
+def _cmd_backfill_parallel(args: argparse.Namespace, sources: list[str]) -> int:
+    logger = logging.getLogger("worker")
+    extra: list[str] = []
+    if args.verbose:
+        extra.append("-v")
+    if args.database_url:
+        extra.extend(["--database-url", args.database_url])
+    if args.no_embed:
+        extra.append("--no-embed")
+    log_dir = Path("data/logs")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    children: list[tuple[str, subprocess.Popen, object]] = []
+    codes: dict[str, int] = {}
+    try:
+        for source in sources:
+            log_path = log_dir / f"backfill-{source}.log"
+            handle = log_path.open("a", encoding="utf-8")
+            cmd = [
+                sys.executable,
+                "-m",
+                "worker.runner",
+                "backfill",
+                "--source",
+                source,
+                "--no-incremental",
+                *extra,
+            ]
+            proc = subprocess.Popen(
+                cmd,
+                stdout=handle,
+                stderr=subprocess.STDOUT,
+                env=env,
+            )
+            children.append((source, proc, handle))
+            logger.info(
+                "parallel backfill started source=%s pid=%s log=%s",
+                source,
+                proc.pid,
+                log_path,
+            )
+        codes: dict[str, int] = {}
+        while children:
+            if _should_stop():
+                for source, proc, _handle in children:
+                    if proc.poll() is None:
+                        logger.warning("stopping parallel backfill source=%s pid=%s", source, proc.pid)
+                        proc.terminate()
+                break
+            still: list[tuple[str, subprocess.Popen, object]] = []
+            for source, proc, handle in children:
+                code = proc.poll()
+                if code is None:
+                    still.append((source, proc, handle))
+                    continue
+                handle.close()
+                codes[source] = int(code)
+                logger.info("parallel backfill finished source=%s code=%s", source, code)
+            children = still
+            if children:
+                sleep(1)
+        if children:
+            for source, proc, handle in children:
+                try:
+                    proc.wait(timeout=20)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                handle.close()
+                codes[source] = int(proc.returncode if proc.returncode is not None else 1)
+    finally:
+        for _source, proc, handle in children:
+            if proc.poll() is None:
+                proc.kill()
+            try:
+                handle.close()
+            except Exception:  # noqa: BLE001
+                pass
+    if not args.no_incremental and not _should_stop():
+        logger.info("parallel backfill children exited; switching to incremental daemon")
+        with psycopg.connect(_database_url(args.database_url), autocommit=True) as connection:
+            run_daemon(connection, should_stop=_should_stop)
+    failed = [name for name, code in codes.items() if code not in {0, None}]
+    print(
+        json.dumps(
+            {"status": "parallel", "codes": codes, "failed": failed},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 2 if failed or _should_stop() else 0
 
 
 def _cmd_daemon(args: argparse.Namespace) -> int:
@@ -207,6 +310,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-incremental",
         action="store_true",
         help="Full backfill bitince daemon'a geçme",
+    )
+    backfill.add_argument(
+        "--serial",
+        action="store_true",
+        help="Kaynakları tek süreçte sırayla çek (varsayılan: all için ayrı süreçler)",
     )
     backfill.set_defaults(handler=_cmd_backfill)
     return parser

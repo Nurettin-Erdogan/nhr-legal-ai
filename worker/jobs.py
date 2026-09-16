@@ -139,7 +139,7 @@ def run_sync(
                     repo.quarantine(
                         source,
                         external_id=payload.get("external_id"),
-                        reason_code="missing_fields",
+                        reason_code=str(payload.get("reason_code") or "missing_fields"),
                         reason=str(payload.get("reason") or "invalid"),
                         raw_payload=payload.get("raw") or payload,
                     )

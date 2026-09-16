@@ -150,6 +150,7 @@ class AymSourceAdapter:
                         yield "quarantined", {
                             **extra,
                             "external_id": row.external_id,
+                            "reason_code": "missing_fields",
                             "reason": "missing_fields:" + ",".join(missing),
                             "raw": {"official_id": row.official_id, "missing": missing},
                         }
@@ -174,6 +175,7 @@ class AymSourceAdapter:
                     yield "quarantined", {
                         **extra,
                         "external_id": row.external_id,
+                        "reason_code": "full_text_unavailable",
                         "reason": "full_text_unavailable:" + str(exc),
                         "raw": {"official_id": row.official_id},
                     }

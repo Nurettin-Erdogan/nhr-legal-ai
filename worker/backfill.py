@@ -35,7 +35,7 @@ def corpus_start_for(source: str, *, settings: Any | None = None) -> date:
     }.get(source)
     if per_source is None:
         return settings.full_corpus_start
-    return min(per_source, settings.full_corpus_start)
+    return max(per_source, settings.full_corpus_start)
 
 
 def is_historical_complete(
@@ -55,13 +55,27 @@ def is_historical_complete(
     return bool(cursor.get("complete"))
 
 
+def _cursor_progress_date(cursor: dict[str, Any]) -> date | None:
+    for key in ("next_window_start", "window_from"):
+        raw = cursor.get(key)
+        if isinstance(raw, str) and raw.strip():
+            try:
+                return date.fromisoformat(raw.strip())
+            except ValueError:
+                continue
+    return None
+
+
 def apply_full_horizon(
     source: str,
     cursor: dict[str, Any] | None,
     *,
     horizon: date,
 ) -> dict[str, Any]:
-    """Tarihsel ufku yeni bir başlangıca çek; mevcut imleç ufuğun ötesindeyse başa sar."""
+    """Ufuk bir tabandır: daha eski aylara geri sarılmaz, ufuktan eski imleç ileri alınır.
+
+    Taranmayan yıllar `complete` yazılmaz; sadece bu kaynaktan itibaren çekilir.
+    """
     cursor = dict(cursor or {})
     if source == "mevzuat":
         if cursor.get("mode") == "discovery":
@@ -81,7 +95,11 @@ def apply_full_horizon(
     if source not in DATE_WINDOW_SOURCES:
         return cursor
     mark = horizon.isoformat()
-    if cursor.get("full_horizon_start") == mark:
+    progress = _cursor_progress_date(cursor)
+    if progress is not None and progress >= horizon:
+        if cursor.get("full_horizon_start") == mark:
+            return cursor
+        cursor["full_horizon_start"] = mark
         return cursor
     return {
         "full_horizon_start": mark,
@@ -167,12 +185,25 @@ def run_full_backfill(
     blocked: list[str] = []
     runs: list[dict[str, Any]] = []
     remaining = [source for source in sources if source not in completed]
+    repo = SyncRepository(connection)
 
     while remaining and not should_stop():
         progressed = False
         for source in list(remaining):
             if should_stop():
                 break
+            checkpoint = repo.get_checkpoint(source)
+            captcha_blocked = checkpoint.health_state == "blocked" and "captcha" in (
+                f"{checkpoint.last_error or ''} {checkpoint.health_detail or ''}".casefold()
+            )
+            if captcha_blocked:
+                if source not in blocked:
+                    blocked.append(source)
+                    logger.warning(
+                        "full backfill skipping blocked source=%s captcha", source
+                    )
+                remaining.remove(source)
+                continue
             logger.info("full backfill starting source=%s", source)
             result = sync(
                 connection,

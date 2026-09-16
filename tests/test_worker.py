@@ -769,6 +769,78 @@ def test_mevzuat_legacy_cursor_restarts_law_instead_of_skipping(monkeypatch, tmp
     assert adapter.last_cursor["mode"] == "discovery"
 
 
+def test_mevzuat_skips_missing_article_tree_and_continues_catalog(monkeypatch, tmp_path):
+    from ingestion.mevzuat.portal import MevzuatPortalError
+    from worker.adapters.mevzuat import MevzuatSourceAdapter
+    from worker.config import get_worker_settings
+
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("MEVZUAT_DELAY_SECONDS", "0")
+    monkeypatch.setenv("MEVZUAT_DISCOVERY_TYPES", "KANUN")
+    monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
+    get_worker_settings.cache_clear()
+
+    class _MissingThenGood(_TwoLawCatalog):
+        def fetch_article_tree(self, mevzuat_id):
+            if str(mevzuat_id) == "1":
+                raise MevzuatPortalError(
+                    "İlgili mevzuata ait ağaç yapısı mevcut değildir."
+                )
+            return super().fetch_article_tree(mevzuat_id)
+
+    adapter = MevzuatSourceAdapter(
+        client=_MissingThenGood(), verify_gazette=False, verify_mbs=False
+    )
+    outcomes = list(
+        adapter.sync(
+            SyncRequest(source="mevzuat", max_records=1),
+            cursor={},
+            connection=None,
+            dry_run=True,
+            should_stop=lambda: False,
+        )
+    )
+    assert outcomes[0][0] == "quarantined"
+    assert outcomes[0][1]["reason_code"] == "missing_article_tree"
+    assert outcomes[0][1]["law_no"] == "4857"
+    assert outcomes[1][0] == "created"
+    assert outcomes[1][1]["law_no"] == "4721"
+    assert adapter.last_cursor["law_no"] == "4721"
+    assert adapter.last_cursor.get("complete") is not True
+
+
+def test_mevzuat_targeted_missing_tree_does_not_mark_complete(monkeypatch, tmp_path):
+    from ingestion.mevzuat.portal import MevzuatPortalError
+    from worker.adapters.mevzuat import MevzuatSourceAdapter
+    from worker.config import get_worker_settings
+
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("MEVZUAT_DELAY_SECONDS", "0")
+    monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
+    get_worker_settings.cache_clear()
+
+    class _NoTree(_MevzuatClientSuccessThenQuarantine):
+        def fetch_article_tree(self, mevzuat_id):
+            raise MevzuatPortalError("İlgili mevzuata ait ağaç yapısı mevcut değildir.")
+
+    adapter = MevzuatSourceAdapter(
+        client=_NoTree(), verify_gazette=False, verify_mbs=False
+    )
+    outcomes = list(
+        adapter.sync(
+            SyncRequest(source="mevzuat", law_no="4857", max_records=10, resume=False),
+            cursor={},
+            connection=None,
+            dry_run=True,
+            should_stop=lambda: False,
+        )
+    )
+    assert len(outcomes) == 1
+    assert outcomes[0][0] == "quarantined"
+    assert outcomes[0][1]["reason_code"] == "missing_article_tree"
+    assert adapter.last_cursor.get("complete") is not True
+
+
 def test_mevzuat_sync_attaches_official_gazette_verification(monkeypatch, tmp_path):
     from ingestion.mevzuat.archive import LegislationArchive
     from ingestion.mevzuat_bilgi_sistemi.portal import MbsVerification
