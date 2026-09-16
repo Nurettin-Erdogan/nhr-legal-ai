@@ -39,6 +39,15 @@ def test_prompt_contains_question_and_stable_source_marker():
     assert DECISION.content in prompt
 
 
+def test_prompt_clips_long_source_text():
+    long_context = replace(DECISION, content=("A" * 2000))
+    prompt = build_grounded_prompt("Soru?", [long_context], max_context_chars=80)
+
+    assert "A" * 2000 not in prompt
+    assert "A" * 79 in prompt
+    assert "…" in prompt
+
+
 def test_prompt_labels_legislation_with_law_and_article():
     prompt = build_grounded_prompt("Haklı fesih nedir?", [LEGISLATION])
 

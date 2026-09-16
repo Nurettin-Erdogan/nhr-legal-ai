@@ -100,7 +100,7 @@ async def _embed_question(question: str) -> list[float] | None:
             model=settings.embedding_model,
             dimensions=settings.embedding_dimensions,
             ollama_base_url=settings.ollama_base_url,
-            ollama_timeout_seconds=settings.ollama_timeout_seconds,
+            ollama_timeout_seconds=min(8.0, settings.ollama_timeout_seconds),
         )
         return await asyncio.to_thread(provider.embed_query, question)
     except EmbeddingProviderError:
@@ -172,11 +172,15 @@ async def answer_question(
             ollama_base_url=settings.ollama_base_url,
             ollama_timeout_seconds=settings.ollama_timeout_seconds,
             ollama_max_output_tokens=settings.ollama_max_output_tokens,
+            ollama_num_ctx=settings.ollama_num_ctx,
+            ollama_keep_alive=settings.ollama_keep_alive,
         )
     except AIProviderError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    query_embedding = await _embed_question(request.question)
+    query_embedding = (
+        await _embed_question(request.question) if settings.rag_query_embedding else None
+    )
 
     try:
         if request.project_id is not None:
@@ -230,11 +234,17 @@ async def answer_question(
             provider,
             question=request.question,
             contexts=contexts,
+            max_context_chars=settings.rag_context_chars,
         )
     except AIProviderError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     answer = verify_answer(raw_answer, contexts)
+    if not answer.grounded:
+        raise HTTPException(
+            status_code=422,
+            detail="Model doğrulanabilir bir kaynak atfı üretmedi; yanıt gösterilmiyor",
+        )
 
     conversation_id: UUID | None = None
     message_id: UUID | None = None

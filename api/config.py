@@ -20,7 +20,11 @@ class Settings:
     ollama_base_url: str
     ollama_timeout_seconds: float
     ollama_max_output_tokens: int
+    ollama_num_ctx: int
+    ollama_keep_alive: str
     rag_top_k: int
+    rag_context_chars: int
+    rag_query_embedding: bool
     embedding_provider: str
     embedding_model: str
     embedding_dimensions: int
@@ -69,14 +73,22 @@ def get_settings() -> Settings:
         ai_model=os.getenv("AI_MODEL", "deepseek-r1:8b").strip(),
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip(),
         ollama_timeout_seconds=max(
-            1.0, min(float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180")), 600.0)
+            1.0, min(float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "120")), 600.0)
         ),
         ollama_max_output_tokens=max(
-            64, min(int(os.getenv("OLLAMA_MAX_OUTPUT_TOKENS", "512")), 4096)
+            64, min(int(os.getenv("OLLAMA_MAX_OUTPUT_TOKENS", "384")), 4096)
         ),
+        ollama_num_ctx=max(512, min(int(os.getenv("OLLAMA_NUM_CTX", "1536")), 8192)),
+        ollama_keep_alive=os.getenv("OLLAMA_KEEP_ALIVE", "30m").strip() or "30m",
         rag_top_k=max(
             1, min(int(os.getenv("RAG_TOP_K", "2" if ai_provider in LOCAL_OLLAMA_PROVIDERS else "6")), 12)
         ),
+        rag_context_chars=max(400, min(int(os.getenv("RAG_CONTEXT_CHARS", "800")), 4000)),
+        rag_query_embedding=os.getenv(
+            "RAG_QUERY_EMBEDDING",
+            "false" if ai_provider in LOCAL_OLLAMA_PROVIDERS else "true",
+        ).lower()
+        in {"1", "true", "yes"},
         embedding_provider=os.getenv("EMBEDDING_PROVIDER", "ollama").strip().lower(),
         embedding_model=os.getenv("EMBEDDING_MODEL", "nomic-embed-text").strip(),
         embedding_dimensions=max(

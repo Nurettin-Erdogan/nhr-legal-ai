@@ -72,9 +72,13 @@ ile üretilir.
 AI_PROVIDER=deepseek
 AI_MODEL=deepseek-r1:8b
 OLLAMA_BASE_URL=http://127.0.0.1:11434
-OLLAMA_TIMEOUT_SECONDS=180
-OLLAMA_MAX_OUTPUT_TOKENS=512
+OLLAMA_TIMEOUT_SECONDS=120
+OLLAMA_MAX_OUTPUT_TOKENS=384
+OLLAMA_NUM_CTX=1536
+OLLAMA_KEEP_ALIVE=30m
 RAG_TOP_K=2
+RAG_CONTEXT_CHARS=800
+RAG_QUERY_EMBEDDING=false
 EMBEDDING_PROVIDER=ollama
 EMBEDDING_MODEL=nomic-embed-text
 EMBEDDING_DIMENSIONS=768
@@ -83,12 +87,14 @@ EMBEDDING_DIMENSIONS=768
 API'yi yeniden başlattıktan sonra `http://localhost:3000/assistant` adresindeki
 ekran etkinleşir. Asistan önce korpusta ilgili mevzuat ve karar parçalarını
 seçer, ardından bu parçaları sabit `[K1]`, `[K2]` kaynak işaretleriyle
-DeepSeek'e gönderir. API, cevaptaki atıfları getirilen kaynaklara karşı ayrıca
-doğrular. Yerel Ollama için API anahtarı gerekmez; servisi kimlik doğrulamasız
+DeepSeek'e gönderir. API, cevaptaki atıf işaretlerinin gerçekten getirilen
+kaynaklara karşılık geldiğini doğrular; hukuki iddiaların maddi doğruluğunu
+otomatik olarak kanıtlamaz. Yerel Ollama için API anahtarı gerekmez; servisi kimlik doğrulamasız
 internete açmayın. Ollama geçici olarak çalışmazsa embedding yerine sözcüksel
 arama devam eder, fakat DeepSeek yanıtı üretilemez.
-Yerel CPU kurulumunda iki kaynak ve 512 çıktı tokenı yanıt süresini makul tutar;
-daha güçlü donanımda bu iki sınır artırılabilir.
+Yerel CPU kurulumunda varsayılan olarak sözcüksel RAG, 1536 bağlam ve 384
+çıktı tokenı kullanılır; DeepSeek-R1 düşünme bloğu kapatılır ki kota gizli
+muhakemeye gitmesin. Semantik soru vektörü için `RAG_QUERY_EMBEDDING=true`.
 
 ### Semantik arama
 

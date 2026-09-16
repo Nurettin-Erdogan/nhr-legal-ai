@@ -73,6 +73,7 @@ def test_ollama_embedding_calls_embed_with_configured_dimensions():
             "input": ["hukuk", "karar"],
             "dimensions": 3,
             "truncate": True,
+            "keep_alive": "30m",
         }
         return httpx.Response(
             200,

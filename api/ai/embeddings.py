@@ -72,6 +72,7 @@ class OllamaEmbeddingProvider:
                         "input": cleaned,
                         "dimensions": self.dimensions,
                         "truncate": True,
+                        "keep_alive": "30m",
                     },
                 )
                 response.raise_for_status()

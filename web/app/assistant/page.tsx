@@ -61,6 +61,7 @@ export default function AssistantPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
+        signal: AbortSignal.timeout(150_000),
         body: JSON.stringify({
           question: question.trim(),
           project_id: projectId || null,
@@ -70,7 +71,11 @@ export default function AssistantPage() {
       if (!response.ok) throw new Error(payload.detail ?? "AI yanıtı üretilemedi");
       setResult(payload);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "AI yanıtı üretilemedi");
+      if (reason instanceof DOMException && reason.name === "TimeoutError") {
+        setError("Yanıt 150 saniyede tamamlanamadı. Ollama ve API durumunu kontrol edip yeniden deneyin.");
+      } else {
+        setError(reason instanceof Error ? reason.message : "AI yanıtı üretilemedi");
+      }
     } finally {
       setLoading(false);
     }
