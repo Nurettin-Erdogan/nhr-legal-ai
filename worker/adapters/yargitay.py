@@ -153,10 +153,17 @@ class YargitaySourceAdapter:
     ) -> Iterator[tuple[RecordOutcome, dict[str, Any]]]:
         window_from, window_to = self.resolve_window(request, cursor)
         start_page = int(cursor.get("page") or 1) if request.resume else 1
+        row_offset = int(cursor.get("row_offset") or 0) if request.resume else 0
+        if request.resume and cursor.get("window_from") and "row_offset" not in cursor:
+            # Older checkpoints used a variable pageSize. Their page number
+            # cannot safely identify a position with the fixed-size contract.
+            logger.warning("legacy Yargıtay cursor; restarting window from page 1")
+            start_page = 1
+            row_offset = 0
         settings = self._settings()
         max_records = request.max_records or settings.yargitay_max_records
         keyword = request.keyword.strip() or str(cursor.get("keyword") or "karar")
-        chamber = request.chamber.strip()
+        chamber = request.chamber.strip() or str(cursor.get("chamber") or "")
         config = ScraperConfig(
             keyword=keyword,
             chamber=chamber,
@@ -178,20 +185,24 @@ class YargitaySourceAdapter:
         expected: int | None = None
         window_complete = False
 
-        first_filters = _search_filters(config, page_number=page_number, page_size=min(config.page_size, max_records))
+        # pageSize must stay fixed across runs: page + row_offset is the resume key.
+        first_filters = _search_filters(config, page_number=page_number, page_size=config.page_size)
         scraper.client.begin_detailed_search(first_filters)
 
         while processed < max_records and not should_stop():
-            remaining = max_records - processed
-            page_size = min(config.page_size, remaining)
+            page_size = config.page_size
             filters = _search_filters(config, page_number=page_number, page_size=page_size)
             page = scraper.client.search_page(filters)
             expected = page.records_filtered
             if not page.rows:
+                if (page_number - 1) * page_size < expected:
+                    raise PortalError(
+                        f"Yargıtay {page_number}. sayfa boş, ancak portal {expected} sonuç bildiriyor"
+                    )
                 window_complete = True
                 break
-            for row in page.rows[:remaining]:
-                if should_stop():
+            for row_index, row in enumerate(page.rows[row_offset:], start=row_offset):
+                if should_stop() or processed >= max_records:
                     break
                 processed += 1
                 seen_in_window += 1
@@ -217,11 +228,14 @@ class YargitaySourceAdapter:
                             "raw": {"document_id": row.document_id, "missing": missing},
                         }
                         failed_in_window += 1
-                        continue
+                        # Retry this row next run; never mark a window complete
+                        # while a decision has not been safely persisted.
+                        break
                     scraper.archive.save(decision)
                     if dry_run:
                         yield "created", {**extra, "external_id": decision.external_id, "dry_run": True}
                         stored_in_window += 1
+                        row_offset = row_index + 1
                         continue
                     result = upsert_decision(connection, decision)
                     outcome: RecordOutcome = result.status  # type: ignore[assignment]
@@ -234,6 +248,7 @@ class YargitaySourceAdapter:
                         "external_id": result.external_id,
                         "legal_source_id": result.legal_source_id,
                     }
+                    row_offset = row_index + 1
                 except CaptchaRequiredError:
                     raise
                 except PortalError as exc:
@@ -243,10 +258,14 @@ class YargitaySourceAdapter:
                         "external_id": f"yargitay:{row.document_id}" if row.document_id else None,
                         "reason": str(exc),
                     }
-            if expected and page_number * page_size >= expected:
+                    break
+            if row_offset < len(page.rows):
+                break
+            if page_number * page_size >= expected:
                 window_complete = True
                 break
             page_number += 1
+            row_offset = 0
 
         if should_stop():
             window_complete = False
@@ -254,6 +273,7 @@ class YargitaySourceAdapter:
         next_start = next_month_start(window_from) if window_complete else window_from
         self.last_cursor = {
             "page": 1 if window_complete else page_number,
+            "row_offset": 0 if window_complete else row_offset,
             "window_from": window_from.isoformat(),
             "window_to": window_to.isoformat(),
             "window_complete": window_complete,

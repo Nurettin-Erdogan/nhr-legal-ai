@@ -6,7 +6,7 @@ import pytest
 
 from ingestion.yargitay.models import CourtDecision
 from ingestion.yargitay.parser import content_hash
-from ingestion.yargitay.portal import CaptchaRequiredError, PortalDecisionRow, SearchPage
+from ingestion.yargitay.portal import CaptchaRequiredError, PortalDecisionRow, PortalError, SearchPage
 from worker.adapters import get_adapter
 from worker.adapters.danistay import DanistaySourceAdapter
 from worker.adapters.yargitay import YargitaySourceAdapter
@@ -70,6 +70,78 @@ def test_yargitay_resume_uses_incomplete_window_cursor():
         },
     )
     assert window == (date(2026, 2, 1), date(2026, 2, 28))
+
+
+def test_legacy_yargitay_cursor_restarts_window_without_skipping(monkeypatch, tmp_path):
+    from worker.adapters import yargitay as adapter_module
+    from worker.config import get_worker_settings
+
+    class _Client:
+        base_url = "https://karararama.yargitay.gov.tr/"
+
+        def __init__(self):
+            self.pages = []
+
+        def begin_detailed_search(self, filters):
+            pass
+
+        def search_page(self, filters):
+            self.pages.append(filters["pageNumber"])
+            return SearchPage(rows=(), records_total=0, records_filtered=0)
+
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
+    get_worker_settings.cache_clear()
+    client = _Client()
+    adapter = YargitaySourceAdapter(client=client)
+    list(
+        adapter.sync(
+            SyncRequest(source="yargitay", resume=True, max_records=1),
+            cursor={
+                "page": 4,
+                "window_from": "2026-01-01",
+                "window_to": "2026-01-31",
+                "window_complete": False,
+            },
+            connection=None,
+            dry_run=True,
+            should_stop=lambda: False,
+        )
+    )
+    assert client.pages == [1]
+
+
+def test_yargitay_empty_page_with_reported_results_is_not_complete(monkeypatch, tmp_path):
+    from worker.config import get_worker_settings
+
+    class _Client:
+        base_url = "https://karararama.yargitay.gov.tr/"
+
+        def begin_detailed_search(self, filters):
+            pass
+
+        def search_page(self, filters):
+            return SearchPage(rows=(), records_total=12, records_filtered=12)
+
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
+    get_worker_settings.cache_clear()
+    adapter = YargitaySourceAdapter(client=_Client())
+    with pytest.raises(PortalError, match="sayfa boş"):
+        list(
+            adapter.sync(
+                SyncRequest(
+                    source="yargitay",
+                    date_from=date(2026, 1, 1),
+                    date_to=date(2026, 1, 31),
+                    max_records=1,
+                ),
+                cursor={},
+                connection=None,
+                dry_run=True,
+                should_stop=lambda: False,
+            )
+        )
 
 
 def test_adapter_registry_exposes_active_sources():
@@ -187,6 +259,145 @@ def test_yargitay_captcha_stops_sync(monkeypatch, tmp_path):
                 should_stop=lambda: False,
             )
         )
+
+
+def test_yargitay_resume_keeps_fixed_page_size_and_row_offset(monkeypatch, tmp_path):
+    from worker.adapters import yargitay as adapter_module
+    from worker.config import get_worker_settings
+
+    class _PagedClient:
+        base_url = "https://karararama.yargitay.gov.tr/"
+
+        def __init__(self):
+            self.requests = []
+
+        def begin_detailed_search(self, filters):
+            self.requests.append(("begin", filters["pageSize"]))
+
+        def search_page(self, filters):
+            page = filters["pageNumber"]
+            size = filters["pageSize"]
+            self.requests.append((page, size, filters["birimYrgHukukDaire"]))
+            start = (page - 1) * size
+            rows = tuple(
+                PortalDecisionRow(str(i), "9. Hukuk Dairesi", f"2026/{i}", f"2026/{i}", "01.01.2026")
+                for i in range(start + 1, min(start + size, 25) + 1)
+            )
+            return SearchPage(rows=rows, records_total=25, records_filtered=25)
+
+        def fetch_document_html(self, document_id):
+            return f"<p>Karar {document_id}</p>"
+
+    def make_decision(row, _html, *, base_url):
+        return CourtDecision(
+            court_name="Yargıtay",
+            chamber="9. Hukuk Dairesi",
+            docket_no=row.docket_no,
+            decision_no=row.decision_no,
+            decision_date=date(2026, 1, 1),
+            title=f"Karar {row.document_id}",
+            raw_text=f"Karar metni {row.document_id}",
+            external_id=f"yargitay:{row.document_id}",
+            content_hash=content_hash(row.document_id),
+            source_url=f"{base_url}getDokuman?id={row.document_id}",
+        )
+
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("YARGITAY_DELAY_SECONDS", "0")
+    monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
+    get_worker_settings.cache_clear()
+    monkeypatch.setattr(adapter_module, "decision_from_portal_row", make_decision)
+    client = _PagedClient()
+    cursor = {}
+    seen = []
+    for _ in range(4):
+        adapter = YargitaySourceAdapter(client=client)
+        outcomes = list(
+            adapter.sync(
+                SyncRequest(
+                    source="yargitay",
+                    date_from=date(2026, 1, 1),
+                    date_to=date(2026, 1, 31),
+                    chamber="9. Hukuk Dairesi" if not cursor else "",
+                    max_records=7,
+                ),
+                cursor=cursor,
+                connection=None,
+                dry_run=True,
+                should_stop=lambda: False,
+            )
+        )
+        seen.extend(payload["external_id"] for _, payload in outcomes)
+        cursor = adapter.last_cursor
+
+    assert seen == [f"yargitay:{i}" for i in range(1, 26)]
+    assert cursor["window_complete"] is True
+    page_requests = [request for request in client.requests if request[0] != "begin"]
+    assert all(size == 20 for _, size, _ in page_requests)
+    assert all(chamber == "9. Hukuk Dairesi" for _, _, chamber in page_requests)
+
+
+def test_yargitay_failed_row_is_retried_before_window_advances(monkeypatch, tmp_path):
+    from worker.adapters import yargitay as adapter_module
+    from worker.config import get_worker_settings
+
+    class _Client:
+        base_url = "https://karararama.yargitay.gov.tr/"
+
+        def begin_detailed_search(self, filters):
+            pass
+
+        def search_page(self, filters):
+            return SearchPage(
+                rows=(
+                    PortalDecisionRow("1", "9. Hukuk Dairesi", "2026/1", "2026/1", "01.01.2026"),
+                    PortalDecisionRow("2", "9. Hukuk Dairesi", "2026/2", "2026/2", "01.01.2026"),
+                ),
+                records_total=2,
+                records_filtered=2,
+            )
+
+        def fetch_document_html(self, document_id):
+            return f"<p>{document_id}</p>"
+
+    def make_decision(row, _html, *, base_url):
+        return CourtDecision(
+            court_name="Yargıtay",
+            chamber=row.chamber,
+            docket_no=row.docket_no,
+            decision_no=row.decision_no,
+            decision_date=date(2026, 1, 1),
+            title="Karar",
+            raw_text="" if row.document_id == "1" else "Geçerli karar metni",
+            external_id=f"yargitay:{row.document_id}",
+            content_hash=content_hash(row.document_id),
+            source_url=f"{base_url}getDokuman?id={row.document_id}",
+        )
+
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("YARGITAY_DELAY_SECONDS", "0")
+    monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
+    get_worker_settings.cache_clear()
+    monkeypatch.setattr(adapter_module, "decision_from_portal_row", make_decision)
+    adapter = YargitaySourceAdapter(client=_Client())
+    outcomes = list(
+        adapter.sync(
+            SyncRequest(
+                source="yargitay",
+                date_from=date(2026, 1, 1),
+                date_to=date(2026, 1, 31),
+                max_records=2,
+            ),
+            cursor={},
+            connection=None,
+            dry_run=True,
+            should_stop=lambda: False,
+        )
+    )
+    assert [status for status, _ in outcomes] == ["quarantined"]
+    assert adapter.last_cursor["page"] == 1
+    assert adapter.last_cursor["row_offset"] == 0
+    assert adapter.last_cursor["window_complete"] is False
 
 
 def test_malformed_schema_health_is_failed():

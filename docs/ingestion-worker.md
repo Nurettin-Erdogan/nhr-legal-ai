@@ -66,7 +66,13 @@ interval kadar bekler.
 Tablo: `source_sync_checkpoints`.
 
 Yargıtay ve Danıştay cursor: tarih penceresi (`window_from` / `window_to`), sayfa,
-`last_external_id`, `window_complete`, `next_window_start`.
+sayfa içi `row_offset`, `last_external_id`, `window_complete`,
+`next_window_start`. Yargıtay `pageSize=20` değerini turlar arasında sabit
+tutar; tur sayfanın ortasında biterse sonraki satırdan devam eder. Eski,
+`row_offset` içermeyen Yargıtay checkpoint'leri kayıt atlamamak için aynı
+pencerenin ilk sayfasından tekrar başlar; mevcut kayıtlar kimlikle
+tekilleştirilir. Hatalı/karantinaya düşen satır penceresini tamamlanmış
+saydırmaz ve sonraki turda yeniden denenir.
 
 KDK cursor: tarih penceresi, DataTables `offset`, `window_complete` ve
 `next_window_start`.
