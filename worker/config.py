@@ -37,6 +37,11 @@ class WorkerSettings:
     mevzuat_interval_minutes: int
     kdk_interval_minutes: int
     aym_interval_minutes: int
+    yargitay_backfill_interval_minutes: int
+    danistay_backfill_interval_minutes: int
+    mevzuat_backfill_interval_minutes: int
+    kdk_backfill_interval_minutes: int
+    aym_backfill_interval_minutes: int
     poll_seconds: int
     yargitay_delay_seconds: float
     danistay_delay_seconds: float
@@ -68,6 +73,11 @@ def get_worker_settings() -> WorkerSettings:
         mevzuat_interval_minutes=_int_env("MEVZUAT_SYNC_INTERVAL_MINUTES", 720),
         kdk_interval_minutes=_int_env("KDK_SYNC_INTERVAL_MINUTES", 1440),
         aym_interval_minutes=_int_env("AYM_SYNC_INTERVAL_MINUTES", 1440),
+        yargitay_backfill_interval_minutes=_int_env("YARGITAY_BACKFILL_INTERVAL_MINUTES", 60),
+        danistay_backfill_interval_minutes=_int_env("DANISTAY_BACKFILL_INTERVAL_MINUTES", 90),
+        mevzuat_backfill_interval_minutes=_int_env("MEVZUAT_BACKFILL_INTERVAL_MINUTES", 120),
+        kdk_backfill_interval_minutes=_int_env("KDK_BACKFILL_INTERVAL_MINUTES", 180),
+        aym_backfill_interval_minutes=_int_env("AYM_BACKFILL_INTERVAL_MINUTES", 180),
         poll_seconds=_int_env("WORKER_POLL_SECONDS", 30),
         yargitay_delay_seconds=_float_env("YARGITAY_DELAY_SECONDS", 1.5),
         danistay_delay_seconds=_float_env("DANISTAY_DELAY_SECONDS", 2.0),

@@ -16,6 +16,7 @@ from worker.adapters import get_adapter
 from worker.adapters.danistay import DanistaySourceAdapter
 from worker.adapters.yargitay import YargitaySourceAdapter
 from worker.locks import JobLockedError, source_job_lock
+from worker.jobs import _interval_for
 from worker.models import Checkpoint, RunCounters, SyncRequest
 from worker.windows import iter_month_windows, month_window, next_month_start
 
@@ -27,6 +28,25 @@ def test_month_windows_cover_range_without_gaps():
     assert windows[2] == (date(2026, 3, 1), date(2026, 3, 10))
     assert next_month_start(date(2026, 12, 1)) == date(2027, 1, 1)
     assert month_window(date(2026, 8, 20)) == (date(2026, 8, 1), date(2026, 8, 31))
+
+
+def test_backfill_cadence_only_when_more_work_and_previous_run_succeeded(monkeypatch):
+    from datetime import timedelta
+    from worker.config import get_worker_settings
+
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("YARGITAY_BACKFILL_INTERVAL_MINUTES", "60")
+    get_worker_settings.cache_clear()
+    today = date(2026, 9, 16)
+    pending = {"window_complete": False, "next_window_start": "2026-01-01"}
+    assert _interval_for("yargitay", cursor=pending, today=today) == timedelta(minutes=60)
+    assert _interval_for("yargitay", cursor=pending, status="partial", today=today) == timedelta(minutes=360)
+    completed_old = {"window_complete": True, "next_window_start": "2026-02-01"}
+    assert _interval_for("yargitay", cursor=completed_old, today=today) == timedelta(minutes=60)
+    completed_current = {"window_complete": True, "next_window_start": "2026-10-01"}
+    assert _interval_for("yargitay", cursor=completed_current, today=today) == timedelta(minutes=360)
+    assert _interval_for("mevzuat", cursor={"complete": False}, today=today) == timedelta(minutes=120)
+    assert _interval_for("danistay", cursor={}, today=today) == timedelta(minutes=720)
 
 
 def test_run_counters_classify_outcomes():

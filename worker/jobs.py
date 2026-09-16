@@ -20,16 +20,36 @@ def _should_stop_never() -> bool:
     return False
 
 
-def _interval_for(source_name: str) -> timedelta:
+def _interval_for(
+    source_name: str,
+    *,
+    cursor: dict[str, Any] | None = None,
+    status: str = "success",
+    today: date | None = None,
+) -> timedelta:
     settings = get_worker_settings()
-    minutes = {
+    regular_minutes = {
         "yargitay": settings.yargitay_interval_minutes,
         "danistay": settings.danistay_interval_minutes,
         "mevzuat": settings.mevzuat_interval_minutes,
         "kdk": settings.kdk_interval_minutes,
         "aym": settings.aym_interval_minutes,
     }[source_name]
-    return timedelta(minutes=minutes)
+    if status != "success" or not cursor:
+        return timedelta(minutes=regular_minutes)
+    backfill_minutes = {
+        "yargitay": settings.yargitay_backfill_interval_minutes,
+        "danistay": settings.danistay_backfill_interval_minutes,
+        "mevzuat": settings.mevzuat_backfill_interval_minutes,
+        "kdk": settings.kdk_backfill_interval_minutes,
+        "aym": settings.aym_backfill_interval_minutes,
+    }[source_name]
+    complete = cursor.get("window_complete", cursor.get("complete"))
+    has_more = complete is False
+    next_start = cursor.get("next_window_start")
+    if complete is True and isinstance(next_start, str):
+        has_more = date.fromisoformat(next_start) <= (today or datetime.now(UTC).date())
+    return timedelta(minutes=backfill_minutes if has_more else regular_minutes)
 
 
 def run_sync(
@@ -166,7 +186,9 @@ def run_sync(
             assert original_checkpoint is not None
             checkpoint = original_checkpoint
         else:
-            checkpoint.next_run_at = datetime.now(UTC) + _interval_for(source)
+            checkpoint.next_run_at = datetime.now(UTC) + _interval_for(
+                source, cursor=checkpoint.last_cursor, status=status
+            )
             if not request.dry_run:
                 store.save(checkpoint)
         repo.finish_run(

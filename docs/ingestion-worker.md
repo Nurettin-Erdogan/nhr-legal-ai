@@ -43,6 +43,11 @@ yoracak kadar sık değildir.
 | `MEVZUAT_SYNC_INTERVAL_MINUTES` | 720 | Mevzuat turları arası |
 | `KDK_SYNC_INTERVAL_MINUTES` | 1440 | KDK turları arası |
 | `AYM_SYNC_INTERVAL_MINUTES` | 1440 | AYM turları arası |
+| `YARGITAY_BACKFILL_INTERVAL_MINUTES` | 60 | Eksik Yargıtay penceresinde başarılı turlar arası |
+| `DANISTAY_BACKFILL_INTERVAL_MINUTES` | 90 | Eksik Danıştay penceresinde başarılı turlar arası |
+| `MEVZUAT_BACKFILL_INTERVAL_MINUTES` | 120 | Eksik başlangıç mevzuat kataloğunda başarılı turlar arası |
+| `KDK_BACKFILL_INTERVAL_MINUTES` | 180 | Eksik KDK penceresinde başarılı turlar arası |
+| `AYM_BACKFILL_INTERVAL_MINUTES` | 180 | Eksik AYM sayfalarında başarılı turlar arası |
 | `WORKER_POLL_SECONDS` | 30 | Daemon beklerken kontrol sıklığı |
 | `YARGITAY_DELAY_SECONDS` | 1.5 | İstek arası bekleme |
 | `DANISTAY_DELAY_SECONDS` | 2.0 | Danıştay istekleri arası bekleme |
@@ -58,8 +63,13 @@ yoracak kadar sık değildir.
 | `DANISTAY_CORPUS_START` | 2020-01-01 | Danıştay için ilk ay penceresi |
 | `KDK_CORPUS_START` | 2020-01-01 | KDK için ilk ay penceresi |
 
-İlk daemon turu `next_run_at` boşsa kaynağı due sayar; sonraki turlar
-interval kadar bekler.
+İlk daemon turu `next_run_at` boşsa kaynağı due sayar. Başarılı turdan sonra
+tamamlanmamış tarih/sayfa penceresi veya geçmişte kalan sonraki pencere varsa
+backfill aralığı kullanılır. Hata, kısmi başarı veya CAPTCHA sonrasında
+normal uzun aralık korunur; portalı sıkıştırmak için otomatik retry yapılmaz.
+Backfill tamamlandığında normal periyodik aralık devreye girer. Mevcut
+`next_run_at` kayıtları geriye dönük değiştirilmez; yeni aralık, sonraki
+başarılı turda uygulanır.
 
 ## Checkpoint / resume
 
