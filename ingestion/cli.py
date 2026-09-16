@@ -240,6 +240,8 @@ def _run_embed(args: argparse.Namespace) -> int:
             api_key=api_key,
             model=args.model,
             dimensions=args.dimensions,
+            ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
+            ollama_timeout_seconds=float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "120")),
         )
     except EmbeddingProviderError as exc:
         logger.error("Embedding başlatılamadı: %s", exc)
@@ -411,8 +413,8 @@ def build_parser() -> argparse.ArgumentParser:
         "embed", help="Hukuk veya kullanıcı belgesi parçaları için embedding üret"
     )
     embed.add_argument("--database-url", default=None, help="Varsayılan: DATABASE_ADMIN_URL")
-    embed.add_argument("--provider", default=os.getenv("EMBEDDING_PROVIDER", "gemini"))
-    embed.add_argument("--model", default=os.getenv("EMBEDDING_MODEL", "gemini-embedding-2"))
+    embed.add_argument("--provider", default=os.getenv("EMBEDDING_PROVIDER", "qwen"))
+    embed.add_argument("--model", default=os.getenv("EMBEDDING_MODEL", "qwen3-embedding:0.6b"))
     embed.add_argument("--dimensions", type=int, default=int(os.getenv("EMBEDDING_DIMENSIONS", "768")))
     embed.add_argument("--limit", type=int, default=500)
     embed.add_argument(

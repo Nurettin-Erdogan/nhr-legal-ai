@@ -55,44 +55,35 @@ Uygulama `http://localhost:3000`, API dokümantasyonu
 kullanacaksa `web/.env.local.example` dosyasını `.env.local` adıyla kopyalayıp
 değeri değiştirin.
 
-## Gemini kaynaklı cevaplar
+## Qwen kaynaklı cevaplar (yerel Ollama)
 
-AI asistanını etkinleştirmek için Google AI Studio'dan alınan anahtarı yalnızca
-yerel `.env` dosyasına ekleyin:
+Ollama'yı yerel makinede başlatın ve iki modeli yükleyin:
 
-```env
-AI_PROVIDER=gemini
-AI_MODEL=gemini-3.5-flash-lite
-GEMINI_API_KEY=buraya_kendi_anahtariniz
-RAG_TOP_K=6
-EMBEDDING_PROVIDER=gemini
-EMBEDDING_MODEL=gemini-embedding-2
-EMBEDDING_DIMENSIONS=768
+```powershell
+ollama pull qwen3:8b
+ollama pull qwen3-embedding:0.6b
 ```
 
-API'yi yeniden başlattıktan sonra `http://localhost:3000/assistant` adresindeki
-ekran etkinleşir. Asistan önce korpusta ilgili mevzuat ve karar parçalarını
-seçer, ardından bu parçaları sabit `[K1]`, `[K2]` kaynak işaretleriyle
-Gemini'ye gönderir. API anahtarı frontend'e aktarılmaz.
-
-### Yerel Qwen3 (Ollama)
-
-Ollama'yı yerel makinede başlatıp `ollama pull qwen3:8b` çalıştırın.
-Proje kökündeki `.env` dosyasında üretim sağlayıcısını seçin:
+Proje kökündeki `.env` dosyasında üretim ve embedding için Qwen'i seçin:
 
 ```env
 AI_PROVIDER=qwen
 AI_MODEL=qwen3:8b
 OLLAMA_BASE_URL=http://127.0.0.1:11434
 OLLAMA_TIMEOUT_SECONDS=120
+RAG_TOP_K=6
+EMBEDDING_PROVIDER=qwen
+EMBEDDING_MODEL=qwen3-embedding:0.6b
+EMBEDDING_DIMENSIONS=768
 ```
 
-API'yi yeniden başlatın. Ollama ayrı bir servistir; yüklü modelin adı
-`AI_MODEL` ile aynı olmalıdır. Yerel Ollama için API anahtarı gerekmez.
-Qwen ve Gemini aynı RAG bağlamını, kaynak işaretlerini ve API tarafındaki
-atıf doğrulamasını kullanır. `EMBEDDING_PROVIDER=gemini` ayrıca seçili
-kalabilir; Gemini embedding anahtarı yoksa arama sözcüksel olarak devam eder.
-Ollama sunucusunu kimlik doğrulamasız internete açmayın.
+API'yi yeniden başlattıktan sonra `http://localhost:3000/assistant` adresindeki
+ekran etkinleşir. Asistan önce korpusta ilgili mevzuat ve karar parçalarını
+seçer, ardından bu parçaları sabit `[K1]`, `[K2]` kaynak işaretleriyle
+Qwen'e gönderir. API, cevaptaki atıfları getirilen kaynaklara karşı ayrıca
+doğrular. Yerel Ollama için API anahtarı gerekmez; servisi kimlik doğrulamasız
+internete açmayın. Ollama geçici olarak çalışmazsa embedding yerine sözcüksel
+arama devam eder, fakat Qwen yanıtı üretilemez.
 
 ### Semantik arama
 

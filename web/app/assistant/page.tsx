@@ -83,7 +83,7 @@ export default function AssistantPage() {
         <header className="topbar">
           <div><span className="eyebrow">KAYNAKLI HUKUK ASİSTANI</span><h1>AI asistanı</h1></div>
           <div className={`ai-status ${status?.configured ? "ready" : "waiting"}`}>
-            <i/><span>{status?.configured ? `${status.provider} · ${status.model}` : status?.provider === "qwen" ? "Ollama / Qwen3 bekleniyor" : "Gemini anahtarı bekleniyor"}</span>
+            <i/><span>{status?.configured ? `${status.provider} · ${status.model}` : "Ollama / Qwen3 bekleniyor"}</span>
           </div>
         </header>
 
@@ -97,11 +97,7 @@ export default function AssistantPage() {
 
           {!status?.configured && status && (
             <div className="setup-banner">
-              {status.provider === "qwen" ? (
-                <><div><strong>Qwen3 modeli Ollama'da hazır değil</strong><span>Ollama'yı başlatın, seçili modeli indirin ve API'yi yeniden başlatın.</span></div><code>ollama pull {status.model}</code></>
-              ) : (
-                <><div><strong>Gemini bağlantısı için son bir ayar gerekiyor</strong><span>Proje kökündeki `.env` dosyasına GEMINI_API_KEY ekleyip API’yi yeniden başlatın.</span></div><code>GEMINI_API_KEY=...</code></>
-              )}
+              <div><strong>Qwen3 modeli Ollama'da hazır değil</strong><span>Ollama'yı başlatın, seçili modeli indirin ve API'yi yeniden başlatın.</span></div><code>ollama pull {status.model}</code>
             </div>
           )}
 

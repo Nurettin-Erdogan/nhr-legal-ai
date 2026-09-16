@@ -130,6 +130,17 @@ def test_embedding_cli_keeps_private_documents_opt_in():
     assert parser.parse_args(["embed", "--target", "documents"]).target == "documents"
 
 
+def test_embedding_cli_defaults_to_qwen_without_provider_env(monkeypatch):
+    monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
+    monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
+
+    args = build_parser().parse_args(["embed"])
+
+    assert args.provider == "qwen"
+    assert args.model == "qwen3-embedding:0.6b"
+    assert args.dimensions == 768
+
+
 def test_embedding_table_name_is_strictly_allowlisted():
     with pytest.raises(ValueError, match="Desteklenmeyen"):
         _embed_chunks(
