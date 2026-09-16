@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from time import sleep
 from typing import Protocol
+from urllib.parse import urlsplit
+
+import httpx
 
 
 class AIProviderError(RuntimeError):
@@ -93,9 +96,99 @@ class GeminiProvider:
         return answer
 
 
-def create_provider(*, provider_name: str, api_key: str | None, model: str) -> AIProvider:
+@dataclass(slots=True)
+class QwenProvider:
+    model: str
+    base_url: str = "http://127.0.0.1:11434"
+    timeout_seconds: float = 120.0
+    name: str = "qwen"
+    transport: httpx.BaseTransport | None = None
+
+    def __post_init__(self) -> None:
+        parsed = urlsplit(self.base_url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+        ):
+            raise AIProviderError("OLLAMA_BASE_URL geçerli bir sunucu adresi olmalı", status_code=503)
+
+    def _client(self, timeout: float) -> httpx.Client:
+        return httpx.Client(
+            base_url=self.base_url.rstrip("/"),
+            timeout=timeout,
+            transport=self.transport,
+            trust_env=False,
+        )
+
+    def is_available(self) -> bool:
+        try:
+            with self._client(min(self.timeout_seconds, 2.0)) as client:
+                response = client.get("/api/tags")
+                response.raise_for_status()
+                models = response.json()["models"]
+            expected = self.model if ":" in self.model else f"{self.model}:latest"
+            return any(
+                isinstance(item, dict)
+                and (item.get("name") == expected or item.get("model") == expected)
+                for item in models
+            )
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            return False
+
+    def generate(self, *, system_instruction: str, prompt: str) -> str:
+        try:
+            with self._client(self.timeout_seconds) as client:
+                response = client.post(
+                    "/api/chat",
+                    json={
+                        "model": self.model,
+                        "messages": [
+                            {"role": "system", "content": system_instruction},
+                            {"role": "user", "content": prompt},
+                        ],
+                        "stream": False,
+                        "think": False,
+                        "options": {"temperature": 0.15, "num_predict": 1800},
+                    },
+                )
+                response.raise_for_status()
+                answer = response.json()["message"]["content"]
+        except httpx.TimeoutException as exc:
+            raise AIProviderError("Ollama yanıt süresini aştı", status_code=504) from exc
+        except httpx.ConnectError as exc:
+            raise AIProviderError("Ollama sunucusuna bağlanılamadı", status_code=503) from exc
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                raise AIProviderError(
+                    f"Ollama modeli bulunamadı: {self.model}. Önce ollama pull {self.model} çalıştırın.",
+                    status_code=503,
+                ) from exc
+            raise AIProviderError("Ollama yanıt üretemedi") from exc
+        except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+            raise AIProviderError("Ollama yanıtı okunamadı") from exc
+        if not isinstance(answer, str) or not answer.strip():
+            raise AIProviderError("Ollama boş bir yanıt döndürdü")
+        return answer.strip()
+
+
+def create_provider(
+    *, provider_name: str, api_key: str | None, model: str,
+    ollama_base_url: str = "http://127.0.0.1:11434",
+    ollama_timeout_seconds: float = 120.0,
+) -> AIProvider:
     if provider_name == "gemini":
         if not api_key:
             raise AIProviderError("GEMINI_API_KEY tanımlı değil")
         return GeminiProvider(api_key=api_key, model=model)
+    if provider_name == "qwen":
+        return QwenProvider(
+            model=model,
+            base_url=ollama_base_url,
+            timeout_seconds=ollama_timeout_seconds,
+        )
     raise AIProviderError(f"Desteklenmeyen AI sağlayıcısı: {provider_name}")
