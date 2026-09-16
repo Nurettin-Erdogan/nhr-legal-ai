@@ -109,6 +109,10 @@ class KdkPortalClient:
                 with self.opener.open(request, timeout=self.timeout_seconds) as response:
                     return response.read()
             except HTTPError as exc:
+                if exc.code == 429:
+                    raise KdkPortalError(
+                        f"KDK HTTP 429; kaynak hız sınırı, aktarım beklemeye alınmalı ({url})"
+                    ) from exc
                 if not is_retryable_status(exc.code) or attempt == self.max_retries:
                     raise KdkPortalError(f"KDK HTTP hatası: {exc.code} ({url})") from exc
                 wait = retry_wait_seconds(

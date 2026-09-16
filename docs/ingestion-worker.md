@@ -73,6 +73,10 @@ yoracak kadar sık değildir.
 `python -m worker.runner backfill --source all` tarihsel korpusu checkpoint ile
 doldurur. `--source all` varsayılan olarak her ACTIVE kaynağı ayrı süreçte
 çalıştırır (aynı portala iki süreç yok). Tek süreç için `--serial`.
+`--serial` modunda da hatalı/kısmi veya ilerlemeyen kaynak, kendi normal
+`next_run_at` aralığına kadar ertelenir; bu sırada diğer kaynaklar taranır.
+Resmî portal HTTP 429 döndürürse aynı isteğe kısa aralıkla tekrar yüklenilmez.
+CAPTCHA görülen kaynak otomatik aşılmaz ve bloklu olarak raporlanır.
 Yargıtay/Danıştay/KDK aylık pencereler kaynak `*_CORPUS_START` değerinden
 (doğrulanmış en eski hit; boş SUCCESS yıllar complete yazılmaz ancak
 taranabilir). Yargıtay tam tarama tarih penceresi + boş `arananKelime`

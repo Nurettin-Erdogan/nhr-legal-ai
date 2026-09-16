@@ -150,6 +150,10 @@ class DanistayPortalClient:
                 _raise_for_captcha(raw)
                 return raw
             except HTTPError as exc:
+                if exc.code == 429:
+                    raise DanistayPortalError(
+                        f"Danıştay HTTP 429; kaynak hız sınırı, aktarım beklemeye alınmalı ({url})"
+                    ) from exc
                 if not is_retryable_status(exc.code) or attempt == self.max_retries:
                     raise DanistayPortalError(f"Danıştay HTTP hatası: {exc.code} ({url})") from exc
                 wait = retry_wait_seconds(

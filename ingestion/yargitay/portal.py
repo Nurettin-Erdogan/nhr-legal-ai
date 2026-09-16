@@ -147,6 +147,10 @@ class YargitayPortalClient:
                 with self.opener.open(request, timeout=self.timeout_seconds) as response:
                     return response.read()
             except HTTPError as exc:
+                if exc.code == 429:
+                    raise PortalError(
+                        f"Yargitay HTTP 429; kaynak hiz siniri, aktarim beklemeye alinmali ({url})"
+                    ) from exc
                 retryable = is_retryable_status(exc.code)
                 if not retryable or attempt == self.max_retries:
                     raise PortalError(f"Yargitay HTTP hatasi: {exc.code} ({url})") from exc

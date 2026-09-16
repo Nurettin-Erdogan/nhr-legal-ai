@@ -12,7 +12,7 @@ import psycopg
 
 from worker import ACTIVE_SOURCES
 from worker.config import get_worker_settings
-from worker.jobs import run_sync
+from worker.jobs import _interval_for, run_sync
 from worker.models import SyncRequest
 from worker.repository import SyncRepository
 from worker.scheduler import run_daemon
@@ -195,9 +195,11 @@ def run_full_backfill(
     runs: list[dict[str, Any]] = []
     remaining = [source for source in sources if source not in completed]
     repo = SyncRepository(connection)
+    retry_after: dict[str, datetime] = {}
 
     while remaining and not should_stop():
         progressed = False
+        earliest_retry: datetime | None = None
         for source in list(remaining):
             if should_stop():
                 break
@@ -213,7 +215,17 @@ def run_full_backfill(
                     )
                 remaining.remove(source)
                 continue
+            now = datetime.now(UTC)
+            deferred_until = retry_after.get(source)
+            if checkpoint.health_state in {"failed", "degraded"} and checkpoint.next_run_at:
+                deferred_until = max(
+                    deferred_until or checkpoint.next_run_at, checkpoint.next_run_at
+                )
+            if deferred_until and deferred_until > now:
+                earliest_retry = min(earliest_retry or deferred_until, deferred_until)
+                continue
             logger.info("full backfill starting source=%s", source)
+            before_cursor = dict(checkpoint.last_cursor or {})
             result = sync(
                 connection,
                 SyncRequest(source=source, lane="backfill", resume=True),
@@ -235,12 +247,24 @@ def run_full_backfill(
                 remaining.remove(source)
                 logger.info("full backfill complete source=%s", source)
                 continue
-            if status in {"failed", "cancelled"}:
-                sleep(max(pause, 5.0))
+            if status != "success" or cursor == before_cursor:
+                # A failing or stationary source must never spin at the short
+                # backfill pause. Let other sources proceed while this one cools.
+                delay = _interval_for(source, cursor=cursor, status="failed")
+                retry_after[source] = datetime.now(UTC) + delay
+                logger.warning(
+                    "full backfill deferred source=%s status=%s until=%s",
+                    source, status, retry_after[source].isoformat(),
+                )
             elif pause > 0:
                 sleep(pause)
         if not progressed:
-            break
+            if earliest_retry is None or should_stop():
+                break
+            # Wake often enough for shutdown, without hammering a blocked portal.
+            wait_seconds = min(60.0, max(0.0, (earliest_retry - datetime.now(UTC)).total_seconds()))
+            if wait_seconds > 0:
+                sleep(wait_seconds)
 
     summary = {
         "status": "incremental" if then_incremental and not should_stop() else "stopped",

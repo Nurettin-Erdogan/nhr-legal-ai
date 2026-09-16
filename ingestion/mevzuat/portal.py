@@ -96,6 +96,10 @@ class MevzuatPortalClient:
                     raw = response.read()
                 break
             except HTTPError as exc:
+                if exc.code == 429:
+                    raise MevzuatPortalError(
+                        f"Bedesten HTTP 429; kaynak hız sınırı, aktarım beklemeye alınmalı ({url})"
+                    ) from exc
                 retry_after = exc.headers.get("Retry-After") if exc.headers else None
                 retryable = is_retryable_status(exc.code)
                 if not retryable or attempt == self.max_retries:

@@ -211,6 +211,64 @@ def test_run_full_backfill_skips_captcha_blocked_source(monkeypatch):
     assert summary["remaining"] == []
 
 
+def test_failed_source_cools_down_without_starving_other_sources(monkeypatch):
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    from worker.config import get_worker_settings
+
+    get_worker_settings.cache_clear()
+    _healthy_repo(monkeypatch)
+    monkeypatch.setattr("worker.backfill.prepare_full_backfill", lambda *_: {})
+    stopped = [False]
+    calls: list[str] = []
+
+    def fake_sync(_connection, request, should_stop=None):
+        calls.append(request.source)
+        if request.source == "yargitay":
+            return {"status": "failed", "checkpoint": {"last_cursor": {}}}
+        return {
+            "status": "success",
+            "checkpoint": {"last_cursor": {
+                "window_complete": True, "reconciled": True,
+                "next_window_start": "2099-01-01",
+            }},
+        }
+
+    def stop_during_cooldown(_seconds):
+        stopped[0] = True
+
+    monkeypatch.setattr("worker.backfill.sleep", stop_during_cooldown)
+    summary = run_full_backfill(
+        object(), ["yargitay", "danistay"],
+        should_stop=lambda: stopped[0], embed=False, then_incremental=False,
+        pause_seconds=0, sync=fake_sync,
+    )
+    assert calls == ["yargitay", "danistay"]
+    assert summary["completed"] == ["danistay"]
+    assert summary["remaining"] == ["yargitay"]
+
+
+def test_stationary_success_is_deferred_instead_of_spinning(monkeypatch):
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    from worker.config import get_worker_settings
+
+    get_worker_settings.cache_clear()
+    _healthy_repo(monkeypatch)
+    monkeypatch.setattr("worker.backfill.prepare_full_backfill", lambda *_: {})
+    stopped = [False]
+    calls = [0]
+
+    def fake_sync(_connection, _request, should_stop=None):
+        calls[0] += 1
+        return {"status": "success", "checkpoint": {"last_cursor": {}}}
+
+    monkeypatch.setattr("worker.backfill.sleep", lambda _seconds: stopped.__setitem__(0, True))
+    run_full_backfill(
+        object(), ["aym"], should_stop=lambda: stopped[0],
+        embed=False, then_incremental=False, pause_seconds=0, sync=fake_sync,
+    )
+    assert calls[0] == 1
+
+
 def test_backfill_cli_is_registered():
     parser = build_parser()
     args = parser.parse_args(["backfill", "--source", "all", "--no-incremental", "--no-embed"])
