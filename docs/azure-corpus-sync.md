@@ -42,3 +42,19 @@ açık olmadığı üretim düzeninde, VM'nin özel ağından erişilen kalıcı
 PostgreSQL hedefi ve ayrı zamanlayıcı gerekir; yerel port internete açılmaz.
 Bu projeye ait mevcut görevin eylemini kontrol ederek güncellemek için
 `-UpdateExisting` seçeneği kullanılır.
+
+## Azure'dan ulaşılamayan KDK için yerel fallback
+
+KDK resmî araması ve PDF indirmesi yerel bilgisayardan doğrulandığında, ayrı
+bir görev kurulabilir:
+
+```powershell
+.\scripts\install_local_kdk_collector.ps1
+```
+
+Görev her saat yalnız kontrol eder. Çekici, veritabanındaki `next_run_at`
+gelmeden istek göndermez: başarılı, eksik tarihsel tur varsayılan olarak
+3 saatte; hata sonrasında 24 saatte yeniden denenir. Bir tur en fazla 40
+karar işler ve eksik embedding'leri yerel Ollama ile tamamlar. Kaynak
+erişimi düzelirse Azure ile aynı resmî kayıtlar kimlik üzerinden tekilleşir.
+Bu fallback Yargıtay CAPTCHA'sını aşmaz.
