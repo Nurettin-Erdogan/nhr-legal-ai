@@ -7,7 +7,7 @@ from typing import Any, Callable
 import psycopg
 
 from ingestion.yargitay.portal import CaptchaRequiredError
-from worker import ACTIVE_SOURCES
+from worker import ACTIVE_SOURCES, OPTIONAL_SOURCES
 from worker.adapters import get_adapter
 from worker.checkpoints import CheckpointStore
 from worker.config import get_worker_settings
@@ -97,6 +97,7 @@ def _interval_for(
         "mevzuat": settings.mevzuat_interval_minutes,
         "kdk": settings.kdk_interval_minutes,
         "aym": settings.aym_interval_minutes,
+        "mevzuat_verify": settings.mevzuat_interval_minutes,
     }[source_name]
     if status != "success" or not cursor:
         return timedelta(minutes=regular_minutes)
@@ -106,6 +107,7 @@ def _interval_for(
         "mevzuat": settings.mevzuat_backfill_interval_minutes,
         "kdk": settings.kdk_backfill_interval_minutes,
         "aym": settings.aym_backfill_interval_minutes,
+        "mevzuat_verify": settings.mevzuat_backfill_interval_minutes,
     }[source_name]
     complete = cursor.get("window_complete", cursor.get("complete"))
     has_more = complete is False
@@ -132,7 +134,7 @@ def run_sync(
             "error": f"{source} current şeridine sahip değil",
         }
     adapter = adapter or get_adapter(source)
-    if source not in ACTIVE_SOURCES:
+    if source not in ACTIVE_SOURCES and source not in OPTIONAL_SOURCES:
         health = adapter.health_check()
         return {
             "source": source,

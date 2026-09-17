@@ -52,8 +52,12 @@ yoracak kadar sık değildir.
 | `YARGITAY_DELAY_SECONDS` | 1.5 | İstek arası bekleme |
 | `DANISTAY_DELAY_SECONDS` | 2.0 | Danıştay istekleri arası bekleme |
 | `MEVZUAT_DELAY_SECONDS` | 1.0 | İstek arası bekleme |
-| `KDK_DELAY_SECONDS` | 2.0 | KDK istekleri arası bekleme |
-| `AYM_DELAY_SECONDS` | 2.0 | AYM kayıtları arası bekleme |
+| `KDK_DELAY_SECONDS` | 1.0 | KDK istekleri arası bekleme (canlı 0.5 429 artırmadı; indirme yükü için 1.0) |
+| `AYM_DELAY_SECONDS` | 1.0 | AYM kayıtları arası bekleme (Yargıtay/Danıştay delay değişmez) |
+| `AYM_PAGE_SIZE` | 100 | AYM public arama `size` (1–100; canlı 100 429 üretmedi) |
+| `KDK_PAGE_SIZE` | 100 | KDK DataTables `length` (1–100; canlı 20/50/100 429 üretmedi) |
+| `MEVZUAT_DISCOVERY_PAGE_SIZE` | 20 | Bedesten keşif `pageSize` (portal en fazla 20 kabul eder) |
+| `MEVZUAT_VERIFY_INLINE` | true | `false` ise RG+MBS doğrulaması `mevzuat_verify` worker'ına bırakılır |
 | `YARGITAY_MAX_RECORDS_PER_RUN` | 80 | Bir turda en fazla karar |
 | `DANISTAY_MAX_RECORDS_PER_RUN` | 50 | Bir turda en fazla Danıştay kararı |
 | `MEVZUAT_MAX_ARTICLES_PER_RUN` | 50 | Bir turda en fazla madde |
@@ -74,6 +78,8 @@ yoracak kadar sık değildir.
 `python -m worker.runner backfill --source all` tarihsel korpusu checkpoint ile
 doldurur. `--source all` varsayılan olarak her ACTIVE kaynağı ayrı süreçte
 çalıştırır (aynı portala iki süreç yok). Tek süreç için `--serial`.
+Bekleyen RG+MBS doğrulaması `python -m worker.runner run --source mevzuat_verify`
+ile ayrı çalıştırılır; `all` ve daemon bunu otomatik açmaz.
 `--serial` modunda da hatalı/kısmi veya ilerlemeyen kaynak, kendi normal
 `next_run_at` aralığına kadar ertelenir; bu sırada diğer kaynaklar taranır.
 Resmî portal HTTP 429 döndürürse aynı isteğe kısa aralıkla tekrar yüklenilmez.

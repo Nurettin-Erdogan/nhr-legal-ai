@@ -282,6 +282,7 @@ def test_adapter_registry_exposes_active_sources():
     assert get_adapter("mevzuat_bilgi_sistemi").active is False
     assert get_adapter("kdk").active is True
     assert get_adapter("kdk").authority == "Kamu Denetçiliği Kurumu"
+    assert get_adapter("mevzuat_verify").source_name == "mevzuat_verify"
 
 
 def test_checkpoint_json_round_trip_fields():

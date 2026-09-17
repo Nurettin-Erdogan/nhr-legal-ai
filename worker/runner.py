@@ -23,7 +23,7 @@ from time import sleep
 import psycopg
 from dotenv import load_dotenv
 
-from worker import ACTIVE_SOURCES, PLANNED_SOURCES
+from worker import ACTIVE_SOURCES, OPTIONAL_SOURCES, PLANNED_SOURCES
 from worker.backfill import run_full_backfill
 from worker.config import get_worker_settings
 from worker.jobs import run_sync
@@ -267,7 +267,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--source",
         required=True,
-        choices=(*ACTIVE_SOURCES, "all", *PLANNED_SOURCES),
+        choices=(*ACTIVE_SOURCES, "all", *OPTIONAL_SOURCES, *PLANNED_SOURCES),
     )
     run.add_argument("--date-from", default=None)
     run.add_argument("--date-to", default=None)

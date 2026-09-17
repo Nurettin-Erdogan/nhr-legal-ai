@@ -8,6 +8,7 @@ from typing import Literal
 import psycopg
 from psycopg.types.json import Jsonb
 
+from ingestion.chunk_store import replace_chunks
 from ingestion.kdk.models import KdkDecision
 from ingestion.yargitay.chunking import DEFAULT_MAX_CHARS, chunk_text
 
@@ -108,34 +109,27 @@ def _write_chunks(
     decision: KdkDecision,
     max_chars: int,
 ) -> int:
-    cursor.execute("DELETE FROM legal_chunks WHERE legal_source_id = %s", (legal_source_id,))
     chunks = chunk_text(decision.raw_text, max_chars=max_chars)
-    for chunk in chunks:
-        cursor.execute(
-            """
-            INSERT INTO legal_chunks (
-                legal_source_id, chunk_index, content, paragraph_start,
-                paragraph_end, content_hash, metadata
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """,
-            (
-                legal_source_id,
-                chunk.index,
-                chunk.content,
-                chunk.paragraph_start,
-                chunk.paragraph_end,
-                chunk.content_hash,
-                Jsonb(
-                    {
-                        "source": "kdk",
-                        "external_id": decision.external_id,
-                        "decision_no": decision.decision_no,
-                        "complaint_no": decision.complaint_no,
-                    }
-                ),
+    rows = [
+        (
+            legal_source_id,
+            chunk.index,
+            chunk.content,
+            chunk.paragraph_start,
+            chunk.paragraph_end,
+            chunk.content_hash,
+            Jsonb(
+                {
+                    "source": "kdk",
+                    "external_id": decision.external_id,
+                    "decision_no": decision.decision_no,
+                    "complaint_no": decision.complaint_no,
+                }
             ),
         )
-    return len(chunks)
+        for chunk in chunks
+    ]
+    return replace_chunks(cursor, legal_source_id, rows)
 
 
 def upsert_decision(

@@ -323,6 +323,161 @@ def test_adapter_quarantines_unreadable_udf_and_keeps_scanning(monkeypatch):
     assert adapter.last_cursor["type_index"] == 1
 
 
+def test_from_mapping_does_not_treat_gazette_or_publication_as_decision_date():
+    row = AymDecisionRow.from_mapping(
+        {
+            **SYNTHETIC_ROW,
+            "kararTarihi": None,
+            "resmiGazeteTarihi": "2099-03-01",
+            "yayinTarihi": "2099-04-01T12:00:00",
+        }
+    )
+    assert row.decision_date is None
+    assert row.official_gazette_date == date(2099, 3, 1)
+    assert row.publication_date == date(2099, 4, 1)
+
+
+def test_udf_fills_missing_portal_decision_date_without_using_gazette():
+    row = AymDecisionRow.from_mapping(
+        {
+            **SYNTHETIC_ROW,
+            "kararTarihi": None,
+            "resmiGazeteTarihi": "2098-12-31",
+        }
+    )
+    decision = decision_from_udf(
+        row,
+        _synthetic_udf(),
+        download_url="https://kararlarbilgibankasi.anayasa.gov.tr/public.udf",
+    )
+    assert decision.decision_date == date(2099, 2, 3)
+    assert decision.metadata["official_gazette_date"] == "2098-12-31"
+
+
+def test_adapter_accumulates_seen_across_runs_until_partition_closes(monkeypatch):
+    rows = tuple(
+        AymDecisionRow.from_mapping(
+            {
+                **SYNTHETIC_ROW,
+                "id": f"00000000-0000-0000-0000-00000000012{index}",
+                "basvuruNo": f"2099/{index}",
+            }
+        )
+        for index in range(1, 6)
+    )
+
+    class Client:
+        def search_page(self, **_kwargs):
+            return SearchPage(rows, total=5, page=1, page_size=20)
+
+        def list_decision_files(self, row):
+            return (
+                AymDecisionFile(
+                    "file",
+                    row.official_id,
+                    "bireysel-basvuru",
+                    f"{row.application_no.replace('/', '-')}.udf",
+                    "BireyselBasvuru",
+                ),
+            )
+
+        def download_udf(self, decision_file):
+            application_no = decision_file.filename.removesuffix(".udf").replace("-", "/")
+            return _synthetic_udf(application_no), (
+                "https://kararlarbilgibankasi.anayasa.gov.tr/"
+                f"api/core/public/files/download-attachment/{decision_file.folder}/"
+                f"{decision_file.filename}"
+            )
+
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("AYM_DELAY_SECONDS", "0")
+    monkeypatch.setattr("worker.adapters.aym.AYM_DECISION_TYPES", ("BireyselBasvuru",))
+    from worker.config import get_worker_settings
+
+    get_worker_settings.cache_clear()
+    request = SyncRequest(source="aym", max_records=2, resume=True)
+    cursor: dict = {}
+    seen_ids: list[str] = []
+    last = None
+    for _ in range(3):
+        adapter = AymSourceAdapter(client=Client())
+        events = list(
+            adapter.sync(
+                request,
+                cursor=cursor,
+                connection=None,
+                dry_run=True,
+                should_stop=lambda: False,
+            )
+        )
+        seen_ids.extend(payload["external_id"] for _, payload in events)
+        last = adapter
+        cursor = adapter.last_cursor
+
+    assert seen_ids == [
+        "aym:bb:2099/1",
+        "aym:bb:2099/2",
+        "aym:bb:2099/3",
+        "aym:bb:2099/4",
+        "aym:bb:2099/5",
+    ]
+    assert last is not None
+    assert last.last_cursor["complete"] is True
+    assert last.last_cursor["reconciled"] is True
+
+
+def test_adapter_keeps_legacy_page_size_when_resuming_mid_partition(monkeypatch):
+    row = AymDecisionRow.from_mapping(SYNTHETIC_ROW)
+    captured: list[int] = []
+
+    class Client:
+        def search_page(self, **kwargs):
+            captured.append(int(kwargs["page_size"]))
+            return SearchPage((row,), total=5, page=1, page_size=kwargs["page_size"])
+
+        def list_decision_files(self, decision_row):
+            return (
+                AymDecisionFile(
+                    "file",
+                    decision_row.official_id,
+                    "bireysel-basvuru",
+                    "2099-123.udf",
+                    "BireyselBasvuru",
+                ),
+            )
+
+        def download_udf(self, decision_file):
+            return _synthetic_udf(), (
+                "https://kararlarbilgibankasi.anayasa.gov.tr/"
+                f"api/core/public/files/download-attachment/{decision_file.folder}/"
+                f"{decision_file.filename}"
+            )
+
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("AYM_DELAY_SECONDS", "0")
+    monkeypatch.setenv("AYM_PAGE_SIZE", "100")
+    from worker.config import get_worker_settings
+
+    get_worker_settings.cache_clear()
+    adapter = AymSourceAdapter(client=Client())
+    list(
+        adapter.sync(
+            SyncRequest(source="aym", max_records=1, resume=True),
+            cursor={
+                "type_index": 0,
+                "page": 2,
+                "row_offset": 3,
+                "window_seen_total": 23,
+            },
+            connection=None,
+            dry_run=True,
+            should_stop=lambda: False,
+        )
+    )
+    assert captured[0] == 20
+    get_worker_settings.cache_clear()
+
+
 def test_adapter_resumes_inside_partially_consumed_page(monkeypatch):
     rows = tuple(
         AymDecisionRow.from_mapping(

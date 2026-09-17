@@ -81,6 +81,10 @@ class WorkerSettings:
     mevzuat_delay_seconds: float
     kdk_delay_seconds: float
     aym_delay_seconds: float
+    aym_page_size: int
+    kdk_page_size: int
+    mevzuat_discovery_page_size: int
+    mevzuat_verify_inline: bool
     yargitay_max_records: int
     danistay_max_records: int
     mevzuat_max_articles: int
@@ -126,8 +130,12 @@ def get_worker_settings() -> WorkerSettings:
         yargitay_delay_seconds=_float_env("YARGITAY_DELAY_SECONDS", 1.5),
         danistay_delay_seconds=_float_env("DANISTAY_DELAY_SECONDS", 2.0),
         mevzuat_delay_seconds=_float_env("MEVZUAT_DELAY_SECONDS", 1.0),
-        kdk_delay_seconds=_float_env("KDK_DELAY_SECONDS", 2.0),
-        aym_delay_seconds=_float_env("AYM_DELAY_SECONDS", 2.0),
+        aym_delay_seconds=_float_env("AYM_DELAY_SECONDS", 1.0),
+        kdk_delay_seconds=_float_env("KDK_DELAY_SECONDS", 1.0),
+        aym_page_size=min(100, _int_env("AYM_PAGE_SIZE", 100)),
+        kdk_page_size=min(100, _int_env("KDK_PAGE_SIZE", 100)),
+        mevzuat_discovery_page_size=min(20, _int_env("MEVZUAT_DISCOVERY_PAGE_SIZE", 20)),
+        mevzuat_verify_inline=_bool_env("MEVZUAT_VERIFY_INLINE", True),
         yargitay_max_records=_int_env("YARGITAY_MAX_RECORDS_PER_RUN", 80),
         danistay_max_records=_int_env("DANISTAY_MAX_RECORDS_PER_RUN", 50),
         mevzuat_max_articles=_int_env("MEVZUAT_MAX_ARTICLES_PER_RUN", 50),

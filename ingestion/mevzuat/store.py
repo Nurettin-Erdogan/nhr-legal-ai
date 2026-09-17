@@ -14,6 +14,7 @@ import psycopg
 from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
 
+from ingestion.chunk_store import replace_chunks
 from ingestion.mevzuat.models import LegislationRecord
 from ingestion.yargitay.chunking import DEFAULT_MAX_CHARS, chunk_text
 
@@ -212,19 +213,6 @@ ON CONFLICT (legal_source_id) DO UPDATE SET
 """
 
 _COUNT_CHUNKS = "SELECT count(*) FROM legal_chunks WHERE legal_source_id = %s"
-_DELETE_CHUNKS = "DELETE FROM legal_chunks WHERE legal_source_id = %s"
-_INSERT_CHUNK = """
-INSERT INTO legal_chunks (
-    legal_source_id,
-    chunk_index,
-    content,
-    paragraph_start,
-    paragraph_end,
-    content_hash,
-    metadata
-)
-VALUES (%s, %s, %s, %s, %s, %s, %s)
-"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,29 +277,27 @@ def _write_chunks(
     record: LegislationRecord,
     max_chars: int,
 ) -> int:
-    cursor.execute(_DELETE_CHUNKS, (legal_source_id,))
     chunks = chunk_text(record.raw_text, max_chars=max_chars)
-    for chunk in chunks:
-        cursor.execute(
-            _INSERT_CHUNK,
-            (
-                legal_source_id,
-                chunk.index,
-                chunk.content,
-                chunk.paragraph_start,
-                chunk.paragraph_end,
-                chunk.content_hash,
-                Jsonb(
-                    {
-                        "source": "mevzuat",
-                        "external_id": record.external_id,
-                        "law_no": record.law_no,
-                        "article_no": record.article_no,
-                    }
-                ),
+    rows = [
+        (
+            legal_source_id,
+            chunk.index,
+            chunk.content,
+            chunk.paragraph_start,
+            chunk.paragraph_end,
+            chunk.content_hash,
+            Jsonb(
+                {
+                    "source": "mevzuat",
+                    "external_id": record.external_id,
+                    "law_no": record.law_no,
+                    "article_no": record.article_no,
+                }
             ),
         )
-    return len(chunks)
+        for chunk in chunks
+    ]
+    return replace_chunks(cursor, legal_source_id, rows)
 
 
 def upsert_legislation(

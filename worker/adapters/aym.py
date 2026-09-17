@@ -18,7 +18,7 @@ from ingestion.yargitay.store import upsert_decision
 from worker.config import get_worker_settings
 from worker.known_sources import skippable_external_ids, skipped_existing
 from worker.models import AdapterHealth, RecordOutcome, SyncRequest
-from worker.reconciliation import coverage_cursor
+from worker.reconciliation import coverage_cursor, window_may_advance
 
 
 class AymSourceAdapter:
@@ -109,7 +109,6 @@ class AymSourceAdapter:
         resume_cursor = cursor if request.resume and not cursor.get("complete") else {}
         keyword = request.keyword.strip() or str(resume_cursor.get("keyword") or "")
         max_records = request.max_records or settings.aym_max_records
-        page_size = 20
         application_no = keyword if keyword.replace("/", "").isdigit() and "/" in keyword else None
         types = (
             ("BireyselBasvuru",)
@@ -121,8 +120,31 @@ class AymSourceAdapter:
             type_index = 0
         page_number = int(resume_cursor.get("page") or 1)
         row_offset = int(resume_cursor.get("row_offset") or 0)
+        same_partition = request.resume and int(resume_cursor.get("type_index") or 0) == type_index
+        configured_page_size = max(1, min(100, settings.aym_page_size))
+        page_size = configured_page_size
+        if same_partition:
+            stored_size = resume_cursor.get("page_size")
+            if stored_size:
+                page_size = max(1, min(100, int(stored_size)))
+            elif (
+                int(resume_cursor.get("page") or 1) > 1
+                or int(resume_cursor.get("row_offset") or 0)
+                or int(resume_cursor.get("window_seen_total") or 0)
+            ):
+                page_size = 20
+        prior_seen = int(resume_cursor.get("window_seen_total") or 0) if same_partition else 0
+        prior_stored = int(resume_cursor.get("window_stored_total") or 0) if same_partition else 0
+        prior_dup = int(resume_cursor.get("window_duplicate_total") or 0) if same_partition else 0
+        prior_q = int(resume_cursor.get("window_quarantined_total") or 0) if same_partition else 0
         processed = seen = stored = duplicate = failed = quarantined = 0
         expected: int | None = None
+
+        def _reset_partition_counters() -> None:
+            nonlocal prior_seen, prior_stored, prior_dup, prior_q
+            nonlocal seen, stored, duplicate, failed, quarantined
+            prior_seen = prior_stored = prior_dup = prior_q = 0
+            seen = stored = duplicate = failed = quarantined = 0
 
         while processed < max_records and not should_stop() and type_index < len(types):
             karar_tipi = types[type_index]
@@ -137,16 +159,25 @@ class AymSourceAdapter:
             if not page.rows:
                 coverage = coverage_cursor(
                     expected=expected,
-                    seen=seen,
-                    stored=stored,
-                    duplicate=duplicate,
-                    quarantined=quarantined,
+                    seen=prior_seen + seen,
+                    stored=prior_stored + stored,
+                    duplicate=prior_dup + duplicate,
+                    quarantined=prior_q + quarantined,
                     failed=failed,
                 )
-                if expected == 0:
+                if expected == 0 or window_may_advance(
+                    reconciled=bool(coverage["reconciled"]),
+                    processed=0,
+                    failed=failed,
+                    already_started=prior_seen + seen > 0 or page_number > 1 or row_offset > 0,
+                    stopped=should_stop(),
+                ):
                     type_index += 1
                     page_number, row_offset = 1, 0
-                    seen = stored = duplicate = failed = quarantined = 0
+                    page_size = configured_page_size
+                    if type_index >= len(types):
+                        break
+                    _reset_partition_counters()
                     continue
                 break
             remaining_rows = page.rows[row_offset:]
@@ -247,16 +278,25 @@ class AymSourceAdapter:
             if page_number * page_size >= (expected or 0):
                 coverage = coverage_cursor(
                     expected=expected,
-                    seen=seen,
-                    stored=stored,
-                    duplicate=duplicate,
-                    quarantined=quarantined,
+                    seen=prior_seen + seen,
+                    stored=prior_stored + stored,
+                    duplicate=prior_dup + duplicate,
+                    quarantined=prior_q + quarantined,
                     failed=failed,
                 )
-                if coverage["reconciled"]:
+                if coverage["reconciled"] or window_may_advance(
+                    reconciled=bool(coverage["reconciled"]),
+                    processed=0,
+                    failed=failed,
+                    already_started=prior_seen + seen > 0 or page_number > 1,
+                    stopped=should_stop(),
+                ):
                     type_index += 1
                     page_number, row_offset = 1, 0
-                    seen = stored = duplicate = failed = quarantined = 0
+                    page_size = configured_page_size
+                    if type_index >= len(types):
+                        break
+                    _reset_partition_counters()
                     continue
                 break
             page_number += 1
@@ -265,15 +305,12 @@ class AymSourceAdapter:
         all_done = type_index >= len(types) and not should_stop()
         coverage = coverage_cursor(
             expected=expected,
-            seen=seen,
-            stored=stored,
-            duplicate=duplicate,
-            quarantined=quarantined,
+            seen=prior_seen + seen,
+            stored=prior_stored + stored,
+            duplicate=prior_dup + duplicate,
+            quarantined=prior_q + quarantined,
             failed=failed,
         )
-        if all_done:
-            coverage["reconciled"] = True
-            coverage["window_complete"] = True
         self.last_cursor = {
             "page": 1 if all_done else page_number,
             "row_offset": 0 if all_done else row_offset,
@@ -282,6 +319,11 @@ class AymSourceAdapter:
             "partitions": list(types),
             "complete": all_done,
             "keyword": "" if all_done else keyword,
+            "page_size": page_size,
+            "window_seen_total": 0 if all_done else prior_seen + seen,
+            "window_stored_total": 0 if all_done else prior_stored + stored,
+            "window_duplicate_total": 0 if all_done else prior_dup + duplicate,
+            "window_quarantined_total": 0 if all_done else prior_q + quarantined,
             **coverage,
             "reconciled": all_done or bool(coverage["reconciled"]),
             "window_complete": all_done,

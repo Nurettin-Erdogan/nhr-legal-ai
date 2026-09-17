@@ -14,6 +14,7 @@ from typing import Literal
 import psycopg
 from psycopg.types.json import Jsonb
 
+from ingestion.chunk_store import replace_chunks
 from ingestion.yargitay.chunking import DEFAULT_MAX_CHARS, chunk_text
 from ingestion.yargitay.models import CourtDecision
 
@@ -174,21 +175,6 @@ ON CONFLICT (legal_source_id) DO UPDATE SET
 
 _COUNT_CHUNKS = "SELECT count(*) FROM legal_chunks WHERE legal_source_id = %s"
 
-_DELETE_CHUNKS = "DELETE FROM legal_chunks WHERE legal_source_id = %s"
-
-_INSERT_CHUNK = """
-INSERT INTO legal_chunks (
-    legal_source_id,
-    chunk_index,
-    content,
-    paragraph_start,
-    paragraph_end,
-    content_hash,
-    metadata
-)
-VALUES (%s, %s, %s, %s, %s, %s, %s)
-"""
-
 
 @dataclass(frozen=True, slots=True)
 class IngestResult:
@@ -228,29 +214,25 @@ def _write_chunks(
     decision: CourtDecision,
     max_chars: int,
 ) -> int:
-    cursor.execute(_DELETE_CHUNKS, (legal_source_id,))
-
     chunks = chunk_text(decision.raw_text, max_chars=max_chars)
-    for chunk in chunks:
-        cursor.execute(
-            _INSERT_CHUNK,
-            (
-                legal_source_id,
-                chunk.index,
-                chunk.content,
-                chunk.paragraph_start,
-                chunk.paragraph_end,
-                chunk.content_hash,
-                Jsonb(
-                    {
-                        "source": decision.metadata.get("source_adapter", "yargitay"),
-                        "external_id": decision.external_id,
-                    }
-                ),
+    rows = [
+        (
+            legal_source_id,
+            chunk.index,
+            chunk.content,
+            chunk.paragraph_start,
+            chunk.paragraph_end,
+            chunk.content_hash,
+            Jsonb(
+                {
+                    "source": decision.metadata.get("source_adapter", "yargitay"),
+                    "external_id": decision.external_id,
+                }
             ),
         )
-
-    return len(chunks)
+        for chunk in chunks
+    ]
+    return replace_chunks(cursor, legal_source_id, rows)
 
 
 def upsert_decision(

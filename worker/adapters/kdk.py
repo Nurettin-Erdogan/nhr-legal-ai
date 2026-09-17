@@ -117,7 +117,7 @@ class KdkSourceAdapter:
         offset = int(cursor.get("offset") or 0) if request.resume else 0
         keyword = request.keyword.strip() or str(cursor.get("keyword") or "")
         max_records = request.max_records or settings.kdk_max_records
-        page_size = min(20, max_records)
+        page_size = max(1, min(100, settings.kdk_page_size))
         client.begin_search(keyword)
 
         processed = seen = stored = duplicate = failed = quarantined = 0

@@ -15,13 +15,12 @@ from ingestion.mevzuat.portal import (
     MevzuatPortalError,
     is_missing_article_tree_error,
 )
+from ingestion.mevzuat.official_verify import stored_law_verification
 from ingestion.mevzuat.store import upsert_legislation, version_identity_for
 from ingestion.mevzuat_bilgi_sistemi.portal import MbsClient, MbsError
 from ingestion.resmi_gazete.portal import ResmiGazeteClient, ResmiGazeteError
 from worker.config import get_worker_settings
 from worker.models import AdapterHealth, RecordOutcome, SyncRequest
-
-DISCOVERY_PAGE_SIZE = 10
 
 
 class MevzuatSourceAdapter:
@@ -45,6 +44,7 @@ class MevzuatSourceAdapter:
         self.verify_gazette = verify_gazette
         self.verify_mbs = verify_mbs
         self.last_cursor: dict[str, Any] = {}
+        self._verification_cache: dict[str, tuple[dict[str, Any], dict[str, Any], int]] = {}
         self._law_state: dict[str, Any] = {
             "processed": 0,
             "last_article": "",
@@ -55,6 +55,98 @@ class MevzuatSourceAdapter:
 
     def _settings(self):
         return get_worker_settings()
+
+    def _discovery_page_size(self) -> int:
+        return max(1, min(20, self._settings().mevzuat_discovery_page_size))
+
+    def _official_verifications(
+        self,
+        *,
+        job: LawJob,
+        law_name: str,
+        gazette_date,
+        gazette_no: str | None,
+        connection: Any,
+        settings,
+    ) -> tuple[dict[str, Any], dict[str, Any], int]:
+        cached = self._verification_cache.get(job.law_no)
+        if cached:
+            gazette, mbs, _pending = cached
+            return gazette, mbs, 0
+        stored = stored_law_verification(connection, job.law_no)
+        if stored is not None:
+            self._verification_cache[job.law_no] = stored
+            gazette, mbs, _pending = stored
+            return gazette, mbs, 0
+        if not settings.mevzuat_verify_inline:
+            skipped = (
+                {
+                    "verified": False,
+                    "detail": "Resmî Gazete doğrulaması ayrı worker'a bırakıldı",
+                    "law_no": job.law_no,
+                },
+                {
+                    "verified": False,
+                    "detail": "MBS doğrulaması ayrı worker'a bırakıldı",
+                    "law_no": job.law_no,
+                },
+                0,
+            )
+            self._verification_cache[job.law_no] = skipped
+            return skipped
+        gazette_verification: dict[str, Any] = {
+            "verified": False,
+            "detail": "Resmî Gazete doğrulaması için tarih veya sayı bilgisi eksik",
+        }
+        mbs_verification: dict[str, Any] = {
+            "verified": False,
+            "detail": "MBS doğrulaması çalıştırılmadı",
+            "law_no": job.law_no,
+        }
+        pending = 0
+        if self.verify_gazette and (gazette_date or gazette_no):
+            pending = 3
+            verifier = self.gazette_client or ResmiGazeteClient(
+                max_retries=settings.max_retries,
+                retry_backoff_seconds=max(1.0, settings.mevzuat_delay_seconds),
+            )
+            try:
+                gazette_verification = verifier.verify_legislation(
+                    publication_date=gazette_date,
+                    issue_no=gazette_no,
+                    law_no=job.law_no,
+                    law_name=law_name,
+                ).to_json()
+            except ResmiGazeteError as exc:
+                gazette_verification = {
+                    "verified": False,
+                    "detail": str(exc),
+                    "requested_date": gazette_date.isoformat() if gazette_date else None,
+                    "requested_issue_no": gazette_no,
+                    "law_no": job.law_no,
+                }
+        if self.verify_mbs:
+            pending += 2
+            mbs = self.mbs_client or MbsClient(
+                max_retries=settings.max_retries,
+                retry_backoff_seconds=max(1.0, settings.mevzuat_delay_seconds),
+            )
+            try:
+                mbs_verification = mbs.verify_legislation(
+                    law_no=job.law_no,
+                    law_name=law_name,
+                    publication_date=gazette_date,
+                    issue_no=gazette_no,
+                ).to_json()
+            except MbsError as exc:
+                mbs_verification = {
+                    "verified": False,
+                    "detail": str(exc),
+                    "law_no": job.law_no,
+                }
+        result = (gazette_verification, mbs_verification, pending)
+        self._verification_cache[job.law_no] = result
+        return result
 
     def health_check(self) -> AdapterHealth:
         client = self.client or MevzuatPortalClient(timeout_seconds=20, max_retries=1)
@@ -223,56 +315,16 @@ class MevzuatSourceAdapter:
             else:
                 state["stopped"] = True
             return
-        gazette_verification: dict[str, Any] = {
-            "verified": False,
-            "detail": "Resmî Gazete doğrulaması için tarih veya sayı bilgisi eksik",
-        }
-        pending_verification_requests = 0
-        if self.verify_gazette and (gazette_date or gazette_no):
-            pending_verification_requests = 3
-            verifier = self.gazette_client or ResmiGazeteClient(
-                max_retries=settings.max_retries,
-                retry_backoff_seconds=max(1.0, settings.mevzuat_delay_seconds),
+        gazette_verification, mbs_verification, pending_verification_requests = (
+            self._official_verifications(
+                job=job,
+                law_name=law_name,
+                gazette_date=gazette_date,
+                gazette_no=gazette_no,
+                connection=connection,
+                settings=settings,
             )
-            try:
-                gazette_verification = verifier.verify_legislation(
-                    publication_date=gazette_date,
-                    issue_no=gazette_no,
-                    law_no=job.law_no,
-                    law_name=law_name,
-                ).to_json()
-            except ResmiGazeteError as exc:
-                gazette_verification = {
-                    "verified": False,
-                    "detail": str(exc),
-                    "requested_date": gazette_date.isoformat() if gazette_date else None,
-                    "requested_issue_no": gazette_no,
-                    "law_no": job.law_no,
-                }
-        mbs_verification: dict[str, Any] = {
-            "verified": False,
-            "detail": "MBS doğrulaması çalıştırılmadı",
-            "law_no": job.law_no,
-        }
-        if self.verify_mbs:
-            pending_verification_requests += 2
-            mbs = self.mbs_client or MbsClient(
-                max_retries=settings.max_retries,
-                retry_backoff_seconds=max(1.0, settings.mevzuat_delay_seconds),
-            )
-            try:
-                mbs_verification = mbs.verify_legislation(
-                    law_no=job.law_no,
-                    law_name=law_name,
-                    publication_date=gazette_date,
-                    issue_no=gazette_no,
-                ).to_json()
-            except MbsError as exc:
-                mbs_verification = {
-                    "verified": False,
-                    "detail": str(exc),
-                    "law_no": job.law_no,
-                }
+        )
         skipping = bool(skip_until_article)
         law_finished = True
         last_successful_article = skip_until_article
@@ -495,6 +547,7 @@ class MevzuatSourceAdapter:
             if skip_until_article
             else ""
         )
+        page_size = self._discovery_page_size()
         processed = 0
         stopped = False
         skipped_laws = 0
@@ -517,7 +570,7 @@ class MevzuatSourceAdapter:
             else:
                 page = client.search_page(
                     page_number=catalog_page,
-                    page_size=DISCOVERY_PAGE_SIZE,
+                    page_size=page_size,
                     types=(current_type,),
                 )
                 documents = page.documents
@@ -536,8 +589,8 @@ class MevzuatSourceAdapter:
                 catalog_page, catalog_offset = 1, 0
                 continue
             if job_offset >= len(documents):
-                if len(documents) >= DISCOVERY_PAGE_SIZE and (
-                    not page.total or catalog_page * DISCOVERY_PAGE_SIZE < page.total
+                if len(documents) >= page_size and (
+                    not page.total or catalog_page * page_size < page.total
                 ):
                     catalog_page += 1
                     catalog_offset = 0
@@ -565,7 +618,7 @@ class MevzuatSourceAdapter:
                 max_articles=max_articles,
                 processed=processed,
                 skip_until_article=skip_until_article,
-                law_index=type_index * 1_000_000 + catalog_page * DISCOVERY_PAGE_SIZE + catalog_offset,
+                law_index=type_index * 1_000_000 + catalog_page * page_size + catalog_offset,
                 skip_missing_tree=True,
             )
             state = self._law_state

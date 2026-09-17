@@ -81,6 +81,7 @@ class AymDecisionRow:
     decision_date: date | None
     application_date: date | None
     publication_date: date | None
+    official_gazette_date: date | None
     chamber: str
     outcome: str
     subject: str
@@ -94,13 +95,10 @@ class AymDecisionRow:
             decision_type=str(value.get("kararTipi") or "").strip(),
             application_no=str(value.get("basvuruNo") or "").strip(),
             applicant_name=str(value.get("basvuruAdi") or "").strip(),
-            decision_date=(
-                parse_portal_date(value.get("kararTarihi"))
-                or parse_portal_date(value.get("resmiGazeteTarihi"))
-                or parse_portal_date(value.get("yayinTarihi"))
-            ),
+            decision_date=parse_portal_date(value.get("kararTarihi")),
             application_date=parse_portal_date(value.get("basvuruTarihi")),
             publication_date=parse_portal_date(value.get("yayinTarihi")),
+            official_gazette_date=parse_portal_date(value.get("resmiGazeteTarihi")),
             chamber=str(value.get("kararVerenBirimLabel") or "").strip(),
             outcome=str(value.get("kararTuruBasvuruSonucuLabel") or "").strip(),
             subject=html_to_text(subject_value),
