@@ -13,7 +13,7 @@ from ingestion.raw_capture import save_raw_response
 from worker.config import get_worker_settings
 from worker.lanes import advance_window_start, resolve_sync_window
 from worker.models import AdapterHealth, RecordOutcome, SyncRequest
-from worker.reconciliation import coverage_cursor
+from worker.reconciliation import coverage_cursor, window_may_advance
 
 
 class KdkSourceAdapter:
@@ -229,7 +229,13 @@ class KdkSourceAdapter:
             quarantined=prior_q + quarantined,
             failed=failed,
         )
-        window_complete = bool(coverage["reconciled"]) and not should_stop()
+        window_complete = window_may_advance(
+            reconciled=bool(coverage["reconciled"]),
+            processed=processed,
+            failed=failed,
+            already_started=prior_seen > 0 or int(cursor.get("offset") or 0) > 0,
+            stopped=should_stop(),
+        )
         next_start = advance_window_start(
             window_from,
             window_complete,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from time import sleep
 from typing import Any, Callable
 
@@ -12,7 +12,7 @@ import psycopg
 
 from worker import ACTIVE_SOURCES
 from worker.config import get_worker_settings
-from worker.jobs import _interval_for, _quarantined_progress, run_sync
+from worker.jobs import _cursor_advanced, _interval_for, run_sync
 from worker.models import SyncRequest
 from worker.repository import SyncRepository
 from worker.scheduler import run_daemon
@@ -225,7 +225,9 @@ def run_full_backfill(
                 continue
             now = datetime.now(UTC)
             deferred_until = retry_after.get(source)
-            if checkpoint.health_state in {"failed", "degraded"} and checkpoint.next_run_at:
+            # Degraded means a batch ended partial (cap / a few bad rows).
+            # Full backfill must keep walking; only a hard failure cools down.
+            if checkpoint.health_state == "failed" and checkpoint.next_run_at:
                 deferred_until = max(
                     deferred_until or checkpoint.next_run_at, checkpoint.next_run_at
                 )
@@ -255,18 +257,21 @@ def run_full_backfill(
                 remaining.remove(source)
                 logger.info("full backfill complete source=%s", source)
                 continue
-            if status != "success" or cursor == before_cursor:
+            error = str(result.get("error") or "")
+            if status == "failed" and "zaten çalışıyor" in error:
+                retry_after[source] = datetime.now(UTC) + timedelta(seconds=15)
+                logger.warning(
+                    "full backfill waiting for lock source=%s until=%s",
+                    source, retry_after[source].isoformat(),
+                )
+            elif status in {"failed", "cancelled"} or not _cursor_advanced(
+                before_cursor, cursor
+            ):
                 # A failing or stationary source must never spin at the short
                 # backfill pause. Let other sources proceed while this one cools.
-                counters = result.get("counters") or {}
-                clean_quarantine = status == "partial" and _quarantined_progress(
-                    before_cursor, cursor,
-                    failed=int(counters.get("records_failed") or 0),
-                    quarantined=int(counters.get("records_quarantined") or 0),
-                )
                 delay = _interval_for(
                     source, cursor=cursor,
-                    status="success" if clean_quarantine else "failed",
+                    status="failed",
                 )
                 retry_after[source] = datetime.now(UTC) + delay
                 logger.warning(

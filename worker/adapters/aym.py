@@ -122,8 +122,6 @@ class AymSourceAdapter:
         row_offset = int(resume_cursor.get("row_offset") or 0)
         processed = seen = stored = duplicate = failed = quarantined = 0
         expected: int | None = None
-        halted_on_failure = False
-        partition_complete = False
 
         while processed < max_records and not should_stop() and type_index < len(types):
             karar_tipi = types[type_index]
@@ -208,27 +206,24 @@ class AymSourceAdapter:
                             "legal_source_id": result.legal_source_id,
                         }
                     row_offset = row_index + 1
-                except AymFullTextUnavailable as exc:
+                except (AymFullTextUnavailable, AymPortalError) as exc:
                     quarantined += 1
+                    reason_code = (
+                        "full_text_unavailable"
+                        if isinstance(exc, AymFullTextUnavailable)
+                        else "unverified_or_unreadable"
+                    )
                     yield "quarantined", {
                         **extra,
                         "external_id": row.external_id,
-                        "reason_code": "full_text_unavailable",
-                        "reason": "full_text_unavailable:" + str(exc),
-                        "raw": {"official_id": row.official_id, "karar_tipi": karar_tipi},
+                        "reason_code": reason_code,
+                        "reason": reason_code + ":" + str(exc),
+                        "raw": {
+                            "official_id": row.official_id,
+                            "karar_tipi": karar_tipi,
+                        },
                     }
                     row_offset = row_index + 1
-                except AymPortalError as exc:
-                    failed += 1
-                    yield "failed", {
-                        **extra,
-                        "external_id": row.external_id,
-                        "reason": str(exc),
-                    }
-                    halted_on_failure = True
-                    break
-            if halted_on_failure:
-                break
             if row_offset < len(page.rows):
                 break
             if page_number * page_size >= (expected or 0):
@@ -245,16 +240,11 @@ class AymSourceAdapter:
                     page_number, row_offset = 1, 0
                     seen = stored = duplicate = failed = quarantined = 0
                     continue
-                partition_complete = False
                 break
             page_number += 1
             row_offset = 0
 
-        all_done = (
-            type_index >= len(types)
-            and not halted_on_failure
-            and not should_stop()
-        )
+        all_done = type_index >= len(types) and not should_stop()
         coverage = coverage_cursor(
             expected=expected,
             seen=seen,

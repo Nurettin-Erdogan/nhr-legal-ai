@@ -32,17 +32,35 @@ def _carry_backfill_horizon(
     return current
 
 
+_CURSOR_POSITION_KEYS = (
+    "next_window_start",
+    "page",
+    "row_offset",
+    "offset",
+    "type_index",
+    "catalog_page",
+    "catalog_offset",
+    "last_article_no",
+    "law_no",
+    "window_from",
+    "window_to",
+)
+
+
+def _cursor_advanced(previous: dict[str, Any], current: dict[str, Any]) -> bool:
+    """True when the adapter wrote a different resume cursor, including KDK offset."""
+    return dict(previous or {}) != dict(current or {})
+
+
 def _quarantined_progress(
     previous: dict[str, Any], current: dict[str, Any], *, failed: int, quarantined: int
 ) -> bool:
     """A skipped bad record need not put a progressing source on error cooldown."""
     if failed or not quarantined:
         return False
-    position_keys = (
-        "next_window_start", "page", "row_offset", "type_index",
-        "catalog_page", "catalog_offset", "last_article_no", "law_no",
+    return any(
+        previous.get(key) != current.get(key) for key in _CURSOR_POSITION_KEYS
     )
-    return any(previous.get(key) != current.get(key) for key in position_keys)
 
 
 def _interval_for(
@@ -169,6 +187,8 @@ def run_sync(
                         raw_payload=payload.get("raw") or payload,
                     )
                 counters.add(outcome)
+                if outcome in {"failed", "invalid"} and not error:
+                    error = str(payload.get("reason") or "record_failed")
                 counters.requests_made += int(payload.get("requests_made") or 0)
                 if payload.get("external_id"):
                     last_external_id = str(payload["external_id"])
@@ -230,7 +250,12 @@ def run_sync(
             checkpoint.consecutive_failures = 0
             checkpoint.last_error = error
             if checkpoint.health_state != "blocked":
-                checkpoint.health_state = "degraded"
+                quarantine_progress = _quarantined_progress(
+                    previous_cursor, checkpoint.last_cursor,
+                    failed=counters.records_failed,
+                    quarantined=counters.records_quarantined,
+                )
+                checkpoint.health_state = "healthy" if quarantine_progress else "degraded"
                 checkpoint.health_detail = error
         elif status in {"failed", "captcha_required", "cancelled"}:
             checkpoint.consecutive_failures += 1
@@ -247,11 +272,12 @@ def run_sync(
             checkpoint = original_checkpoint
         else:
             interval_status = status
-            if status == "partial" and _quarantined_progress(
-                previous_cursor, checkpoint.last_cursor,
-                failed=counters.records_failed,
-                quarantined=counters.records_quarantined,
+            if status == "partial" and _cursor_advanced(
+                previous_cursor, checkpoint.last_cursor
             ):
+                # A batch cap or a few bad rows is not a portal outage. Keep
+                # the short backfill cadence so the collector does not idle
+                # for hours between 40–80 record runs.
                 interval_status = "success"
             checkpoint.next_run_at = datetime.now(UTC) + _interval_for(
                 source, cursor=checkpoint.last_cursor, status=interval_status, lane=lane

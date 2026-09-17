@@ -106,16 +106,15 @@ Checkpoint'ler ayrıdır (`yargitay` / `yargitay:current`). Coverage kanonik
 kaynağa yazılır; current şerit `complete=true` yazmaz, çünkü içinde
 bulunduğumuz ay kapanmış sayılmaz.
 
-Başarılı turdan sonra tamamlanmamış tarih/sayfa penceresi veya geçmişte kalan
-sonraki pencere varsa backfill aralığı kullanılır. Hata, kısmi başarı veya
-CAPTCHA sonrasında normal uzun aralık korunur; portalı sıkıştırmak için
-otomatik retry yapılmaz. Backfill tamamlandığında normal periyodik aralık
-devreye girer. Mevcut `next_run_at` kayıtları geriye dönük değiştirilmez; yeni
-aralık, sonraki başarılı turda uygulanır.
-Karantinaya alınan kayıt dışında hata yoksa ve imleç gerçekten ilerlediyse
-`partial` tur kısa backfill aralığıyla devam eder. İlerlemeyen, başarısız veya
-CAPTCHA isteyen tur yine uzun beklemeye alınır; karantina kaydı korunur ve
-eksik pencere tamamlanmış sayılmaz.
+`python -m worker.runner backfill` tarihsel korpus bitene kadar döner.
+Tur başına `*_MAX_*` tavanı (40–80 kayıt) vardır; tavan dolunca tur
+`partial`/`success` biter ama imleç ilerlediyse süreç saatlerce beklemaz,
+kaynak gecikmesi + `BACKFILL_PAUSE_SECONDS` (Danıştay min. 30s) sonra
+aynı imleçten devam eder. İlerlemeden başarısız olan, aynı imleçte
+dönen veya CAPTCHA isteyen kaynak uzun aralığa alınır; karantina kaydı
+korunur ve eksik pencere tamamlanmış sayılmaz. Daemon için: imleç
+ilerleyen `partial` kısa backfill aralığını kullanır. Backfill bitince
+normal periyodik aralık devreye girer.
 
 ## Checkpoint / resume
 
@@ -218,10 +217,13 @@ künyesi portalın yapılandırılmış JSON alanlarından alınır.
 
 AYM bireysel başvuru künyesi public arama JSON'undan alınır. Tam metin,
 public karar-dosyaları listesinin gösterdiği UDF attachment içindeki
-`content.xml` dosyasından çıkarılır. UDF'deki başvuru numarası JSON künyesiyle
-eşleşmeden kayıt korpusa alınmaz. Bireysel başvurularda olmayan bir karar
-numarası üretilmez; `docket_no` başvuru numarasıdır ve kullanıcıya `B. No:`
-olarak gösterilir. Güvenlik doğrulaması isteyen PDF üretim ucu kullanılmaz.
+`content.xml` dosyasından çıkarılır; paket içinde başka dosya olsa da
+yalnız `content.xml` okunur. Başvuru/esas numarası ve karar tarihi JSON
+künyesiyle metinde eşleşmeden kayıt korpusa alınmaz. Okunamayan veya
+künyesi tutmayan dosya karantinaya düşer, imleç sonraki karara geçer,
+çekim durmaz. Bireysel başvurularda olmayan bir karar numarası üretilmez;
+`docket_no` başvuru numarasıdır ve kullanıcıya `B. No:` olarak gösterilir.
+Güvenlik doğrulaması isteyen PDF üretim ucu kullanılmaz.
 
 ## Embedding
 

@@ -227,6 +227,31 @@ def test_run_full_backfill_skips_captcha_blocked_source(monkeypatch):
     assert summary["remaining"] == []
 
 
+def test_lock_contention_retries_in_seconds_not_hours(monkeypatch):
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    from worker.config import get_worker_settings
+
+    get_worker_settings.cache_clear()
+    _healthy_repo(monkeypatch)
+    monkeypatch.setattr("worker.backfill.prepare_full_backfill", lambda *_: {})
+    observed = []
+    stopped = [False]
+
+    def fake_sync(_connection, _request, should_stop=None):
+        return {"status": "failed", "error": "aym sync zaten çalışıyor"}
+
+    def fake_sleep(seconds):
+        observed.append(seconds)
+        stopped[0] = True
+
+    monkeypatch.setattr("worker.backfill.sleep", fake_sleep)
+    run_full_backfill(
+        object(), ["aym"], should_stop=lambda: stopped[0],
+        embed=False, then_incremental=False, pause_seconds=2, sync=fake_sync,
+    )
+    assert observed and observed[0] <= 15
+
+
 def test_failed_source_cools_down_without_starving_other_sources(monkeypatch):
     monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
     from worker.config import get_worker_settings
@@ -285,6 +310,108 @@ def test_stationary_success_is_deferred_instead_of_spinning(monkeypatch):
     assert calls[0] == 1
 
 
+def test_kdk_offset_progress_keeps_short_pause(monkeypatch):
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    from worker.config import get_worker_settings
+
+    get_worker_settings.cache_clear()
+    _healthy_repo(monkeypatch)
+    monkeypatch.setattr("worker.backfill.prepare_full_backfill", lambda *_: {})
+    stopped = [False]
+    observed = []
+
+    def fake_sync(_connection, _request, should_stop=None):
+        return {
+            "status": "success",
+            "checkpoint": {
+                "last_cursor": {
+                    "offset": 40,
+                    "window_from": "2017-11-01",
+                    "window_complete": False,
+                }
+            },
+        }
+
+    def short_pause(seconds):
+        observed.append(seconds)
+        stopped[0] = True
+
+    monkeypatch.setattr("worker.backfill.sleep", short_pause)
+    run_full_backfill(
+        object(), ["kdk"], should_stop=lambda: stopped[0],
+        embed=False, then_incremental=False, pause_seconds=2, sync=fake_sync,
+    )
+    assert observed == [2]
+
+
+def test_progressing_partial_with_failed_row_keeps_short_pause(monkeypatch):
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    from worker.config import get_worker_settings
+
+    get_worker_settings.cache_clear()
+    _healthy_repo(monkeypatch)
+    monkeypatch.setattr("worker.backfill.prepare_full_backfill", lambda *_: {})
+    stopped = [False]
+    observed = []
+
+    def fake_sync(_connection, _request, should_stop=None):
+        return {
+            "status": "partial",
+            "counters": {"records_failed": 1, "records_quarantined": 0},
+            "checkpoint": {"last_cursor": {"page": 3, "window_complete": False}},
+        }
+
+    def short_pause(seconds):
+        observed.append(seconds)
+        stopped[0] = True
+
+    monkeypatch.setattr("worker.backfill.sleep", short_pause)
+    run_full_backfill(
+        object(), ["yargitay"], should_stop=lambda: stopped[0],
+        embed=False, then_incremental=False, pause_seconds=2, sync=fake_sync,
+    )
+    assert observed == [2]
+
+
+def test_degraded_checkpoint_does_not_block_full_backfill(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    from worker.config import get_worker_settings
+
+    get_worker_settings.cache_clear()
+    monkeypatch.setattr("worker.backfill.prepare_full_backfill", lambda *_: {})
+
+    class FakeRepo:
+        def get_checkpoint(self, source):
+            return Checkpoint(
+                source_name=source,
+                health_state="degraded",
+                next_run_at=datetime.now(UTC) + timedelta(hours=12),
+            )
+
+    monkeypatch.setattr("worker.backfill.SyncRepository", lambda _c: FakeRepo())
+    calls = [0]
+    stopped = [False]
+
+    def fake_sync(_connection, _request, should_stop=None):
+        calls[0] += 1
+        return {
+            "status": "partial",
+            "counters": {"records_failed": 1, "records_created": 40},
+            "checkpoint": {"last_cursor": {"page": 2, "window_complete": False}},
+        }
+
+    monkeypatch.setattr(
+        "worker.backfill.sleep", lambda _seconds: stopped.__setitem__(0, True)
+    )
+    run_full_backfill(
+        object(), ["kdk"], should_stop=lambda: stopped[0],
+        embed=False, then_incremental=False, pause_seconds=2, sync=fake_sync,
+    )
+    assert calls[0] == 1
+
+
 def test_progressing_quarantine_uses_backfill_cadence_without_spinning(monkeypatch):
     monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
     from worker.config import get_worker_settings
@@ -302,19 +429,16 @@ def test_progressing_quarantine_uses_backfill_cadence_without_spinning(monkeypat
             "checkpoint": {"last_cursor": {"page": 2, "window_complete": False}},
         }
 
-    def interval(_source, *, cursor=None, status="success"):
-        from datetime import timedelta
+    def short_pause(seconds):
+        observed.append(seconds)
+        stopped[0] = True
 
-        observed.append(status)
-        return timedelta(minutes=180 if status == "success" else 1440)
-
-    monkeypatch.setattr("worker.backfill._interval_for", interval)
-    monkeypatch.setattr("worker.backfill.sleep", lambda _seconds: stopped.__setitem__(0, True))
+    monkeypatch.setattr("worker.backfill.sleep", short_pause)
     run_full_backfill(
         object(), ["aym"], should_stop=lambda: stopped[0],
-        embed=False, then_incremental=False, pause_seconds=0, sync=fake_sync,
+        embed=False, then_incremental=False, pause_seconds=2, sync=fake_sync,
     )
-    assert observed == ["success"]
+    assert observed == [2]
 
 
 def test_danistay_success_has_minimum_inter_run_pause(monkeypatch):

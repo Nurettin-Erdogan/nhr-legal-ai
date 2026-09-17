@@ -65,9 +65,10 @@ korpus adapter'ı değil, mevzuat doğrulama katmanıdır.
 AYM için `POST /api/core/public/search` ile yapılandırılmış künye,
 `GET /api/core/public/kararlar/{id}/dosyalar` ile yayımlanmış dosya listesi ve
 `GET /api/core/public/files/download-attachment/{folder}/{filename}` ile UDF
-karar dosyası alınır. UDF içindeki `content.xml` güvenli boyut ve yapı
-kontrollerinden sonra ayrıştırılır; başvuru numarası arama künyesiyle
-eşleşmezse kayıt reddedilir. Güvenlik doğrulaması isteyen PDF üretim ucu
+karar dosyası alınır. UDF içindeki `content.xml` güvenli boyut ve XML
+kontrollerinden sonra ayrıştırılır; başvuru/esas numarası ve karar tarihi
+arama künyesiyle metinde eşleşmezse kayıt reddedilip karantinaya alınır,
+sonraki karara geçilir. Güvenlik doğrulaması isteyen PDF üretim ucu
 kullanılmaz ve doğrulama başlığı taklit edilmez.
 
 ## Provenance standardı

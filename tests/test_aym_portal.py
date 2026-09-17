@@ -130,11 +130,12 @@ def test_identity_and_url_reject_empty_application_number():
         decision_url("")
 
 
-def _synthetic_udf(application_no: str = "2099/123") -> bytes:
+def _synthetic_udf(application_no: str = "2099/123", *, decision_date: str = "03.02.2099") -> bytes:
     xml = f"""
     <template><content><elements>
       <paragraph><content>ANAYASA MAHKEMESİ</content></paragraph>
       <paragraph><content>Bireysel Başvuru No: {application_no}</content></paragraph>
+      <paragraph><content>Karar Tarihi: {decision_date}</content></paragraph>
       <paragraph><content>{'Sentetik karar paragrafı. ' * 12}</content></paragraph>
     </elements></content></template>
     """.encode("utf-8")
@@ -220,6 +221,7 @@ def test_udf_becomes_grounded_court_decision_without_fake_decision_number():
     assert decision.decision_no is None
     assert decision.external_id == "aym:bb:2099/123"
     assert decision.metadata["outcome"] == "Esas (İhlal)"
+    assert decision.metadata["kunye_verified"] is True
     assert "applicant_name" not in decision.metadata
 
 
@@ -231,6 +233,94 @@ def test_udf_rejects_mismatched_application_number():
             _synthetic_udf("2099/999"),
             download_url="https://kararlarbilgibankasi.anayasa.gov.tr/public.udf",
         )
+
+
+def test_udf_reads_content_xml_even_if_archive_has_extra_members():
+    stream = BytesIO()
+    with ZipFile(stream, "w", ZIP_DEFLATED) as archive:
+        with ZipFile(BytesIO(_synthetic_udf()), "r") as source:
+            archive.writestr("content.xml", source.read("content.xml"))
+        archive.writestr("mimetype", b"application/vnd.uyap-udf")
+        archive.writestr("images/logo.png", b"not-a-real-image")
+    text = extract_udf_text(stream.getvalue())
+    assert "2099/123" in text
+    assert "03.02.2099" in text
+
+
+def test_udf_rejects_missing_content_xml():
+    stream = BytesIO()
+    with ZipFile(stream, "w", ZIP_DEFLATED) as archive:
+        archive.writestr("mimetype", b"application/vnd.uyap-udf")
+    with pytest.raises(AymPortalError, match="content.xml yok"):
+        extract_udf_text(stream.getvalue())
+
+
+def test_udf_rejects_mismatched_decision_date():
+    row = AymDecisionRow.from_mapping(SYNTHETIC_ROW)
+    with pytest.raises(AymPortalError, match="karar tarihi"):
+        decision_from_udf(
+            row,
+            _synthetic_udf(decision_date="01.01.1990"),
+            download_url="https://kararlarbilgibankasi.anayasa.gov.tr/public.udf",
+        )
+
+
+def test_adapter_quarantines_unreadable_udf_and_keeps_scanning(monkeypatch):
+    rows = tuple(
+        AymDecisionRow.from_mapping(
+            {
+                **SYNTHETIC_ROW,
+                "id": f"00000000-0000-0000-0000-00000000012{index}",
+                "basvuruNo": f"2099/{index}",
+            }
+        )
+        for index in (1, 2)
+    )
+
+    class Client:
+        def search_page(self, **_kwargs):
+            return SearchPage(rows, total=2, page=1, page_size=20)
+
+        def list_decision_files(self, row):
+            return (
+                AymDecisionFile(
+                    "file",
+                    row.official_id,
+                    "bireysel-basvuru",
+                    f"{row.application_no.replace('/', '-')}.udf",
+                    "BireyselBasvuru",
+                ),
+            )
+
+        def download_udf(self, decision_file):
+            if "2099-1" in decision_file.filename:
+                return b"not-a-zip", "https://kararlarbilgibankasi.anayasa.gov.tr/bad.udf"
+            application_no = decision_file.filename.removesuffix(".udf").replace("-", "/")
+            return _synthetic_udf(application_no), (
+                "https://kararlarbilgibankasi.anayasa.gov.tr/"
+                f"api/core/public/files/download-attachment/{decision_file.folder}/"
+                f"{decision_file.filename}"
+            )
+
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("AYM_DELAY_SECONDS", "0")
+    from worker.config import get_worker_settings
+
+    get_worker_settings.cache_clear()
+    adapter = AymSourceAdapter(client=Client())
+    events = list(
+        adapter.sync(
+            SyncRequest(source="aym", max_records=2, resume=True),
+            cursor={},
+            connection=None,
+            dry_run=True,
+            should_stop=lambda: False,
+        )
+    )
+    assert events[0][0] == "quarantined"
+    assert events[1][0] == "created"
+    assert events[1][1]["external_id"] == "aym:bb:2099/2"
+    assert adapter.last_cursor["type_index"] == 1
 
 
 def test_adapter_resumes_inside_partially_consumed_page(monkeypatch):

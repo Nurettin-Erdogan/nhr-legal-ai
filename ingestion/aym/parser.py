@@ -13,15 +13,33 @@ MAX_UDF_BYTES = 20 * 1024 * 1024
 MAX_XML_BYTES = 30 * 1024 * 1024
 
 
+def _udf_content_xml_name(names: list[str]) -> str:
+    """ZIP'te yalnız content.xml okunur; diğer üyeler açılmaz."""
+    by_norm = {name.replace("\\", "/"): name for name in names}
+    candidates = [
+        original
+        for normalized, original in by_norm.items()
+        if normalized.rstrip("/").split("/")[-1] == "content.xml"
+        and ".." not in normalized.split("/")
+        and not normalized.endswith("/")
+    ]
+    if not candidates:
+        raise AymPortalError("AYM UDF içinde content.xml yok")
+    for original in candidates:
+        if original.replace("\\", "/") == "content.xml":
+            return original
+    if len(candidates) != 1:
+        raise AymPortalError("AYM UDF içinde birden fazla content.xml var")
+    return candidates[0]
+
+
 def extract_udf_text(raw: bytes) -> str:
     if len(raw) > MAX_UDF_BYTES:
         raise AymPortalError("AYM UDF dosyası güvenli boyut sınırını aşıyor")
     try:
         with ZipFile(BytesIO(raw)) as archive:
-            names = archive.namelist()
-            if names != ["content.xml"]:
-                raise AymPortalError("AYM UDF arşivi yalnız content.xml içermelidir")
-            info = archive.getinfo("content.xml")
+            member = _udf_content_xml_name(archive.namelist())
+            info = archive.getinfo(member)
             if info.file_size > MAX_XML_BYTES:
                 raise AymPortalError("AYM UDF XML içeriği güvenli boyut sınırını aşıyor")
             xml = archive.read(info)
@@ -54,6 +72,28 @@ def extract_udf_text(raw: bytes) -> str:
     return text
 
 
+def verify_aym_text_matches_row(row: AymDecisionRow, text: str) -> None:
+    """Künye alanları resmi metnin içinde yoksa kayıt yazılmaz."""
+    compact = "".join(text.split())
+    if row.application_no:
+        if (
+            row.application_no not in text
+            and row.application_no.replace("/", "") not in compact
+        ):
+            raise AymPortalError("AYM metni başvuru/esas numarası künyesiyle eşleşmiyor")
+    if row.decision_date is None:
+        raise AymPortalError("AYM karar tarihi eksik")
+    date_tokens = (
+        row.decision_date.strftime("%d.%m.%Y"),
+        f"{row.decision_date.day}.{row.decision_date.month}.{row.decision_date.year}",
+        row.decision_date.isoformat(),
+        row.decision_date.strftime("%d/%m/%Y"),
+        f"{row.decision_date.day}/{row.decision_date.month}/{row.decision_date.year}",
+    )
+    if not any(token in text for token in date_tokens):
+        raise AymPortalError("AYM metni karar tarihi künyesiyle eşleşmiyor")
+
+
 def decision_from_file(
     row: AymDecisionRow,
     raw: bytes,
@@ -66,6 +106,7 @@ def decision_from_file(
         text = normalize_text(html_to_text(raw.decode("utf-8", errors="replace")))
         if len(text) < 100:
             raise AymPortalError("AYM HTML içinde yeterli karar metni bulunamadı")
+        verify_aym_text_matches_row(row, text)
         fetched_at = fetched_at or datetime.now(UTC)
         if not row.decision_date:
             raise AymPortalError("AYM karar tarihi eksik")
@@ -82,6 +123,7 @@ def decision_from_file(
             "decision_type": row.decision_type,
             "official_download_url": download_url,
             "decision_date": row.decision_date.isoformat(),
+            "kunye_verified": True,
         }
         return CourtDecision(
             court_name="Anayasa Mahkemesi",
@@ -110,10 +152,7 @@ def decision_from_udf(
     if not row.decision_date:
         raise AymPortalError("AYM karar tarihi eksik")
     raw_text = extract_udf_text(udf)
-    compact = "".join(raw_text.split())
-    if row.decision_type == "BireyselBasvuru" and row.application_no:
-        if row.application_no not in raw_text and row.application_no.replace("/", "") not in compact:
-            raise AymPortalError("AYM UDF başvuru numarası arama künyesiyle eşleşmiyor")
+    verify_aym_text_matches_row(row, raw_text)
     fetched_at = fetched_at or datetime.now(UTC)
     docket = row.application_no or str(row.official_id)
     title = (
@@ -134,6 +173,7 @@ def decision_from_udf(
         "subject": row.subject or None,
         "confidential": row.confidential,
         "official_download_url": download_url,
+        "kunye_verified": True,
     }
     return CourtDecision(
         court_name="Anayasa Mahkemesi",

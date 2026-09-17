@@ -16,7 +16,12 @@ from worker.adapters import get_adapter
 from worker.adapters.danistay import DanistaySourceAdapter
 from worker.adapters.yargitay import YargitaySourceAdapter
 from worker.locks import JobLockedError, source_job_lock
-from worker.jobs import _carry_backfill_horizon, _interval_for, _quarantined_progress
+from worker.jobs import (
+    _carry_backfill_horizon,
+    _cursor_advanced,
+    _interval_for,
+    _quarantined_progress,
+)
 from worker.models import Checkpoint, RunCounters, SyncRequest
 from worker.windows import iter_month_windows, month_window, next_month_start
 
@@ -56,6 +61,9 @@ def test_only_progressing_quarantine_qualifies_for_short_backfill_interval():
     assert not _quarantined_progress(previous, progressed, failed=1, quarantined=1)
     assert not _quarantined_progress(previous, previous, failed=0, quarantined=1)
     assert not _quarantined_progress(previous, progressed, failed=0, quarantined=0)
+    assert _cursor_advanced(previous, progressed)
+    assert not _cursor_advanced(previous, previous)
+    assert _cursor_advanced({"offset": 0}, {"offset": 40})
 
 
 def test_backfill_horizon_survives_adapter_cursor_replacement():
@@ -1052,6 +1060,7 @@ def test_last_successful_sync_at_only_on_success(monkeypatch):
     )
     assert partial["status"] == "partial"
     assert calls[-1].last_successful_sync_at == prior
+    assert calls[-1].health_state == "healthy"
 
     success = jobs.run_sync(
         _Conn(),

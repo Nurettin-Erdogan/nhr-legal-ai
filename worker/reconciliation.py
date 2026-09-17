@@ -25,6 +25,27 @@ def coverage_reconciled(
     return True
 
 
+def window_may_advance(
+    *,
+    reconciled: bool,
+    processed: int,
+    failed: int,
+    already_started: bool,
+    stopped: bool = False,
+) -> bool:
+    """Move to the next month when this resume point has no portal rows left.
+
+    Coverage mismatch must not pin backfill to a finished page for hours.
+    A fresh window that returns nothing on the first request is left in place
+    so a transient empty search cannot skip a month.
+    """
+    if stopped:
+        return False
+    if reconciled:
+        return True
+    return processed == 0 and failed == 0 and already_started
+
+
 def coverage_cursor(
     *,
     expected: int | None,
