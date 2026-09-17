@@ -43,12 +43,13 @@ def _seed_legislation(conn) -> None:
     source_id = conn.execute(
         """
         INSERT INTO legal_sources (
-            source_type, title, external_id, authority, raw_text, ingest_status,
+            source_type, title, external_id, authority, raw_text, ingest_status, metadata,
             canonical_source_name, ingestion_method, source_version,
             fetched_at, last_verified_at
         )
         VALUES (
             'legislation', %s, %s, 'Mevzuat Bilgi Sistemi', %s, 'ready',
+            '{"verified_against_gazette":true,"verified_against_mbs":true}',
             'Mevzuat Bilgi Sistemi', 'bedesten_public_json_http', '1',
             NOW(), NOW()
         )
@@ -124,13 +125,15 @@ def _seed_historical_legislation(conn) -> tuple[str, str]:
             INSERT INTO legal_sources (
                 source_type, title, external_id, authority, raw_text, ingest_status,
                 canonical_source_name, ingestion_method, source_version, revision,
-                effective_from, effective_to, is_current, fetched_at, last_verified_at
+                effective_from, effective_to, is_current, fetched_at, last_verified_at,
+                metadata
             )
             VALUES (
                 'legislation', 'Tarihsel Test Kanunu m. 8',
                 'test/PYTESTTARIH/law/999980/8', 'Mevzuat Bilgi Sistemi', %s, 'ready',
                 'Mevzuat Bilgi Sistemi', 'test_fixture', %s, %s,
-                %s, %s, %s, NOW(), NOW()
+                %s, %s, %s, NOW(), NOW(),
+                '{"verified_against_gazette":true,"verified_against_mbs":true}'
             )
             RETURNING id
             """,
@@ -209,6 +212,17 @@ def test_retrieval_returns_both_legislation_and_decisions(connection):
     seeded = [context for context in contexts if TOKEN in context.content]
 
     assert {context.source_type for context in seeded} == {"legislation", "court_decision"}
+
+
+def test_retrieval_excludes_unverified_legislation(connection):
+    _seed_legislation(connection)
+    connection.execute(
+        "UPDATE legal_sources SET metadata = '{}'::jsonb "
+        "WHERE external_id = %s",
+        (f"test/{TOKEN}/law/{TEST_LAW_NO}/25",),
+    )
+    contexts = retrieve_contexts(connection, question=QUESTION, top_k=10)
+    assert not any(context.source_type == "legislation" for context in contexts)
 
 
 def test_retrieval_builds_readable_references_per_source_type(connection):

@@ -11,7 +11,18 @@ from api.schemas import CorpusStats, LegalSearchResponse, LegalSourceDetail
 
 router = APIRouter(prefix="/api/legal", tags=["legal"])
 
-_SEARCH_SQL = """
+_VERIFIED_SOURCE_FILTER = """
+ls.ingest_status = 'ready'
+AND (
+    ls.source_type <> 'legislation'
+    OR (
+        ls.metadata->>'verified_against_gazette' = 'true'
+        AND ls.metadata->>'verified_against_mbs' = 'true'
+    )
+)
+"""
+
+_SEARCH_SQL = f"""
 WITH search_query AS (
     SELECT to_tsquery(
         'turkish',
@@ -60,6 +71,7 @@ ranked AS (
     CROSS JOIN search_query
     WHERE ls.source_type IN ('court_decision', 'legislation', 'other')
       AND ls.deleted_at IS NULL
+      AND {_VERIFIED_SOURCE_FILTER}
       AND (
           (CAST(%(as_of)s AS date) IS NULL AND ls.is_current)
           OR (
@@ -101,7 +113,7 @@ ORDER BY rank DESC,
 LIMIT %(limit)s OFFSET %(offset)s
 """
 
-_DETAIL_SQL = """
+_DETAIL_SQL = f"""
 SELECT
     ls.id,
     ls.source_type,
@@ -149,6 +161,7 @@ LEFT JOIN legislation_details legislation ON legislation.legal_source_id = ls.id
 WHERE ls.id = %s
   AND ls.source_type IN ('court_decision', 'legislation', 'other')
   AND ls.deleted_at IS NULL
+  AND {_VERIFIED_SOURCE_FILTER}
 """
 
 
@@ -161,7 +174,7 @@ def corpus_stats() -> CorpusStats:
     try:
         with database_connection() as connection:
             row = connection.execute(
-                """
+                f"""
                 SELECT
                     count(DISTINCT ls.id)::int AS source_count,
                     count(chunk.id)::int AS chunk_count,
@@ -180,6 +193,7 @@ def corpus_stats() -> CorpusStats:
                 LEFT JOIN legal_chunks chunk ON chunk.legal_source_id = ls.id
                 WHERE ls.source_type IN ('court_decision', 'legislation', 'other')
                   AND ls.deleted_at IS NULL
+                  AND {_VERIFIED_SOURCE_FILTER}
                   AND ls.is_current
                 """
             ).fetchone()

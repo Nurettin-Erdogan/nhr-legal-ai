@@ -48,6 +48,20 @@ LEFT JOIN legislation_details legislation ON legislation.legal_source_id = ls.id
 
 _RECENCY_ORDER = "COALESCE(decision.decision_date, ls.published_at) DESC NULLS LAST"
 
+# Bedesten articles are only citation-eligible after both independent official
+# catalogue checks. This also protects older rows written as "ready" before
+# ingestion began enforcing verification state.
+_VERIFIED_SOURCE_FILTER = """
+ls.ingest_status = 'ready'
+AND (
+    ls.source_type <> 'legislation'
+    OR (
+        ls.metadata->>'verified_against_gazette' = 'true'
+        AND ls.metadata->>'verified_against_mbs' = 'true'
+    )
+)
+"""
+
 # Historical legislation is returned only when the official validity interval is
 # known. `version_date` is useful audit metadata but is not treated as a legal
 # effective date. Court decisions are bounded by their own decision date.
@@ -104,6 +118,7 @@ JOIN legal_sources ls ON ls.id = chunk.legal_source_id
 {_DETAIL_JOINS}
 CROSS JOIN search_query
 WHERE ls.deleted_at IS NULL
+  AND {_VERIFIED_SOURCE_FILTER}
   AND {_TEMPORAL_FILTER}
   AND search_query.value IS NOT NULL
   AND chunk.search_vector @@ search_query.value
@@ -131,6 +146,7 @@ lexical AS (
     {_DETAIL_JOINS}
     CROSS JOIN search_query
     WHERE ls.deleted_at IS NULL
+      AND {_VERIFIED_SOURCE_FILTER}
       AND {_TEMPORAL_FILTER}
       AND search_query.value IS NOT NULL
       AND chunk.search_vector @@ search_query.value
@@ -144,6 +160,7 @@ semantic AS (
     JOIN legal_sources ls ON ls.id = chunk.legal_source_id
     {_DETAIL_JOINS}
     WHERE ls.deleted_at IS NULL
+      AND {_VERIFIED_SOURCE_FILTER}
       AND {_TEMPORAL_FILTER}
       AND chunk.embedding IS NOT NULL
       AND chunk.embedding_model = %(embedding_model)s

@@ -74,7 +74,7 @@ VALUES (
     %(metadata)s,
     %(published_at)s,
     %(content_hash)s,
-    'ready',
+    %(ingest_status)s,
     NOW(),
     %(effective_from)s,
     %(effective_to)s,
@@ -100,7 +100,7 @@ SET title = %(title)s,
     last_ingested_at = NOW(),
     fetched_at = COALESCE(%(fetched_at)s, NOW()),
     last_verified_at = COALESCE(%(fetched_at)s, NOW()),
-    ingest_status = 'ready'
+    ingest_status = %(ingest_status)s
 WHERE id = %(id)s
 """
 
@@ -279,6 +279,12 @@ def upsert_legislation(
                 "effective_from": record.effective_from,
                 "effective_to": record.effective_to,
                 "fetched_at": record.scraped_at,
+                "ingest_status": (
+                    "ready"
+                    if record.metadata.get("verified_against_gazette") is True
+                    and record.metadata.get("verified_against_mbs") is True
+                    else "pending"
+                ),
                 "source_version": version_identity,
                 "revision": 1 if existing is None else existing[3] + 1,
             }

@@ -83,7 +83,7 @@ def test_upsert_writes_legislation_details_and_chunks(connection):
     )
     assert source == (
         "legislation",
-        "ready",
+        "pending",
         "Mevzuat Bilgi Sistemi",
         f"mevzuat:kanun:{TEST_LAW_NO}:m.25",
     )
@@ -95,6 +95,25 @@ def test_upsert_writes_legislation_details_and_chunks(connection):
         (result.legal_source_id,),
     )
     assert details == ("law", TEST_LAW_NO, "25")
+
+
+def test_both_official_checks_are_required_for_ready(connection):
+    record = _record()
+    verified = replace(
+        record,
+        metadata={
+            **record.metadata,
+            "verified_against_gazette": True,
+            "verified_against_mbs": True,
+        },
+    )
+    result = upsert_legislation(connection, verified)
+    source = _fetch_one(
+        connection,
+        "SELECT ingest_status, last_verified_at IS NOT NULL FROM legal_sources WHERE id = %s",
+        (result.legal_source_id,),
+    )
+    assert source == ("ready", True)
 
 
 def test_reingesting_same_article_is_idempotent(connection):

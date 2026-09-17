@@ -34,12 +34,13 @@ def _seed_legislation(connection):
     source_id = connection.execute(
         """
         INSERT INTO legal_sources (
-            source_type, title, external_id, authority, raw_text, ingest_status,
+            source_type, title, external_id, authority, raw_text, ingest_status, metadata,
             canonical_source_name, ingestion_method, source_version,
             fetched_at, last_verified_at
         )
         VALUES (
             'legislation', %s, %s, 'Mevzuat Bilgi Sistemi', %s, 'ready',
+            '{"verified_against_gazette":true,"verified_against_mbs":true}',
             'Mevzuat Bilgi Sistemi', 'bedesten_public_json_http', '1',
             NOW(), NOW()
         )
@@ -95,6 +96,21 @@ def test_search_returns_legislation_metadata(connection, monkeypatch):
     assert result.law_no == TEST_LAW_NO
     assert result.article_no == "25"
     assert result.chamber is None
+
+
+def test_unverified_legislation_is_not_public(connection, monkeypatch):
+    source_id = _seed_legislation(connection)
+    connection.execute(
+        "UPDATE legal_sources SET metadata = '{}'::jsonb WHERE id = %s",
+        (source_id,),
+    )
+    _use_connection(monkeypatch, connection)
+
+    response = legal.search_legal_sources(q=TOKEN, limit=10, offset=0)
+    assert all(item.id != source_id for item in response.results)
+    with pytest.raises(legal.HTTPException) as exc:
+        legal.legal_source_detail(source_id)
+    assert exc.value.status_code == 404
 
 
 def test_source_detail_returns_legislation_and_chunks(connection, monkeypatch):
