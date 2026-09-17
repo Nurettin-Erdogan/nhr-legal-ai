@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
@@ -169,3 +171,79 @@ def test_changed_text_does_not_replace_cited_chunks(connection):
     )
     assert stored_hash == original.content_hash
     assert is_current is False
+
+
+def _version(record, *, day: date, suffix: str):
+    text = f"{record.raw_text}\n\n{suffix}"
+    return replace(
+        record,
+        raw_text=text,
+        content_hash=content_hash(text),
+        version_date=day,
+    )
+
+
+def test_revisiting_historical_version_preserves_current_and_lineage(connection):
+    base = _record()
+    old = _version(base, day=date(2023, 5, 22), suffix="Eski metin")
+    current = _version(base, day=date(2024, 8, 20), suffix="Güncel metin")
+    first = upsert_legislation(connection, old)
+    second = upsert_legislation(connection, current)
+
+    revisit = upsert_legislation(connection, old)
+    assert revisit.status == "unchanged"
+    assert revisit.legal_source_id == first.legal_source_id
+    rows = connection.execute(
+        "SELECT id, revision, is_current, superseded_by_id, content_hash "
+        "FROM legal_sources WHERE source_type = 'legislation' AND external_id = %s "
+        "ORDER BY revision",
+        (old.external_id,),
+    ).fetchall()
+    assert len(rows) == 2
+    assert rows[0] == (
+        UUID(first.legal_source_id), 1, False,
+        UUID(second.legal_source_id), old.content_hash,
+    )
+    assert rows[1] == (UUID(second.legal_source_id), 2, True, None, current.content_hash)
+    assert _fetch_one(
+        connection,
+        "SELECT count(*) FROM legal_source_revisions WHERE legal_source_id IN (%s, %s)",
+        (first.legal_source_id, second.legal_source_id),
+    ) == (2,)
+
+
+def test_new_older_snapshot_is_archived_without_demoting_current(connection):
+    base = _record()
+    old = _version(base, day=date(2023, 5, 22), suffix="İlk metin")
+    current = _version(base, day=date(2024, 8, 20), suffix="Güncel metin")
+    middle = _version(base, day=date(2024, 1, 1), suffix="Ara metin")
+    first = upsert_legislation(connection, old)
+    second = upsert_legislation(connection, current)
+    third = upsert_legislation(connection, middle)
+
+    assert third.status == "new_version"
+    rows = connection.execute(
+        "SELECT id, revision, is_current, superseded_by_id FROM legal_sources "
+        "WHERE source_type = 'legislation' AND external_id = %s ORDER BY revision",
+        (old.external_id,),
+    ).fetchall()
+    assert rows == [
+        (UUID(first.legal_source_id), 1, False, UUID(second.legal_source_id)),
+        (UUID(second.legal_source_id), 2, True, None),
+        (UUID(third.legal_source_id), 3, False, UUID(second.legal_source_id)),
+    ]
+
+    newest = _version(base, day=date(2025, 1, 1), suffix="Sonraki metin")
+    fourth = upsert_legislation(connection, newest)
+    assert fourth.status == "new_version"
+    rows = connection.execute(
+        "SELECT id, revision, is_current, superseded_by_id FROM legal_sources "
+        "WHERE source_type = 'legislation' AND external_id = %s ORDER BY revision",
+        (old.external_id,),
+    ).fetchall()
+    assert rows == [
+        (UUID(first.legal_source_id), 1, False, UUID(second.legal_source_id)),
+        (UUID(second.legal_source_id), 2, False, UUID(fourth.legal_source_id)),
+        (UUID(third.legal_source_id), 3, False, UUID(second.legal_source_id)),
+        (UUID(fourth.legal_source_id), 4, True, None),
+    ]

@@ -30,12 +30,32 @@ SELECT
         JOIN citations c ON c.legal_chunk_id = lc.id
         WHERE lc.legal_source_id = ls.id
     ) AS has_citations,
-    ls.revision
+    ls.revision,
+    details.version_identity,
+    details.version_date
 FROM legal_sources ls
+LEFT JOIN legislation_details details ON details.legal_source_id = ls.id
 WHERE ls.source_type = 'legislation'
   AND ls.external_id = %s
   AND ls.is_current
 FOR UPDATE OF ls
+"""
+
+_SELECT_VERSION = """
+SELECT ls.id, ls.is_current
+FROM legislation_details details
+JOIN legal_sources ls ON ls.id = details.legal_source_id
+WHERE details.legislation_type = %s
+  AND details.law_no = %s
+  AND details.article_no = %s
+  AND details.version_identity = %s
+FOR UPDATE OF ls
+"""
+
+_NEXT_REVISION = """
+SELECT COALESCE(MAX(revision), 0) + 1
+FROM legal_sources
+WHERE source_type = 'legislation' AND external_id = %s
 """
 
 _INSERT_SOURCE = """
@@ -61,7 +81,8 @@ INSERT INTO legal_sources (
     last_verified_at,
     source_version,
     revision,
-    is_current
+    is_current,
+    superseded_by_id
 )
 VALUES (
     'legislation',
@@ -85,7 +106,8 @@ VALUES (
     COALESCE(%(fetched_at)s, NOW()),
     %(source_version)s,
     %(revision)s,
-    TRUE
+    %(is_current)s,
+    %(superseded_by_id)s
 )
 RETURNING id
 """
@@ -265,8 +287,40 @@ def upsert_legislation(
     with connection.transaction(), connection.cursor() as cursor:
         cursor.execute(_SELECT_EXISTING, (record.external_id,))
         existing = cursor.fetchone()
-        content_changed = existing is None or existing[1] != record.content_hash
         version_identity = f"{record.version_date or 'undated'}:{record.content_hash}"
+        cursor.execute(
+            _SELECT_VERSION,
+            (record.legislation_type, record.law_no, record.article_no, version_identity),
+        )
+        known_version = cursor.fetchone()
+        if known_version is not None and (existing is None or known_version[0] != existing[0]):
+            # A portal may serve an older snapshot after a newer revision was
+            # collected. Never promote it or insert its natural version twice.
+            cursor.execute(_COUNT_CHUNKS, (known_version[0],))
+            return IngestResult(
+                external_id=record.external_id,
+                status="unchanged",
+                legal_source_id=str(known_version[0]),
+                chunk_count=cursor.fetchone()[0],
+            )
+        cursor.execute(
+            _UPSERT_IDENTITY,
+            (record.legislation_type, record.law_no, record.article_no, record.law_name),
+        )
+        legislation_identity_id = cursor.fetchone()[0]
+        content_changed = (
+            existing is None
+            or existing[1] != record.content_hash
+            or existing[4] != version_identity
+        )
+        cursor.execute(_NEXT_REVISION, (record.external_id,))
+        next_revision = cursor.fetchone()[0]
+        older_than_current = bool(
+            existing is not None
+            and record.version_date is not None
+            and existing[5] is not None
+            and record.version_date < existing[5]
+        )
         source_values = {
                 "title": record.title,
                 "source_url": record.source_url,
@@ -286,18 +340,20 @@ def upsert_legislation(
                     else "pending"
                 ),
                 "source_version": version_identity,
-                "revision": 1 if existing is None else existing[3] + 1,
+                "revision": next_revision,
+                "is_current": not older_than_current,
+                "superseded_by_id": existing[0] if older_than_current else None,
             }
-        cursor.execute(
-            _UPSERT_IDENTITY,
-            (record.legislation_type, record.law_no, record.article_no, record.law_name),
-        )
-        legislation_identity_id = cursor.fetchone()[0]
 
         if existing is not None and not content_changed:
             legal_source_id = existing[0]
             cursor.execute(_TOUCH_SOURCE, {**source_values, "id": legal_source_id})
             status: IngestStatus = "unchanged"
+        elif older_than_current:
+            cursor.execute(_INSERT_SOURCE, source_values)
+            legal_source_id = cursor.fetchone()[0]
+            cursor.execute(_SNAPSHOT_SOURCE, (legal_source_id,))
+            status = "new_version"
         elif existing is not None:
             cursor.execute(_SNAPSHOT_SOURCE, (existing[0],))
             cursor.execute(
