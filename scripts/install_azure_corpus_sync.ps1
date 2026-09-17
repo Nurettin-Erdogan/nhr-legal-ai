@@ -1,6 +1,7 @@
 param(
     [ValidateSet('SixHours', 'Daily')]
-    [string]$Frequency = 'SixHours'
+    [string]$Frequency = 'SixHours',
+    [switch]$UpdateExisting
 )
 
 $ErrorActionPreference = 'Stop'
@@ -11,11 +12,19 @@ $taskName = 'NHR Legal AI Azure Corpus Sync'
 
 if (-not (Test-Path -LiteralPath $python)) { throw "Python bulunamadı: $python" }
 if (-not (Test-Path -LiteralPath (Join-Path $root '.env'))) { throw 'Yerel .env bulunamadı.' }
-if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
-    throw "Görev zaten var: $taskName. Mevcut görevi incelemeden üzerine yazılmıyor."
+$existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+if ($existing) {
+    if (-not $UpdateExisting) {
+        throw "Görev zaten var: $taskName. Güncellemek için -UpdateExisting kullanın."
+    }
+    if ($existing.Actions.Count -ne 1 -or
+        $existing.Actions[0].Execute -ne $python -or
+        -not $existing.Actions[0].Arguments.Contains($sync)) {
+        throw 'Aynı adlı görevin eylemi farklı; güvenli güncelleme reddedildi.'
+    }
 }
 
-$action = New-ScheduledTaskAction -Execute $python -Argument ('"' + $sync + '"') -WorkingDirectory $root
+$action = New-ScheduledTaskAction -Execute $python -Argument ('"' + $sync + '" --embed-limit 500') -WorkingDirectory $root
 if ($Frequency -eq 'SixHours') {
     $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5) `
         -RepetitionInterval (New-TimeSpan -Hours 6) `
@@ -30,5 +39,6 @@ $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances 
 
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
     -Principal $principal -Settings $settings `
-    -Description 'Resmî hukuk korpusunu Azure üzerinden yerel PostgreSQL ile birleştirir.' | Out-Null
+    -Description 'Resmî hukuk korpusunu Azure üzerinden yerel PostgreSQL ile birleştirir.' `
+    -Force | Out-Null
 Get-ScheduledTask -TaskName $taskName | Select-Object TaskName, State

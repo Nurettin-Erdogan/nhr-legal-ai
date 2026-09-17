@@ -14,6 +14,7 @@ belge, sohbet ve yerel embedding verisi kopyalanmaz veya silinmez.
 .\.venv\Scripts\python.exe scripts\sync_azure_corpus.py --dry-run --full
 .\.venv\Scripts\python.exe scripts\sync_azure_corpus.py --full
 .\.venv\Scripts\python.exe scripts\sync_azure_corpus.py
+.\.venv\Scripts\python.exe scripts\sync_azure_corpus.py --embed-limit 500
 ```
 
 İlk aktarım `--full` yapar. Sonraki çağrılar `data/azure-corpus-sync-state.json`
@@ -22,6 +23,10 @@ imlecinden bir dakika geri gidip değişenleri tekrar tarar; işlem idempotentti
 veritabanında tek tek transaction ile yazılır. Eksik parça ve detaylar eklenir;
 mevcut yerel embedding korunur. İmleç yalnızca başarılı aktarım sonrasında
 ilerler. Ayrıntılı günlük `data/azure-corpus-sync.log` dosyasındadır.
+`--embed-limit` yalnız eksik vektörleri Ollama ile üretir. Yapılandırılmış
+model mevcut yerel modelden farklıysa, var olan vektörleri yeniden yazmaz;
+güvenli biçimde hata verir. Zamanlanmış görev her turda en fazla 500 eksik
+parçayı vektörler.
 
 Altı saatte bir yerel Windows görevi kurmak için:
 
@@ -35,3 +40,5 @@ erişimi yokken veri çekilemez. Sonraki başarılı çalışmada imleçten deva
 Görev kurulmadan önce aynı isimli görevi ezmez. Yerel bilgisayarın sürekli
 açık olmadığı üretim düzeninde, VM'nin özel ağından erişilen kalıcı bir
 PostgreSQL hedefi ve ayrı zamanlayıcı gerekir; yerel port internete açılmaz.
+Bu projeye ait mevcut görevin eylemini kontrol ederek güncellemek için
+`-UpdateExisting` seçeneği kullanılır.

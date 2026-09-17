@@ -24,6 +24,8 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 STATE_PATH = ROOT / "data" / "azure-corpus-sync-state.json"
 LOG = logging.getLogger("azure-corpus-sync")
 
@@ -200,12 +202,43 @@ def _load_since(path: Path, *, full: bool) -> str | None:
     return (stamp - timedelta(minutes=1)).astimezone(timezone.utc).isoformat()
 
 
+def _embed_missing(db_url: str, limit: int) -> None:
+    """Fill missing vectors without changing the local corpus embedding model."""
+    from api.ai.embeddings import create_embedding_provider
+    from ingestion.embeddings import embed_legal_chunks
+
+    model = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
+    with psycopg.connect(db_url) as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT embedding_model FROM legal_chunks WHERE embedding IS NOT NULL"
+        ).fetchall()
+        existing_models = {row[0] for row in rows}
+        if existing_models and existing_models != {model}:
+            raise ValueError(
+                f"Local embedding model {existing_models} differs from configured {model}"
+            )
+        provider = create_embedding_provider(
+            provider_name=os.getenv("EMBEDDING_PROVIDER", "ollama"),
+            model=model,
+            dimensions=int(os.getenv("EMBEDDING_DIMENSIONS", "768")),
+            ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
+        )
+        summary = embed_legal_chunks(
+            conn, provider, limit=limit, batch_size=8, delay_seconds=0,
+            max_retries=2, retry_backoff_seconds=5,
+        )
+        LOG.info("Embedding pass embedded=%s remaining=%s", summary.embedded,
+                 summary.remaining)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="nhr@20.91.186.253")
     parser.add_argument("--state", type=Path, default=STATE_PATH)
     parser.add_argument("--full", action="store_true", help="Ignore incremental watermark")
     parser.add_argument("--dry-run", action="store_true", help="Read both DBs, write neither")
+    parser.add_argument("--embed-limit", type=int, default=0,
+                        help="Fill at most N missing local legal embeddings after sync")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     if not args.dry_run:
@@ -219,6 +252,8 @@ def main(argv: list[str] | None = None) -> int:
     db_url = os.getenv("DATABASE_ADMIN_URL")
     if not db_url:
         parser.error("DATABASE_ADMIN_URL is required in the local .env")
+    if args.embed_limit < 0:
+        parser.error("--embed-limit must be nonnegative")
     since = _load_since(args.state, full=args.full)
     sql = _remote_sql(since)
     remote = ("docker exec -i nhr-legal-ai-db psql -X -A -t -q -v ON_ERROR_STOP=1 "
@@ -261,6 +296,12 @@ def main(argv: list[str] | None = None) -> int:
         temporary.write_text(json.dumps({"last_updated_at": highest.isoformat()}) + "\n",
                              encoding="utf-8")
         temporary.replace(args.state)
+    if args.embed_limit and not args.dry_run:
+        try:
+            _embed_missing(db_url, args.embed_limit)
+        except Exception as exc:  # noqa: BLE001
+            LOG.error("Local embedding pass failed: %s", exc)
+            return 3
     return 0
 
 
