@@ -96,6 +96,7 @@ class WorkerSettings:
     current_retry_interval_minutes: int
     full_corpus_start: date
     backfill_pause_seconds: float
+    danistay_backfill_pause_seconds: float
     mevzuat_discovery_types: tuple[str, ...]
     embed_after_sync: bool
     embed_limit_per_run: int
@@ -142,6 +143,7 @@ def get_worker_settings() -> WorkerSettings:
         current_retry_interval_minutes=_int_env("CURRENT_RETRY_INTERVAL_MINUTES", 60),
         full_corpus_start=_date_env("FULL_CORPUS_START", YARGITAY_CORPUS_START),
         backfill_pause_seconds=_float_env("BACKFILL_PAUSE_SECONDS", 2.0),
+        danistay_backfill_pause_seconds=_float_env("DANISTAY_BACKFILL_PAUSE_SECONDS", 30.0),
         mevzuat_discovery_types=_csv_env(
             "MEVZUAT_DISCOVERY_TYPES", DEFAULT_MEVZUAT_DISCOVERY_TYPES
         ),

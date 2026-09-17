@@ -285,6 +285,67 @@ def test_stationary_success_is_deferred_instead_of_spinning(monkeypatch):
     assert calls[0] == 1
 
 
+def test_progressing_quarantine_uses_backfill_cadence_without_spinning(monkeypatch):
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    from worker.config import get_worker_settings
+
+    get_worker_settings.cache_clear()
+    _healthy_repo(monkeypatch)
+    monkeypatch.setattr("worker.backfill.prepare_full_backfill", lambda *_: {})
+    stopped = [False]
+    observed = []
+
+    def fake_sync(_connection, _request, should_stop=None):
+        return {
+            "status": "partial",
+            "counters": {"records_failed": 0, "records_quarantined": 1},
+            "checkpoint": {"last_cursor": {"page": 2, "window_complete": False}},
+        }
+
+    def interval(_source, *, cursor=None, status="success"):
+        from datetime import timedelta
+
+        observed.append(status)
+        return timedelta(minutes=180 if status == "success" else 1440)
+
+    monkeypatch.setattr("worker.backfill._interval_for", interval)
+    monkeypatch.setattr("worker.backfill.sleep", lambda _seconds: stopped.__setitem__(0, True))
+    run_full_backfill(
+        object(), ["aym"], should_stop=lambda: stopped[0],
+        embed=False, then_incremental=False, pause_seconds=0, sync=fake_sync,
+    )
+    assert observed == ["success"]
+
+
+def test_danistay_success_has_minimum_inter_run_pause(monkeypatch):
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("DANISTAY_BACKFILL_PAUSE_SECONDS", "30")
+    from worker.config import get_worker_settings
+
+    get_worker_settings.cache_clear()
+    _healthy_repo(monkeypatch)
+    monkeypatch.setattr("worker.backfill.prepare_full_backfill", lambda *_: {})
+    stopped = [False]
+    pauses = []
+
+    def fake_sync(_connection, _request, should_stop=None):
+        return {
+            "status": "success",
+            "checkpoint": {"last_cursor": {"page": 2, "window_complete": False}},
+        }
+
+    def fake_sleep(seconds):
+        pauses.append(seconds)
+        stopped[0] = True
+
+    monkeypatch.setattr("worker.backfill.sleep", fake_sleep)
+    run_full_backfill(
+        object(), ["danistay"], should_stop=lambda: stopped[0],
+        embed=False, then_incremental=False, pause_seconds=2, sync=fake_sync,
+    )
+    assert pauses == [30]
+
+
 def test_backfill_cli_is_registered():
     parser = build_parser()
     args = parser.parse_args(["backfill", "--source", "all", "--no-incremental", "--no-embed"])

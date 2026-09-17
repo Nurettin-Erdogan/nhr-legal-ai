@@ -16,7 +16,7 @@ from worker.adapters import get_adapter
 from worker.adapters.danistay import DanistaySourceAdapter
 from worker.adapters.yargitay import YargitaySourceAdapter
 from worker.locks import JobLockedError, source_job_lock
-from worker.jobs import _carry_backfill_horizon, _interval_for
+from worker.jobs import _carry_backfill_horizon, _interval_for, _quarantined_progress
 from worker.models import Checkpoint, RunCounters, SyncRequest
 from worker.windows import iter_month_windows, month_window, next_month_start
 
@@ -47,6 +47,15 @@ def test_backfill_cadence_only_when_more_work_and_previous_run_succeeded(monkeyp
     assert _interval_for("yargitay", cursor=completed_current, today=today) == timedelta(minutes=360)
     assert _interval_for("mevzuat", cursor={"complete": False}, today=today) == timedelta(minutes=120)
     assert _interval_for("danistay", cursor={}, today=today) == timedelta(minutes=720)
+
+
+def test_only_progressing_quarantine_qualifies_for_short_backfill_interval():
+    previous = {"page": 9, "row_offset": 0, "seen_count": 40}
+    progressed = {"page": 11, "row_offset": 0, "seen_count": 40}
+    assert _quarantined_progress(previous, progressed, failed=0, quarantined=1)
+    assert not _quarantined_progress(previous, progressed, failed=1, quarantined=1)
+    assert not _quarantined_progress(previous, previous, failed=0, quarantined=1)
+    assert not _quarantined_progress(previous, progressed, failed=0, quarantined=0)
 
 
 def test_backfill_horizon_survives_adapter_cursor_replacement():

@@ -32,6 +32,19 @@ def _carry_backfill_horizon(
     return current
 
 
+def _quarantined_progress(
+    previous: dict[str, Any], current: dict[str, Any], *, failed: int, quarantined: int
+) -> bool:
+    """A skipped bad record need not put a progressing source on error cooldown."""
+    if failed or not quarantined:
+        return False
+    position_keys = (
+        "next_window_start", "page", "row_offset", "type_index",
+        "catalog_page", "catalog_offset", "last_article_no", "law_no",
+    )
+    return any(previous.get(key) != current.get(key) for key in position_keys)
+
+
 def _interval_for(
     source_name: str,
     *,
@@ -123,6 +136,7 @@ def run_sync(
 
     try:
         checkpoint = store.load(job_key)
+        previous_cursor = dict(checkpoint.last_cursor or {})
         original_checkpoint = checkpoint if targeted_law else None
         if targeted_law:
             checkpoint = deepcopy(checkpoint)
@@ -232,8 +246,15 @@ def run_sync(
             assert original_checkpoint is not None
             checkpoint = original_checkpoint
         else:
+            interval_status = status
+            if status == "partial" and _quarantined_progress(
+                previous_cursor, checkpoint.last_cursor,
+                failed=counters.records_failed,
+                quarantined=counters.records_quarantined,
+            ):
+                interval_status = "success"
             checkpoint.next_run_at = datetime.now(UTC) + _interval_for(
-                source, cursor=checkpoint.last_cursor, status=status, lane=lane
+                source, cursor=checkpoint.last_cursor, status=interval_status, lane=lane
             )
             if not request.dry_run:
                 store.save(checkpoint)

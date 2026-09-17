@@ -67,6 +67,7 @@ yoracak kadar sık değildir.
 | `CURRENT_RETRY_INTERVAL_MINUTES` | 60 | Güncel şerit ayı bitirmediyse veya lookback içinde sonraki aya geçiyorsa |
 | `FULL_CORPUS_START` | 2000-01-01 | Yalnız AYM gibi tarih penceresi olmayan kaynaklarda yedek; kaynak tabanı ezmez |
 | `BACKFILL_PAUSE_SECONDS` | 2 | Full backfill turları arası kısa bekleme |
+| `DANISTAY_BACKFILL_PAUSE_SECONDS` | 30 | Danıştay'da başarılı ay turları arası asgari bekleme; boş ayların 429 üretmesini önlemeye yardımcı olur |
 | `MEVZUAT_DISCOVERY_TYPES` | KANUN,KHK,... | Bedesten keşif türleri |
 | `EMBED_LIMIT_PER_RUN` | 200 | Her sync sonrası en fazla yeni chunk embedding |
 
@@ -111,6 +112,10 @@ CAPTCHA sonrasında normal uzun aralık korunur; portalı sıkıştırmak için
 otomatik retry yapılmaz. Backfill tamamlandığında normal periyodik aralık
 devreye girer. Mevcut `next_run_at` kayıtları geriye dönük değiştirilmez; yeni
 aralık, sonraki başarılı turda uygulanır.
+Karantinaya alınan kayıt dışında hata yoksa ve imleç gerçekten ilerlediyse
+`partial` tur kısa backfill aralığıyla devam eder. İlerlemeyen, başarısız veya
+CAPTCHA isteyen tur yine uzun beklemeye alınır; karantina kaydı korunur ve
+eksik pencere tamamlanmış sayılmaz.
 
 ## Checkpoint / resume
 

@@ -12,7 +12,7 @@ import psycopg
 
 from worker import ACTIVE_SOURCES
 from worker.config import get_worker_settings
-from worker.jobs import _interval_for, run_sync
+from worker.jobs import _interval_for, _quarantined_progress, run_sync
 from worker.models import SyncRequest
 from worker.repository import SyncRepository
 from worker.scheduler import run_daemon
@@ -258,14 +258,29 @@ def run_full_backfill(
             if status != "success" or cursor == before_cursor:
                 # A failing or stationary source must never spin at the short
                 # backfill pause. Let other sources proceed while this one cools.
-                delay = _interval_for(source, cursor=cursor, status="failed")
+                counters = result.get("counters") or {}
+                clean_quarantine = status == "partial" and _quarantined_progress(
+                    before_cursor, cursor,
+                    failed=int(counters.get("records_failed") or 0),
+                    quarantined=int(counters.get("records_quarantined") or 0),
+                )
+                delay = _interval_for(
+                    source, cursor=cursor,
+                    status="success" if clean_quarantine else "failed",
+                )
                 retry_after[source] = datetime.now(UTC) + delay
                 logger.warning(
                     "full backfill deferred source=%s status=%s until=%s",
                     source, status, retry_after[source].isoformat(),
                 )
             elif pause > 0:
-                sleep(pause)
+                # Empty Danıştay months otherwise consume a request every few
+                # seconds and hit 429, causing a much longer source cooldown.
+                source_pause = (
+                    max(pause, settings.danistay_backfill_pause_seconds)
+                    if source == "danistay" else pause
+                )
+                sleep(source_pause)
         if not progressed:
             if earliest_retry is None or should_stop():
                 break
