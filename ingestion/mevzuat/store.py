@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import psycopg
+from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
 
 from ingestion.mevzuat.models import LegislationRecord
@@ -45,10 +46,38 @@ _SELECT_VERSION = """
 SELECT ls.id, ls.is_current
 FROM legislation_details details
 JOIN legal_sources ls ON ls.id = details.legal_source_id
-WHERE details.legislation_type = %s
-  AND details.law_no = %s
-  AND details.article_no = %s
+WHERE details.legislation_identity_id = %s
   AND details.version_identity = %s
+FOR UPDATE OF ls
+"""
+
+_SELECT_BY_CONTENT_HASH = """
+SELECT ls.id, ls.is_current
+FROM legislation_details details
+JOIN legal_sources ls ON ls.id = details.legal_source_id
+WHERE details.legislation_identity_id = %s
+  AND ls.content_hash = %s
+ORDER BY ls.is_current DESC, ls.revision DESC
+LIMIT 1
+"""
+
+_SELECT_CURRENT_BY_IDENTITY = """
+SELECT
+    ls.id,
+    ls.content_hash,
+    EXISTS (
+        SELECT 1
+        FROM legal_chunks lc
+        JOIN citations c ON c.legal_chunk_id = lc.id
+        WHERE lc.legal_source_id = ls.id
+    ) AS has_citations,
+    ls.revision,
+    details.version_identity,
+    details.version_date
+FROM legislation_details details
+JOIN legal_sources ls ON ls.id = details.legal_source_id
+WHERE details.legislation_identity_id = %s
+  AND ls.is_current
 FOR UPDATE OF ls
 """
 
@@ -110,20 +139,6 @@ VALUES (
     %(superseded_by_id)s
 )
 RETURNING id
-"""
-
-_TOUCH_SOURCE = """
-UPDATE legal_sources
-SET title = %(title)s,
-    source_url = COALESCE(%(source_url)s, source_url),
-    official_source_url = COALESCE(%(source_url)s, official_source_url),
-    metadata = metadata || %(metadata)s,
-    published_at = COALESCE(%(published_at)s, published_at),
-    last_ingested_at = NOW(),
-    fetched_at = COALESCE(%(fetched_at)s, NOW()),
-    last_verified_at = COALESCE(%(fetched_at)s, NOW()),
-    ingest_status = %(ingest_status)s
-WHERE id = %(id)s
 """
 
 _UPSERT_IDENTITY = """
@@ -192,10 +207,8 @@ ON CONFLICT (legal_source_id) DO UPDATE SET
     article_title = EXCLUDED.article_title,
     official_gazette_no = EXCLUDED.official_gazette_no,
     official_gazette_date = EXCLUDED.official_gazette_date,
-    version_date = EXCLUDED.version_date,
-    legislation_identity_id = EXCLUDED.legislation_identity_id,
-    version_identity = EXCLUDED.version_identity,
-    amendment_source = EXCLUDED.amendment_source
+    version_date = COALESCE(legislation_details.version_date, EXCLUDED.version_date),
+    amendment_source = COALESCE(EXCLUDED.amendment_source, legislation_details.amendment_source)
 """
 
 _COUNT_CHUNKS = "SELECT count(*) FROM legal_chunks WHERE legal_source_id = %s"
@@ -246,6 +259,30 @@ class CitedLegislationChangedError(RuntimeError):
     """Atıf verilmiş bir madde değişti; parçalar korunarak aktarım durdu."""
 
 
+def version_identity_for(record: LegislationRecord) -> str:
+    """Portal tarihi + metin hash'i. Aynı çift ikinci kez yazılmaz."""
+    return f"{record.version_date or 'undated'}:{record.content_hash}"
+
+
+def _unchanged_result(
+    cursor: psycopg.Cursor,
+    record: LegislationRecord,
+    legal_source_id: object,
+    *,
+    max_chunk_chars: int,
+) -> IngestResult:
+    cursor.execute(_COUNT_CHUNKS, (legal_source_id,))
+    chunk_count = cursor.fetchone()[0]
+    if chunk_count == 0:
+        chunk_count = _write_chunks(cursor, str(legal_source_id), record, max_chunk_chars)
+    return IngestResult(
+        external_id=record.external_id,
+        status="unchanged",
+        legal_source_id=str(legal_source_id),
+        chunk_count=chunk_count,
+    )
+
+
 def _write_chunks(
     cursor: psycopg.Cursor,
     legal_source_id: str,
@@ -283,36 +320,38 @@ def upsert_legislation(
     *,
     max_chunk_chars: int = DEFAULT_MAX_CHARS,
 ) -> IngestResult:
-    """Maddeyi ve parçalarını tek transaction içinde yazar."""
+    """Maddeyi ve parçalarını tek transaction içinde yazar.
+
+    Aynı ``version_identity`` veya aynı içerik hash'i tekrar gelirse satır
+    overwrite edilmez; sonuç ``unchanged`` olur. Hash değişmişse eski current
+    korunur ve yeni revision zincire eklenir.
+    """
+    version_identity = version_identity_for(record)
     with connection.transaction(), connection.cursor() as cursor:
-        cursor.execute(_SELECT_EXISTING, (record.external_id,))
-        existing = cursor.fetchone()
-        version_identity = f"{record.version_date or 'undated'}:{record.content_hash}"
-        cursor.execute(
-            _SELECT_VERSION,
-            (record.legislation_type, record.law_no, record.article_no, version_identity),
-        )
-        known_version = cursor.fetchone()
-        if known_version is not None and (existing is None or known_version[0] != existing[0]):
-            # A portal may serve an older snapshot after a newer revision was
-            # collected. Never promote it or insert its natural version twice.
-            cursor.execute(_COUNT_CHUNKS, (known_version[0],))
-            return IngestResult(
-                external_id=record.external_id,
-                status="unchanged",
-                legal_source_id=str(known_version[0]),
-                chunk_count=cursor.fetchone()[0],
-            )
         cursor.execute(
             _UPSERT_IDENTITY,
             (record.legislation_type, record.law_no, record.article_no, record.law_name),
         )
         legislation_identity_id = cursor.fetchone()[0]
-        content_changed = (
-            existing is None
-            or existing[1] != record.content_hash
-            or existing[4] != version_identity
+        cursor.execute(_SELECT_VERSION, (legislation_identity_id, version_identity))
+        known_version = cursor.fetchone()
+        if known_version is not None:
+            return _unchanged_result(
+                cursor, record, known_version[0], max_chunk_chars=max_chunk_chars
+            )
+        cursor.execute(
+            _SELECT_BY_CONTENT_HASH, (legislation_identity_id, record.content_hash)
         )
+        hashed = cursor.fetchone()
+        if hashed is not None:
+            return _unchanged_result(
+                cursor, record, hashed[0], max_chunk_chars=max_chunk_chars
+            )
+        cursor.execute(_SELECT_CURRENT_BY_IDENTITY, (legislation_identity_id,))
+        existing = cursor.fetchone()
+        if existing is None:
+            cursor.execute(_SELECT_EXISTING, (record.external_id,))
+            existing = cursor.fetchone()
         cursor.execute(_NEXT_REVISION, (record.external_id,))
         next_revision = cursor.fetchone()[0]
         older_than_current = bool(
@@ -322,83 +361,93 @@ def upsert_legislation(
             and record.version_date < existing[5]
         )
         source_values = {
-                "title": record.title,
-                "source_url": record.source_url,
-                "external_id": record.external_id,
-                "authority": "Mevzuat Bilgi Sistemi",
-                "raw_text": record.raw_text,
-                "metadata": Jsonb(record.metadata),
-                "published_at": record.official_gazette_date,
-                "content_hash": record.content_hash,
-                "effective_from": record.effective_from,
-                "effective_to": record.effective_to,
-                "fetched_at": record.scraped_at,
-                "ingest_status": (
-                    "ready"
-                    if record.metadata.get("verified_against_gazette") is True
-                    and record.metadata.get("verified_against_mbs") is True
-                    else "pending"
-                ),
-                "source_version": version_identity,
-                "revision": next_revision,
-                "is_current": not older_than_current,
-                "superseded_by_id": existing[0] if older_than_current else None,
-            }
-
-        if existing is not None and not content_changed:
-            legal_source_id = existing[0]
-            cursor.execute(_TOUCH_SOURCE, {**source_values, "id": legal_source_id})
-            status: IngestStatus = "unchanged"
-        elif older_than_current:
-            cursor.execute(_INSERT_SOURCE, source_values)
-            legal_source_id = cursor.fetchone()[0]
-            cursor.execute(_SNAPSHOT_SOURCE, (legal_source_id,))
-            status = "new_version"
-        elif existing is not None:
-            cursor.execute(_SNAPSHOT_SOURCE, (existing[0],))
-            cursor.execute(
-                """
-                UPDATE legal_sources
-                SET is_current = FALSE,
-                    effective_to = COALESCE(effective_to, CAST(%s AS date) - 1)
-                WHERE id = %s
-                """,
-                (record.effective_from, existing[0]),
+            "title": record.title,
+            "source_url": record.source_url,
+            "external_id": record.external_id,
+            "authority": "Mevzuat Bilgi Sistemi",
+            "raw_text": record.raw_text,
+            "metadata": Jsonb(record.metadata),
+            "published_at": record.official_gazette_date,
+            "content_hash": record.content_hash,
+            "effective_from": record.effective_from,
+            "effective_to": record.effective_to,
+            "fetched_at": record.scraped_at,
+            "ingest_status": (
+                "ready"
+                if record.metadata.get("verified_against_gazette") is True
+                and record.metadata.get("verified_against_mbs") is True
+                else "pending"
+            ),
+            "source_version": version_identity,
+            "revision": next_revision,
+            "is_current": not older_than_current,
+            "superseded_by_id": existing[0] if older_than_current else None,
+        }
+        details_values = {
+            "legislation_type": record.legislation_type,
+            "law_name": record.law_name,
+            "law_no": record.law_no,
+            "article_no": record.article_no,
+            "article_title": record.article_title,
+            "official_gazette_no": record.official_gazette_no,
+            "official_gazette_date": record.official_gazette_date,
+            "version_date": record.version_date,
+            "legislation_identity_id": legislation_identity_id,
+            "version_identity": version_identity,
+            "amendment_source": record.amendment_source,
+        }
+        try:
+            with connection.transaction():
+                if older_than_current:
+                    cursor.execute(_INSERT_SOURCE, source_values)
+                    legal_source_id = cursor.fetchone()[0]
+                    cursor.execute(_SNAPSHOT_SOURCE, (legal_source_id,))
+                    status: IngestStatus = "new_version"
+                elif existing is not None:
+                    cursor.execute(_SNAPSHOT_SOURCE, (existing[0],))
+                    cursor.execute(
+                        """
+                        UPDATE legal_sources
+                        SET is_current = FALSE,
+                            effective_to = COALESCE(effective_to, CAST(%s AS date) - 1)
+                        WHERE id = %s
+                        """,
+                        (record.effective_from, existing[0]),
+                    )
+                    cursor.execute(_INSERT_SOURCE, source_values)
+                    legal_source_id = cursor.fetchone()[0]
+                    cursor.execute(
+                        "UPDATE legal_sources SET superseded_by_id = %s WHERE id = %s",
+                        (legal_source_id, existing[0]),
+                    )
+                    cursor.execute(_SNAPSHOT_SOURCE, (legal_source_id,))
+                    status = "new_version"
+                else:
+                    cursor.execute(_INSERT_SOURCE, source_values)
+                    legal_source_id = cursor.fetchone()[0]
+                    cursor.execute(_SNAPSHOT_SOURCE, (legal_source_id,))
+                    status = "created"
+                cursor.execute(
+                    _UPSERT_DETAILS,
+                    {"legal_source_id": legal_source_id, **details_values},
+                )
+                chunk_count = _write_chunks(
+                    cursor, legal_source_id, record, max_chunk_chars
+                )
+        except UniqueViolation:
+            cursor.execute(_SELECT_VERSION, (legislation_identity_id, version_identity))
+            known_version = cursor.fetchone()
+            if known_version is None:
+                cursor.execute(
+                    _SELECT_BY_CONTENT_HASH,
+                    (legislation_identity_id, record.content_hash),
+                )
+                known_version = cursor.fetchone()
+            if known_version is None:
+                raise
+            return _unchanged_result(
+                cursor, record, known_version[0], max_chunk_chars=max_chunk_chars
             )
-            cursor.execute(_INSERT_SOURCE, source_values)
-            legal_source_id = cursor.fetchone()[0]
-            cursor.execute(
-                "UPDATE legal_sources SET superseded_by_id = %s WHERE id = %s",
-                (legal_source_id, existing[0]),
-            )
-            cursor.execute(_SNAPSHOT_SOURCE, (legal_source_id,))
-            status = "new_version"
-        else:
-            cursor.execute(_INSERT_SOURCE, source_values)
-            legal_source_id = cursor.fetchone()[0]
-            cursor.execute(_SNAPSHOT_SOURCE, (legal_source_id,))
-            status = "created"
-        cursor.execute(
-            _UPSERT_DETAILS,
-            {
-                "legal_source_id": legal_source_id,
-                "legislation_type": record.legislation_type,
-                "law_name": record.law_name,
-                "law_no": record.law_no,
-                "article_no": record.article_no,
-                "article_title": record.article_title,
-                "official_gazette_no": record.official_gazette_no,
-                "official_gazette_date": record.official_gazette_date,
-                "version_date": record.version_date,
-                "legislation_identity_id": legislation_identity_id,
-                "version_identity": version_identity,
-                "amendment_source": record.amendment_source,
-            },
-        )
-        cursor.execute(_COUNT_CHUNKS, (legal_source_id,))
-        chunk_count = cursor.fetchone()[0]
-        if status != "unchanged" or chunk_count == 0:
-            chunk_count = _write_chunks(cursor, legal_source_id, record, max_chunk_chars)
 
     return IngestResult(
         external_id=record.external_id,

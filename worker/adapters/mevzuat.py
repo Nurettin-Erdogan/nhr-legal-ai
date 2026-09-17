@@ -15,7 +15,7 @@ from ingestion.mevzuat.portal import (
     MevzuatPortalError,
     is_missing_article_tree_error,
 )
-from ingestion.mevzuat.store import upsert_legislation
+from ingestion.mevzuat.store import upsert_legislation, version_identity_for
 from ingestion.mevzuat_bilgi_sistemi.portal import MbsClient, MbsError
 from ingestion.resmi_gazete.portal import ResmiGazeteClient, ResmiGazeteError
 from worker.config import get_worker_settings
@@ -92,7 +92,7 @@ class MevzuatSourceAdapter:
         return record.external_id
 
     def version_identity(self, record: LegislationRecord) -> str:
-        return f"{record.version_date or 'undated'}:{record.content_hash}"
+        return version_identity_for(record)
 
     def provenance(self, record: LegislationRecord) -> dict[str, Any]:
         return {
