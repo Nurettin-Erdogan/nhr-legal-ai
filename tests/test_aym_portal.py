@@ -412,3 +412,121 @@ def test_completed_one_off_aym_search_does_not_pin_next_corpus_run(monkeypatch):
     assert client.calls[0]["keyword"] is None
     assert client.calls[0]["application_no"] is None
     assert adapter.last_cursor["keyword"] == ""
+
+
+class _KnownSourcesConnection:
+    def __init__(self, known):
+        self.known = set(known)
+
+    def execute(self, _sql, params=None):
+        wanted = set(params[0]) if params else set()
+        hits = [(eid,) for eid in sorted(self.known & wanted)]
+
+        class _Result:
+            def fetchall(self_inner):
+                return hits
+
+        return _Result()
+
+
+def test_adapter_skips_file_download_when_source_exists(monkeypatch):
+    row = AymDecisionRow.from_mapping(SYNTHETIC_ROW)
+
+    class Client:
+        def __init__(self):
+            self.listed = []
+            self.downloaded = []
+
+        def search_page(self, **_kwargs):
+            return SearchPage((row,), total=1, page=1, page_size=20)
+
+        def list_decision_files(self, decision_row):
+            self.listed.append(decision_row.official_id)
+            raise AssertionError("mevcut AYM kaydı için dosya listesi istenmemeli")
+
+        def download_udf(self, decision_file):
+            self.downloaded.append(decision_file.file_id)
+            raise AssertionError("mevcut AYM kaydı indirilmemeli")
+
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("AYM_DELAY_SECONDS", "0")
+    from worker.config import get_worker_settings
+
+    get_worker_settings.cache_clear()
+    adapter = AymSourceAdapter(client=Client())
+    events = list(
+        adapter.sync(
+            SyncRequest(source="aym", max_records=1, resume=True, lane="backfill"),
+            cursor={},
+            connection=_KnownSourcesConnection({"aym:bb:2099/123"}),
+            dry_run=True,
+            should_stop=lambda: False,
+        )
+    )
+    assert events == [
+        (
+            "unchanged",
+            {
+                "page": 1,
+                "expected_count": 1,
+                "requests_made": 1,
+                "karar_tipi": "BireyselBasvuru",
+                "external_id": "aym:bb:2099/123",
+                "skipped_existing": True,
+            },
+        )
+    ]
+
+
+def test_adapter_current_lane_refetches_existing_source(monkeypatch):
+    row = AymDecisionRow.from_mapping(SYNTHETIC_ROW)
+
+    class Client:
+        def __init__(self):
+            self.listed = []
+            self.downloaded = []
+
+        def search_page(self, **_kwargs):
+            return SearchPage((row,), total=1, page=1, page_size=20)
+
+        def list_decision_files(self, decision_row):
+            self.listed.append(decision_row.official_id)
+            return (
+                AymDecisionFile(
+                    "file",
+                    decision_row.official_id,
+                    "bireysel-basvuru",
+                    "2099-123.udf",
+                    "BireyselBasvuru",
+                ),
+            )
+
+        def download_udf(self, decision_file):
+            self.downloaded.append(decision_file.file_id)
+            return _synthetic_udf(), (
+                "https://kararlarbilgibankasi.anayasa.gov.tr/"
+                f"api/core/public/files/download-attachment/{decision_file.folder}/"
+                f"{decision_file.filename}"
+            )
+
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("AYM_DELAY_SECONDS", "0")
+    from worker.config import get_worker_settings
+
+    get_worker_settings.cache_clear()
+    client = Client()
+    adapter = AymSourceAdapter(client=client)
+    events = list(
+        adapter.sync(
+            SyncRequest(source="aym", max_records=1, resume=True, lane="current"),
+            cursor={},
+            connection=_KnownSourcesConnection({"aym:bb:2099/123"}),
+            dry_run=True,
+            should_stop=lambda: False,
+        )
+    )
+    assert events[0][0] == "created"
+    assert "skipped_existing" not in events[0][1]
+    assert client.listed == [row.official_id]
+    assert client.downloaded == ["file"]
+

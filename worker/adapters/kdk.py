@@ -11,6 +11,7 @@ from ingestion.kdk.portal import BASE_URL, KdkPortalClient, KdkPortalError, sear
 from ingestion.kdk.store import upsert_decision
 from ingestion.raw_capture import save_raw_response
 from worker.config import get_worker_settings
+from worker.known_sources import skippable_external_ids, skipped_existing
 from worker.lanes import advance_window_start, resolve_sync_window
 from worker.models import AdapterHealth, RecordOutcome, SyncRequest
 from worker.reconciliation import coverage_cursor, window_may_advance
@@ -149,6 +150,15 @@ class KdkSourceAdapter:
             expected = page.records_filtered
             if not page.rows:
                 break
+            known = skippable_external_ids(
+                connection,
+                [
+                    f"kdk:{str(row.get('id') or '').strip()}"
+                    for row in page.rows
+                    if str(row.get("id") or "").strip()
+                ],
+                lane=request.lane,
+            )
             for row in page.rows:
                 if processed >= max_records or should_stop():
                     break
@@ -163,6 +173,12 @@ class KdkSourceAdapter:
                     "requests_made": 1,
                 }
                 try:
+                    external_id = f"kdk:{record_id}" if record_id else ""
+                    if external_id and external_id in known:
+                        duplicate += 1
+                        yield "unchanged", skipped_existing(extra, external_id)
+                        offset += 1
+                        continue
                     publication_path = str(row.get("karaR_YAYIN_URL") or "").strip()
                     raw_date = str(row.get("karaR_TARIH") or "").strip()
                     if settings.kdk_delay_seconds:

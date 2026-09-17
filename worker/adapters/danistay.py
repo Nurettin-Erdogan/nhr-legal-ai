@@ -10,6 +10,7 @@ from ingestion.danistay.portal import (
     BASE_URL,
     DanistayPortalClient,
     DanistayPortalError,
+    portal_external_id,
 )
 from ingestion.danistay.scraper import ScraperConfig, decision_from_portal_row, search_filters
 from ingestion.raw_capture import save_raw_response
@@ -18,6 +19,7 @@ from ingestion.yargitay.models import CourtDecision
 from ingestion.yargitay.portal import CaptchaRequiredError
 from ingestion.yargitay.store import upsert_decision
 from worker.config import get_worker_settings
+from worker.known_sources import skippable_external_ids, skipped_existing
 from worker.lanes import advance_window_start, resolve_sync_window
 from worker.models import AdapterHealth, RecordOutcome, SyncRequest
 from worker.reconciliation import coverage_cursor, window_may_advance
@@ -183,7 +185,17 @@ class DanistaySourceAdapter:
                         f"Danıştay {page_number}. sayfa boş, ancak portal {expected} sonuç bildiriyor"
                     )
                 break
-            for row_index, row in enumerate(page.rows[row_offset:], start=row_offset):
+            remaining_rows = page.rows[row_offset:]
+            known = skippable_external_ids(
+                connection,
+                [
+                    portal_external_id(row.document_id)
+                    for row in remaining_rows
+                    if row.document_id
+                ],
+                lane=request.lane,
+            )
+            for row_index, row in enumerate(remaining_rows, start=row_offset):
                 if should_stop():
                     break
                 if processed >= max_records:
@@ -198,6 +210,14 @@ class DanistaySourceAdapter:
                     "requests_made": 1,
                 }
                 try:
+                    external_id = (
+                        portal_external_id(row.document_id) if row.document_id else ""
+                    )
+                    if external_id and external_id in known:
+                        duplicate += 1
+                        yield "unchanged", skipped_existing(extra, external_id)
+                        row_offset = row_index + 1
+                        continue
                     if settings.danistay_delay_seconds:
                         sleep(settings.danistay_delay_seconds)
                     html = client.fetch_document_html(row.document_id, keyword=row.keyword)

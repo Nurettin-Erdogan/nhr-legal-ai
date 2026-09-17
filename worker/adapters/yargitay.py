@@ -14,6 +14,7 @@ from ingestion.yargitay.portal import (
     CaptchaRequiredError,
     PortalError,
     YargitayPortalClient,
+    portal_external_id,
 )
 from ingestion.yargitay.scraper import (
     ScraperConfig,
@@ -23,6 +24,7 @@ from ingestion.yargitay.scraper import (
 )
 from ingestion.yargitay.store import upsert_decision
 from worker.config import get_worker_settings
+from worker.known_sources import skippable_external_ids, skipped_existing
 from worker.lanes import advance_window_start, resolve_sync_window
 from worker.models import AdapterHealth, RecordOutcome, SyncRequest
 from worker.reconciliation import coverage_cursor, window_may_advance
@@ -216,7 +218,17 @@ class YargitaySourceAdapter:
                         f"Yargıtay {page_number}. sayfa boş, ancak portal {expected} sonuç bildiriyor"
                     )
                 break
-            for row_index, row in enumerate(page.rows[row_offset:], start=row_offset):
+            remaining_rows = page.rows[row_offset:]
+            known = skippable_external_ids(
+                connection,
+                [
+                    portal_external_id(row.document_id)
+                    for row in remaining_rows
+                    if row.document_id
+                ],
+                lane=request.lane,
+            )
+            for row_index, row in enumerate(remaining_rows, start=row_offset):
                 if should_stop() or processed >= max_records:
                     break
                 processed += 1
@@ -229,6 +241,14 @@ class YargitaySourceAdapter:
                     "requests_made": 1,
                 }
                 try:
+                    external_id = (
+                        portal_external_id(row.document_id) if row.document_id else ""
+                    )
+                    if external_id and external_id in known:
+                        duplicate_in_window += 1
+                        yield "unchanged", skipped_existing(extra, external_id)
+                        row_offset = row_index + 1
+                        continue
                     if settings.yargitay_delay_seconds:
                         sleep(settings.yargitay_delay_seconds)
                     html = scraper.client.fetch_document_html(row.document_id)

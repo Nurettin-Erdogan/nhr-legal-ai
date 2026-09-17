@@ -16,6 +16,7 @@ from ingestion.raw_capture import save_raw_response
 from ingestion.yargitay.models import CourtDecision
 from ingestion.yargitay.store import upsert_decision
 from worker.config import get_worker_settings
+from worker.known_sources import skippable_external_ids, skipped_existing
 from worker.models import AdapterHealth, RecordOutcome, SyncRequest
 from worker.reconciliation import coverage_cursor
 
@@ -148,7 +149,15 @@ class AymSourceAdapter:
                     seen = stored = duplicate = failed = quarantined = 0
                     continue
                 break
-            for row_index, row in enumerate(page.rows[row_offset:], start=row_offset):
+            remaining_rows = page.rows[row_offset:]
+            known_ids: list[str] = []
+            for row in remaining_rows:
+                try:
+                    known_ids.append(row.external_id)
+                except ValueError:
+                    continue
+            known = skippable_external_ids(connection, known_ids, lane=request.lane)
+            for row_index, row in enumerate(remaining_rows, start=row_offset):
                 if processed >= max_records or should_stop():
                     break
                 processed += 1
@@ -160,6 +169,15 @@ class AymSourceAdapter:
                     "karar_tipi": karar_tipi,
                 }
                 try:
+                    try:
+                        external_id = row.external_id
+                    except ValueError:
+                        external_id = ""
+                    if external_id and external_id in known:
+                        duplicate += 1
+                        yield "unchanged", skipped_existing(extra, external_id)
+                        row_offset = row_index + 1
+                        continue
                     files = client.list_decision_files(row)
                     if settings.aym_delay_seconds:
                         sleep(settings.aym_delay_seconds)

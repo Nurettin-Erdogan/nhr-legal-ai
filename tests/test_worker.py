@@ -530,6 +530,112 @@ def test_yargitay_failed_row_is_retried_before_window_advances(monkeypatch, tmp_
     assert adapter.last_cursor["window_complete"] is True
 
 
+class _KnownSourcesConnection:
+    def __init__(self, known):
+        self.known = set(known)
+
+    def execute(self, _sql, params=None):
+        wanted = set(params[0]) if params else set()
+        hits = [(eid,) for eid in sorted(self.known & wanted)]
+
+        class _Result:
+            def fetchall(self_inner):
+                return hits
+
+        return _Result()
+
+
+def test_yargitay_skips_document_fetch_when_source_exists(monkeypatch, tmp_path):
+    outcomes, client = _sync_yargitay_two_rows(
+        monkeypatch,
+        tmp_path,
+        lane="backfill",
+        known={"yargitay:1"},
+    )
+    assert [status for status, _ in outcomes] == ["unchanged", "created"]
+    assert outcomes[0][1]["skipped_existing"] is True
+    assert client.fetched == ["2"]
+    assert outcomes[0][1]["external_id"] == "yargitay:1"
+
+
+def test_yargitay_current_lane_refetches_existing_source(monkeypatch, tmp_path):
+    outcomes, client = _sync_yargitay_two_rows(
+        monkeypatch,
+        tmp_path,
+        lane="current",
+        known={"yargitay:1", "yargitay:2"},
+    )
+    assert [status for status, _ in outcomes] == ["created", "created"]
+    assert "skipped_existing" not in outcomes[0][1]
+    assert client.fetched == ["1", "2"]
+
+
+def _sync_yargitay_two_rows(monkeypatch, tmp_path, *, lane: str, known: set[str]):
+    from worker.adapters import yargitay as adapter_module
+    from worker.config import get_worker_settings
+
+    class _Client:
+        base_url = "https://karararama.yargitay.gov.tr/"
+
+        def __init__(self):
+            self.fetched = []
+
+        def begin_detailed_search(self, filters):
+            pass
+
+        def search_page(self, filters):
+            return SearchPage(
+                rows=(
+                    PortalDecisionRow("1", "9. Hukuk Dairesi", "2026/1", "2026/1", "01.01.2026"),
+                    PortalDecisionRow("2", "9. Hukuk Dairesi", "2026/2", "2026/2", "01.01.2026"),
+                ),
+                records_total=2,
+                records_filtered=2,
+            )
+
+        def fetch_document_html(self, document_id):
+            self.fetched.append(document_id)
+            return f"<p>Karar {document_id} yeterli metin.</p>"
+
+    def make_decision(row, _html, *, base_url):
+        return CourtDecision(
+            court_name="Yargıtay",
+            chamber=row.chamber,
+            docket_no=row.docket_no,
+            decision_no=row.decision_no,
+            decision_date=date(2026, 1, 1),
+            title="Karar",
+            raw_text=f"Karar metni {row.document_id}",
+            external_id=f"yargitay:{row.document_id}",
+            content_hash=content_hash(row.document_id),
+            source_url=f"{base_url}getDokuman?id={row.document_id}",
+        )
+
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("YARGITAY_DELAY_SECONDS", "0")
+    monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
+    get_worker_settings.cache_clear()
+    monkeypatch.setattr(adapter_module, "decision_from_portal_row", make_decision)
+    client = _Client()
+    adapter = YargitaySourceAdapter(client=client)
+    outcomes = list(
+        adapter.sync(
+            SyncRequest(
+                source="yargitay",
+                date_from=date(2026, 1, 1),
+                date_to=date(2026, 1, 31),
+                max_records=2,
+                lane=lane,
+            ),
+            cursor={},
+            connection=_KnownSourcesConnection(known),
+            dry_run=True,
+            should_stop=lambda: False,
+        )
+    )
+    return outcomes, client
+
+
 def test_malformed_schema_health_is_failed():
     class _BadClient:
         def _request(self, path):
@@ -696,6 +802,48 @@ def test_mevzuat_checkpoint_does_not_advance_past_failed_article(
     assert outcomes[1][0] == "failed"
     assert adapter.last_cursor["last_article_no"] == "1"
     assert adapter.last_cursor.get("complete") is not True
+
+
+def test_mevzuat_refetches_article_html_when_source_exists(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("MEVZUAT_DELAY_SECONDS", "0")
+    monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
+    from worker.adapters.mevzuat import MevzuatSourceAdapter
+    from worker.config import get_worker_settings
+
+    get_worker_settings.cache_clear()
+
+    class _Client(_MevzuatClientSuccessThenQuarantine):
+        def __init__(self):
+            self.fetched = []
+
+        def fetch_article_html(self, madde_id):
+            self.fetched.append(madde_id)
+            return f"<p>Geçerli madde metni {madde_id}.</p>"
+
+    client = _Client()
+    adapter = MevzuatSourceAdapter(
+        client=client, verify_gazette=False, verify_mbs=False
+    )
+    outcomes = list(
+        adapter.sync(
+            SyncRequest(
+                source="mevzuat",
+                law_no="4857",
+                max_records=10,
+                resume=False,
+                lane="backfill",
+            ),
+            cursor={},
+            connection=_KnownSourcesConnection({"mevzuat:kanun:4857:m.1"}),
+            dry_run=True,
+            should_stop=lambda: False,
+        )
+    )
+    assert [status for status, _ in outcomes] == ["created", "created", "created"]
+    assert all("skipped_existing" not in payload for _, payload in outcomes)
+    assert client.fetched == ["a1", "a2", "a3"]
+    assert adapter.last_cursor["complete"] is True
 
 
 def test_mevzuat_resume_retries_after_last_successful_article(monkeypatch, tmp_path):
