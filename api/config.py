@@ -76,7 +76,7 @@ def get_settings() -> Settings:
             1.0, min(float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "120")), 600.0)
         ),
         ollama_max_output_tokens=max(
-            64, min(int(os.getenv("OLLAMA_MAX_OUTPUT_TOKENS", "384")), 4096)
+            64, min(int(os.getenv("OLLAMA_MAX_OUTPUT_TOKENS", "768")), 4096)
         ),
         ollama_num_ctx=max(512, min(int(os.getenv("OLLAMA_NUM_CTX", "1536")), 8192)),
         ollama_keep_alive=os.getenv("OLLAMA_KEEP_ALIVE", "30m").strip() or "30m",

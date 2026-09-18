@@ -151,3 +151,4 @@ class AIAnswerResponse(BaseModel):
     unverified_markers: list[str] = Field(default_factory=list)
     conversation_id: UUID | None = None
     message_id: UUID | None = None
+    from_cache: bool = False

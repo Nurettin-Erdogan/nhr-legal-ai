@@ -1,49 +1,45 @@
 from __future__ import annotations
 
-import asyncio
-import logging
+import json
+from time import monotonic
 from typing import Annotated
 from uuid import UUID
 
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException
-from psycopg.errors import InsufficientPrivilege
+from fastapi.responses import StreamingResponse
 
-from api.ai.embeddings import EmbeddingProviderError, create_embedding_provider
-from api.ai.history import record_exchange
+from api.ai.pipeline import (
+    _embed_question,
+    as_citation,
+    execute_answer,
+    iter_answer_events,
+    persist_answer,
+)
 from api.ai.providers import (
     AIProviderError,
     LOCAL_OLLAMA_PROVIDERS,
     OllamaProvider,
-    create_provider,
 )
-from api.ai.rag import RAGContext, generate_grounded_answer
-from api.ai.retrieval import retrieve_contexts, retrieve_document_contexts
-from api.ai.verification import VerifiedAnswer, verify_answer
 from api.auth.routes import optional_current_user_id
 from api.config import get_settings
 from api.db import authenticated_database_connection, database_connection
-from api.schemas import AIAnswerRequest, AIAnswerResponse, AICitation, AIStatusResponse
-
-logger = logging.getLogger(__name__)
+from api.schemas import AIAnswerRequest, AIAnswerResponse, AIStatusResponse
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
+
+_STATUS_TTL_SECONDS = 30.0
+_status_semantic_cache: tuple[float, bool] | None = None
+
+# Re-export for existing tests that patch the route module.
+_as_citation = as_citation
+_persist = persist_answer
 
 
 @router.get("/status", response_model=AIStatusResponse)
 def ai_status() -> AIStatusResponse:
     settings = get_settings()
-    try:
-        with database_connection() as connection:
-            semantic_search_ready = bool(
-                connection.execute(
-                    "SELECT EXISTS (SELECT 1 FROM legal_chunks "
-                    "WHERE embedding IS NOT NULL AND embedding_model = %s)",
-                    (settings.embedding_model,),
-                ).fetchone()["exists"]
-            )
-    except psycopg.Error:
-        semantic_search_ready = False
+    semantic_search_ready = _semantic_search_ready(settings.embedding_model)
     configured = False
     if settings.ai_provider in LOCAL_OLLAMA_PROVIDERS:
         try:
@@ -64,78 +60,25 @@ def ai_status() -> AIStatusResponse:
     )
 
 
-def _as_citation(position: int, context: RAGContext) -> AICitation:
-    return AICitation(
-        marker=f"K{position}",
-        source_id=context.source_id,
-        chunk_id=context.chunk_id,
-        source_type=context.source_type,
-        title=context.title,
-        reference=context.reference_line,
-        source_url=context.source_url,
-        court_name=context.court_name,
-        chamber=context.chamber,
-        docket_no=context.docket_no,
-        decision_no=context.decision_no,
-        decision_date=context.decision_date,
-        law_name=context.law_name,
-        law_no=context.law_no,
-        article_no=context.article_no,
-        page_number=context.page_number,
-        version_date=context.version_date,
-        effective_from=context.effective_from,
-        effective_to=context.effective_to,
-        source_version=context.source_version,
-        revision=context.revision,
-        excerpt=context.content[:500],
-        rank=context.rank,
-    )
-
-
-async def _embed_question(question: str) -> list[float] | None:
-    settings = get_settings()
+def _semantic_search_ready(embedding_model: str) -> bool:
+    global _status_semantic_cache
+    now = monotonic()
+    cached = _status_semantic_cache
+    if cached is not None and now - cached[0] < _STATUS_TTL_SECONDS:
+        return cached[1]
     try:
-        provider = create_embedding_provider(
-            provider_name=settings.embedding_provider,
-            model=settings.embedding_model,
-            dimensions=settings.embedding_dimensions,
-            ollama_base_url=settings.ollama_base_url,
-            ollama_timeout_seconds=min(8.0, settings.ollama_timeout_seconds),
-        )
-        return await asyncio.to_thread(provider.embed_query, question)
-    except EmbeddingProviderError:
-        # Semantic retrieval is an enhancement; lexical RAG remains available.
-        logger.warning("Soru embedding'i üretilemedi; lexical RAG kullanılacak")
-        return None
-
-
-def _persist(
-    request: AIAnswerRequest,
-    answer: VerifiedAnswer,
-    *,
-    user_id: UUID,
-    model_name: str,
-) -> tuple[UUID | None, UUID | None]:
-    try:
-        with authenticated_database_connection(str(user_id)) as connection:
-            return record_exchange(
-                connection,
-                user_id=user_id,
-                conversation_id=request.conversation_id,
-                project_id=request.project_id,
-                question=request.question,
-                answer=answer,
-                model_name=model_name,
-                as_of=request.as_of,
+        with database_connection() as connection:
+            ready = bool(
+                connection.execute(
+                    "SELECT EXISTS (SELECT 1 FROM legal_chunks "
+                    "WHERE embedding IS NOT NULL AND embedding_model = %s)",
+                    (embedding_model,),
+                ).fetchone()["exists"]
             )
-    except InsufficientPrivilege as exc:
-        raise HTTPException(
-            status_code=403,
-            detail="Bu konuşmaya veya projeye yazma yetkiniz yok",
-        ) from exc
     except psycopg.Error:
-        logger.exception("Sohbet geçmişi kaydedilemedi")
-        return None, None
+        ready = False
+    _status_semantic_cache = (now, ready)
+    return ready
 
 
 def _require_project_access(user_id: UUID | None, project_id: UUID | None) -> None:
@@ -163,108 +106,26 @@ async def answer_question(
     request: AIAnswerRequest,
     user_id: Annotated[UUID | None, Depends(optional_current_user_id)],
 ) -> AIAnswerResponse:
-    settings = get_settings()
     _require_project_access(user_id, request.project_id)
-    try:
-        provider = create_provider(
-            provider_name=settings.ai_provider,
-            model=settings.ai_model,
-            ollama_base_url=settings.ollama_base_url,
-            ollama_timeout_seconds=settings.ollama_timeout_seconds,
-            ollama_max_output_tokens=settings.ollama_max_output_tokens,
-            ollama_num_ctx=settings.ollama_num_ctx,
-            ollama_keep_alive=settings.ollama_keep_alive,
-        )
-    except AIProviderError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    response, _timings = await execute_answer(request, user_id)
+    return response
 
-    query_embedding = (
-        await _embed_question(request.question) if settings.rag_query_embedding else None
-    )
 
-    try:
-        if request.project_id is not None:
-            assert user_id is not None
-            with authenticated_database_connection(str(user_id)) as connection:
-                legal_contexts = retrieve_contexts(
-                    connection,
-                    question=request.question,
-                    top_k=settings.rag_top_k,
-                    query_embedding=query_embedding,
-                    embedding_model=settings.embedding_model,
-                    as_of=request.as_of,
-                )
-                document_contexts = retrieve_document_contexts(
-                    connection,
-                    question=request.question,
-                    project_id=str(request.project_id),
-                    top_k=settings.rag_top_k,
-                    query_embedding=query_embedding,
-                    embedding_model=settings.embedding_model,
-                )
-                contexts = sorted(
-                    (*legal_contexts, *document_contexts),
-                    key=lambda context: context.rank,
-                    reverse=True,
-                )[: settings.rag_top_k]
-        else:
-            with database_connection() as connection:
-                contexts = retrieve_contexts(
-                    connection,
-                    question=request.question,
-                    top_k=settings.rag_top_k,
-                    query_embedding=query_embedding,
-                    embedding_model=settings.embedding_model,
-                    as_of=request.as_of,
-                )
-    except HTTPException:
-        raise
-    except psycopg.Error as exc:
-        raise HTTPException(status_code=503, detail="Hukuk kaynakları aranamadı") from exc
+@router.post("/answer/progress")
+async def answer_question_progress(
+    request: AIAnswerRequest,
+    user_id: Annotated[UUID | None, Depends(optional_current_user_id)],
+) -> StreamingResponse:
+    _require_project_access(user_id, request.project_id)
 
-    if not contexts:
-        raise HTTPException(
-            status_code=422,
-            detail="Bu soru için mevcut korpusta yeterli kaynak bulunamadı",
-        )
+    async def events():
+        try:
+            async for event in iter_answer_events(request, user_id):
+                yield json.dumps(event, ensure_ascii=False, default=str) + "\n"
+        except HTTPException as exc:
+            yield json.dumps(
+                {"stage": "error", "status": exc.status_code, "detail": exc.detail},
+                ensure_ascii=False,
+            ) + "\n"
 
-    try:
-        raw_answer = await asyncio.to_thread(
-            generate_grounded_answer,
-            provider,
-            question=request.question,
-            contexts=contexts,
-            max_context_chars=settings.rag_context_chars,
-        )
-    except AIProviderError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-
-    answer = verify_answer(raw_answer, contexts)
-    if not answer.grounded:
-        raise HTTPException(
-            status_code=422,
-            detail="Model doğrulanabilir bir kaynak atfı üretmedi; yanıt gösterilmiyor",
-        )
-
-    conversation_id: UUID | None = None
-    message_id: UUID | None = None
-    if user_id is not None:
-        conversation_id, message_id = await asyncio.to_thread(
-            _persist, request, answer, user_id=user_id, model_name=provider.model
-        )
-
-    return AIAnswerResponse(
-        question=request.question,
-        as_of=request.as_of,
-        answer=answer.text,
-        provider=provider.name,
-        model=provider.model,
-        citations=[
-            _as_citation(position, context)
-            for position, context in enumerate(answer.contexts, start=1)
-        ],
-        grounded=answer.grounded,
-        unverified_markers=list(answer.unverified_markers),
-        conversation_id=conversation_id,
-        message_id=message_id,
-    )
+    return StreamingResponse(events(), media_type="application/x-ndjson")

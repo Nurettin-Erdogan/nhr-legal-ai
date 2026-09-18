@@ -22,7 +22,9 @@ type AIAnswer = {
   citations: Citation[];
   grounded: boolean;
   unverified_markers: string[];
+  from_cache?: boolean;
 };
+type PipelineStage = "searching" | "sources_found" | "generating" | "verifying" | "done";
 
 const suggestions = [
   "Kıdem tazminatına hak kazanma şartları nelerdir?",
@@ -30,11 +32,26 @@ const suggestions = [
   "Yıllık izin alacağının ispat yükü kimdedir?",
 ];
 
+const STAGE_ORDER: PipelineStage[] = ["searching", "sources_found", "generating", "verifying"];
+const STAGE_LABEL: Record<PipelineStage, string> = {
+  searching: "Kaynaklar aranıyor",
+  sources_found: "Kaynaklar bulundu",
+  generating: "Cevap hazırlanıyor",
+  verifying: "Atıflar doğrulanıyor",
+  done: "Cevap hazır",
+};
+
+function stageIndex(stage: PipelineStage | "") {
+  if (!stage || stage === "done") return STAGE_ORDER.length;
+  return STAGE_ORDER.indexOf(stage);
+}
+
 export default function AssistantPage() {
   const [status, setStatus] = useState<AIStatus | null>(null);
   const [question, setQuestion] = useState(suggestions[0]);
   const [result, setResult] = useState<AIAnswer | null>(null);
   const [loading, setLoading] = useState(false);
+  const [stage, setStage] = useState<PipelineStage | "">("");
   const [error, setError] = useState("");
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
@@ -56,10 +73,11 @@ export default function AssistantPage() {
     setLoading(true);
     setError("");
     setResult(null);
+    setStage("searching");
     try {
-      const response = await fetch(`${API_URL}/api/ai/answer`, {
+      const response = await fetch(`${API_URL}/api/ai/answer/progress`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Accept: "application/x-ndjson" },
         credentials: "include",
         signal: AbortSignal.timeout(150_000),
         body: JSON.stringify({
@@ -67,19 +85,58 @@ export default function AssistantPage() {
           project_id: projectId || null,
         }),
       });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.detail ?? "AI yanıtı üretilemedi");
-      setResult(payload);
+      if (!response.ok || !response.body) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail ?? "AI yanıtı üretilemedi");
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let completed: AIAnswer | null = null;
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const eventPayload = JSON.parse(line) as {
+            stage?: string;
+            detail?: string;
+            result?: AIAnswer;
+          };
+          if (eventPayload.stage === "error") {
+            throw new Error(eventPayload.detail ?? "AI yanıtı üretilemedi");
+          }
+          if (eventPayload.stage === "searching" || eventPayload.stage === "sources_found"
+            || eventPayload.stage === "generating" || eventPayload.stage === "verifying"
+            || eventPayload.stage === "done") {
+            setStage(eventPayload.stage);
+          }
+          if (eventPayload.stage === "done" && eventPayload.result) {
+            completed = eventPayload.result;
+          }
+        }
+      }
+      if (!completed) throw new Error("Doğrulanmış cevap alınamadı");
+      setResult(completed);
+      setStage("done");
     } catch (reason) {
       if (reason instanceof DOMException && reason.name === "TimeoutError") {
         setError("Yanıt 150 saniyede tamamlanamadı. Ollama ve API durumunu kontrol edip yeniden deneyin.");
       } else {
         setError(reason instanceof Error ? reason.message : "AI yanıtı üretilemedi");
       }
+      setStage("");
     } finally {
       setLoading(false);
     }
   }
+
+  const buttonLabel = loading
+    ? (STAGE_LABEL[stage || "searching"] + "…")
+    : "Kaynaklı cevap üret";
 
   return (
     <main className="app-shell">
@@ -118,19 +175,32 @@ export default function AssistantPage() {
                 </select>
               </div>
             )}
-            <div className="question-actions"><small>{projectId ? "Mevzuat, kararlar ve seçili proje belgeleri birlikte aranır." : "Yanıtlar mevcut mevzuat ve karar kaynaklarıyla sınırlandırılır."}</small><button disabled={loading || !status?.configured}>{loading ? "Kaynaklar inceleniyor…" : "Kaynaklı cevap üret"}</button></div>
+            <div className="question-actions"><small>{projectId ? "Mevzuat, kararlar ve seçili proje belgeleri birlikte aranır." : "Yanıtlar mevcut mevzuat ve karar kaynaklarıyla sınırlandırılır."}</small><button disabled={loading || !status?.configured}>{buttonLabel}</button></div>
           </form>
 
           <div className="suggestion-row">
             {suggestions.map((suggestion) => <button key={suggestion} onClick={() => setQuestion(suggestion)}>{suggestion}</button>)}
           </div>
 
+          {loading && (
+            <div className="assistant-progress" aria-live="polite">
+              <ol>
+                {STAGE_ORDER.map((item) => {
+                  const current = stageIndex(stage || "searching");
+                  const itemIndex = STAGE_ORDER.indexOf(item);
+                  const className = itemIndex < current ? "done" : itemIndex === current ? "active" : "";
+                  return <li key={item} className={className}><span/>{STAGE_LABEL[item]}</li>;
+                })}
+              </ol>
+            </div>
+          )}
+
           {error && <div className="error-banner">{error}</div>}
 
           {result && (
             <section className="answer-layout">
               <article className="answer-card">
-                <div className="answer-heading"><Icon name="spark"/><div><span>AI DEĞERLENDİRMESİ</span><small>{result.provider} · {result.model}</small></div></div>
+                <div className="answer-heading"><Icon name="spark"/><div><span>AI DEĞERLENDİRMESİ</span><small>{result.provider} · {result.model}{result.from_cache ? " · önbellek" : ""}</small></div></div>
                 {!result.grounded && (
                   <div className="ungrounded-notice">
                     Bu yanıt korpustaki hiçbir kaynağa atıf yapmıyor; hukuki dayanak olarak kullanmayın.

@@ -35,7 +35,7 @@ def test_prompt_contains_question_and_stable_source_marker():
     assert "KULLANICI SORUSU" in prompt
     assert "Kıdem tazminatı alınabilir mi?" in prompt
     assert "[K1] Yargıtay 9. Hukuk Dairesi, E. 2026/1, K. 2026/2, T. 02.01.2026" in prompt
-    assert "Tür: Mahkeme kararı" in prompt
+    assert "URL: https://example.test/decision/1" in prompt
     assert DECISION.content in prompt
 
 
@@ -52,7 +52,7 @@ def test_prompt_labels_legislation_with_law_and_article():
     prompt = build_grounded_prompt("Haklı fesih nedir?", [LEGISLATION])
 
     assert "[K1] İş Kanunu (4857) m. 25 — İşverenin haklı nedenle derhal fesih hakkı" in prompt
-    assert "Tür: Mevzuat" in prompt
+    assert "URL: https://example.test/law/4857/25" in prompt
 
 
 def test_aym_reference_uses_application_number_not_fake_case_number():
@@ -80,7 +80,7 @@ def test_prompt_labels_user_document_with_page_and_section():
     prompt = build_grounded_prompt("Fesih tarihi nedir?", [DOCUMENT])
 
     assert "[K1] iş_sözleşmesi.pdf, s. 3, Fesih" in prompt
-    assert "Tür: Kullanıcı belgesi" in prompt
+    assert DOCUMENT.content in prompt
 
 
 def test_prompt_labels_kdk_as_administrative_official_source():
@@ -106,8 +106,8 @@ def test_prompt_labels_kdk_as_administrative_official_source():
 
     prompt = build_grounded_prompt("İdarenin işlemi uygun mu?", [context])
 
-    assert "Tür: İdarî karar / resmî kaynak" in prompt
     assert "Kamu Denetçiliği Kurumu" in prompt
+    assert context.source_url in prompt
 
 
 def test_project_rag_requires_authentication_before_retrieval():

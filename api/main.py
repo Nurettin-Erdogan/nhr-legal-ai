@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
+import sys
+from contextlib import asynccontextmanager
+
 import psycopg
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.admin_ingestion import router as admin_ingestion_router
+from api.ai.providers import AIProviderError, LOCAL_OLLAMA_PROVIDERS, create_provider
 from api.ai.routes import router as ai_router
 from api.auth.routes import router as auth_router
 from api.config import get_settings
@@ -14,10 +19,43 @@ from api.legal import router as legal_router
 from api.projects import router as projects_router
 from api.schemas import HealthResponse
 
+logger = logging.getLogger(__name__)
+
+
+def _warmup_local_model() -> None:
+    if "pytest" in sys.modules:
+        return
+    settings = get_settings()
+    if settings.ai_provider not in LOCAL_OLLAMA_PROVIDERS:
+        return
+    try:
+        provider = create_provider(
+            provider_name=settings.ai_provider,
+            model=settings.ai_model,
+            ollama_base_url=settings.ollama_base_url,
+            ollama_timeout_seconds=min(30.0, settings.ollama_timeout_seconds),
+            ollama_max_output_tokens=settings.ollama_max_output_tokens,
+            ollama_num_ctx=settings.ollama_num_ctx,
+            ollama_keep_alive=settings.ollama_keep_alive,
+        )
+        warmup = getattr(provider, "warmup", None)
+        if callable(warmup):
+            warmup()
+    except AIProviderError:
+        logger.info("Ollama ısındırma atlandı; model daha sonra yüklenecek")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    _warmup_local_model()
+    yield
+
+
 app = FastAPI(
     title="NHR Legal AI API",
     description="Türk hukuku araştırma ve kaynaklı yapay zekâ platformu API'si.",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 settings = get_settings()

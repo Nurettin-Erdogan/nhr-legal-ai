@@ -48,6 +48,34 @@ LEFT JOIN legislation_details legislation ON legislation.legal_source_id = ls.id
 
 _RECENCY_ORDER = "COALESCE(decision.decision_date, ls.published_at) DESC NULLS LAST"
 
+# First two content tokens in question order, ANDed. OR-of-every-token scanned
+# ~40% of the corpus; AND-of-the-full-question dropped recall to empty hits.
+_SEARCH_QUERY_CTES = """
+tokens AS (
+    SELECT token, ord
+    FROM (
+        SELECT unnest(lexemes) AS token,
+               row_number() OVER () AS ord
+        FROM ts_debug('turkish', %(question)s)
+        WHERE lexemes IS NOT NULL
+    ) parsed
+    WHERE char_length(token) >= 4
+),
+search_query AS (
+    SELECT CASE
+        WHEN EXISTS (SELECT 1 FROM tokens)
+        THEN to_tsquery(
+            'turkish',
+            array_to_string(
+                ARRAY(SELECT token FROM tokens ORDER BY ord LIMIT 2),
+                ' & '
+            )
+        )
+        ELSE NULL
+    END AS value
+)
+"""
+
 # Bedesten articles are only citation-eligible after both independent official
 # catalogue checks. This also protects older rows written as "ready" before
 # ingestion began enforcing verification state.
@@ -100,42 +128,109 @@ _TEMPORAL_FILTER = """
 )
 """
 
+_LEXICAL_HIT_FILTER = f"""
+ls.deleted_at IS NULL
+  AND {_VERIFIED_SOURCE_FILTER}
+  AND search_query.value IS NOT NULL
+  AND chunk.search_vector @@ search_query.value
+"""
+
 LEXICAL_RETRIEVAL_SQL = f"""
-WITH search_query AS (
-    SELECT to_tsquery(
-        'turkish',
-        array_to_string(
-            tsvector_to_array(to_tsvector('turkish', %(question)s)),
-            ' | '
-        )
-    ) AS value
+WITH {_SEARCH_QUERY_CTES},
+ranked AS (
+    SELECT hits.chunk_id AS id, hits.rank
+    FROM search_query
+    CROSS JOIN LATERAL legal_rag_current_lexical_hits(
+        search_query.value,
+        %(candidate_limit)s
+    ) AS hits
+    WHERE search_query.value IS NOT NULL
 )
 SELECT
 {_SELECT_COLUMNS},
-    ts_rank_cd(chunk.search_vector, search_query.value) AS rank
-FROM legal_chunks chunk
+    ranked.rank
+FROM ranked
+JOIN legal_chunks chunk ON chunk.id = ranked.id
 JOIN legal_sources ls ON ls.id = chunk.legal_source_id
 {_DETAIL_JOINS}
-CROSS JOIN search_query
-WHERE ls.deleted_at IS NULL
-  AND {_VERIFIED_SOURCE_FILTER}
-  AND {_TEMPORAL_FILTER}
-  AND search_query.value IS NOT NULL
-  AND chunk.search_vector @@ search_query.value
-ORDER BY rank DESC, {_RECENCY_ORDER}
+ORDER BY ranked.rank DESC, {_RECENCY_ORDER}
+LIMIT %(top_k)s
+"""
+
+LEXICAL_HISTORICAL_SQL = f"""
+WITH {_SEARCH_QUERY_CTES},
+ranked AS (
+    SELECT chunk.id,
+           ts_rank_cd(chunk.search_vector, search_query.value) AS rank
+    FROM legal_chunks chunk
+    JOIN legal_sources ls ON ls.id = chunk.legal_source_id
+    {_DETAIL_JOINS}
+    CROSS JOIN search_query
+    WHERE {_LEXICAL_HIT_FILTER}
+      AND {_TEMPORAL_FILTER}
+    ORDER BY rank DESC
+    LIMIT %(candidate_limit)s
+)
+SELECT
+{_SELECT_COLUMNS},
+    ranked.rank
+FROM ranked
+JOIN legal_chunks chunk ON chunk.id = ranked.id
+JOIN legal_sources ls ON ls.id = chunk.legal_source_id
+{_DETAIL_JOINS}
+ORDER BY ranked.rank DESC, {_RECENCY_ORDER}
 LIMIT %(top_k)s
 """
 
 HYBRID_RETRIEVAL_SQL = f"""
-WITH search_query AS (
-    SELECT to_tsquery(
-        'turkish',
-        array_to_string(
-            tsvector_to_array(to_tsvector('turkish', %(question)s)),
-            ' | '
-        )
-    ) AS value
+WITH {_SEARCH_QUERY_CTES},
+lexical AS (
+    SELECT hits.chunk_id AS id,
+           row_number() OVER (ORDER BY hits.rank DESC) AS position
+    FROM search_query
+    CROSS JOIN LATERAL legal_rag_current_lexical_hits(
+        search_query.value,
+        %(candidate_limit)s
+    ) AS hits
+    WHERE search_query.value IS NOT NULL
 ),
+semantic AS (
+    SELECT chunk.id,
+           row_number() OVER (ORDER BY chunk.embedding <=> %(embedding)s::vector) AS position
+    FROM legal_chunks chunk
+    JOIN legal_sources ls ON ls.id = chunk.legal_source_id
+    WHERE ls.deleted_at IS NULL
+      AND {_VERIFIED_SOURCE_FILTER}
+      AND ls.is_current
+      AND chunk.embedding IS NOT NULL
+      AND chunk.embedding_model = %(embedding_model)s
+    ORDER BY position
+    LIMIT %(candidate_limit)s
+),
+scores AS (
+    SELECT id, 0.55 / (60 + position) AS score FROM lexical
+    UNION ALL
+    SELECT id, 0.45 / (60 + position) AS score FROM semantic
+),
+ranked AS (
+    SELECT id, sum(score) AS score
+    FROM scores
+    GROUP BY id
+    ORDER BY score DESC
+    LIMIT %(top_k)s
+)
+SELECT
+{_SELECT_COLUMNS},
+    ranked.score AS rank
+FROM ranked
+JOIN legal_chunks chunk ON chunk.id = ranked.id
+JOIN legal_sources ls ON ls.id = chunk.legal_source_id
+{_DETAIL_JOINS}
+ORDER BY ranked.score DESC, {_RECENCY_ORDER}
+"""
+
+HYBRID_HISTORICAL_SQL = f"""
+WITH {_SEARCH_QUERY_CTES},
 lexical AS (
     SELECT chunk.id,
            row_number() OVER (
@@ -145,11 +240,8 @@ lexical AS (
     JOIN legal_sources ls ON ls.id = chunk.legal_source_id
     {_DETAIL_JOINS}
     CROSS JOIN search_query
-    WHERE ls.deleted_at IS NULL
-      AND {_VERIFIED_SOURCE_FILTER}
+    WHERE {_LEXICAL_HIT_FILTER}
       AND {_TEMPORAL_FILTER}
-      AND search_query.value IS NOT NULL
-      AND chunk.search_vector @@ search_query.value
     ORDER BY position
     LIMIT %(candidate_limit)s
 ),
@@ -189,16 +281,8 @@ JOIN legal_sources ls ON ls.id = chunk.legal_source_id
 ORDER BY ranked.score DESC, {_RECENCY_ORDER}
 """
 
-DOCUMENT_LEXICAL_RETRIEVAL_SQL = """
-WITH search_query AS (
-    SELECT to_tsquery(
-        'turkish',
-        array_to_string(
-            tsvector_to_array(to_tsvector('turkish', %(question)s)),
-            ' | '
-        )
-    ) AS value
-)
+DOCUMENT_LEXICAL_RETRIEVAL_SQL = f"""
+WITH {_SEARCH_QUERY_CTES}
 SELECT
     chunk.id AS chunk_id,
     document.id AS source_id,
@@ -235,16 +319,8 @@ ORDER BY rank DESC, document.created_at DESC
 LIMIT %(top_k)s
 """
 
-DOCUMENT_HYBRID_RETRIEVAL_SQL = """
-WITH search_query AS (
-    SELECT to_tsquery(
-        'turkish',
-        array_to_string(
-            tsvector_to_array(to_tsvector('turkish', %(question)s)),
-            ' | '
-        )
-    ) AS value
-),
+DOCUMENT_HYBRID_RETRIEVAL_SQL = f"""
+WITH {_SEARCH_QUERY_CTES},
 lexical AS (
     SELECT chunk.id,
            row_number() OVER (
@@ -326,12 +402,17 @@ def retrieve_contexts(
     embedding_model: str | None = None,
     as_of: date | None = None,
 ) -> list[RAGContext]:
+    try:
+        connection.execute("SET jit TO off")
+    except psycopg.Error:
+        pass
     params = {
         "question": question,
         "top_k": top_k,
         "candidate_limit": max(top_k * 4, 20),
         "as_of": as_of,
     }
+    historical = as_of is not None
     if query_embedding is not None and embedding_model:
         params.update(
             {
@@ -339,9 +420,10 @@ def retrieve_contexts(
                 "embedding_model": embedding_model,
             }
         )
-        rows = connection.execute(HYBRID_RETRIEVAL_SQL, params).fetchall()
+        sql = HYBRID_HISTORICAL_SQL if historical else HYBRID_RETRIEVAL_SQL
     else:
-        rows = connection.execute(LEXICAL_RETRIEVAL_SQL, params).fetchall()
+        sql = LEXICAL_HISTORICAL_SQL if historical else LEXICAL_RETRIEVAL_SQL
+    rows = connection.execute(sql, params).fetchall()
     return [RAGContext(**row) for row in rows]
 
 
@@ -360,6 +442,10 @@ def retrieve_document_contexts(
         "top_k": top_k,
         "candidate_limit": max(top_k * 4, 20),
     }
+    try:
+        connection.execute("SET jit TO off")
+    except psycopg.Error:
+        pass
     if query_embedding is not None and embedding_model:
         params.update(
             {

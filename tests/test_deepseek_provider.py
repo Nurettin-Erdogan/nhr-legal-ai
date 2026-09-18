@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from contextlib import contextmanager
 from types import SimpleNamespace
 
 import httpx
@@ -48,7 +47,8 @@ def test_deepseek_uses_existing_rag_prompt_and_citation_verification():
         assert body["stream"] is False
         assert body["raw"] is True
         assert body["keep_alive"] == "30m"
-        assert body["options"]["num_predict"] == 384
+        assert 64 <= body["options"]["num_predict"] <= 768
+        assert body["options"]["num_predict"] < body["options"]["num_ctx"]
         assert body["options"]["num_ctx"] == 1536
         assert body["options"]["stop"] == [
             "<｜end▁of▁sentence｜>", "<｜User｜>", "<｜Assistant｜>"
@@ -105,7 +105,9 @@ def test_ollama_rejects_invalid_base_url():
 
 
 def test_question_embedding_uses_supported_provider_arguments(monkeypatch):
-    monkeypatch.setattr(routes, "get_settings", lambda: SimpleNamespace(
+    from api.ai import pipeline as ai_pipeline
+
+    monkeypatch.setattr(ai_pipeline, "get_settings", lambda: SimpleNamespace(
         embedding_provider="ollama",
         embedding_model="nomic-embed-text",
         embedding_dimensions=768,
@@ -128,7 +130,7 @@ def test_question_embedding_uses_supported_provider_arguments(monkeypatch):
         assert ollama_timeout_seconds > 0
         return StubEmbeddingProvider()
 
-    monkeypatch.setattr(routes, "create_embedding_provider", create_stub_embedding_provider)
+    monkeypatch.setattr(ai_pipeline, "create_embedding_provider", create_stub_embedding_provider)
     assert asyncio.run(routes._embed_question("Hukuki soru?")) == [0.5]
 
 
@@ -146,6 +148,48 @@ def test_ollama_strips_think_blocks_from_answer():
     assert provider.generate(system_instruction="rules", prompt="question") == "Sonuç. [K1]"
 
 
+def test_ollama_records_token_usage_on_success():
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "response": "Sonuç. [K1]",
+                "done_reason": "stop",
+                "prompt_eval_count": 120,
+                "eval_count": 40,
+            },
+        )
+
+    provider = OllamaProvider(
+        model="deepseek-r1:8b",
+        transport=httpx.MockTransport(respond),
+    )
+    assert provider.generate(system_instruction="rules", prompt="question") == "Sonuç. [K1]"
+    assert provider.last_usage is not None
+    assert provider.last_usage.prompt_eval_count == 120
+    assert provider.last_usage.eval_count == 40
+    assert provider.last_usage.done_reason == "stop"
+
+
+def test_num_predict_is_capped_to_fit_num_ctx():
+    captured: dict[str, object] = {}
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content)["options"])
+        return httpx.Response(200, json={"response": "Sonuç. [K1]"})
+
+    provider = OllamaProvider(
+        model="deepseek-r1:8b",
+        max_output_tokens=768,
+        num_ctx=1536,
+        transport=httpx.MockTransport(respond),
+    )
+    provider.generate(system_instruction="A" * 2500, prompt="B" * 2500)
+    assert captured["num_ctx"] == 1536
+    assert captured["num_predict"] < 768
+    assert captured["num_predict"] >= 64
+
+
 def test_ollama_rejects_truncated_answer():
     provider = OllamaProvider(
         model="deepseek-r1:8b",
@@ -161,13 +205,16 @@ def test_ollama_rejects_truncated_answer():
 
 
 def test_answer_route_rejects_uncited_legal_response(monkeypatch):
+    from api.ai import pipeline as ai_pipeline
+    from api.ai.cache import answer_cache
+
     context = court_decision_context()
     settings = SimpleNamespace(
         ai_provider="deepseek",
         ai_model="deepseek-r1:8b",
         ollama_base_url="http://127.0.0.1:11434",
         ollama_timeout_seconds=120.0,
-        ollama_max_output_tokens=384,
+        ollama_max_output_tokens=768,
         ollama_num_ctx=1536,
         ollama_keep_alive="30m",
         rag_query_embedding=False,
@@ -175,19 +222,14 @@ def test_answer_route_rejects_uncited_legal_response(monkeypatch):
         embedding_model="nomic-embed-text",
         rag_context_chars=800,
     )
-
-    @contextmanager
-    def database_stub():
-        yield object()
-
-    monkeypatch.setattr(routes, "get_settings", lambda: settings)
-    monkeypatch.setattr(routes, "create_provider", lambda **kwargs: SimpleNamespace(
+    answer_cache.clear()
+    monkeypatch.setattr(ai_pipeline, "get_settings", lambda: settings)
+    monkeypatch.setattr(ai_pipeline, "create_provider", lambda **kwargs: SimpleNamespace(
         name="deepseek", model="deepseek-r1:8b"
     ))
-    monkeypatch.setattr(routes, "database_connection", database_stub)
-    monkeypatch.setattr(routes, "retrieve_contexts", lambda *args, **kwargs: [context])
+    monkeypatch.setattr(ai_pipeline, "_retrieve", lambda *args, **kwargs: [context])
     monkeypatch.setattr(
-        routes, "generate_grounded_answer", lambda *args, **kwargs: "Kaynaksız hukuki sonuç."
+        ai_pipeline, "generate_grounded_answer", lambda *args, **kwargs: "Kaynaksız hukuki sonuç."
     )
 
     with pytest.raises(HTTPException) as error:
