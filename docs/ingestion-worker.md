@@ -38,22 +38,22 @@ yoracak kadar sık değildir.
 
 | Değişken | Varsayılan | Anlam |
 | --- | --- | --- |
-| `YARGITAY_SYNC_INTERVAL_MINUTES` | 360 | Yargıtay turları arası |
-| `DANISTAY_SYNC_INTERVAL_MINUTES` | 720 | Danıştay turları arası |
-| `MEVZUAT_SYNC_INTERVAL_MINUTES` | 720 | Mevzuat turları arası |
-| `KDK_SYNC_INTERVAL_MINUTES` | 1440 | KDK turları arası |
-| `AYM_SYNC_INTERVAL_MINUTES` | 1440 | AYM turları arası |
-| `YARGITAY_BACKFILL_INTERVAL_MINUTES` | 60 | Eksik Yargıtay penceresinde başarılı turlar arası |
-| `DANISTAY_BACKFILL_INTERVAL_MINUTES` | 90 | Eksik Danıştay penceresinde başarılı turlar arası |
-| `MEVZUAT_BACKFILL_INTERVAL_MINUTES` | 120 | Eksik mevzuat keşif kataloğunda başarılı turlar arası |
-| `KDK_BACKFILL_INTERVAL_MINUTES` | 180 | Eksik KDK penceresinde başarılı turlar arası |
-| `AYM_BACKFILL_INTERVAL_MINUTES` | 180 | Eksik AYM sayfalarında başarılı turlar arası |
-| `WORKER_POLL_SECONDS` | 30 | Daemon beklerken kontrol sıklığı |
-| `YARGITAY_DELAY_SECONDS` | 1.5 | İstek arası bekleme |
-| `DANISTAY_DELAY_SECONDS` | 2.0 | Danıştay istekleri arası bekleme |
-| `MEVZUAT_DELAY_SECONDS` | 1.0 | İstek arası bekleme |
-| `KDK_DELAY_SECONDS` | 1.0 | KDK istekleri arası bekleme (canlı 0.5 429 artırmadı; indirme yükü için 1.0) |
-| `AYM_DELAY_SECONDS` | 1.0 | AYM kayıtları arası bekleme (Yargıtay/Danıştay delay değişmez) |
+| `YARGITAY_SYNC_INTERVAL_MINUTES` | 2 | Yargıtay idle/wrap turları arası |
+| `DANISTAY_SYNC_INTERVAL_MINUTES` | 2 | Danıştay idle/wrap turları arası |
+| `MEVZUAT_SYNC_INTERVAL_MINUTES` | 2 | Mevzuat idle turları arası |
+| `KDK_SYNC_INTERVAL_MINUTES` | 2 | KDK idle/wrap turları arası |
+| `AYM_SYNC_INTERVAL_MINUTES` | 2 | AYM idle turları arası |
+| `YARGITAY_BACKFILL_INTERVAL_MINUTES` | 1 | Eksik Yargıtay penceresinde checkpoint aralığı |
+| `DANISTAY_BACKFILL_INTERVAL_MINUTES` | 1 | Eksik Danıştay penceresinde checkpoint aralığı |
+| `MEVZUAT_BACKFILL_INTERVAL_MINUTES` | 1 | Eksik mevzuat keşif kataloğunda checkpoint aralığı |
+| `KDK_BACKFILL_INTERVAL_MINUTES` | 1 | Eksik KDK penceresinde checkpoint aralığı |
+| `AYM_BACKFILL_INTERVAL_MINUTES` | 1 | Eksik AYM sayfalarında checkpoint aralığı |
+| `WORKER_POLL_SECONDS` | 5 | Daemon beklerken kontrol sıklığı |
+| `YARGITAY_DELAY_SECONDS` | 0.25 | İstek arası bekleme |
+| `DANISTAY_DELAY_SECONDS` | 0.35 | Danıştay istekleri arası bekleme |
+| `MEVZUAT_DELAY_SECONDS` | 0.2 | İstek arası bekleme |
+| `KDK_DELAY_SECONDS` | 0.25 | KDK istekleri arası bekleme |
+| `AYM_DELAY_SECONDS` | 0.25 | AYM kayıtları arası bekleme |
 | `AYM_PAGE_SIZE` | 100 | AYM public arama `size` (1–100; canlı 100 429 üretmedi) |
 | `KDK_PAGE_SIZE` | 100 | KDK DataTables `length` (1–100; canlı 20/50/100 429 üretmedi) |
 | `MEVZUAT_DISCOVERY_PAGE_SIZE` | 20 | Bedesten keşif `pageSize` (portal en fazla 20 kabul eder) |
@@ -67,11 +67,14 @@ yoracak kadar sık değildir.
 | `DANISTAY_CORPUS_START` | 1982-01-01 | Danıştay: 1981 SUCCESS 0, 1982 hit |
 | `KDK_CORPUS_START` | 2017-01-01 | KDK IndexPaging tarih filtresi 2017 hit, 2016 SUCCESS 0 |
 | `CURRENT_LOOKBACK_DAYS` | 45 | Güncel şeridin taradığı son gün sayısı |
-| `CURRENT_SYNC_INTERVAL_MINUTES` | 180 | Güncel şerit lookback turunu bitirip ufuğa sarıldıktan sonra |
-| `CURRENT_RETRY_INTERVAL_MINUTES` | 60 | Güncel şerit ayı bitirmediyse veya lookback içinde sonraki aya geçiyorsa |
+| `CURRENT_SYNC_INTERVAL_MINUTES` | 2 | Güncel şerit lookback turunu bitirip ufuğa sarıldıktan sonra |
+| `CURRENT_RETRY_INTERVAL_MINUTES` | 1 | Güncel şerit ayı bitirmediyse veya lookback içinde sonraki aya geçiyorsa |
 | `FULL_CORPUS_START` | 2000-01-01 | Yalnız AYM gibi tarih penceresi olmayan kaynaklarda yedek; kaynak tabanı ezmez |
-| `BACKFILL_PAUSE_SECONDS` | 2 | Full backfill turları arası kısa bekleme |
-| `DANISTAY_BACKFILL_PAUSE_SECONDS` | 30 | Danıştay'da başarılı ay turları arası asgari bekleme; boş ayların 429 üretmesini önlemeye yardımcı olur |
+| `BACKFILL_PAUSE_SECONDS` | 0.3 | Full backfill turları arası kısa bekleme |
+| `DANISTAY_BACKFILL_PAUSE_SECONDS` | 3 | Danıştay'da başarılı ay turları arası asgari bekleme |
+| `INGESTION_FAILURE_RETRY_MINUTES` | 0.25 | genel hata sonrası ~15 sn; süreç çıkmaz |
+| `INGESTION_RATE_LIMIT_RETRY_MINUTES` | 2 | 429 / JSON-olmayan / RG-MBS soğuma; süreç çıkmaz |
+| `INGESTION_CAPTCHA_RETRY_MINUTES` | 0.5 | CAPTCHA sonrası ~30 sn; bypass yok, süreç çıkmaz |
 | `MEVZUAT_DISCOVERY_TYPES` | KANUN,KHK,... | Bedesten keşif türleri |
 | `EMBED_LIMIT_PER_RUN` | 200 | Her sync sonrası en fazla yeni chunk embedding |
 
@@ -80,10 +83,12 @@ doldurur. `--source all` varsayılan olarak her ACTIVE kaynağı ayrı süreçte
 çalıştırır (aynı portala iki süreç yok). Tek süreç için `--serial`.
 Bekleyen RG+MBS doğrulaması `python -m worker.runner run --source mevzuat_verify`
 ile ayrı çalıştırılır; `all` ve daemon bunu otomatik açmaz.
-`--serial` modunda da hatalı/kısmi veya ilerlemeyen kaynak, kendi normal
-`next_run_at` aralığına kadar ertelenir; bu sırada diğer kaynaklar taranır.
-Resmî portal HTTP 429 döndürürse aynı isteğe kısa aralıkla tekrar yüklenilmez.
-CAPTCHA görülen kaynak otomatik aşılmaz ve bloklu olarak raporlanır.
+`--serial` modunda da hatalı/kısmi veya ilerlemeyen kaynak kısa hata
+aralığına alınır; bu sırada diğer kaynaklar taranır.
+Resmî portal HTTP 429 döndürürse aynı isteğe kısa aralıkla tekrar yüklenilmez;
+tur biter ve `INGESTION_RATE_LIMIT_RETRY_MINUTES` sonra aynı imleçten devam eder.
+CAPTCHA görülen kaynak otomatik aşılmaz, `blocked` olarak raporlanır ve süreç
+çıkarılmaz; `INGESTION_CAPTCHA_RETRY_MINUTES` sonra yeniden dener.
 Yargıtay/Danıştay/KDK aylık pencereler kaynak `*_CORPUS_START` değerinden
 (doğrulanmış en eski hit; boş SUCCESS yıllar complete yazılmaz ancak
 taranabilir). Eski checkpoint 2020 gibi daha yeni bir yıldaysa ve eski
@@ -99,9 +104,10 @@ her tür ayrı partition. CAPTCHA bypass yoktur. Raw yanıtlar `data/raw/<kaynak
 altında URL, SHA256, fetched_at ile saklanır.
 mevcut rate-limit ve `*_MAX_*` tavanları korunur; süreç kesilirse aynı komut
 kaldığı yerden devam eder. Her başarılı turdan sonra `legal_chunks` içindeki
-yeni parçalar embed edilir. Kaynak tarihsel olarak bitince incremental
-`daemon` moduna geçer (güncel şerit + periyodik tarama). CAPTCHA olan kaynak
-atlanır, bypass yoktur.
+yeni parçalar embed edilir. Kaynak tarihsel olarak bitince incremental `daemon` moduna geçer (güncel şerit +
+periyodik tarama). `--no-incremental` süreçten çıkmaz: arşivi biten kaynak
+current şeritte taramaya devam eder. CAPTCHA olan kaynak atlanmaz; bypass
+yoktur, soğuma sonrası tekrar denenir.
 
 İlk daemon turu `next_run_at` boşsa işi due sayar. Yargıtay, Danıştay ve KDK
 iki şeritte yürür: `backfill` arşivi doldurur, `current` son
@@ -115,10 +121,11 @@ bulunduğumuz ay kapanmış sayılmaz.
 `python -m worker.runner backfill` tarihsel korpus bitene kadar döner.
 Tur başına `*_MAX_*` tavanı (40–80 kayıt) vardır; tavan dolunca tur
 `partial`/`success` biter ama imleç ilerlediyse süreç saatlerce beklemaz,
-kaynak gecikmesi + `BACKFILL_PAUSE_SECONDS` (Danıştay min. 30s) sonra
-aynı imleçten devam eder. İlerlemeden başarısız olan, aynı imleçte
-dönen veya CAPTCHA isteyen kaynak uzun aralığa alınır; karantina kaydı
-korunur ve eksik pencere tamamlanmış sayılmaz. Daemon için: imleç
+kaynak gecikmesi + `BACKFILL_PAUSE_SECONDS` (Danıştay min. 3s) sonra
+aynı imleçten devam eder. İlerlemeden başarısız olan veya aynı imleçte
+dönen kaynak `INGESTION_FAILURE_RETRY_MINUTES` bekler; CAPTCHA isteyen kaynak
+süreçten düşülmez, `INGESTION_CAPTCHA_RETRY_MINUTES` sonra yeniden denenir.
+Karantina kaydı korunur ve eksik pencere tamamlanmış sayılmaz. Daemon için: imleç
 ilerleyen `partial` kısa backfill aralığını kullanır. Backfill bitince
 normal periyodik aralık devreye girer.
 
@@ -161,10 +168,12 @@ mevzuat, KDK ve AYM birbirini bloklamaz.
 
 ## Retry / backoff / CAPTCHA
 
-- 429: `Retry-After` + üstel backoff + jitter, sonra retry
+- 429: `Retry-After` (en fazla 8 sn) + üstel backoff + jitter, sonra retry;
+  tur yine 429 ile biterse `INGESTION_RATE_LIMIT_RETRY_MINUTES` soğuma
 - 5xx: backoff + retry
 - 401/403: retry yok; iş fail
-- CAPTCHA: bypass yok; run `captcha_required`, health `blocked`
+- CAPTCHA: bypass yok; run `captcha_required`, health `blocked`; worker
+  süreçten çıkmaz, `INGESTION_CAPTCHA_RETRY_MINUTES` sonra yeniden dener
 - Playwright birincil yöntem değildir
 
 ## Versioning ve change detection
@@ -299,7 +308,8 @@ Get-Content -Raw .\database\migrations\013_activate_aym_source.sql |
 
 - AYM PDF üretim ucu güvenlik doğrulaması ister; worker bu ucu kullanmaz ve
   yalnız açık public UDF attachment akışıyla çalışır.
-- Yargıtay ve Danıştay CAPTCHA sonrası insan müdahalesi gerekir.
+- Yargıtay ve Danıştay CAPTCHA sonrası otomatik aşılmaz; worker 45 dakikada
+  bir yeniden dener, süreç ayakta kalır.
 - Portal `recordsFiltered` her daire/anahtar kelime aramasına bağlıdır; "tüm Yargıtay 2020–2026" tek bir sayı değildir. Coverage pencereleri anahtar kelime `karar` ile taranır; daire bazlı taramayı CLI `--chamber` ile verin.
 - Büyük korpus Git'te tutulmaz.
 - Embedding kota hataları ingestion'ı geri almaz; backfill tekrarlanır.

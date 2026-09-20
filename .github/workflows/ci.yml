@@ -54,7 +54,14 @@ jobs:
             database/migrations/010_activate_danistay_source.sql \
             database/migrations/011_activate_resmi_gazete_verification.sql \
             database/migrations/012_activate_kdk_source.sql \
-            database/migrations/013_activate_aym_source.sql
+            database/migrations/013_activate_aym_source.sql \
+            database/migrations/014_legal_rag_indexes.sql \
+            database/migrations/015_bulk_seed_inventory.sql \
+            database/migrations/016_bulk_seed_search.sql \
+            database/migrations/017_superseded_by_index.sql \
+            database/migrations/018_bounded_lexical_hits.sql \
+            database/migrations/019_court_decision_date_index.sql \
+            database/migrations/020_seed_verification_queue.sql
           do
             psql -h localhost -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1 -f "$f"
           done

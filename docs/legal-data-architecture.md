@@ -249,6 +249,7 @@ dayandığı sonradan denetlenebilir.
 - Geçici 5xx yanıtları sınırlı sayıda tekrar denenir.
 - 401/403 kalıcı yapılandırma/erişim hatası olarak değerlendirilir.
 - CAPTCHA bypass edilmez; run `captcha_required`, adapter health `blocked` olur.
+  Worker bu durumda süreçten çıkmaz; soğuma sonrası aynı imleçten yeniden dener.
 - Varsayılan gecikme ve tur başına kayıt sınırları agresif değildir.
 - Portal kullanım şartları, robots politikası, yeniden kullanım lisansı ve
   kişisel veri yükümlülükleri üretim ölçeğine çıkmadan hukukî olarak incelenir.

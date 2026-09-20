@@ -25,7 +25,10 @@ doğrulanır; doğrulama kanıtı kaynak metadata'sında saklanır.
 ```
 
 `backfill --source all` her kaynağı ayrı süreçte çeker; aynı resmi portala
-iki süreç bağlanmaz. Delay, CAPTCHA bypass ve metinsiz kayıt yoktur.
+iki süreç bağlanmaz. Delay, CAPTCHA bypass ve metinsiz kayıt yoktur. 429 ve
+CAPTCHA süreci durdurmaz; sırasıyla ~15 sn ve ~30 sn soğuma sonrası
+aynı imleçten yeniden dener. `--source all` her kaynağı ayrı süreçte tutar;
+çocuk süreç çıkarsa parent yeniden başlatır.
 Tarihsel taban kaynak bazlıdır (Yargıtay 2000, Danıştay 1982, KDK 2017);
 taranmayan dönem complete yazılmaz. Azure 1 GB için `--serial --no-embed`.
 
@@ -80,8 +83,8 @@ AI_PROVIDER=deepseek
 AI_MODEL=deepseek-r1:8b
 OLLAMA_BASE_URL=http://127.0.0.1:11434
 OLLAMA_TIMEOUT_SECONDS=120
-OLLAMA_MAX_OUTPUT_TOKENS=384
-OLLAMA_NUM_CTX=1536
+OLLAMA_MAX_OUTPUT_TOKENS=768
+OLLAMA_NUM_CTX=3072
 OLLAMA_KEEP_ALIVE=30m
 RAG_TOP_K=2
 RAG_CONTEXT_CHARS=800
@@ -99,7 +102,7 @@ kaynaklara karşılık geldiğini doğrular; hukuki iddiaların maddi doğruluğ
 otomatik olarak kanıtlamaz. Yerel Ollama için API anahtarı gerekmez; servisi kimlik doğrulamasız
 internete açmayın. Ollama geçici olarak çalışmazsa embedding yerine sözcüksel
 arama devam eder, fakat DeepSeek yanıtı üretilemez.
-Yerel CPU kurulumunda varsayılan olarak sözcüksel RAG, 1536 bağlam ve 384
+Yerel CPU kurulumunda varsayılan olarak sözcüksel RAG, 3072 bağlam ve 768
 çıktı tokenı kullanılır; DeepSeek-R1 düşünme bloğu kapatılır ki kota gizli
 muhakemeye gitmesin. Semantik soru vektörü için `RAG_QUERY_EMBEDDING=true`.
 

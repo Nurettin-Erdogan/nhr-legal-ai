@@ -31,6 +31,15 @@ mevzuat maddesi veya hukuki sonuç uydurulamaz. Kaynak yetersizse bu açıkça
 söylenir. Bu kural model promptunda kalmaz; üretilen cevabın gerçekten
 getirilen kaynaklara dayandığı kod tarafında doğrulanır.
 
+**Doğrulanmamış kaynak "resmî" diye sunulmaz.** Korpusta üçüncü taraf derlemeden
+gelen kayıtlar da var (2026-09-20 itibarıyla ~10,2 milyon Yargıtay/Danıştay kararı,
+`ingestion_method='bulk_seed'`, `ingest_status='pending'`). Bunlar aranabilir ve
+atıf yapılabilir, ama her yerde ayrı gösterilir: arayüz sayacında ayrı satır,
+cevaptaki atıfta "doğrulanmadı" rozeti, modele verilen kaynak metninde uyarı satırı.
+Bir kayıt ancak resmî portaldan çekilip metni eşleştiğinde `ready` olur
+([docs/ingestion-bulk-mrfg.md](docs/ingestion-bulk-mrfg.md)). Bu ayrımı silen
+değişiklik yapılmaz.
+
 **AI katmanı sağlayıcıdan bağımsız kalır.** Yerel üretim DeepSeek (Ollama)
 üzerinden gider; üretim ve embedding çağrıları arayüz arkasında tutulur. Model
 sıfırdan eğitilmez.

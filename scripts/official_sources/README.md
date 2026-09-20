@@ -36,7 +36,7 @@ aynen kabul eder; örneğin tek kaynağı sınırlı ve yazmadan denemek için:
 ```
 
 `--help` seçenekleri listeler. Bu scriptleri sınırsız ve eşzamanlı çalıştırmayın;
-resmî portalların hız sınırları ve CAPTCHA durumlarında worker durur veya
-sonraki tura bırakır. 6 ve 7 numaralı scriptler **yalnızca smoke doğrulaması**
+resmî portalların hız sınırları ve CAPTCHA durumlarında worker kısa soğuma
+sonrası aynı imleçten yeniden dener; CAPTCHA aşılmaz. 6 ve 7 numaralı scriptler **yalnızca smoke doğrulaması**
 yapar: örnek mevzuat künyesini sorgular, korpusa yazmaz, doğrulama başarısızsa
 çıkış kodu `1` döndürür. Gerçek mevzuat kaydı doğrulaması 5 numaralı akıştadır.
