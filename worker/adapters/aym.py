@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from time import sleep
 from typing import Any, Callable
 
+from ingestion.source_errors import should_retry_same_record
 from ingestion.aym.parser import decision_from_file
 from ingestion.aym.portal import (
     BASE_URL,
@@ -148,13 +149,26 @@ class AymSourceAdapter:
 
         while processed < max_records and not should_stop() and type_index < len(types):
             karar_tipi = types[type_index]
-            page = client.search_page(
-                page=page_number,
-                page_size=page_size,
-                application_no=application_no,
-                keyword=None if application_no else keyword or None,
-                karar_tipi=karar_tipi,
-            )
+            try:
+                page = client.search_page(
+                    page=page_number,
+                    page_size=page_size,
+                    application_no=application_no,
+                    keyword=None if application_no else keyword or None,
+                    karar_tipi=karar_tipi,
+                )
+            except AymPortalError as exc:
+                if should_retry_same_record(exc):
+                    failed += 1
+                    yield "failed", {
+                        "external_id": None,
+                        "reason": str(exc),
+                        "page": page_number,
+                        "karar_tipi": karar_tipi,
+                        "requests_made": 1,
+                    }
+                    break
+                raise
             expected = page.total
             if not page.rows:
                 coverage = coverage_cursor(
@@ -256,6 +270,18 @@ class AymSourceAdapter:
                         }
                     row_offset = row_index + 1
                 except (AymFullTextUnavailable, AymPortalError) as exc:
+                    if isinstance(exc, AymPortalError) and should_retry_same_record(exc):
+                        failed += 1
+                        try:
+                            failed_id = row.external_id
+                        except ValueError:
+                            failed_id = str(row.official_id)
+                        yield "failed", {
+                            **extra,
+                            "external_id": failed_id,
+                            "reason": str(exc),
+                        }
+                        break
                     quarantined += 1
                     reason_code = (
                         "full_text_unavailable"

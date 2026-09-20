@@ -32,18 +32,39 @@ def window_may_advance(
     failed: int,
     already_started: bool,
     stopped: bool = False,
+    listing_exhausted: bool = False,
 ) -> bool:
     """Move to the next month when this resume point has no portal rows left.
 
     Coverage mismatch must not pin backfill to a finished page for hours.
     A fresh window that returns nothing on the first request is left in place
-    so a transient empty search cannot skip a month.
+    so a transient empty search cannot skip a month. A fully walked listing
+    (every search row consumed or skipped) also advances even if retry noise
+    inflated seen_count.
     """
     if stopped:
         return False
-    if reconciled:
+    if reconciled or listing_exhausted:
         return True
     return processed == 0 and failed == 0 and already_started
+
+
+def listing_is_exhausted(
+    *,
+    expected: int | None,
+    page_number: int,
+    page_size: int,
+    row_offset: int,
+    page_row_count: int,
+    processed: int,
+    max_records: int,
+    stopped: bool,
+) -> bool:
+    if stopped or expected is None or processed >= max_records:
+        return False
+    if row_offset < page_row_count:
+        return False
+    return page_number * page_size >= expected
 
 
 def coverage_cursor(

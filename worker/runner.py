@@ -35,6 +35,30 @@ from worker.scheduler import run_daemon
 STOP = Event()
 
 
+def _python_for_child() -> str:
+    """Avoid the Windows venv launcher stub, which doubles every worker PID."""
+    base = getattr(sys, "_base_executable", "") or ""
+    if base:
+        try:
+            if Path(base).resolve() != Path(sys.executable).resolve() and Path(base).is_file():
+                return base
+        except OSError:
+            pass
+    return sys.executable
+
+
+def _child_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    merged = os.environ.copy() if env is None else dict(env)
+    site = Path(sys.prefix) / "Lib" / "site-packages"
+    if site.is_dir():
+        prefix = str(site)
+        existing = merged.get("PYTHONPATH", "")
+        merged["PYTHONPATH"] = prefix if not existing else prefix + os.pathsep + existing
+    merged["VIRTUAL_ENV"] = sys.prefix
+    merged["PYTHONUNBUFFERED"] = "1"
+    return merged
+
+
 def _configure_logging(verbose: bool) -> None:
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
@@ -156,6 +180,34 @@ def _print_backfill_summary(summary: dict) -> int:
     return 0
 
 
+def _spawn_backfill_child(
+    source: str,
+    extra: list[str],
+    env: dict[str, str],
+    log_dir: Path,
+) -> tuple[str, subprocess.Popen, object]:
+    log_path = log_dir / f"backfill-{source}.log"
+    handle = log_path.open("a", encoding="utf-8")
+    cmd = [
+        _python_for_child(),
+        "-u",
+        "-m",
+        "worker.runner",
+        "backfill",
+        "--source",
+        source,
+        "--no-incremental",
+        *extra,
+    ]
+    proc = subprocess.Popen(
+        cmd,
+        stdout=handle,
+        stderr=subprocess.STDOUT,
+        env=_child_env(env),
+    )
+    return source, proc, handle
+
+
 def _cmd_backfill_parallel(args: argparse.Namespace, sources: list[str]) -> int:
     logger = logging.getLogger("worker")
     extra: list[str] = []
@@ -173,32 +225,14 @@ def _cmd_backfill_parallel(args: argparse.Namespace, sources: list[str]) -> int:
     codes: dict[str, int] = {}
     try:
         for source in sources:
-            log_path = log_dir / f"backfill-{source}.log"
-            handle = log_path.open("a", encoding="utf-8")
-            cmd = [
-                sys.executable,
-                "-m",
-                "worker.runner",
-                "backfill",
-                "--source",
-                source,
-                "--no-incremental",
-                *extra,
-            ]
-            proc = subprocess.Popen(
-                cmd,
-                stdout=handle,
-                stderr=subprocess.STDOUT,
-                env=env,
-            )
-            children.append((source, proc, handle))
+            child = _spawn_backfill_child(source, extra, env, log_dir)
+            children.append(child)
             logger.info(
                 "parallel backfill started source=%s pid=%s log=%s",
                 source,
-                proc.pid,
-                log_path,
+                child[1].pid,
+                log_dir / f"backfill-{source}.log",
             )
-        codes: dict[str, int] = {}
         while children:
             if _should_stop():
                 for source, proc, _handle in children:
@@ -214,7 +248,23 @@ def _cmd_backfill_parallel(args: argparse.Namespace, sources: list[str]) -> int:
                     continue
                 handle.close()
                 codes[source] = int(code)
-                logger.info("parallel backfill finished source=%s code=%s", source, code)
+                logger.warning(
+                    "parallel backfill exited source=%s code=%s; restarting",
+                    source,
+                    code,
+                )
+                if _should_stop():
+                    continue
+                sleep(1)
+                if _should_stop():
+                    continue
+                child = _spawn_backfill_child(source, extra, env, log_dir)
+                still.append(child)
+                logger.info(
+                    "parallel backfill restarted source=%s pid=%s",
+                    source,
+                    child[1].pid,
+                )
             children = still
             if children:
                 sleep(1)
@@ -309,7 +359,7 @@ def build_parser() -> argparse.ArgumentParser:
     backfill.add_argument(
         "--no-incremental",
         action="store_true",
-        help="Full backfill bitince daemon'a geçme",
+        help="Arşiv bitince daemon'a geçme; süreç current şeritte kalarak taramaya devam eder",
     )
     backfill.add_argument(
         "--serial",

@@ -45,13 +45,17 @@ def test_backfill_cadence_only_when_more_work_and_previous_run_succeeded(monkeyp
     today = date(2026, 9, 16)
     pending = {"window_complete": False, "next_window_start": "2026-01-01"}
     assert _interval_for("yargitay", cursor=pending, today=today) == timedelta(minutes=60)
-    assert _interval_for("yargitay", cursor=pending, status="partial", today=today) == timedelta(minutes=360)
+    assert _interval_for("yargitay", cursor=pending, status="partial", today=today) == timedelta(minutes=60)
+    assert _interval_for("yargitay", cursor=pending, status="failed", today=today) == timedelta(seconds=15)
+    assert _interval_for(
+        "danistay", cursor=pending, status="captcha_required", today=today
+    ) == timedelta(seconds=30)
     completed_old = {"window_complete": True, "next_window_start": "2026-02-01"}
     assert _interval_for("yargitay", cursor=completed_old, today=today) == timedelta(minutes=60)
     completed_current = {"window_complete": True, "next_window_start": "2026-10-01"}
-    assert _interval_for("yargitay", cursor=completed_current, today=today) == timedelta(minutes=360)
-    assert _interval_for("mevzuat", cursor={"complete": False}, today=today) == timedelta(minutes=120)
-    assert _interval_for("danistay", cursor={}, today=today) == timedelta(minutes=720)
+    assert _interval_for("yargitay", cursor=completed_current, today=today) == timedelta(minutes=2)
+    assert _interval_for("mevzuat", cursor={"complete": False}, today=today) == timedelta(minutes=1)
+    assert _interval_for("danistay", cursor={}, today=today) == timedelta(minutes=2)
 
 
 def test_only_progressing_quarantine_qualifies_for_short_backfill_interval():
@@ -571,6 +575,143 @@ def test_yargitay_current_lane_refetches_existing_source(monkeypatch, tmp_path):
     assert client.fetched == ["1", "2"]
 
 
+def test_yargitay_skips_unavailable_document_and_continues(monkeypatch, tmp_path):
+    from worker.adapters import yargitay as adapter_module
+    from worker.config import get_worker_settings
+
+    class _Client:
+        base_url = "https://karararama.yargitay.gov.tr/"
+        fetched = []
+
+        def begin_detailed_search(self, filters):
+            pass
+
+        def search_page(self, filters):
+            return SearchPage(
+                rows=(
+                    PortalDecisionRow("1", "9. Hukuk Dairesi", "2026/1", "2026/1", "01.01.2026"),
+                    PortalDecisionRow("2", "9. Hukuk Dairesi", "2026/2", "2026/2", "01.01.2026"),
+                ),
+                records_total=2,
+                records_filtered=2,
+            )
+
+        def fetch_document_html(self, document_id):
+            self.fetched.append(document_id)
+            if document_id == "1":
+                raise PortalError(
+                    "Runtime exception:{0}:Belge alma isleminde hata olustu. pid:null"
+                )
+            return "<p>Karar 2 yeterli metin.</p>"
+
+    def make_decision(row, _html, *, base_url):
+        return CourtDecision(
+            court_name="Yargıtay",
+            chamber=row.chamber,
+            docket_no=row.docket_no,
+            decision_no=row.decision_no,
+            decision_date=date(2026, 1, 1),
+            title="Karar",
+            raw_text=f"Karar metni {row.document_id}",
+            external_id=f"yargitay:{row.document_id}",
+            content_hash=content_hash(row.document_id),
+            source_url=f"{base_url}getDokuman?id={row.document_id}",
+        )
+
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("YARGITAY_DELAY_SECONDS", "0")
+    monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
+    get_worker_settings.cache_clear()
+    monkeypatch.setattr(adapter_module, "decision_from_portal_row", make_decision)
+    adapter = YargitaySourceAdapter(client=_Client())
+    outcomes = list(
+        adapter.sync(
+            SyncRequest(
+                source="yargitay",
+                date_from=date(2026, 1, 1),
+                date_to=date(2026, 1, 31),
+                max_records=2,
+            ),
+            cursor={},
+            connection=None,
+            dry_run=True,
+            should_stop=lambda: False,
+        )
+    )
+    assert [status for status, _ in outcomes] == ["quarantined", "created"]
+    assert outcomes[0][1]["reason_code"] == "document_unavailable"
+    assert adapter.last_cursor["row_offset"] == 0
+    assert adapter.last_cursor["window_complete"] is True
+    assert _Client.fetched == ["1", "2"]
+
+
+def test_yargitay_rate_limit_does_not_skip_row(monkeypatch, tmp_path):
+    from worker.adapters import yargitay as adapter_module
+    from worker.config import get_worker_settings
+
+    class _Client:
+        base_url = "https://karararama.yargitay.gov.tr/"
+        fetched = []
+
+        def begin_detailed_search(self, filters):
+            pass
+
+        def search_page(self, filters):
+            return SearchPage(
+                rows=(
+                    PortalDecisionRow("1", "9. Hukuk Dairesi", "2026/1", "2026/1", "01.01.2026"),
+                    PortalDecisionRow("2", "9. Hukuk Dairesi", "2026/2", "2026/2", "01.01.2026"),
+                ),
+                records_total=2,
+                records_filtered=2,
+            )
+
+        def fetch_document_html(self, document_id):
+            self.fetched.append(document_id)
+            raise PortalError(
+                "Yargitay HTTP 429; kaynak hiz siniri, aktarim beklemeye alinmali"
+            )
+
+    def make_decision(row, _html, *, base_url):
+        return CourtDecision(
+            court_name="Yargıtay",
+            chamber=row.chamber,
+            docket_no=row.docket_no,
+            decision_no=row.decision_no,
+            decision_date=date(2026, 1, 1),
+            title="Karar",
+            raw_text="metin",
+            external_id=f"yargitay:{row.document_id}",
+            content_hash=content_hash(row.document_id),
+            source_url=f"{base_url}getDokuman?id={row.document_id}",
+        )
+
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("YARGITAY_DELAY_SECONDS", "0")
+    monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
+    get_worker_settings.cache_clear()
+    monkeypatch.setattr(adapter_module, "decision_from_portal_row", make_decision)
+    adapter = YargitaySourceAdapter(client=_Client())
+    outcomes = list(
+        adapter.sync(
+            SyncRequest(
+                source="yargitay",
+                date_from=date(2026, 1, 1),
+                date_to=date(2026, 1, 31),
+                max_records=2,
+            ),
+            cursor={},
+            connection=None,
+            dry_run=True,
+            should_stop=lambda: False,
+        )
+    )
+    assert [status for status, _ in outcomes] == ["failed"]
+    assert adapter.last_cursor["row_offset"] == 0
+    assert adapter.last_cursor["window_complete"] is False
+    assert _Client.fetched == ["1"]
+
+
 def _sync_yargitay_two_rows(monkeypatch, tmp_path, *, lane: str, known: set[str]):
     from worker.adapters import yargitay as adapter_module
     from worker.config import get_worker_settings
@@ -770,9 +911,7 @@ def test_mevzuat_checkpoint_does_not_advance_past_quarantined_article(
     assert adapter.last_cursor.get("complete") is not True
 
 
-def test_mevzuat_checkpoint_does_not_advance_past_failed_article(
-    monkeypatch, tmp_path
-):
+def test_mevzuat_skips_unreadable_article_and_continues(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
     monkeypatch.setenv("MEVZUAT_DELAY_SECONDS", "0")
     monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
@@ -799,13 +938,12 @@ def test_mevzuat_checkpoint_does_not_advance_past_failed_article(
             should_stop=lambda: False,
         )
     )
-    assert outcomes[0][0] == "created"
-    assert outcomes[1][0] == "failed"
-    assert adapter.last_cursor["last_article_no"] == "1"
-    assert adapter.last_cursor.get("complete") is not True
+    assert [status for status, _ in outcomes] == ["created", "quarantined", "created"]
+    assert outcomes[1][1]["reason_code"] == "article_unavailable"
+    assert adapter.last_cursor["complete"] is True
 
 
-def test_mevzuat_refetches_article_html_when_source_exists(monkeypatch, tmp_path):
+def test_mevzuat_skips_article_html_when_source_exists(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
     monkeypatch.setenv("MEVZUAT_DELAY_SECONDS", "0")
     monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
@@ -841,13 +979,67 @@ def test_mevzuat_refetches_article_html_when_source_exists(monkeypatch, tmp_path
             should_stop=lambda: False,
         )
     )
-    assert [status for status, _ in outcomes] == ["created", "created", "created"]
-    assert all("skipped_existing" not in payload for _, payload in outcomes)
-    assert client.fetched == ["a1", "a2", "a3"]
+    assert [status for status, _ in outcomes] == ["unchanged", "created", "created"]
+    assert outcomes[0][1]["skipped_existing"] is True
+    assert client.fetched == ["a2", "a3"]
     assert adapter.last_cursor["complete"] is True
 
 
-def test_mevzuat_resume_retries_after_last_successful_article(monkeypatch, tmp_path):
+def test_mevzuat_finishes_all_known_law_without_html_or_max_cap(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("MEVZUAT_DELAY_SECONDS", "0")
+    monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
+    from worker.adapters.mevzuat import MevzuatSourceAdapter
+    from worker.config import get_worker_settings
+
+    get_worker_settings.cache_clear()
+
+    class _Client(_MevzuatClientSuccessThenQuarantine):
+        def __init__(self):
+            self.fetched = []
+            self.trees = 0
+
+        def fetch_article_tree(self, mevzuat_id):
+            self.trees += 1
+            return super().fetch_article_tree(mevzuat_id)
+
+        def fetch_article_html(self, madde_id):
+            self.fetched.append(madde_id)
+            raise AssertionError("bilinen madde HTML'i tekrar indirilmemeli")
+
+    client = _Client()
+    adapter = MevzuatSourceAdapter(
+        client=client, verify_gazette=False, verify_mbs=False
+    )
+    known = {
+        "mevzuat:kanun:4857:m.1",
+        "mevzuat:kanun:4857:m.2",
+        "mevzuat:kanun:4857:m.3",
+    }
+    outcomes = list(
+        adapter.sync(
+            SyncRequest(
+                source="mevzuat",
+                law_no="4857",
+                max_records=1,
+                resume=False,
+                lane="backfill",
+            ),
+            cursor={},
+            connection=_KnownSourcesConnection(known),
+            dry_run=True,
+            should_stop=lambda: False,
+        )
+    )
+    assert all(status == "unchanged" for status, _ in outcomes)
+    assert len(outcomes) == 3
+    assert client.fetched == []
+    assert client.trees == 1
+    assert adapter.last_cursor["complete"] is True
+    get_worker_settings.cache_clear()
+
     monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
     monkeypatch.setenv("MEVZUAT_DELAY_SECONDS", "0")
     monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
@@ -882,6 +1074,43 @@ def test_mevzuat_resume_retries_after_last_successful_article(monkeypatch, tmp_p
     assert article_nos[0] == "2"
     assert adapter.last_cursor["last_article_no"] == ""
     assert adapter.last_cursor["complete"] is True
+
+
+def test_mevzuat_missing_resume_article_skips_law(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("MEVZUAT_DELAY_SECONDS", "0")
+    monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
+    from worker.adapters.mevzuat import MevzuatSourceAdapter
+    from worker.config import get_worker_settings
+
+    get_worker_settings.cache_clear()
+
+    class _AllGood(_MevzuatClientSuccessThenQuarantine):
+        def fetch_article_html(self, madde_id):
+            return f"<p>Geçerli madde metni {madde_id}.</p>"
+
+    adapter = MevzuatSourceAdapter(
+        client=_AllGood(), verify_gazette=False, verify_mbs=False
+    )
+    outcomes = list(
+        adapter.sync(
+            SyncRequest(
+                source="mevzuat",
+                law_no="4857",
+                max_records=10,
+                resume=True,
+            ),
+            cursor={"law_index": 0, "law_no": "4857", "last_article_no": "99"},
+            connection=None,
+            dry_run=True,
+            should_stop=lambda: False,
+        )
+    )
+    assert outcomes[0][0] == "quarantined"
+    assert outcomes[0][1]["reason_code"] == "resume_article_missing"
+    assert adapter.last_cursor["complete"] is True
+    assert adapter.last_cursor["last_article_no"] == ""
+    get_worker_settings.cache_clear()
 
 
 def test_mevzuat_limit_at_law_boundary_advances_without_skipping_next_law(
@@ -1445,7 +1674,7 @@ def test_current_lane_cadence_and_coverage_never_complete(monkeypatch):
     ) == timedelta(minutes=180)
     assert _interval_for(
         "yargitay", cursor=pending, status="failed", lane="current"
-    ) == timedelta(minutes=180)
+    ) == timedelta(seconds=15)
 
     coverage_calls: list[dict] = []
     loaded: list[str] = []

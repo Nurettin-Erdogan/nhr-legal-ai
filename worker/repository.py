@@ -47,6 +47,21 @@ class SyncRepository:
         self.save_checkpoint(checkpoint)
         return checkpoint
 
+    def cancel_stale_runs(self, *, older_than_hours: float = 2) -> int:
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE source_sync_runs
+                SET status = 'cancelled',
+                    completed_at = COALESCE(completed_at, NOW()),
+                    error_message = COALESCE(error_message, 'stale running row')
+                WHERE status = 'running'
+                  AND started_at < NOW() - (%s * INTERVAL '1 hour')
+                """,
+                (older_than_hours,),
+            )
+            return int(cursor.rowcount or 0)
+
     def list_checkpoints(self) -> list[Checkpoint]:
         with self.connection.cursor(row_factory=dict_row) as cursor:
             cursor.execute(

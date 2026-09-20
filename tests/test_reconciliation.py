@@ -1,4 +1,4 @@
-from worker.reconciliation import coverage_reconciled, window_may_advance
+from worker.reconciliation import coverage_reconciled, listing_is_exhausted, window_may_advance
 
 
 def test_window_is_complete_only_when_portal_count_matches_fates():
@@ -43,4 +43,31 @@ def test_exhausted_resume_point_may_advance_without_reconcile():
     )
     assert not window_may_advance(
         reconciled=True, processed=0, failed=0, already_started=True, stopped=True
+    )
+    assert window_may_advance(
+        reconciled=False,
+        processed=4,
+        failed=0,
+        already_started=True,
+        listing_exhausted=True,
+    )
+    assert not listing_is_exhausted(
+        expected=15,
+        page_number=1,
+        page_size=20,
+        row_offset=10,
+        page_row_count=20,
+        processed=10,
+        max_records=80,
+        stopped=False,
+    )
+    assert listing_is_exhausted(
+        expected=15,
+        page_number=1,
+        page_size=20,
+        row_offset=15,
+        page_row_count=15,
+        processed=5,
+        max_records=80,
+        stopped=False,
     )

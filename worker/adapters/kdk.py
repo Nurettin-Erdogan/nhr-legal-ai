@@ -10,6 +10,7 @@ from ingestion.kdk.parser import decision_from_row
 from ingestion.kdk.portal import BASE_URL, KdkPortalClient, KdkPortalError, search_form
 from ingestion.kdk.store import upsert_decision
 from ingestion.raw_capture import save_raw_response
+from ingestion.source_errors import should_retry_same_record
 from worker.config import get_worker_settings
 from worker.known_sources import skippable_external_ids, skipped_existing
 from worker.lanes import advance_window_start, resolve_sync_window
@@ -138,15 +139,29 @@ class KdkSourceAdapter:
         halted_on_failure = False
         while processed < max_records and not should_stop():
             request_length = min(page_size, max_records - processed)
-            page = client.search_page(
-                search_form(
-                    start=offset,
-                    length=request_length,
-                    keyword=keyword,
-                    date_from=window_from,
-                    date_to=window_to,
+            try:
+                page = client.search_page(
+                    search_form(
+                        start=offset,
+                        length=request_length,
+                        keyword=keyword,
+                        date_from=window_from,
+                        date_to=window_to,
+                    )
                 )
-            )
+            except KdkPortalError as exc:
+                if should_retry_same_record(exc):
+                    halted_on_failure = True
+                    yield "failed", {
+                        "external_id": None,
+                        "reason": str(exc),
+                        "offset": offset,
+                        "window_from": window_from.isoformat(),
+                        "window_to": window_to.isoformat(),
+                        "requests_made": 1,
+                    }
+                    break
+                raise
             expected = page.records_filtered
             if not page.rows:
                 break
@@ -224,14 +239,24 @@ class KdkSourceAdapter:
                         }
                     offset += 1
                 except KdkPortalError as exc:
-                    failed += 1
-                    yield "failed", {
+                    if should_retry_same_record(exc):
+                        failed += 1
+                        yield "failed", {
+                            **extra,
+                            "external_id": f"kdk:{record_id}" if record_id else None,
+                            "reason": str(exc),
+                        }
+                        halted_on_failure = True
+                        break
+                    quarantined += 1
+                    yield "quarantined", {
                         **extra,
                         "external_id": f"kdk:{record_id}" if record_id else None,
-                        "reason": str(exc),
+                        "reason_code": "document_unavailable",
+                        "reason": "document_unavailable:" + str(exc),
+                        "raw": {"record_id": record_id, "detail": str(exc)},
                     }
-                    halted_on_failure = True
-                    break
+                    offset += 1
             if halted_on_failure:
                 break
             if offset >= (expected or 0) or len(page.rows) < request_length:
@@ -245,12 +270,19 @@ class KdkSourceAdapter:
             quarantined=prior_q + quarantined,
             failed=failed,
         )
+        listing_exhausted = (
+            not should_stop()
+            and processed < max_records
+            and expected is not None
+            and offset >= expected
+        )
         window_complete = window_may_advance(
             reconciled=bool(coverage["reconciled"]),
             processed=processed,
             failed=failed,
             already_started=prior_seen > 0 or int(cursor.get("offset") or 0) > 0,
             stopped=should_stop(),
+            listing_exhausted=listing_exhausted,
         )
         next_start = advance_window_start(
             window_from,

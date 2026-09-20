@@ -10,9 +10,11 @@ from typing import Any, Callable
 
 import psycopg
 
+from ingestion.source_errors import is_rate_limited, should_retry_same_record
 from worker import ACTIVE_SOURCES
 from worker.config import get_worker_settings
 from worker.jobs import _cursor_advanced, _interval_for, run_sync
+from worker.lanes import CURRENT_LANE_SOURCES, checkpoint_name
 from worker.models import SyncRequest
 from worker.repository import SyncRepository
 from worker.scheduler import run_daemon
@@ -21,6 +23,58 @@ logger = logging.getLogger("worker.backfill")
 
 DATE_WINDOW_SOURCES = frozenset({"yargitay", "danistay", "kdk"})
 HORIZON_AUDIT_VERSION = 1
+
+
+def _captcha_blocked(checkpoint: Any) -> bool:
+    blob = f"{getattr(checkpoint, 'last_error', '') or ''} {getattr(checkpoint, 'health_detail', '') or ''}"
+    return getattr(checkpoint, "health_state", None) == "blocked" and "captcha" in blob.casefold()
+
+
+def _source_retry_at(
+    checkpoint: Any,
+    source: str,
+    retry_after: dict[str, datetime],
+    now: datetime,
+) -> datetime | None:
+    """Earliest time this source may run again. None means due now.
+
+    Failed/CAPTCHA checkpoints used to inherit the idle daemon interval
+    (6–24h) or drop out of the loop entirely. Keep the process alive and
+    retry on a short, capped cooldown instead of honoring that long wait.
+    """
+    settings = get_worker_settings()
+    candidates: list[datetime] = []
+    in_memory = retry_after.get(source)
+    if in_memory is not None:
+        candidates.append(in_memory)
+    last = getattr(checkpoint, "last_attempt_at", None)
+    error = str(getattr(checkpoint, "last_error", "") or "")
+    if _captcha_blocked(checkpoint):
+        minutes = settings.captcha_retry_minutes
+    elif error and (is_rate_limited(error) or should_retry_same_record(error)):
+        minutes = settings.rate_limit_retry_minutes
+    elif getattr(checkpoint, "health_state", None) == "failed":
+        minutes = settings.failure_retry_minutes
+    else:
+        minutes = None
+    if minutes is not None and last is not None:
+        candidates.append(last + timedelta(minutes=minutes))
+    until = max(candidates) if candidates else None
+    if until and until > now:
+        return until
+    return None
+
+
+def _current_lookback_open(cursor: dict[str, Any]) -> bool:
+    """True while the current lane still has months left in the lookback."""
+    complete = cursor.get("window_complete", cursor.get("complete"))
+    if complete is False:
+        return True
+    next_start = cursor.get("next_window_start")
+    window_from = cursor.get("window_from")
+    if complete is True and isinstance(next_start, str) and isinstance(window_from, str):
+        return date.fromisoformat(next_start) > date.fromisoformat(window_from)
+    return False
 
 
 def _should_stop_never() -> bool:
@@ -198,12 +252,30 @@ def run_full_backfill(
             raise ValueError(f"Backfill yalnız ACTIVE kaynaklar için: {source}")
         prepare_full_backfill(connection, source)
 
+    keep_alive = not then_incremental
     completed: list[str] = []
     blocked: list[str] = []
     runs: list[dict[str, Any]] = []
     remaining = [source for source in sources if source not in completed]
     repo = SyncRepository(connection)
     retry_after: dict[str, datetime] = {}
+    lanes: dict[str, str] = {source: "backfill" for source in remaining}
+
+    for source in list(remaining):
+        archive_cursor = repo.get_checkpoint(source).last_cursor
+        if not is_historical_complete(source, archive_cursor):
+            continue
+        if source not in completed:
+            completed.append(source)
+        if keep_alive and source in CURRENT_LANE_SOURCES:
+            lanes[source] = "current"
+            logger.info(
+                "full backfill already complete source=%s; staying alive on current lane",
+                source,
+            )
+        elif not keep_alive:
+            remaining.remove(source)
+            logger.info("full backfill complete source=%s", source)
 
     while remaining and not should_stop():
         progressed = False
@@ -211,34 +283,38 @@ def run_full_backfill(
         for source in list(remaining):
             if should_stop():
                 break
-            checkpoint = repo.get_checkpoint(source)
-            captcha_blocked = checkpoint.health_state == "blocked" and "captcha" in (
-                f"{checkpoint.last_error or ''} {checkpoint.health_detail or ''}".casefold()
+            archive_checkpoint = repo.get_checkpoint(source)
+            if (
+                keep_alive
+                and source in CURRENT_LANE_SOURCES
+                and is_historical_complete(source, archive_checkpoint.last_cursor)
+            ):
+                lanes[source] = "current"
+                if source not in completed:
+                    completed.append(source)
+            lane = lanes[source]
+            checkpoint = (
+                repo.get_checkpoint(checkpoint_name(source, lane))
+                if lane == "current"
+                else archive_checkpoint
             )
-            if captcha_blocked:
-                if source not in blocked:
-                    blocked.append(source)
-                    logger.warning(
-                        "full backfill skipping blocked source=%s captcha", source
-                    )
-                remaining.remove(source)
-                continue
             now = datetime.now(UTC)
-            deferred_until = retry_after.get(source)
-            # Degraded means a batch ended partial (cap / a few bad rows).
-            # Full backfill must keep walking; only a hard failure cools down.
-            if checkpoint.health_state == "failed" and checkpoint.next_run_at:
-                deferred_until = max(
-                    deferred_until or checkpoint.next_run_at, checkpoint.next_run_at
+            gate = archive_checkpoint if _captcha_blocked(archive_checkpoint) else checkpoint
+            if _captcha_blocked(gate) and source not in blocked:
+                blocked.append(source)
+                logger.warning(
+                    "full backfill captcha source=%s; process stays, retry after cooldown",
+                    source,
                 )
-            if deferred_until and deferred_until > now:
+            deferred_until = _source_retry_at(gate, source, retry_after, now)
+            if deferred_until is not None:
                 earliest_retry = min(earliest_retry or deferred_until, deferred_until)
                 continue
-            logger.info("full backfill starting source=%s", source)
+            logger.info("full backfill starting source=%s lane=%s", source, lane)
             before_cursor = dict(checkpoint.last_cursor or {})
             result = sync(
                 connection,
-                SyncRequest(source=source, lane="backfill", resume=True),
+                SyncRequest(source=source, lane=lane, resume=True),
                 should_stop=should_stop,
             )
             runs.append(result)
@@ -248,49 +324,95 @@ def run_full_backfill(
             if embed and status not in {"failed", "captcha_required"}:
                 result["embedding"] = embed_fn(connection)
             if status == "captcha_required":
-                blocked.append(source)
-                remaining.remove(source)
-                logger.warning("full backfill blocked source=%s captcha", source)
+                if source not in blocked:
+                    blocked.append(source)
+                delay = _interval_for(source, cursor=cursor, status="captcha_required")
+                retry_after[source] = datetime.now(UTC) + delay
+                logger.warning(
+                    "full backfill captcha source=%s retry_at=%s",
+                    source,
+                    retry_after[source].isoformat(),
+                )
                 continue
-            if is_historical_complete(source, cursor):
-                completed.append(source)
+            if lane == "backfill" and is_historical_complete(source, cursor):
+                if source not in completed:
+                    completed.append(source)
+                if keep_alive and source in CURRENT_LANE_SOURCES:
+                    lanes[source] = "current"
+                    logger.info(
+                        "full backfill complete source=%s; staying alive on current lane",
+                        source,
+                    )
+                    continue
+                if keep_alive:
+                    delay = _interval_for(source, cursor=cursor, status="success")
+                    retry_after[source] = datetime.now(UTC) + delay
+                    logger.info(
+                        "full backfill complete source=%s; rescan at %s",
+                        source,
+                        retry_after[source].isoformat(),
+                    )
+                    continue
                 remaining.remove(source)
                 logger.info("full backfill complete source=%s", source)
                 continue
             error = str(result.get("error") or "")
             if status == "failed" and "zaten çalışıyor" in error:
-                retry_after[source] = datetime.now(UTC) + timedelta(seconds=15)
+                retry_after[source] = datetime.now(UTC) + timedelta(seconds=3)
                 logger.warning(
                     "full backfill waiting for lock source=%s until=%s",
                     source, retry_after[source].isoformat(),
                 )
-            elif status in {"failed", "cancelled"} or not _cursor_advanced(
-                before_cursor, cursor
+            elif error and is_rate_limited(error):
+                delay = _interval_for(
+                    source, cursor=cursor, status="failed", lane=lane, error=error
+                )
+                retry_after[source] = datetime.now(UTC) + delay
+                logger.warning(
+                    "full backfill rate-limited source=%s until=%s",
+                    source, retry_after[source].isoformat(),
+                )
+            elif status in {"failed", "cancelled"} or (
+                lane == "backfill" and not _cursor_advanced(before_cursor, cursor)
             ):
-                # A failing or stationary source must never spin at the short
-                # backfill pause. Let other sources proceed while this one cools.
                 delay = _interval_for(
                     source, cursor=cursor,
                     status="failed",
+                    lane=lane,
                 )
                 retry_after[source] = datetime.now(UTC) + delay
                 logger.warning(
                     "full backfill deferred source=%s status=%s until=%s",
                     source, status, retry_after[source].isoformat(),
                 )
+            elif lane == "current" and (
+                not _current_lookback_open(cursor)
+                or not _cursor_advanced(before_cursor, cursor)
+            ):
+                delay = _interval_for(
+                    source, cursor=cursor, status="success", lane="current"
+                )
+                retry_after[source] = datetime.now(UTC) + delay
+                logger.info(
+                    "current lane parked source=%s until=%s",
+                    source,
+                    retry_after[source].isoformat(),
+                )
             elif pause > 0:
-                # Empty Danıştay months otherwise consume a request every few
-                # seconds and hit 429, causing a much longer source cooldown.
                 source_pause = (
                     max(pause, settings.danistay_backfill_pause_seconds)
                     if source == "danistay" else pause
                 )
                 sleep(source_pause)
         if not progressed:
-            if earliest_retry is None or should_stop():
+            if should_stop():
                 break
-            # Wake often enough for shutdown, without hammering a blocked portal.
-            wait_seconds = min(60.0, max(0.0, (earliest_retry - datetime.now(UTC)).total_seconds()))
+            if earliest_retry is None:
+                if not keep_alive:
+                    break
+                sleep(max(1.0, float(settings.poll_seconds)))
+                continue
+            wait_seconds = min(5.0, max(0.0, (earliest_retry - datetime.now(UTC)).total_seconds()))
             if wait_seconds > 0:
                 sleep(wait_seconds)
 

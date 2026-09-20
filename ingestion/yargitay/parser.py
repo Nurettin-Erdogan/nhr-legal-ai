@@ -99,17 +99,21 @@ def parse_decision_date(text: str, *, allow_unlabeled: bool = False) -> date | N
 
 
 def parse_chamber(text: str) -> str | None:
-    """`9. Hukuk Dairesi` veya `Hukuk Genel Kurulu` biçimine normalleştirir."""
+    """`9. Hukuk Dairesi` veya `Hukuk Genel Kurulu` biçimine normalleştirir.
+
+    Genel kurul, temyiz edilen dairenin adından önce gelir. Aksi halde
+    `Ceza Genel Kurulu 2004/8-130` gövdesindeki `8. Ceza Dairesi` HGK/CGK
+    kaydını yanlış etiketler.
+    """
     folded = tr_casefold(text)
+    assembly = _ASSEMBLY_PATTERN.search(folded)
+    if assembly:
+        return f"{_CHAMBER_KIND_NAMES[assembly.group(1)]} Genel Kurulu"
 
     match = _CHAMBER_PATTERN.search(folded) or _CHAMBER_ABBREVIATION_PATTERN.search(folded)
     if match:
         kind = _CHAMBER_KIND_NAMES[match.group(2)]
         return f"{int(match.group(1))}. {kind} Dairesi"
-
-    assembly = _ASSEMBLY_PATTERN.search(folded)
-    if assembly:
-        return f"{_CHAMBER_KIND_NAMES[assembly.group(1)]} Genel Kurulu"
 
     return None
 

@@ -212,3 +212,59 @@ def test_adapter_resumes_inside_partially_consumed_page(monkeypatch, tmp_path):
     )
     assert second_events[0][1]["external_id"] == "danistay:9900000002"
     assert second.last_cursor["row_offset"] == 2
+
+
+def test_danistay_skips_missing_hiddencontent_and_continues(monkeypatch, tmp_path):
+    rows = tuple(
+        PortalDecisionRow.from_mapping(
+            {
+                "id": f"990000000{index}",
+                "daireKurul": "10. Daire",
+                "kararTarihi": "31.12.2099",
+                "esasNo": f"2098/{index}",
+                "kararNo": f"2099/{index}",
+            }
+        )
+        for index in range(1, 3)
+    )
+
+    class Client:
+        base_url = "https://karararama.danistay.gov.tr/"
+
+        def begin_detailed_search(self, _filters):
+            return None
+
+        def search_page(self, _filters):
+            from ingestion.danistay.portal import SearchPage
+
+            return SearchPage(rows=rows, records_total=2, records_filtered=2)
+
+        def fetch_document_html(self, document_id, *, keyword=""):
+            if str(document_id).endswith("1"):
+                raise DanistayPortalError("Danıştay karar sayfasında hiddencontent bulunamadı")
+            return SYNTHETIC_DOCUMENT
+
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("DANISTAY_DELAY_SECONDS", "0")
+    monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
+    from worker.config import get_worker_settings
+
+    get_worker_settings.cache_clear()
+    adapter = DanistaySourceAdapter(client=Client())
+    events = list(
+        adapter.sync(
+            SyncRequest(
+                source="danistay",
+                date_from=date(2099, 1, 1),
+                date_to=date(2099, 12, 31),
+                max_records=2,
+            ),
+            cursor={},
+            connection=None,
+            dry_run=True,
+            should_stop=lambda: False,
+        )
+    )
+    assert [status for status, _ in events] == ["quarantined", "created"]
+    assert events[0][1]["reason_code"] == "document_unavailable"
+    assert adapter.last_cursor["window_complete"] is True

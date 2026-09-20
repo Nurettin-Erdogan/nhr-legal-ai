@@ -8,6 +8,7 @@ from time import sleep
 from typing import Any, Callable
 
 from ingestion.raw_capture import save_raw_response
+from ingestion.source_errors import should_retry_same_record
 from ingestion.yargitay.models import CourtDecision
 from ingestion.yargitay.portal import (
     BASE_URL,
@@ -27,7 +28,7 @@ from worker.config import get_worker_settings
 from worker.known_sources import skippable_external_ids, skipped_existing
 from worker.lanes import advance_window_start, resolve_sync_window
 from worker.models import AdapterHealth, RecordOutcome, SyncRequest
-from worker.reconciliation import coverage_cursor, window_may_advance
+from worker.reconciliation import coverage_cursor, listing_is_exhausted, window_may_advance
 
 logger = logging.getLogger("worker.yargitay")
 
@@ -202,6 +203,7 @@ class YargitaySourceAdapter:
         prior_q = int(cursor.get("window_quarantined_total") or 0) if same_window else 0
         expected: int | None = None
         window_complete = False
+        page = None
 
         # pageSize must stay fixed across runs: page + row_offset is the resume key.
         first_filters = _search_filters(config, page_number=page_number, page_size=config.page_size)
@@ -210,7 +212,21 @@ class YargitaySourceAdapter:
         while processed < max_records and not should_stop():
             page_size = config.page_size
             filters = _search_filters(config, page_number=page_number, page_size=page_size)
-            page = scraper.client.search_page(filters)
+            try:
+                page = scraper.client.search_page(filters)
+            except PortalError as exc:
+                if should_retry_same_record(exc):
+                    failed_in_window += 1
+                    yield "failed", {
+                        "external_id": None,
+                        "reason": str(exc),
+                        "page": page_number,
+                        "window_from": window_from.isoformat(),
+                        "window_to": window_to.isoformat(),
+                        "requests_made": 1,
+                    }
+                    break
+                raise
             expected = page.records_filtered
             if not page.rows:
                 if (page_number - 1) * page_size < expected:
@@ -296,13 +312,27 @@ class YargitaySourceAdapter:
                 except CaptchaRequiredError:
                     raise
                 except PortalError as exc:
-                    failed_in_window += 1
-                    yield "failed", {
+                    if should_retry_same_record(exc):
+                        failed_in_window += 1
+                        yield "failed", {
+                            **extra,
+                            "external_id": (
+                                f"yargitay:{row.document_id}" if row.document_id else None
+                            ),
+                            "reason": str(exc),
+                        }
+                        break
+                    quarantined_in_window += 1
+                    yield "quarantined", {
                         **extra,
-                        "external_id": f"yargitay:{row.document_id}" if row.document_id else None,
-                        "reason": str(exc),
+                        "external_id": (
+                            f"yargitay:{row.document_id}" if row.document_id else None
+                        ),
+                        "reason_code": "document_unavailable",
+                        "reason": "document_unavailable:" + str(exc),
+                        "raw": {"document_id": row.document_id, "detail": str(exc)},
                     }
-                    break
+                    row_offset = row_index + 1
             if row_offset < len(page.rows):
                 break
             if expected is not None and page_number * page_size >= expected:
@@ -318,12 +348,23 @@ class YargitaySourceAdapter:
             quarantined=prior_q + quarantined_in_window,
             failed=failed_in_window,
         )
+        exhausted = listing_is_exhausted(
+            expected=expected,
+            page_number=page_number,
+            page_size=config.page_size,
+            row_offset=row_offset,
+            page_row_count=len(page.rows) if page is not None else 0,
+            processed=processed,
+            max_records=max_records,
+            stopped=should_stop(),
+        )
         window_complete = window_may_advance(
             reconciled=bool(coverage["reconciled"]),
             processed=processed,
             failed=failed_in_window,
             already_started=prior_seen > 0 or start_page > 1 or int(cursor.get("row_offset") or 0) > 0,
             stopped=should_stop(),
+            listing_exhausted=exhausted,
         )
 
         next_start = advance_window_start(

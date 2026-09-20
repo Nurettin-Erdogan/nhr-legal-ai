@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 import psycopg
 
+from ingestion.source_errors import should_retry_same_record
 from ingestion.yargitay.portal import CaptchaRequiredError
 from worker import ACTIVE_SOURCES, OPTIONAL_SOURCES
 from worker.adapters import get_adapter
@@ -70,12 +71,24 @@ def _interval_for(
     status: str = "success",
     today: date | None = None,
     lane: str = "backfill",
+    error: str | None = None,
 ) -> timedelta:
     settings = get_worker_settings()
+    if status == "captcha_required":
+        return timedelta(minutes=settings.captcha_retry_minutes)
+    if error and (
+        should_retry_same_record(error)
+        or "soğuma" in error.casefold()
+        or "soguma" in error.casefold()
+        or "json olmayan" in error.casefold()
+    ):
+        return timedelta(minutes=settings.rate_limit_retry_minutes)
+    if status in {"failed", "cancelled"}:
+        return timedelta(minutes=settings.failure_retry_minutes)
     if lane == "current":
         regular = settings.current_interval_minutes
         retry = settings.current_retry_interval_minutes
-        if status != "success" or not cursor:
+        if not cursor:
             return timedelta(minutes=regular)
         complete = cursor.get("window_complete", cursor.get("complete"))
         if complete is False:
@@ -99,7 +112,7 @@ def _interval_for(
         "aym": settings.aym_interval_minutes,
         "mevzuat_verify": settings.mevzuat_interval_minutes,
     }[source_name]
-    if status != "success" or not cursor:
+    if not cursor:
         return timedelta(minutes=regular_minutes)
     backfill_minutes = {
         "yargitay": settings.yargitay_backfill_interval_minutes,
@@ -160,6 +173,9 @@ def run_sync(
         original_checkpoint = checkpoint if targeted_law else None
         if targeted_law:
             checkpoint = deepcopy(checkpoint)
+        cancel_stale = getattr(repo, "cancel_stale_runs", None)
+        if callable(cancel_stale):
+            cancel_stale(older_than_hours=2)
         counters = RunCounters()
         run = repo.start_run(
             job_key,
@@ -281,8 +297,18 @@ def run_sync(
                 # the short backfill cadence so the collector does not idle
                 # for hours between 40–80 record runs.
                 interval_status = "success"
+            if error and (
+                should_retry_same_record(error)
+                or "soğuma" in error.casefold()
+                or "json olmayan" in error.casefold()
+            ):
+                interval_status = "failed"
             checkpoint.next_run_at = datetime.now(UTC) + _interval_for(
-                source, cursor=checkpoint.last_cursor, status=interval_status, lane=lane
+                source,
+                cursor=checkpoint.last_cursor,
+                status=interval_status,
+                lane=lane,
+                error=error,
             )
             if not request.dry_run:
                 store.save(checkpoint)

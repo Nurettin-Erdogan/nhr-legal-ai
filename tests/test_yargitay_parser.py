@@ -98,6 +98,15 @@ def test_parse_decision_date_rejects_impossible_date():
         ("9. HD", "9. Hukuk Dairesi"),
         ("12. Ceza Dairesi", "12. Ceza Dairesi"),
         ("Hukuk Genel Kurulu", "Hukuk Genel Kurulu"),
+        ("Ceza Genel Kurulu", "Ceza Genel Kurulu"),
+        (
+            "Ceza Genel Kurulu 2004/8-130 E., 2004/206 K.\nYARGITAY DAİRESİ : 8. Ceza Dairesi",
+            "Ceza Genel Kurulu",
+        ),
+        (
+            "Hukuk Genel Kurulu 2005/9-235 E. , 2005/293 K.\n9. Hukuk Dairesi kararı temyiz edildi",
+            "Hukuk Genel Kurulu",
+        ),
     ],
 )
 def test_parse_chamber_normalizes_variants(text, expected):

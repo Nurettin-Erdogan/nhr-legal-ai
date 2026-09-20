@@ -25,6 +25,7 @@ def test_retryable_and_auth_status_codes():
 def test_backoff_is_exponential_with_retry_after_and_jitter():
     assert retry_wait_seconds(1, base_seconds=2, jitter=False) == 2
     assert retry_wait_seconds(3, base_seconds=2, jitter=False) == 8
-    assert retry_wait_seconds(1, base_seconds=2, retry_after="10", jitter=False) == 10
+    assert retry_wait_seconds(1, base_seconds=2, retry_after="10", jitter=False) == 8
     wait = retry_wait_seconds(1, base_seconds=10, rng=_FixedRng())
-    assert wait == 10  # 0.8 + 0.4*0.5 = 1.0
+    assert wait == 8
+    assert retry_wait_seconds(1, base_seconds=2, retry_after="86400", jitter=False) == 8

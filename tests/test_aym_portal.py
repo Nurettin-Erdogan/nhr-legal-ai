@@ -323,6 +323,44 @@ def test_adapter_quarantines_unreadable_udf_and_keeps_scanning(monkeypatch):
     assert adapter.last_cursor["type_index"] == 1
 
 
+def test_adapter_rate_limit_on_search_keeps_cursor_and_stays_alive(monkeypatch):
+    class Client:
+        def search_page(self, **_kwargs):
+            raise AymPortalError(
+                "AYM HTTP 429; kaynak hız sınırı, aktarım beklemeye alınmalı "
+                "(https://kararlarbilgibankasi.anayasa.gov.tr/api/core/public/search)"
+            )
+
+        def list_decision_files(self, _row):
+            raise AssertionError("429 sonrası dosya listelenmemeli")
+
+        def download_udf(self, _decision_file):
+            raise AssertionError("429 sonrası UDF indirilmemeli")
+
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    from worker.config import get_worker_settings
+    from worker.adapters.aym import AymSourceAdapter
+    from worker.models import SyncRequest
+
+    get_worker_settings.cache_clear()
+    adapter = AymSourceAdapter(client=Client())
+    events = list(
+        adapter.sync(
+            SyncRequest(source="aym", max_records=2, resume=True),
+            cursor={"type_index": 2, "page": 15, "row_offset": 66, "karar_tipi": "SiyasiParti"},
+            connection=None,
+            dry_run=True,
+            should_stop=lambda: False,
+        )
+    )
+    assert events[0][0] == "failed"
+    assert "429" in events[0][1]["reason"]
+    assert adapter.last_cursor["type_index"] == 2
+    assert adapter.last_cursor["page"] == 15
+    get_worker_settings.cache_clear()
+
+
+
 def test_from_mapping_does_not_treat_gazette_or_publication_as_decision_date():
     row = AymDecisionRow.from_mapping(
         {

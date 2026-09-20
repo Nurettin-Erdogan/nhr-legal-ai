@@ -8,7 +8,13 @@ from typing import Any, Callable
 from ingestion.catalog import LawJob
 from ingestion.mevzuat.archive import LegislationArchive
 from ingestion.mevzuat.models import LegislationRecord
-from ingestion.mevzuat.parser import iter_article_nodes, parse_portal_date, record_from_article
+from ingestion.mevzuat.parser import (
+    article_external_id,
+    iter_article_nodes,
+    parse_portal_date,
+    portal_type_name,
+    record_from_article,
+)
 from ingestion.mevzuat.portal import (
     BASE_URL,
     MevzuatPortalClient,
@@ -19,7 +25,9 @@ from ingestion.mevzuat.official_verify import stored_law_verification
 from ingestion.mevzuat.store import upsert_legislation, version_identity_for
 from ingestion.mevzuat_bilgi_sistemi.portal import MbsClient, MbsError
 from ingestion.resmi_gazete.portal import ResmiGazeteClient, ResmiGazeteError
+from ingestion.source_errors import should_retry_same_record
 from worker.config import get_worker_settings
+from worker.known_sources import skippable_external_ids, skipped_existing
 from worker.models import AdapterHealth, RecordOutcome, SyncRequest
 
 
@@ -315,35 +323,95 @@ class MevzuatSourceAdapter:
             else:
                 state["stopped"] = True
             return
-        gazette_verification, mbs_verification, pending_verification_requests = (
-            self._official_verifications(
-                job=job,
-                law_name=law_name,
-                gazette_date=gazette_date,
-                gazette_no=gazette_no,
-                connection=connection,
-                settings=settings,
-            )
+        portal_type = portal_type_name(document.get("mevzuatTur"))
+        known = skippable_external_ids(
+            connection,
+            [
+                article_external_id(
+                    job.law_no,
+                    str(article.get("maddeNo") or "").strip(),
+                    portal_type=portal_type,
+                )
+                for article in articles
+                if str(article.get("maddeNo") or "").strip()
+            ],
+            lane=request.lane,
         )
+        remaining: list[Any] = []
         skipping = bool(skip_until_article)
-        law_finished = True
-        last_successful_article = skip_until_article
+        resume_found = not skipping
         for article in articles:
-            if state["processed"] >= max_articles or should_stop():
-                law_finished = False
-                break
             article_no = str(article.get("maddeNo") or "").strip()
             if skipping:
                 if article_no == skip_until_article:
                     skipping = False
+                    resume_found = True
                 continue
-            state["processed"] += 1
+            remaining.append(article)
+        if skip_until_article and not resume_found:
+            yield "quarantined", {
+                "external_id": f"mevzuat:{job.law_no}:m.{skip_until_article}",
+                "reason_code": "resume_article_missing",
+                "reason": f"Resume maddesi bulunamadı: {job.law_no} m.{skip_until_article}",
+                "law_no": job.law_no,
+                "article_no": skip_until_article,
+                "requests_made": 1,
+                "raw": {
+                    "law_no": job.law_no,
+                    "article_no": skip_until_article,
+                },
+            }
+            state["finished"] = True
+            state["last_article"] = ""
+            return
+        need_fetch = any(
+            str(article.get("maddeNo") or "").strip()
+            and article_external_id(
+                job.law_no,
+                str(article.get("maddeNo") or "").strip(),
+                portal_type=portal_type,
+            )
+            not in known
+            for article in remaining
+        )
+        if need_fetch:
+            gazette_verification, mbs_verification, pending_verification_requests = (
+                self._official_verifications(
+                    job=job,
+                    law_name=law_name,
+                    gazette_date=gazette_date,
+                    gazette_no=gazette_no,
+                    connection=connection,
+                    settings=settings,
+                )
+            )
+        else:
+            gazette_verification, mbs_verification, pending_verification_requests = (
+                {"verified": False},
+                {"verified": False},
+                0,
+            )
+        law_finished = True
+        last_successful_article = skip_until_article
+        for article in remaining:
+            article_no = str(article.get("maddeNo") or "").strip()
             extra = {
                 "law_no": job.law_no,
                 "article_no": article_no,
                 "law_index": law_index,
                 "requests_made": 1 + pending_verification_requests,
             }
+            external_id = article_external_id(
+                job.law_no, article_no, portal_type=portal_type
+            )
+            if article_no and external_id in known:
+                yield "unchanged", skipped_existing(extra, external_id)
+                last_successful_article = article_no
+                continue
+            if state["processed"] >= max_articles or should_stop():
+                law_finished = False
+                break
+            state["processed"] += 1
             try:
                 if settings.mevzuat_delay_seconds:
                     sleep(settings.mevzuat_delay_seconds)
@@ -405,20 +473,26 @@ class MevzuatSourceAdapter:
                 }
                 last_successful_article = article_no
             except (MevzuatPortalError, ValueError) as exc:
-                yield "failed", {**extra, "reason": str(exc)}
-                state["stopped"] = True
-                law_finished = False
-                break
-        if skipping:
-            yield "failed", {
-                "external_id": None,
-                "reason": f"Resume maddesi bulunamadı: {job.law_no} m.{skip_until_article}",
-                "law_no": job.law_no,
-                "requests_made": 0,
-            }
-            state["stopped"] = True
-            law_finished = False
-            last_successful_article = ""
+                if should_retry_same_record(exc):
+                    yield "failed", {**extra, "reason": str(exc)}
+                    state["stopped"] = True
+                    law_finished = False
+                    break
+                yield "quarantined", {
+                    **extra,
+                    "external_id": extra.get("external_id")
+                    or f"mevzuat:{job.law_no}:m.{article_no}",
+                    "reason_code": "article_unavailable",
+                    "reason": "article_unavailable:" + str(exc),
+                    "raw": {
+                        "law_no": job.law_no,
+                        "article_no": article_no,
+                        "detail": str(exc),
+                    },
+                }
+                last_successful_article = article_no
+        if law_finished and not need_fetch:
+            state["processed"] = processed + 1
         state["finished"] = law_finished
         state["last_article"] = "" if law_finished else last_successful_article
 

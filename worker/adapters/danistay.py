@@ -14,6 +14,7 @@ from ingestion.danistay.portal import (
 )
 from ingestion.danistay.scraper import ScraperConfig, decision_from_portal_row, search_filters
 from ingestion.raw_capture import save_raw_response
+from ingestion.source_errors import should_retry_same_record
 from ingestion.yargitay.archive import DecisionArchive
 from ingestion.yargitay.models import CourtDecision
 from ingestion.yargitay.portal import CaptchaRequiredError
@@ -22,7 +23,7 @@ from worker.config import get_worker_settings
 from worker.known_sources import skippable_external_ids, skipped_existing
 from worker.lanes import advance_window_start, resolve_sync_window
 from worker.models import AdapterHealth, RecordOutcome, SyncRequest
-from worker.reconciliation import coverage_cursor, window_may_advance
+from worker.reconciliation import coverage_cursor, listing_is_exhausted, window_may_advance
 
 
 class DanistaySourceAdapter:
@@ -162,6 +163,7 @@ class DanistaySourceAdapter:
         expected: int | None = None
         window_complete = False
         halted_on_failure = False
+        page = None
         same_window = (
             request.resume
             and cursor.get("window_from") == window_from.isoformat()
@@ -171,13 +173,25 @@ class DanistaySourceAdapter:
         prior_stored = int(cursor.get("window_stored_total") or 0) if same_window else 0
         prior_dup = int(cursor.get("window_duplicate_total") or 0) if same_window else 0
         prior_q = int(cursor.get("window_quarantined_total") or 0) if same_window else 0
-        expected: int | None = None
-        window_complete = False
-        halted_on_failure = False
         while processed < max_records and not should_stop():
             remaining = max_records - processed
             page_size = config.page_size
-            page = client.search_page(search_filters(config, page_number=page_number, page_size=page_size))
+            try:
+                page = client.search_page(search_filters(config, page_number=page_number, page_size=page_size))
+            except DanistayPortalError as exc:
+                if should_retry_same_record(exc):
+                    failed += 1
+                    yield "failed", {
+                        "external_id": None,
+                        "reason": str(exc),
+                        "page": page_number,
+                        "window_from": window_from.isoformat(),
+                        "window_to": window_to.isoformat(),
+                        "requests_made": 1,
+                    }
+                    halted_on_failure = True
+                    break
+                raise
             expected = page.records_filtered
             if not page.rows:
                 if (page_number - 1) * page_size < expected:
@@ -265,14 +279,28 @@ class DanistaySourceAdapter:
                 except CaptchaRequiredError:
                     raise
                 except DanistayPortalError as exc:
-                    failed += 1
-                    yield "failed", {
+                    if should_retry_same_record(exc):
+                        failed += 1
+                        yield "failed", {
+                            **extra,
+                            "external_id": (
+                                f"danistay:{row.document_id}" if row.document_id else None
+                            ),
+                            "reason": str(exc),
+                        }
+                        halted_on_failure = True
+                        break
+                    quarantined += 1
+                    yield "quarantined", {
                         **extra,
-                        "external_id": f"danistay:{row.document_id}" if row.document_id else None,
-                        "reason": str(exc),
+                        "external_id": (
+                            f"danistay:{row.document_id}" if row.document_id else None
+                        ),
+                        "reason_code": "document_unavailable",
+                        "reason": "document_unavailable:" + str(exc),
+                        "raw": {"document_id": row.document_id, "detail": str(exc)},
                     }
-                    halted_on_failure = True
-                    break
+                    row_offset = row_index + 1
             if halted_on_failure:
                 break
             if row_offset < len(page.rows):
@@ -292,12 +320,23 @@ class DanistaySourceAdapter:
             quarantined=prior_q + quarantined,
             failed=failed,
         )
+        exhausted = listing_is_exhausted(
+            expected=expected,
+            page_number=page_number,
+            page_size=config.page_size,
+            row_offset=row_offset,
+            page_row_count=len(page.rows) if page is not None else 0,
+            processed=processed,
+            max_records=max_records,
+            stopped=should_stop(),
+        )
         window_complete = window_may_advance(
             reconciled=bool(coverage["reconciled"]),
             processed=processed,
             failed=failed,
             already_started=prior_seen > 0 or page_number > 1 or int(cursor.get("row_offset") or 0) > 0,
             stopped=should_stop(),
+            listing_exhausted=exhausted,
         )
         next_start = advance_window_start(
             window_from,
