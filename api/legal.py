@@ -28,7 +28,7 @@ router = APIRouter(prefix="/api/legal", tags=["legal"])
 
 logger = logging.getLogger(__name__)
 
-_STATS_TTL_SECONDS = 60.0
+_STATS_TTL_SECONDS = 4.0
 _stats_cache: tuple[float, CorpusStats] | None = None
 
 # count(*) over the multi-million-row chunk and seed sets takes 6-15 s, far past
@@ -57,7 +57,10 @@ _live_chunks: tuple[float, int] | None = None
 # immediately instead of blocking on multi-minute count(*) scans of ~20M chunks.
 _SLOW_COUNTS_FILE = Path(__file__).resolve().parents[1] / "data" / "cache" / "slow_counts.json"
 
-_SLOW_COUNTS_TTL_SECONDS = 600.0
+_SLOW_COUNTS_TTL_SECONDS = 15.0
+# Üçüncü taraf sayısı ağır (10M satır filtresi): chunk sayımı 15 sn'de bir, bu 10 dk'da bir.
+_SEED_COUNT_TTL_SECONDS = 600.0
+_seed_count_at = 0.0
 _SLOW_COUNTS_TIMEOUT = "120s"
 _slow_counts: tuple[float, dict[str, int]] | None = None
 _slow_counts_lock = threading.Lock()
@@ -362,12 +365,21 @@ def _corpus_stats_cached() -> CorpusStats:
     return stats
 
 
+# Toplam parça sayısı istatistikten (tam tarama yok); "embedding hazır" kısmi indeksten
+# (`idx_legal_chunks_embedded`, migration 023) sayılır. Eskiden tek geçişte üç sayım 21M satırı
+# tarıyor, embedding yazarken 120 sn sınırını aşıp sayaç donuyordu.
 _CHUNK_COUNTS_SQL = """
 SELECT
-    count(*)::int AS chunk_count,
-    count(*) FILTER (WHERE chunk.embedding IS NOT NULL)::int AS chunk_embedded_count,
-    count(*) FILTER (WHERE chunk.embedding IS NULL)::int AS chunk_embedding_pending_count
-FROM legal_chunks chunk
+    total.n AS chunk_count,
+    embedded.n AS chunk_embedded_count,
+    greatest(total.n - embedded.n, 0) AS chunk_embedding_pending_count
+FROM (
+    SELECT coalesce(max(n_live_tup), 0)::int AS n
+    FROM pg_stat_user_tables WHERE relname = 'legal_chunks'
+) total,
+(
+    SELECT count(*)::int AS n FROM legal_chunks WHERE embedding IS NOT NULL
+) embedded
 """
 
 _SEED_COUNT_SQL = """
@@ -389,11 +401,17 @@ def _load_slow_counts(previous: dict[str, int] | None = None) -> dict[str, int]:
     """
     counts: dict[str, int] = dict(previous or {})
     failures: list[str] = []
-    for label, sql in (("chunk", _CHUNK_COUNTS_SQL), ("seed", _SEED_COUNT_SQL)):
+    global _seed_count_at
+    queries = [("chunk", _CHUNK_COUNTS_SQL)]
+    if "seed_count" not in counts or time.monotonic() - _seed_count_at >= _SEED_COUNT_TTL_SECONDS:
+        queries.append(("seed", _SEED_COUNT_SQL))
+    for label, sql in queries:
         try:
             with database_connection() as connection:
                 connection.execute(f"SET LOCAL statement_timeout = '{_SLOW_COUNTS_TIMEOUT}'")
                 counts.update(dict(connection.execute(sql).fetchone()))
+            if label == "seed":
+                _seed_count_at = time.monotonic()
         except psycopg.Error:
             failures.append(label)
     if failures:

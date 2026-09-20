@@ -171,6 +171,10 @@ class MbsClient:
             for item in payload["data"]
             if isinstance(item, Mapping) and str(item.get("mevzuatNo") or "").strip() == law_no.strip()
         ]
+        if len(exact) > 1:
+            # Aynı numarayı farklı türler paylaşabilir (ör. 6736 hem Kanun hem CB Kararı);
+            # korpus şu an yalnız kanun aldığından tür=1 (Kanunlar) ile daraltılır.
+            exact = [item for item in exact if int(item.get("mevzuatTur") or 0) == 1]
         if len(exact) != 1:
             raise MbsError(f"{law_no} numaralı mevzuat için tekil MBS kaydı bulunamadı")
         item = exact[0]

@@ -48,6 +48,8 @@ $workers = @(
   @{ name = 'aym';       pattern = 'worker\.runner backfill --source aym';     args = @('-u','-m','worker.runner','backfill','--source','aym','--no-incremental','--no-embed') },
   @{ name = 'kdk';       pattern = 'worker\.runner backfill --source kdk';     args = @('-u','-m','worker.runner','backfill','--source','kdk','--no-incremental','--no-embed') },
   @{ name = 'mevzuat';   pattern = 'worker\.runner backfill --source mevzuat'; args = @('-u','-m','worker.runner','backfill','--source','mevzuat','--no-incremental','--no-embed') },
+  # Yeni doğrulanan/eklenen resmî kayıtları sürekli embedding'e çevirir (yerel Ollama, hafif turlar).
+  @{ name = 'embed';     pattern = 'embed_chunks\.py';                           args = @('-X','utf8','-u','scripts\embed_chunks.py','--batch','64','--loop') },
   @{ name = 'dogrulama'; pattern = 'worker\.verify_loop';                      args = @('-u','-m','worker.verify_loop') },
   # Uc uncu taraf kayit dogrulayicisi: kimlikle dogrudan ceker, hizini kendi ayarlar (429/CAPTCHA'da yavaslar).
   # CAPTCHA'da 3 kez ust uste durursa 20 dk sonra yeniden denenir.
@@ -55,6 +57,8 @@ $workers = @(
   @{ name = 'dogrula-danistay'; pattern = 'verify_seeds\.py --source danistay'; backoff = 1200; args = @('-u','scripts\verify_seeds.py','--source','danistay') }
 )
 $pauseFile = "$stateDir\PAUSE_CAMPAIGNS"   # varsa arama-tabanli kampanyalar baslatilmaz (dogrulayici ayni portali kullanir)
+$pauseVerifyFile = "$stateDir\PAUSE_VERIFY"   # varsa dogrulayicilar baslatilmaz (boslugu kapatan kampanya portali kullanir)
+$pauseEmbedFile = "$stateDir\PAUSE_EMBED"    # varsa embedding kolu baslatilmaz
 $nextStart = @{}   # kol adı -> en erken yeniden başlatma zamanı
 $launchedAt = @{}
 $restarts = @{}
@@ -65,6 +69,8 @@ while (-not (Test-Path $stopFile)) {
 
   foreach ($w in $workers) {
     if ((Get-Procs $w.pattern).Count -gt 0) { continue }
+    if ($w.name -like 'dogrula-*' -and (Test-Path $pauseVerifyFile)) { continue }
+    if ($w.name -eq 'embed' -and (Test-Path $pauseEmbedFile)) { continue }
     if ($nextStart[$w.name] -and $now -lt $nextStart[$w.name]) { continue }
     $n = 1 + [int]$restarts[$w.name]; $restarts[$w.name] = $n
     Start-Process -FilePath $py -ArgumentList $w.args -WindowStyle Hidden `

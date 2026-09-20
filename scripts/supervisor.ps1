@@ -50,6 +50,12 @@ while (-not (Test-Path $stopFile)) {
       Write-Log "ALERT nobetci yoktu, yeniden baslatildi"
     }
 
+    # 2b) bekci (dis veri cekme kampanyalari + Ollama; sen yokken toparlar)
+    if (-not (Test-Path "$stateDir\GUARDIAN_STOP") -and (Find-Procs 'scripts.guardian\.ps1' 'powershell%').Count -eq 0) {
+      Start-Process powershell.exe -ArgumentList '-NoProfile','-WindowStyle','Hidden','-File',"$root\scripts\guardian.ps1" -WindowStyle Hidden
+      Write-Log "ALERT bekci yoktu, baslatildi"
+    }
+
     # 3) docker DB kabi
     $running = (& docker inspect -f '{{.State.Running}}' nhr-legal-ai-db 2>$null)
     if ($running -ne 'true') {

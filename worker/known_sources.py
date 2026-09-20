@@ -8,6 +8,7 @@ Doğrulanmayı bekleyen mevzuat maddeleri içerik olarak hazırdır; HTML tekrar
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from typing import Any
 
@@ -47,6 +48,12 @@ WHERE ls.deleted_at IS NULL
   AND ls.external_id = ANY(%s)
 """
 
+# Boşluk kapatma kampanyaları için: seed kayıtlar "var" sayılır, yalnız hiç olmayanlar çekilir.
+# (`INGEST_SEEDS_AS_KNOWN=1`; varsayılan kapalı, doğrulama için seed'ler yeniden çekilir.)
+HAS_FULLTEXT_INCL_SEEDS_SQL = HAS_FULLTEXT_SQL.replace(
+    "  AND ls.ingestion_method IS DISTINCT FROM 'bulk_seed'\n", ""
+)
+
 
 def skippable_external_ids(
     connection: Any,
@@ -60,7 +67,8 @@ def skippable_external_ids(
     if connection is None or not ids:
         return set()
     found = _ids_from(connection, SKIPPABLE_SQL, ids)
-    found |= _ids_from(connection, HAS_FULLTEXT_SQL, ids)
+    seeds_known = os.environ.get("INGEST_SEEDS_AS_KNOWN") == "1"
+    found |= _ids_from(connection, HAS_FULLTEXT_INCL_SEEDS_SQL if seeds_known else HAS_FULLTEXT_SQL, ids)
     return found
 
 

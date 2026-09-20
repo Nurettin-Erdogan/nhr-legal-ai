@@ -118,3 +118,18 @@ def test_ambiguous_exact_law_number_is_rejected():
 
     with pytest.raises(MbsError, match="tekil"):
         MbsClient(opener=opener, timeout_seconds=5).search_law("4857")
+
+
+def test_same_number_in_other_legislation_type_resolves_to_law():
+    # 6736 gibi numaralar hem Kanun hem Cumhurbaşkanı Kararı olarak listelenir.
+    payload = _search_payload()
+    other = dict(payload["data"][0])
+    other["mevzuatTur"] = 3
+    other["mevAdi"] = "CUMHURBAŞKANI KARARI"
+    payload["data"].append(other)
+    opener = _Opener([json.dumps(payload, ensure_ascii=False).encode(), _detail_html()])
+
+    document = MbsClient(opener=opener, timeout_seconds=5).search_law("4857")
+
+    assert document.law_name == "İŞ KANUNU"
+    assert document.legislation_type == 1

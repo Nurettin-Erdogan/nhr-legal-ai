@@ -61,7 +61,8 @@ jobs:
             database/migrations/017_superseded_by_index.sql \
             database/migrations/018_bounded_lexical_hits.sql \
             database/migrations/019_court_decision_date_index.sql \
-            database/migrations/020_seed_verification_queue.sql
+            database/migrations/020_seed_verification_queue.sql \
+            database/migrations/023_chunk_embedded_partial_index.sql
           do
             psql -h localhost -U nhr_app -d nhr_legal_ai -v ON_ERROR_STOP=1 -f "$f"
           done
