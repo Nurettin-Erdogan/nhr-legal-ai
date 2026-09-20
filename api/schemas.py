@@ -12,6 +12,29 @@ class HealthResponse(BaseModel):
     database: str
 
 
+class CourtDecisionBreakdown(BaseModel):
+    yargitay: int = 0
+    danistay: int = 0
+    anayasa_mahkemesi: int = 0
+
+
+class AdministrativeBreakdown(BaseModel):
+    kamu_denetciligi_kurumu: int = 0
+
+
+class LegislationVerificationBreakdown(BaseModel):
+    bedesten: int = 0
+    both_verified: int = 0
+    gazette_only: int = 0
+    mbs_only: int = 0
+    neither: int = 0
+
+
+class ChunkEmbeddingBreakdown(BaseModel):
+    ready: int = 0
+    pending: int = 0
+
+
 class CorpusStats(BaseModel):
     source_count: int
     chunk_count: int
@@ -19,6 +42,13 @@ class CorpusStats(BaseModel):
     legislation_count: int
     other_count: int = 0
     latest_decision_date: date | None
+    court_decisions: CourtDecisionBreakdown = Field(default_factory=CourtDecisionBreakdown)
+    administrative: AdministrativeBreakdown = Field(default_factory=AdministrativeBreakdown)
+    legislation_verification: LegislationVerificationBreakdown = Field(
+        default_factory=LegislationVerificationBreakdown
+    )
+    embeddings: ChunkEmbeddingBreakdown = Field(default_factory=ChunkEmbeddingBreakdown)
+    seed_count: int = 0
 
 
 class LegalSearchHit(BaseModel):
@@ -105,6 +135,8 @@ class AIStatusResponse(BaseModel):
     configured: bool
     embedding_model: str
     semantic_search_ready: bool
+    ollama_num_ctx: int | None = None
+    ollama_max_output_tokens: int | None = None
 
 
 class AIAnswerRequest(BaseModel):
@@ -138,6 +170,7 @@ class AICitation(BaseModel):
     revision: int | None = None
     excerpt: str
     rank: float
+    verification: str = "official"
 
 
 class AIAnswerResponse(BaseModel):
@@ -152,3 +185,6 @@ class AIAnswerResponse(BaseModel):
     conversation_id: UUID | None = None
     message_id: UUID | None = None
     from_cache: bool = False
+    prompt_eval_count: int | None = None
+    eval_count: int | None = None
+    done_reason: str | None = None

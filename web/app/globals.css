@@ -36,11 +36,23 @@ button, input { font: inherit; }
 .sidebar-status span { margin-top: 3px; color: rgba(255,255,255,.45); }
 
 .workspace { min-width: 0; }
-.topbar { min-height: 96px; padding: 22px 48px; border-bottom: 1px solid var(--line); background: rgba(255,254,250,.75); display: flex; justify-content: space-between; align-items: center; backdrop-filter: blur(10px); }
+.topbar { position: relative; z-index: 20; min-height: 96px; padding: 22px 48px; border-bottom: 1px solid var(--line); background: rgba(255,254,250,.75); display: flex; justify-content: space-between; align-items: center; overflow: visible; backdrop-filter: blur(10px); }
 .eyebrow, .section-kicker { color: var(--gold); font-size: 10px; font-weight: 700; letter-spacing: 1.6px; }
 .topbar h1 { margin: 6px 0 0; font: 24px/1.1 Georgia, serif; }
-.corpus-pill { padding: 10px 15px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: var(--paper); font-size: 12px; }
-.corpus-pill span { color: var(--forest); font-weight: 700; }
+.corpus-pill { position: relative; padding: 6px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: var(--paper); font-size: 12px; display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px; }
+.corpus-pill > span:not(.corpus-stat-wrap) { color: var(--forest); font-weight: 700; }
+.corpus-stat-wrap { position: relative; display: inline-flex; align-items: center; gap: 2px; }
+.corpus-sep { color: var(--muted); font-weight: 400; padding: 0 4px; }
+.corpus-stat-trigger { margin: 0; padding: 6px 9px; border: 0; border-radius: 999px; background: transparent; color: var(--muted); cursor: help; font: inherit; }
+.corpus-stat-trigger strong { color: var(--forest); font-weight: 700; }
+.corpus-stat-trigger:hover, .corpus-stat-trigger:focus-visible, .corpus-stat-trigger.open { background: #f2f1ec; color: var(--ink); outline: none; }
+.corpus-tooltip { position: absolute; top: calc(100% + 8px); left: 0; z-index: 40; width: 280px; }
+.corpus-stat-wrap.end .corpus-tooltip { left: auto; right: 0; }
+.corpus-tooltip ul { list-style: none; margin: 0; padding: 10px 14px; border: 1px solid var(--line); background: var(--paper); box-shadow: var(--shadow); }
+.corpus-tooltip li { display: flex; justify-content: space-between; align-items: baseline; gap: 18px; padding: 7px 0; }
+.corpus-tooltip li + li { border-top: 1px solid #ecece7; }
+.corpus-tooltip li span { min-width: 0; color: var(--ink); font-size: 12px; font-weight: 400; line-height: 1.35; }
+.corpus-tooltip li strong { flex: none; color: var(--forest); font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
 .content { width: min(1050px, calc(100% - 64px)); margin: 44px auto 80px; }
 .hero-panel { padding: 36px 40px; background: var(--paper); border: 1px solid var(--line); border-radius: 4px; box-shadow: var(--shadow); display: flex; justify-content: space-between; align-items: end; position: relative; overflow: hidden; }
 .hero-panel:after { content: "§"; position: absolute; right: 165px; top: -42px; color: rgba(23,63,53,.045); font: 170px Georgia, serif; }
@@ -156,6 +168,7 @@ button, input { font: inherit; }
 .citation-card span { color: var(--gold); font-size: 9px; font-weight: 700; text-transform: uppercase; }
 .citation-card strong { margin-top: 6px; font-size: 11px; }
 .citation-card small { max-height: 48px; margin-top: 7px; overflow: hidden; color: var(--muted); font-size: 9px; line-height: 1.5; }
+.citation-unverified { margin-left: 6px; padding: 1px 5px; border: 1px solid #c9a227; border-radius: 2px; background: #fdf7e3; color: #8a6d0b; font-style: normal; font-size: 8px; letter-spacing: .02em; }
 
 .sidebar-bottom { margin-top: auto; display: grid; gap: 14px; }
 .sidebar-bottom .sidebar-status { margin-top: 0; }
@@ -234,7 +247,10 @@ button, input { font: inherit; }
   .app-shell { display: block; }
   .sidebar { position: static; width: 100%; height: auto; padding: 18px 20px; }
   .sidebar nav, .sidebar-status { display: none; }
-  .topbar { padding: 20px; }
+  .topbar { padding: 20px; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+  .corpus-pill { max-width: 100%; }
+  .corpus-stat-wrap { position: static; }
+  .corpus-tooltip, .corpus-stat-wrap.end .corpus-tooltip { left: 8px; right: 8px; width: auto; }
   .content { width: calc(100% - 28px); margin-top: 18px; }
   .hero-panel { padding: 28px 24px; }
   .hero-panel h2 { font-size: 30px; }

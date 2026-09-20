@@ -48,6 +48,9 @@ class RAGContext:
     effective_to: date | None = None
     source_version: str | None = None
     revision: int | None = None
+    # 'official': resmî portaldan doğrulanmış; 'third_party': üçüncü taraf arşiv, doğrulanmadı;
+    # 'user_document': kullanıcının kendi yüklediği belge.
+    verification: str = "official"
 
     @property
     def kind_label(self) -> str:
@@ -130,6 +133,10 @@ def build_grounded_prompt(
                 line
                 for line in (
                     f"[K{index}] {context.reference_line}",
+                    # Doğrulanmamış kaynağı model de bilsin: kesin dille sunulmamalı.
+                    "UYARI: Üçüncü taraf arşivden; resmî portalla henüz doğrulanmadı."
+                    if context.verification == "third_party"
+                    else None,
                     f"URL: {context.source_url}" if context.source_url else None,
                     context.temporal_line,
                     "Metin:",

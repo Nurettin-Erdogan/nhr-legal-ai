@@ -200,3 +200,27 @@ def test_chunks_are_searchable_via_turkish_full_text_index(connection):
     )
 
     assert match_count >= 1
+
+
+def test_natural_key_collision_is_unchanged_not_failure(connection):
+    first = upsert_decision(connection, _decision(raw_text=BODY))
+    second = upsert_decision(
+        connection,
+        CourtDecision(
+            court_name="Yargıtay",
+            chamber="9. Hukuk Dairesi",
+            docket_no="2019/999001",
+            decision_no="2021/999002",
+            decision_date=date(2021, 5, 12),
+            title="Yargıtay 9. Hukuk Dairesi, E. 2019/999001, K. 2021/999002 (12.05.2021)",
+            raw_text=BODY,
+            external_id="yargitay:other-document-id",
+            content_hash=content_hash(BODY),
+            source_url="https://karararama.yargitay.gov.tr/",
+            metadata={"header_info": "test"},
+        ),
+    )
+    assert first.status == "created"
+    assert second.status == "unchanged"
+    assert second.legal_source_id == first.legal_source_id
+

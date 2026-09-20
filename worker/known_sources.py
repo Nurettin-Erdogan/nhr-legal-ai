@@ -2,6 +2,8 @@
 
 Yalnız `lane=backfill` iken çalışır. Current/incremental şerit mevcut kaydı
 yeniden indirir; silinmiş, başarısız veya parçası olmayan kayıtlar atlanmaz.
+Doğrulanmayı bekleyen mevzuat maddeleri içerik olarak hazırdır; HTML tekrar
+çekilmez.
 """
 
 from __future__ import annotations
@@ -9,18 +11,40 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+# source_type filtresi (CHECK kısıtının üç değeri) tekil indeksin (source_type, external_id)
+# kullanılmasını sağlar; olmadan 7M+ satırda her sorgu seq scan olur.
 SKIPPABLE_SQL = """
 SELECT ls.external_id
 FROM legal_sources ls
 WHERE ls.deleted_at IS NULL
   AND ls.is_current
-  AND ls.ingest_status = 'ready'
+  AND ls.source_type IN ('legislation', 'court_decision', 'other')
+  AND (
+        ls.ingest_status = 'ready'
+        OR (
+            ls.source_type = 'legislation'
+            AND ls.ingest_status = 'pending'
+        )
+    )
   AND ls.external_id = ANY(%s)
   AND EXISTS (
       SELECT 1
       FROM legal_chunks lc
       WHERE lc.legal_source_id = ls.id
   )
+"""
+
+# Üçüncü taraf `bulk_seed` kayıtlar "zaten var" sayılmaz: resmî portaldan yeniden çekilip
+# doğrulanmaları (ready'ye yükselmeleri) gerekir; atlanırsa hiç doğrulanmazlar.
+HAS_FULLTEXT_SQL = """
+SELECT ls.external_id
+FROM legal_sources ls
+WHERE ls.deleted_at IS NULL
+  AND ls.is_current
+  AND ls.source_type IN ('legislation', 'court_decision', 'other')
+  AND ls.ingestion_method IS DISTINCT FROM 'bulk_seed'
+  AND length(coalesce(ls.raw_text, '')) > 80
+  AND ls.external_id = ANY(%s)
 """
 
 
@@ -35,7 +59,13 @@ def skippable_external_ids(
     ids = [value for value in external_ids if value]
     if connection is None or not ids:
         return set()
-    rows = _fetchall(connection, SKIPPABLE_SQL, (list(ids),))
+    found = _ids_from(connection, SKIPPABLE_SQL, ids)
+    found |= _ids_from(connection, HAS_FULLTEXT_SQL, ids)
+    return found
+
+
+def _ids_from(connection: Any, sql: str, ids: list[str]) -> set[str]:
+    rows = _fetchall(connection, sql, (list(ids),))
     found: set[str] = set()
     for row in rows:
         if isinstance(row, dict):

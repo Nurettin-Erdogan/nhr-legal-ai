@@ -23,6 +23,7 @@ from api.ai.retrieval import retrieve_contexts, retrieve_document_contexts
 from api.ai.verification import VerifiedAnswer, verify_answer
 from api.config import get_settings
 from api.db import authenticated_database_connection, database_connection
+from api.ai import verification_queue
 from api.schemas import AIAnswerRequest, AIAnswerResponse, AICitation
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ class PipelineTimings:
     from_cache: bool = False
     prompt_eval_count: int | None = None
     eval_count: int | None = None
+    done_reason: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -71,7 +73,18 @@ def as_citation(position: int, context: RAGContext) -> AICitation:
         revision=context.revision,
         excerpt=context.content[:500],
         rank=context.rank,
+        verification=context.verification,
     )
+
+
+def _queue_cited_third_party(answer: VerifiedAnswer) -> None:
+    """Atıf yapılan doğrulanmamış kaynakları öncelikli doğrulama sırasına alır."""
+    pending = [
+        context.source_id
+        for context in answer.contexts
+        if context.verification == "third_party"
+    ]
+    verification_queue.enqueue_in_background(pending)
 
 
 def _response_from_verified(
@@ -82,7 +95,10 @@ def _response_from_verified(
     conversation_id: UUID | None,
     message_id: UUID | None,
     from_cache: bool,
+    timings: PipelineTimings | None = None,
 ) -> AIAnswerResponse:
+    if not from_cache:
+        _queue_cited_third_party(answer)
     return AIAnswerResponse(
         question=request.question,
         as_of=request.as_of,
@@ -98,11 +114,24 @@ def _response_from_verified(
         conversation_id=conversation_id,
         message_id=message_id,
         from_cache=from_cache,
+        prompt_eval_count=None if timings is None else timings.prompt_eval_count,
+        eval_count=None if timings is None else timings.eval_count,
+        done_reason=None if timings is None else timings.done_reason,
     )
 
 
 def _payload_from_response(response: AIAnswerResponse) -> dict[str, Any]:
-    return response.model_dump(mode="json", exclude={"conversation_id", "message_id", "from_cache"})
+    return response.model_dump(
+        mode="json",
+        exclude={
+            "conversation_id",
+            "message_id",
+            "from_cache",
+            "prompt_eval_count",
+            "eval_count",
+            "done_reason",
+        },
+    )
 
 
 async def _embed_question(question: str) -> list[float] | None:
@@ -310,6 +339,7 @@ async def execute_answer(
                 conversation_id=conversation_id,
                 message_id=message_id,
                 from_cache=True,
+                timings=timings,
             )
             await emit("done", result=response.model_dump(mode="json"))
             return response, timings
@@ -327,11 +357,37 @@ async def execute_answer(
             )
             timings.llm_ms = (monotonic() - llm_started) * 1000
     except AIProviderError as exc:
+        usage = getattr(provider, "last_usage", None)
+        if usage is not None:
+            timings.prompt_eval_count = usage.prompt_eval_count
+            timings.eval_count = usage.eval_count
+            timings.done_reason = usage.done_reason
+            timings.extra["num_predict"] = usage.num_predict
+            timings.extra["num_ctx"] = usage.num_ctx
+            logger.info(
+                "Ollama generation failed prompt_eval_count=%s eval_count=%s done_reason=%s num_predict=%s num_ctx=%s",
+                usage.prompt_eval_count,
+                usage.eval_count,
+                usage.done_reason,
+                usage.num_predict,
+                usage.num_ctx,
+            )
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     usage = getattr(provider, "last_usage", None)
     if usage is not None:
         timings.prompt_eval_count = usage.prompt_eval_count
         timings.eval_count = usage.eval_count
+        timings.done_reason = usage.done_reason
+        timings.extra["num_predict"] = usage.num_predict
+        timings.extra["num_ctx"] = usage.num_ctx
+        logger.info(
+            "Ollama generation prompt_eval_count=%s eval_count=%s done_reason=%s num_predict=%s num_ctx=%s",
+            usage.prompt_eval_count,
+            usage.eval_count,
+            usage.done_reason,
+            usage.num_predict,
+            usage.num_ctx,
+        )
 
     await emit("verifying")
     verify_started = monotonic()
@@ -360,6 +416,7 @@ async def execute_answer(
         conversation_id=conversation_id,
         message_id=message_id,
         from_cache=False,
+        timings=timings,
     )
     answer_cache.put(cache_key, _payload_from_response(response))
     timings.total_ms = (monotonic() - started) * 1000

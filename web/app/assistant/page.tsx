@@ -13,6 +13,7 @@ type Citation = {
   title: string;
   reference: string;
   excerpt: string;
+  verification?: "official" | "third_party" | "user_document";
 };
 type Project = { id: string; name: string; document_count: number };
 type AIAnswer = {
@@ -217,7 +218,9 @@ export default function AssistantPage() {
                 <h3>Başvurulan kaynaklar</h3>
                 <p>{result.citations.length} kaynak parçası</p>
                 {result.citations.map((citation) => {
-                  const content = <><span>[{citation.marker}] {citation.source_type === "legislation" ? "Mevzuat" : citation.source_type === "document" ? "Proje belgesi" : citation.source_type === "other" ? "İdarî karar" : "Yargı kararı"}</span><strong>{citation.reference}</strong><small>{citation.excerpt.slice(0, 130)}…</small></>;
+                  const kind = citation.source_type === "legislation" ? "Mevzuat" : citation.source_type === "document" ? "Proje belgesi" : citation.source_type === "other" ? "İdarî karar" : "Yargı kararı";
+                  const unverified = citation.verification === "third_party";
+                  const content = <><span>[{citation.marker}] {kind}{unverified && <em className="citation-unverified" title="Üçüncü taraf arşivden alındı; resmî portalla henüz doğrulanmadı. Kullanmadan önce resmî kaynaktan teyit edin.">doğrulanmadı</em>}</span><strong>{citation.reference}</strong><small>{citation.excerpt.slice(0, 130)}…</small></>;
                   return citation.source_type === "document" ? (
                     <div className="citation-card" key={citation.marker}>{content}</div>
                   ) : (

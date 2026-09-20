@@ -175,6 +175,30 @@ ON CONFLICT (legal_source_id) DO UPDATE SET
 
 _COUNT_CHUNKS = "SELECT count(*) FROM legal_chunks WHERE legal_source_id = %s"
 
+_SELECT_NATURAL = """
+SELECT
+    ls.id,
+    ls.content_hash,
+    EXISTS (
+        SELECT 1
+        FROM legal_chunks lc
+        JOIN citations c ON c.legal_chunk_id = lc.id
+        WHERE lc.legal_source_id = ls.id
+    ) AS has_citations,
+    ls.revision
+FROM legal_sources ls
+JOIN court_decision_details d ON d.legal_source_id = ls.id
+WHERE ls.source_type = 'court_decision'
+  AND ls.is_current
+  AND ls.deleted_at IS NULL
+  AND lower(d.court_name) = lower(%s)
+  AND lower(COALESCE(d.chamber, '')) = lower(COALESCE(%s, ''))
+  AND d.docket_no = %s
+  AND d.decision_no = %s
+FOR UPDATE OF ls
+LIMIT 1
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class IngestResult:
@@ -249,6 +273,17 @@ def upsert_decision(
     with connection.transaction(), connection.cursor() as cursor:
         cursor.execute(_SELECT_EXISTING, (decision.external_id,))
         existing = cursor.fetchone()
+        if existing is None and decision.docket_no and decision.decision_no:
+            cursor.execute(
+                _SELECT_NATURAL,
+                (
+                    decision.court_name,
+                    decision.chamber or "",
+                    decision.docket_no,
+                    decision.decision_no,
+                ),
+            )
+            existing = cursor.fetchone()
 
         content_changed = existing is None or existing[1] != decision.content_hash
         source_values = {
@@ -257,7 +292,16 @@ def upsert_decision(
                 "external_id": decision.external_id,
                 "authority": decision.court_name,
                 "raw_text": decision.raw_text,
-                "metadata": Jsonb(decision.metadata),
+                # Resmî portaldan geldiği için, aynı kayıt daha önce üçüncü taraf tohum olarak
+                # girdiyse eski `official_verified: false` işaretleri de düzeltilir.
+                "metadata": Jsonb(
+                    {
+                        **decision.metadata,
+                        "official_verified": True,
+                        "third_party": False,
+                        "provenance": "official_portal",
+                    }
+                ),
                 "decision_date": decision.decision_date,
                 "content_hash": decision.content_hash,
                 "fetched_at": decision.scraped_at,

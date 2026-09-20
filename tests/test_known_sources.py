@@ -34,6 +34,8 @@ def test_skippable_sql_requires_ready_current_chunks_and_not_deleted():
     assert "ls.is_current" in SKIPPABLE_SQL
     assert "ls.deleted_at IS NULL" in SKIPPABLE_SQL
     assert "legal_chunks" in SKIPPABLE_SQL
+    assert "source_type = 'legislation'" in SKIPPABLE_SQL
+    assert "ingest_status = 'pending'" in SKIPPABLE_SQL
 
 
 def test_skippable_external_ids_empty_without_connection_or_ids():
@@ -54,6 +56,7 @@ def test_skippable_external_ids_looks_up_on_backfill_lane():
     ) == {"yargitay:1"}
     assert skipped_existing({"requests_made": 1}, "yargitay:1")["skipped_existing"] is True
     assert "ingest_status = 'ready'" in connection.sql[0]
+    assert any("raw_text" in sql for sql in connection.sql)
 
 
 @pytest.mark.skipif(not DATABASE_URL, reason="NHR_TEST_DATABASE_URL tanımlı değil")
