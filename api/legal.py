@@ -1,39 +1,104 @@
 from __future__ import annotations
 
+import json
+import logging
+import sys
+import threading
+import time
 from datetime import date
+from pathlib import Path
 from uuid import UUID
 
 import psycopg
 from fastapi import APIRouter, HTTPException, Query
+from psycopg.errors import QueryCanceled
 
 from api.db import database_connection
-from api.schemas import CorpusStats, LegalSearchResponse, LegalSourceDetail
+from api.schemas import (
+    AdministrativeBreakdown,
+    ChunkEmbeddingBreakdown,
+    CorpusStats,
+    CourtDecisionBreakdown,
+    LegalSearchResponse,
+    LegalSourceDetail,
+    LegislationVerificationBreakdown,
+)
 
 router = APIRouter(prefix="/api/legal", tags=["legal"])
 
+logger = logging.getLogger(__name__)
+
+_STATS_TTL_SECONDS = 60.0
+_stats_cache: tuple[float, CorpusStats] | None = None
+
+# count(*) over the multi-million-row chunk and seed sets takes 6-15 s, far past
+# the 8 s budget of the interactive stats query. They refresh in the background
+# and the endpoint serves the last good value in the meantime.
+# Public-corpus search results are not user-specific, so repeats are served from
+# memory. Common-word queries can still need 15+ s on ~10M chunks, hence 45 s.
+_SEARCH_TIMEOUT = "45s"
+# Tam sıralı arama bu sürede bitmezse (soğuk diskte yaygın sözcükler) sınırlı adaylı sürüme
+# geçilir; toplam en kötü durum ~12 + 25 sn, arayüzün 50 sn bütçesi içinde.
+_SEARCH_FULL_TIMEOUT = "12s"
+_SEARCH_BOUNDED_TIMEOUT = "25s"
+_SEARCH_MAX_CANDIDATES = 60000
+_SEARCH_WORK_MEM = "64MB"
+_SEARCH_CACHE_TTL_SECONDS = 300.0
+_SEARCH_CACHE_MAX_ENTRIES = 256
+_search_cache: dict[tuple, tuple[float, LegalSearchResponse]] = {}
+
+# Exact chunk counts are slow (see below), so the pill's live number comes from the
+# planner's running tuple statistics: instant, updated as rows are committed, and
+# approximate. It only overlays the cached exact value.
+_LIVE_CHUNKS_TTL_SECONDS = 2.0
+_live_chunks: tuple[float, int] | None = None
+
+# The slow counts also live on disk so a restarted API serves the last known totals
+# immediately instead of blocking on multi-minute count(*) scans of ~20M chunks.
+_SLOW_COUNTS_FILE = Path(__file__).resolve().parents[1] / "data" / "cache" / "slow_counts.json"
+
+_SLOW_COUNTS_TTL_SECONDS = 600.0
+_SLOW_COUNTS_TIMEOUT = "120s"
+_slow_counts: tuple[float, dict[str, int]] | None = None
+_slow_counts_lock = threading.Lock()
+_slow_counts_refreshing = False
+
 _VERIFIED_SOURCE_FILTER = """
-ls.ingest_status = 'ready'
-AND (
-    ls.source_type <> 'legislation'
+(
+    (
+        ls.ingest_status = 'ready'
+        AND (
+            ls.source_type <> 'legislation'
+            OR (
+                ls.metadata->>'verified_against_gazette' = 'true'
+                AND ls.metadata->>'verified_against_mbs' = 'true'
+            )
+        )
+    )
     OR (
-        ls.metadata->>'verified_against_gazette' = 'true'
-        AND ls.metadata->>'verified_against_mbs' = 'true'
+        ls.ingestion_method = 'bulk_seed'
+        AND ls.ingest_status = 'pending'
+        AND ls.source_type = 'court_decision'
     )
 )
 """
 
-_SEARCH_SQL = f"""
+# %(joiner)s is ' & ' first: an OR of common words ("kıdem | tazminat") matches
+# millions of chunks and takes 6-45 s on the full corpus. ' | ' is only the
+# fallback when the AND query finds nothing.
+_SEARCH_TSQUERY_SQL = """
 WITH search_query AS (
     SELECT to_tsquery(
         'turkish',
         array_to_string(
             tsvector_to_array(to_tsvector('turkish', %(query)s)),
-            ' | '
+            %(joiner)s
         )
     ) AS value
-),
-ranked AS (
-    SELECT DISTINCT ON (ls.id)
+)
+"""
+
+_SEARCH_SELECT_COLUMNS = """
         ls.id,
         ls.source_type,
         ls.title,
@@ -62,43 +127,83 @@ ranked AS (
         ls.effective_to,
         ls.source_version,
         ls.revision,
-        left(chunk.content, 700) AS excerpt,
-        ts_rank_cd(chunk.search_vector, search_query.value) AS rank
-    FROM legal_sources ls
+        left(chunk.content, 700) AS excerpt
+"""
+
+def _current_search_sql(hits_call: str) -> str:
+    return f"""
+{_SEARCH_TSQUERY_SQL},
+hits AS (
+    SELECT hits.chunk_id, hits.rank
+    FROM search_query
+    CROSS JOIN LATERAL {hits_call} AS hits
+    WHERE search_query.value IS NOT NULL
+),
+ranked AS (
+    SELECT DISTINCT ON (ls.id)
+{_SEARCH_SELECT_COLUMNS},
+        hits.rank
+    FROM hits
+    JOIN legal_chunks chunk ON chunk.id = hits.chunk_id
+    JOIN legal_sources ls ON ls.id = chunk.legal_source_id
     LEFT JOIN court_decision_details decision ON decision.legal_source_id = ls.id
     LEFT JOIN legislation_details legislation ON legislation.legal_source_id = ls.id
-    JOIN legal_chunks chunk ON chunk.legal_source_id = ls.id
+    WHERE ls.source_type IN ('court_decision', 'legislation', 'other')
+      AND ls.deleted_at IS NULL
+      AND {_VERIFIED_SOURCE_FILTER}
+    ORDER BY ls.id, hits.rank DESC, chunk.chunk_index
+)
+SELECT ranked.*, count(*) OVER () AS total
+FROM ranked
+ORDER BY rank DESC,
+         COALESCE(decision_date, official_gazette_date, version_date) DESC NULLS LAST,
+         title
+LIMIT %(limit)s OFFSET %(offset)s
+"""
+
+
+_CURRENT_SEARCH_SQL = _current_search_sql(
+    "legal_rag_current_lexical_hits(search_query.value, %(candidate_limit)s)"
+)
+# Tam sürüm zaman aşımına uğrarsa: eşleşmelerin ilk N tanesi sıralanır (IO sınırlı, kapsam kısmi).
+_CURRENT_SEARCH_BOUNDED_SQL = _current_search_sql(
+    "legal_rag_current_lexical_hits_bounded("
+    "search_query.value, %(candidate_limit)s, %(max_candidates)s)"
+)
+
+_HISTORICAL_SEARCH_SQL = f"""
+{_SEARCH_TSQUERY_SQL},
+ranked AS (
+    SELECT DISTINCT ON (ls.id)
+{_SEARCH_SELECT_COLUMNS},
+        ts_rank_cd(chunk.search_vector, search_query.value) AS rank
+    FROM legal_chunks chunk
+    JOIN legal_sources ls ON ls.id = chunk.legal_source_id
+    LEFT JOIN court_decision_details decision ON decision.legal_source_id = ls.id
+    LEFT JOIN legislation_details legislation ON legislation.legal_source_id = ls.id
     CROSS JOIN search_query
     WHERE ls.source_type IN ('court_decision', 'legislation', 'other')
       AND ls.deleted_at IS NULL
       AND {_VERIFIED_SOURCE_FILTER}
       AND (
-          (CAST(%(as_of)s AS date) IS NULL AND ls.is_current)
+          ls.source_type = 'legislation'
+          AND ls.effective_from IS NOT NULL
+          AND ls.effective_from <= CAST(%(as_of)s AS date)
+          AND (
+              ls.effective_to IS NULL
+              OR ls.effective_to >= CAST(%(as_of)s AS date)
+          )
           OR (
-              CAST(%(as_of)s AS date) IS NOT NULL
-              AND (
-                  (
-                      ls.source_type = 'legislation'
-                      AND ls.effective_from IS NOT NULL
-                      AND ls.effective_from <= CAST(%(as_of)s AS date)
-                      AND (
-                          ls.effective_to IS NULL
-                          OR ls.effective_to >= CAST(%(as_of)s AS date)
-                      )
-                  )
-                  OR (
-                      ls.source_type = 'court_decision'
-                      AND ls.is_current
-                      AND decision.decision_date IS NOT NULL
-                      AND decision.decision_date <= CAST(%(as_of)s AS date)
-                  )
-                  OR (
-                      ls.source_type = 'other'
-                      AND ls.is_current
-                      AND ls.published_at IS NOT NULL
-                      AND ls.published_at <= CAST(%(as_of)s AS date)
-                  )
-              )
+              ls.source_type = 'court_decision'
+              AND ls.is_current
+              AND decision.decision_date IS NOT NULL
+              AND decision.decision_date <= CAST(%(as_of)s AS date)
+          )
+          OR (
+              ls.source_type = 'other'
+              AND ls.is_current
+              AND ls.published_at IS NOT NULL
+              AND ls.published_at <= CAST(%(as_of)s AS date)
           )
       )
       AND search_query.value IS NOT NULL
@@ -169,37 +274,300 @@ def _database_unavailable(exc: psycopg.Error) -> HTTPException:
     return HTTPException(status_code=503, detail="Hukuk veritabanına şu anda ulaşılamıyor")
 
 
-@router.get("/stats", response_model=CorpusStats)
-def corpus_stats() -> CorpusStats:
+def _stats_from_row(row: dict[str, object]) -> CorpusStats:
+    return CorpusStats(
+        source_count=int(row["source_count"] or 0),
+        chunk_count=int(row["chunk_count"] or 0),
+        decision_count=int(row["decision_count"] or 0),
+        legislation_count=int(row["legislation_count"] or 0),
+        other_count=int(row["other_count"] or 0),
+        latest_decision_date=row["latest_decision_date"],  # type: ignore[arg-type]
+        court_decisions=CourtDecisionBreakdown(
+            yargitay=int(row["yargitay_count"] or 0),
+            danistay=int(row["danistay_count"] or 0),
+            anayasa_mahkemesi=int(row["aym_count"] or 0),
+        ),
+        administrative=AdministrativeBreakdown(
+            kamu_denetciligi_kurumu=int(row["kdk_count"] or 0),
+        ),
+        legislation_verification=LegislationVerificationBreakdown(
+            bedesten=int(row["legislation_bedesten_count"] or 0),
+            both_verified=int(row["legislation_both_verified_count"] or 0),
+            gazette_only=int(row["legislation_gazette_only_count"] or 0),
+            mbs_only=int(row["legislation_mbs_only_count"] or 0),
+            neither=int(row["legislation_neither_count"] or 0),
+        ),
+        embeddings=ChunkEmbeddingBreakdown(
+            ready=int(row["chunk_embedded_count"] or 0),
+            pending=int(row["chunk_embedding_pending_count"] or 0),
+        ),
+        seed_count=int(row.get("seed_count") or 0),
+    )
+
+
+def _live_chunk_estimate() -> int | None:
+    global _live_chunks
+    now = time.monotonic()
+    cached = _live_chunks
+    if cached is not None and now - cached[0] < _LIVE_CHUNKS_TTL_SECONDS:
+        return cached[1]
     try:
         with database_connection() as connection:
+            connection.execute("SET LOCAL statement_timeout = '2s'")
             row = connection.execute(
-                f"""
-                SELECT
-                    count(DISTINCT ls.id)::int AS source_count,
-                    count(chunk.id)::int AS chunk_count,
-                    count(DISTINCT ls.id) FILTER (
-                        WHERE ls.source_type = 'court_decision'
-                    )::int AS decision_count,
-                    count(DISTINCT ls.id) FILTER (
-                        WHERE ls.source_type = 'legislation'
-                    )::int AS legislation_count,
-                    count(DISTINCT ls.id) FILTER (
-                        WHERE ls.source_type = 'other'
-                    )::int AS other_count,
-                    max(details.decision_date) AS latest_decision_date
-                FROM legal_sources ls
-                LEFT JOIN court_decision_details details ON details.legal_source_id = ls.id
-                LEFT JOIN legal_chunks chunk ON chunk.legal_source_id = ls.id
-                WHERE ls.source_type IN ('court_decision', 'legislation', 'other')
-                  AND ls.deleted_at IS NULL
-                  AND {_VERIFIED_SOURCE_FILTER}
-                  AND ls.is_current
-                """
+                "SELECT n_live_tup::bigint AS n FROM pg_stat_user_tables "
+                "WHERE schemaname = 'public' AND relname = 'legal_chunks'"
             ).fetchone()
+    except psycopg.Error:
+        return cached[1] if cached is not None else None
+    value = int(row["n"]) if row and row["n"] else None
+    if value:
+        _live_chunks = (now, value)
+    return value
+
+
+def _with_live_chunks(stats: CorpusStats) -> CorpusStats:
+    live = _live_chunk_estimate()
+    if not live:
+        return stats
+    ready = stats.embeddings.ready
+    total = max(live, ready)
+    return stats.model_copy(
+        update={
+            "chunk_count": total,
+            "embeddings": stats.embeddings.model_copy(update={"pending": total - ready}),
+        }
+    )
+
+
+@router.get("/stats", response_model=CorpusStats)
+def corpus_stats() -> CorpusStats:
+    return _with_live_chunks(_corpus_stats_cached())
+
+
+def _corpus_stats_cached() -> CorpusStats:
+    global _stats_cache
+    now = time.monotonic()
+    cached = _stats_cache
+    if cached is not None and now - cached[0] < _STATS_TTL_SECONDS:
+        return cached[1]
+    try:
+        stats = _load_corpus_stats()
     except psycopg.Error as exc:
+        if cached is not None:
+            logger.warning("Korpus istatistikleri yenilenemedi, eski değer sunuluyor: %s", exc)
+            return cached[1]
         raise _database_unavailable(exc) from exc
-    return CorpusStats(**row)
+    _stats_cache = (time.monotonic(), stats)
+    return stats
+
+
+_CHUNK_COUNTS_SQL = """
+SELECT
+    count(*)::int AS chunk_count,
+    count(*) FILTER (WHERE chunk.embedding IS NOT NULL)::int AS chunk_embedded_count,
+    count(*) FILTER (WHERE chunk.embedding IS NULL)::int AS chunk_embedding_pending_count
+FROM legal_chunks chunk
+"""
+
+_SEED_COUNT_SQL = """
+SELECT count(*)::int AS seed_count
+FROM legal_sources ls
+WHERE ls.ingestion_method = 'bulk_seed'
+  AND ls.ingest_status = 'pending'
+  AND ls.deleted_at IS NULL
+  AND ls.is_current
+  AND ls.source_type = 'court_decision'
+"""
+
+
+def _load_slow_counts(previous: dict[str, int] | None = None) -> dict[str, int]:
+    """Her sayım ayrı sorguda: biri zaman aşımına uğrarsa diğeri yine tazelenir.
+
+    Tek blokta çalışırken 21M satırlık chunk sayımı 120 sn sınırını aşıyor ve aynı
+    istisna üçüncü taraf sayısını da tazelenmemiş bırakıyordu; kutudaki sayı donuyordu.
+    """
+    counts: dict[str, int] = dict(previous or {})
+    failures: list[str] = []
+    for label, sql in (("chunk", _CHUNK_COUNTS_SQL), ("seed", _SEED_COUNT_SQL)):
+        try:
+            with database_connection() as connection:
+                connection.execute(f"SET LOCAL statement_timeout = '{_SLOW_COUNTS_TIMEOUT}'")
+                counts.update(dict(connection.execute(sql).fetchone()))
+        except psycopg.Error:
+            failures.append(label)
+    if failures:
+        logger.warning("Ağır sayımlar tazelenemedi: %s (eski değer korunuyor)", ", ".join(failures))
+    if not counts:
+        raise RuntimeError("Hiçbir ağır sayım alınamadı")
+    return counts
+
+
+def _read_slow_counts_file() -> dict[str, int] | None:
+    if "pytest" in sys.modules:
+        return None
+    try:
+        raw = json.loads(_SLOW_COUNTS_FILE.read_text(encoding="utf-8"))
+        return {key: int(raw[key]) for key in ("chunk_count", "chunk_embedded_count", "chunk_embedding_pending_count", "seed_count")}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _write_slow_counts_file(counts: dict[str, int]) -> None:
+    if "pytest" in sys.modules:
+        return
+    try:
+        _SLOW_COUNTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _SLOW_COUNTS_FILE.write_text(json.dumps(counts), encoding="utf-8")
+    except OSError:
+        logger.warning("Ağır sayımlar diske yazılamadı", exc_info=True)
+
+
+def _refresh_slow_counts_in_background() -> None:
+    global _slow_counts, _slow_counts_refreshing
+    with _slow_counts_lock:
+        if _slow_counts_refreshing:
+            return
+        _slow_counts_refreshing = True
+
+    def refresh() -> None:
+        global _slow_counts, _slow_counts_refreshing
+        try:
+            previous = _slow_counts[1] if _slow_counts else None
+            counts = _load_slow_counts(previous)
+            _slow_counts = (time.monotonic(), counts)
+            _write_slow_counts_file(counts)
+        except (psycopg.Error, RuntimeError):
+            logger.exception("Ağır korpus sayımları yenilenemedi")
+        finally:
+            with _slow_counts_lock:
+                _slow_counts_refreshing = False
+
+    threading.Thread(target=refresh, name="corpus-slow-counts", daemon=True).start()
+
+
+def _slow_counts_snapshot() -> dict[str, int]:
+    """Chunk and seed totals: computed once inline, then refreshed off the request path."""
+    global _slow_counts
+    cached = _slow_counts
+    if cached is None:
+        with _slow_counts_lock:
+            if _slow_counts is None:
+                on_disk = _read_slow_counts_file()
+                if on_disk is not None:
+                    # Serve the last known totals now; the stale timestamp triggers a refresh.
+                    _slow_counts = (time.monotonic() - _SLOW_COUNTS_TTL_SECONDS, on_disk)
+                else:
+                    counts = _load_slow_counts()
+                    _slow_counts = (time.monotonic(), counts)
+                    _write_slow_counts_file(counts)
+            cached = _slow_counts
+        if time.monotonic() - cached[0] >= _SLOW_COUNTS_TTL_SECONDS:
+            _refresh_slow_counts_in_background()
+        return cached[1]
+    if time.monotonic() - cached[0] >= _SLOW_COUNTS_TTL_SECONDS:
+        _refresh_slow_counts_in_background()
+    return cached[1]
+
+
+def warm_slow_counts() -> None:
+    """Fill the slow-count cache at startup so the first page load does not wait."""
+    try:
+        _slow_counts_snapshot()
+    except psycopg.Error:
+        logger.exception("Korpus sayımları ısıtılamadı")
+
+
+def _load_corpus_stats() -> CorpusStats:
+    bedesten = (
+        "ls.source_type = 'legislation'"
+        " AND ls.ingestion_method = 'bedesten_public_json_http'"
+    )
+    with database_connection() as connection:
+        connection.execute("SET LOCAL statement_timeout = '8s'")
+        row = connection.execute(
+            """
+            SELECT
+                count(*) FILTER (
+                    WHERE ls.source_type = 'court_decision'
+                )::int AS decision_count,
+                count(*) FILTER (
+                    WHERE ls.source_type = 'court_decision'
+                      AND COALESCE(ls.authority, '') = 'Yargıtay'
+                )::int AS yargitay_count,
+                count(*) FILTER (
+                    WHERE ls.source_type = 'court_decision'
+                      AND COALESCE(ls.authority, '') = 'Danıştay'
+                )::int AS danistay_count,
+                count(*) FILTER (
+                    WHERE ls.source_type = 'court_decision'
+                      AND COALESCE(ls.authority, '') = 'Anayasa Mahkemesi'
+                )::int AS aym_count,
+                count(*) FILTER (
+                    WHERE ls.source_type = 'other'
+                )::int AS other_count,
+                count(*) FILTER (
+                    WHERE ls.source_type = 'other'
+                      AND COALESCE(ls.authority, '') = 'Kamu Denetçiliği Kurumu'
+                )::int AS kdk_count,
+                max(ls.published_at) FILTER (
+                    WHERE ls.source_type = 'court_decision'
+                )::date AS latest_decision_date
+            FROM legal_sources ls
+            WHERE ls.deleted_at IS NULL
+              AND ls.is_current
+              AND ls.ingest_status = 'ready'
+              AND ls.source_type IN ('court_decision', 'other')
+            """
+        ).fetchone()
+        legislation = connection.execute(
+            """
+            SELECT count(*)::int AS legislation_count
+            FROM legal_sources ls
+            WHERE ls.source_type = 'legislation'
+              AND ls.deleted_at IS NULL
+              AND ls.is_current
+              AND ls.ingest_status = 'ready'
+              AND ls.metadata->>'verified_against_gazette' = 'true'
+              AND ls.metadata->>'verified_against_mbs' = 'true'
+            """
+        ).fetchone()
+        verification = connection.execute(
+            f"""
+            SELECT
+                count(*)::int AS legislation_bedesten_count,
+                count(*) FILTER (
+                    WHERE ls.metadata->>'verified_against_gazette' = 'true'
+                      AND ls.metadata->>'verified_against_mbs' = 'true'
+                )::int AS legislation_both_verified_count,
+                count(*) FILTER (
+                    WHERE ls.metadata->>'verified_against_gazette' = 'true'
+                      AND ls.metadata->>'verified_against_mbs' IS DISTINCT FROM 'true'
+                )::int AS legislation_gazette_only_count,
+                count(*) FILTER (
+                    WHERE ls.metadata->>'verified_against_mbs' = 'true'
+                      AND ls.metadata->>'verified_against_gazette' IS DISTINCT FROM 'true'
+                )::int AS legislation_mbs_only_count,
+                count(*) FILTER (
+                    WHERE ls.metadata->>'verified_against_gazette' IS DISTINCT FROM 'true'
+                      AND ls.metadata->>'verified_against_mbs' IS DISTINCT FROM 'true'
+                )::int AS legislation_neither_count
+            FROM legal_sources ls
+            WHERE {bedesten}
+              AND ls.deleted_at IS NULL
+              AND ls.is_current
+            """
+        ).fetchone()
+    payload = dict(row)
+    payload.update(dict(legislation))
+    payload["source_count"] = (
+        int(payload["decision_count"] or 0)
+        + int(payload["legislation_count"] or 0)
+        + int(payload["other_count"] or 0)
+    )
+    payload.update(dict(verification))
+    payload.update(_slow_counts_snapshot())
+    return _stats_from_row(payload)
 
 
 @router.get("/search", response_model=LegalSearchResponse)
@@ -210,12 +578,60 @@ def search_legal_sources(
     as_of: date | None = None,
 ) -> LegalSearchResponse:
     query = " ".join(q.split())
+    params: dict[str, object] = {
+        "query": query,
+        "limit": limit,
+        "offset": offset,
+        "as_of": as_of,
+        "candidate_limit": max(80, (offset + limit) * 10),
+        "max_candidates": _SEARCH_MAX_CANDIDATES,
+    }
+    sql = _HISTORICAL_SEARCH_SQL if as_of is not None else _CURRENT_SEARCH_SQL
+
+    cache_key = (query, limit, offset, as_of)
+    cached = _search_cache.get(cache_key)
+    if cached is not None and time.monotonic() - cached[0] < _SEARCH_CACHE_TTL_SECONDS:
+        return cached[1]
+
+    def run(joiner: str, statement: str = sql, timeout: str = _SEARCH_TIMEOUT) -> list[dict]:
+        # Docker'ın 64 MB /dev/shm'i büyük paralel taramalarda dolabilir ("could not resize
+        # shared memory segment", DiskFull); o zaman aynı sorgu paralel işçisiz yeniden denenir.
+        for parallel_workers in (2, 0):
+            try:
+                with database_connection() as connection:
+                    connection.execute(f"SET LOCAL statement_timeout = '{timeout}'")
+                    # 4 MB varsayılan work_mem ile yüz binlerce eşleşen parçanın sıralanması
+                    # diske taşıp sayfaları tekrar tekrar okur; 64 MB bunu belirgin azaltır.
+                    connection.execute(f"SET LOCAL work_mem = '{_SEARCH_WORK_MEM}'")
+                    connection.execute("SET LOCAL jit = off")
+                    connection.execute(
+                        f"SET LOCAL max_parallel_workers_per_gather = {parallel_workers}"
+                    )
+                    return connection.execute(statement, {**params, "joiner": joiner}).fetchall()
+            except psycopg.errors.DiskFull:
+                if parallel_workers == 0:
+                    raise
+                logger.warning("Paylaşımlı bellek yetmedi, paralelsiz yeniden deneniyor: %r", query)
+        return []
+
+    bounded = as_of is None  # sınırlı aday sürümü yalnız güncel aramada var
     try:
-        with database_connection() as connection:
-            rows = connection.execute(
-                _SEARCH_SQL,
-                {"query": query, "limit": limit, "offset": offset, "as_of": as_of},
-            ).fetchall()
+        try:
+            rows = run(" & ", sql, _SEARCH_FULL_TIMEOUT if bounded else _SEARCH_TIMEOUT)
+        except QueryCanceled:
+            if not bounded:
+                raise
+            logger.warning("Tam sıralı arama zaman aşımı, sınırlı aday sürümü: %r", query)
+            rows = run(" & ", _CURRENT_SEARCH_BOUNDED_SQL, _SEARCH_BOUNDED_TIMEOUT)
+        if not rows:
+            try:
+                rows = (
+                    run(" | ", _CURRENT_SEARCH_BOUNDED_SQL, _SEARCH_BOUNDED_TIMEOUT)
+                    if bounded
+                    else run(" | ")
+                )
+            except QueryCanceled:
+                logger.warning("Geniş (VEYA) arama zaman aşımına uğradı: %r", query)
     except psycopg.Error as exc:
         raise _database_unavailable(exc) from exc
 
@@ -223,7 +639,7 @@ def search_legal_sources(
     results = [dict(row) for row in rows]
     for result in results:
         result.pop("total", None)
-    return LegalSearchResponse(
+    response = LegalSearchResponse(
         query=query,
         as_of=as_of,
         total=total,
@@ -231,6 +647,10 @@ def search_legal_sources(
         offset=offset,
         results=results,
     )
+    if len(_search_cache) >= _SEARCH_CACHE_MAX_ENTRIES:
+        _search_cache.pop(next(iter(_search_cache)), None)
+    _search_cache[cache_key] = (time.monotonic(), response)
+    return response
 
 
 @router.get("/sources/{source_id}", response_model=LegalSourceDetail)

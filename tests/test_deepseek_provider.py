@@ -47,9 +47,9 @@ def test_deepseek_uses_existing_rag_prompt_and_citation_verification():
         assert body["stream"] is False
         assert body["raw"] is True
         assert body["keep_alive"] == "30m"
-        assert 64 <= body["options"]["num_predict"] <= 768
-        assert body["options"]["num_predict"] < body["options"]["num_ctx"]
-        assert body["options"]["num_ctx"] == 1536
+        assert body["options"]["num_predict"] == 768
+        assert body["options"]["num_ctx"] == 3072
+        assert body.get("think") is False
         assert body["options"]["stop"] == [
             "<｜end▁of▁sentence｜>", "<｜User｜>", "<｜Assistant｜>"
         ]
@@ -171,6 +171,27 @@ def test_ollama_records_token_usage_on_success():
     assert provider.last_usage.done_reason == "stop"
 
 
+def test_num_predict_keeps_768_at_3072_ctx_for_typical_prompt():
+    captured: dict[str, object] = {}
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content)["options"])
+        return httpx.Response(
+            200,
+            json={"response": "Sonuç. [K1]", "done_reason": "stop"},
+        )
+
+    provider = OllamaProvider(
+        model="deepseek-r1:8b",
+        max_output_tokens=768,
+        num_ctx=3072,
+        transport=httpx.MockTransport(respond),
+    )
+    provider.generate(system_instruction="A" * 800, prompt="B" * 3200)
+    assert captured["num_ctx"] == 3072
+    assert captured["num_predict"] == 768
+
+
 def test_num_predict_is_capped_to_fit_num_ctx():
     captured: dict[str, object] = {}
 
@@ -215,7 +236,7 @@ def test_answer_route_rejects_uncited_legal_response(monkeypatch):
         ollama_base_url="http://127.0.0.1:11434",
         ollama_timeout_seconds=120.0,
         ollama_max_output_tokens=768,
-        ollama_num_ctx=1536,
+        ollama_num_ctx=3072,
         ollama_keep_alive="30m",
         rag_query_embedding=False,
         rag_top_k=2,

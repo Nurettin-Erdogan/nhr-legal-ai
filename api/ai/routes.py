@@ -57,6 +57,8 @@ def ai_status() -> AIStatusResponse:
         configured=configured,
         embedding_model=settings.embedding_model,
         semantic_search_ready=semantic_search_ready,
+        ollama_num_ctx=settings.ollama_num_ctx,
+        ollama_max_output_tokens=settings.ollama_max_output_tokens,
     )
 
 

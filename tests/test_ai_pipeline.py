@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from uuid import UUID
 
 from api.ai.cache import (
     answer_cache,
@@ -11,7 +12,14 @@ from api.ai.cache import (
 )
 from api.ai.eval_questions import REGRESSION_QUESTIONS
 from api.ai.pipeline import execute_answer, iter_answer_events
-from api.ai.retrieval import LEXICAL_RETRIEVAL_SQL, LEXICAL_HISTORICAL_SQL
+from api.ai.retrieval import (
+    LEXICAL_BROAD_RETRIEVAL_SQL,
+    LEXICAL_HISTORICAL_SQL,
+    LEXICAL_RETRIEVAL_SQL,
+    STATUTE_RETRIEVAL_SQL,
+    lexical_hits_insufficient,
+    merge_lexical_hits,
+)
 from api.schemas import AIAnswerRequest
 from tests.factories import court_decision_context
 
@@ -23,7 +31,7 @@ def _settings(**overrides):
         ollama_base_url="http://127.0.0.1:11434",
         ollama_timeout_seconds=120.0,
         ollama_max_output_tokens=768,
-        ollama_num_ctx=1536,
+        ollama_num_ctx=3072,
         ollama_keep_alive="30m",
         rag_query_embedding=False,
         rag_top_k=2,
@@ -58,6 +66,109 @@ def test_lexical_sql_uses_and_query_and_defers_detail_joins():
     assert "CAST(%(as_of)s AS date) IS NOT NULL" in LEXICAL_HISTORICAL_SQL
     assert "verified_against_gazette" in LEXICAL_HISTORICAL_SQL
     assert "verified_against_mbs" in LEXICAL_HISTORICAL_SQL
+    assert "bulk_seed" in LEXICAL_HISTORICAL_SQL
+    assert " | " in LEXICAL_BROAD_RETRIEVAL_SQL
+    assert "ORDER BY ord LIMIT 2" not in LEXICAL_BROAD_RETRIEVAL_SQL
+    assert "\\m[0-9]{3,5}\\M" in LEXICAL_RETRIEVAL_SQL
+    assert "token NOT IN" in LEXICAL_RETRIEVAL_SQL
+    assert "legislation.law_no" in STATUTE_RETRIEVAL_SQL
+
+
+def _kdk_context(**overrides):
+    from api.ai.rag import RAGContext
+
+    values = dict(
+        chunk_id=UUID("00000000-0000-0000-0000-000000000031"),
+        source_id=UUID("00000000-0000-0000-0000-000000000032"),
+        source_type="other",
+        title="KDK, 2023/1 — Ret Kararı",
+        source_url=None,
+        authority="Kamu Denetçiliği Kurumu",
+        court_name="Kamu Denetçiliği Kurumu",
+        chamber=None,
+        docket_no=None,
+        decision_no="2023/1",
+        decision_date=None,
+        law_name=None,
+        law_no=None,
+        article_no=None,
+        article_title=None,
+        content="Başvuru reddedilmiştir.",
+        rank=0.9,
+    )
+    values.update(overrides)
+    return RAGContext(**values)
+
+
+def test_lexical_hits_insufficient_on_kdk_only_and_missing_law_no():
+    from tests.factories import legislation_context
+
+    kdk = _kdk_context()
+    assert lexical_hits_insufficient(
+        "İş sözleşmesinin haksız feshinde işçi hangi tazminatları talep edebilir?",
+        [
+            kdk,
+            _kdk_context(chunk_id=UUID("00000000-0000-0000-0000-000000000033")),
+        ],
+        2,
+    )
+    assert lexical_hits_insufficient(
+        "4857 sayılı İş Kanunu madde 18 neyi düzenler?",
+        [kdk],
+        1,
+    )
+    law = legislation_context()
+    assert not lexical_hits_insufficient(
+        "4857 sayılı İş Kanunu madde 25 neyi düzenler?",
+        [law],
+        1,
+    )
+    assert lexical_hits_insufficient(
+        "İşe iade davasının koşulları nelerdir?",
+        [court_decision_context(content="Bireysel başvuru süresi otuz gündür.")],
+        1,
+    )
+    assert not lexical_hits_insufficient(
+        "Kamu Denetçiliği Kurumuna başvuru şartları nelerdir?",
+        [kdk],
+        1,
+    )
+
+
+def test_merge_lexical_hits_prefers_matching_legislation():
+    from tests.factories import legislation_context
+
+    kdk = _kdk_context(rank=0.99)
+    law = legislation_context(rank=0.1)
+    merged = merge_lexical_hits(
+        "4857 sayılı İş Kanunu madde 25 neyi düzenler?",
+        [kdk],
+        [law],
+        1,
+    )
+    assert merged[0].source_type == "legislation"
+    assert merged[0].article_no == "25"
+
+
+def test_merge_lexical_hits_keeps_distinct_sources():
+    from tests.factories import court_decision_context, legislation_context
+
+    first = court_decision_context(rank=0.9)
+    duplicate = court_decision_context(
+        chunk_id="00000000-0000-0000-0000-000000000041",
+        rank=0.8,
+        content=first.content,
+    )
+    law = legislation_context(rank=0.2)
+    merged = merge_lexical_hits(
+        "Fazla çalışma ücreti nasıl hesaplanır?",
+        [first, duplicate],
+        [law],
+        2,
+    )
+    source_ids = {item.source_id for item in merged}
+    assert len(merged) == 2
+    assert len(source_ids) == 2
 
 
 def test_cache_key_changes_when_source_version_changes():

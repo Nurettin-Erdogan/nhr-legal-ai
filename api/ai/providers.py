@@ -31,6 +31,8 @@ class GenerationUsage:
     eval_count: int | None = None
     eval_duration_ns: int | None = None
     done_reason: str | None = None
+    num_predict: int | None = None
+    num_ctx: int | None = None
 
 
 LOCAL_OLLAMA_PROVIDERS = frozenset({"deepseek", "ollama"})
@@ -67,7 +69,7 @@ class OllamaProvider:
     base_url: str = "http://127.0.0.1:11434"
     timeout_seconds: float = 120.0
     max_output_tokens: int = 768
-    num_ctx: int = 1536
+    num_ctx: int = 3072
     keep_alive: str = "30m"
     name: str = "deepseek"
     transport: httpx.BaseTransport | None = None
@@ -135,7 +137,11 @@ class OllamaProvider:
                     "prompt": " ",
                     "stream": False,
                     "keep_alive": self.keep_alive,
-                    "options": {"num_predict": 1, "temperature": 0},
+                    "options": {
+                        "num_predict": 1,
+                        "temperature": 0,
+                        "num_ctx": self.num_ctx,
+                    },
                 },
             )
         except httpx.HTTPError:
@@ -163,11 +169,12 @@ class OllamaProvider:
         }
 
     def _options(self, *, prompt_chars: int = 0) -> dict[str, int | float]:
-        # num_ctx counts prompt+output. Grounded R1 prompts measure ~1100
-        # prompt_eval tokens; 768 output at 1536 ctx overflows and Ollama
-        # returns done_reason=length. Reserve at least 3/4 of the window.
-        reserved_prompt = max(prompt_chars // 2, (self.num_ctx * 3) // 4)
-        room = max(128, self.num_ctx - reserved_prompt)
+        # num_ctx is prompt + output. A 75% prompt floor at 1536 ctx collapsed
+        # num_predict to 384 and Ollama returned done_reason=length. Reserve
+        # only the estimated prompt (~3 chars/token for Turkish legal text)
+        # so 768 output fits in a 3072 window for ~1100-token RAG prompts.
+        estimated_prompt = max(1, prompt_chars // 3)
+        room = max(128, self.num_ctx - estimated_prompt)
         return {
             "temperature": 0.15,
             "num_predict": min(self.max_output_tokens, room),
@@ -190,6 +197,7 @@ class OllamaProvider:
                 "prompt": raw_prompt,
                 "raw": True,
                 "stream": False,
+                "think": False,
                 "keep_alive": self.keep_alive,
                 "options": {
                     **self._options(prompt_chars=len(raw_prompt)),
@@ -230,12 +238,17 @@ class OllamaProvider:
         finally:
             if close_after:
                 client.close()
+        options = payload.get("options") if isinstance(payload.get("options"), dict) else {}
+        requested_predict = _optional_int(options.get("num_predict"))
+        requested_ctx = _optional_int(options.get("num_ctx"))
         if isinstance(body, dict):
             self.last_usage = GenerationUsage(
                 prompt_eval_count=_optional_int(body.get("prompt_eval_count")),
                 eval_count=_optional_int(body.get("eval_count")),
                 eval_duration_ns=_optional_int(body.get("eval_duration")),
                 done_reason=body.get("done_reason") if isinstance(body.get("done_reason"), str) else None,
+                num_predict=requested_predict,
+                num_ctx=requested_ctx,
             )
             if body.get("done_reason") == "length":
                 raise AIProviderError("Ollama yanıtı token sınırında kesildi; çıktı sınırını artırın")
@@ -268,7 +281,7 @@ def create_provider(
     ollama_base_url: str = "http://127.0.0.1:11434",
     ollama_timeout_seconds: float = 120.0,
     ollama_max_output_tokens: int = 768,
-    ollama_num_ctx: int = 1536,
+    ollama_num_ctx: int = 3072,
     ollama_keep_alive: str = "30m",
 ) -> AIProvider:
     if provider_name in LOCAL_OLLAMA_PROVIDERS:

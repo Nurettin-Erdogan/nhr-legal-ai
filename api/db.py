@@ -16,6 +16,7 @@ def database_connection() -> Iterator[psycopg.Connection]:
         row_factory=dict_row,
         connect_timeout=5,
     ) as connection:
+        connection.execute("SET statement_timeout = '20s'")
         yield connection
 
 

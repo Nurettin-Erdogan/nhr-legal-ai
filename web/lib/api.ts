@@ -1,6 +1,17 @@
 export const API_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8765";
 
+export const CORPUS_STATS_POLL_MS = 3000;
+
+export async function getCorpusStats(signal?: AbortSignal): Promise<CorpusStats> {
+  const response = await fetch(`${API_URL}/api/legal/stats`, {
+    cache: "no-store",
+    signal,
+  });
+  if (!response.ok) throw new Error("Korpus sayaçları alınamadı");
+  return response.json();
+}
+
 export type CorpusStats = {
   source_count: number;
   chunk_count: number;
@@ -8,6 +19,26 @@ export type CorpusStats = {
   legislation_count: number;
   other_count: number;
   latest_decision_date: string | null;
+  court_decisions: {
+    yargitay: number;
+    danistay: number;
+    anayasa_mahkemesi: number;
+  };
+  administrative: {
+    kamu_denetciligi_kurumu: number;
+  };
+  legislation_verification: {
+    bedesten: number;
+    both_verified: number;
+    gazette_only: number;
+    mbs_only: number;
+    neither: number;
+  };
+  embeddings: {
+    ready: number;
+    pending: number;
+  };
+  seed_count: number;
 };
 
 export type LegalSearchHit = {

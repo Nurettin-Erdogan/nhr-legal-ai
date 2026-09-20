@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 from contextlib import asynccontextmanager
 
 import psycopg
@@ -15,7 +16,7 @@ from api.auth.routes import router as auth_router
 from api.config import get_settings
 from api.db import database_connection
 from api.documents import router as documents_router
-from api.legal import router as legal_router
+from api.legal import router as legal_router, warm_slow_counts
 from api.projects import router as projects_router
 from api.schemas import HealthResponse
 
@@ -48,6 +49,8 @@ def _warmup_local_model() -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     _warmup_local_model()
+    if "pytest" not in sys.modules:
+        threading.Thread(target=warm_slow_counts, name="corpus-stats-warmup", daemon=True).start()
     yield
 
 

@@ -1,15 +1,23 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import AppSidebar, { Icon } from "@/app/ui/app-sidebar";
-import { API_URL, CorpusStats, LegalSearchResponse } from "@/lib/api";
+import CorpusPill from "@/app/ui/corpus-pill";
+import {
+  API_URL,
+  CORPUS_STATS_POLL_MS,
+  CorpusStats,
+  LegalSearchResponse,
+  getCorpusStats,
+} from "@/lib/api";
 
 const initialQuery = "kıdem tazminatı";
 
 export default function Home() {
   const [query, setQuery] = useState(initialQuery);
   const [stats, setStats] = useState<CorpusStats | null>(null);
+  const statsRef = useRef<CorpusStats | null>(null);
   const [results, setResults] = useState<LegalSearchResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -20,22 +28,64 @@ export default function Home() {
     setLoading(true);
     setError("");
     try {
-      const response = await fetch(`${API_URL}/api/legal/search?q=${encodeURIComponent(cleaned)}&limit=20`);
+      const response = await fetch(
+        `${API_URL}/api/legal/search?q=${encodeURIComponent(cleaned)}&limit=20`,
+        { signal: AbortSignal.timeout(50_000) },
+      );
       if (!response.ok) throw new Error("Arama servisine ulaşılamadı");
       setResults(await response.json());
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Beklenmeyen bir hata oluştu");
+      const timedOut =
+        (reason instanceof DOMException && reason.name === "TimeoutError") ||
+        (reason instanceof Error && reason.name === "TimeoutError");
+      const offline =
+        reason instanceof TypeError ||
+        (reason instanceof Error && /fetch|network|Failed to fetch/i.test(reason.message));
+      setError(
+        timedOut
+          ? "Arama zaman aşımına uğradı. Yeniden deneyin."
+          : offline
+            ? "API çalışmıyor. Önce FastAPI sunucusunu başlatın."
+            : reason instanceof Error
+              ? reason.message
+              : "Beklenmeyen bir hata oluştu",
+      );
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    fetch(`${API_URL}/api/legal/stats`)
-      .then((response) => response.ok ? response.json() : Promise.reject())
-      .then(setStats)
-      .catch(() => setError("API çalışmıyor. Önce FastAPI sunucusunu başlatın."));
+    let cancelled = false;
+    let inflight: AbortController | null = null;
+
+    async function loadStats() {
+      inflight?.abort();
+      const controller = new AbortController();
+      inflight = controller;
+      const timeout = window.setTimeout(() => controller.abort(), 8000);
+      try {
+        const next = await getCorpusStats(controller.signal);
+        if (cancelled) return;
+        statsRef.current = next;
+        setStats(next);
+      } catch {
+        if (cancelled) return;
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    }
+
+    void loadStats();
+    const timer = window.setInterval(() => {
+      void loadStats();
+    }, CORPUS_STATS_POLL_MS);
     void runSearch(initialQuery);
+    return () => {
+      cancelled = true;
+      inflight?.abort();
+      window.clearInterval(timer);
+    };
   }, []);
 
   function submit(event: FormEvent) {
@@ -50,7 +100,7 @@ export default function Home() {
       <section className="workspace">
         <header className="topbar">
           <div><span className="eyebrow">NHR ARAŞTIRMA</span><h1>Hukuk araştırması</h1></div>
-          <div className="corpus-pill"><span>{stats?.decision_count ?? "—"}</span> yargı kararı · <span>{stats?.other_count ?? "—"}</span> idarî karar · <span>{stats?.legislation_count ?? "—"}</span> mevzuat · <span>{stats?.chunk_count ?? "—"}</span> parça</div>
+          <CorpusPill stats={stats} />
         </header>
 
         <div className="content">
