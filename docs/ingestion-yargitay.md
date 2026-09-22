@@ -128,9 +128,12 @@ Ayrıştırma ve parçalama testleri bağımlılıksız çalışır. Veritabanı
 yalnızca `NHR_TEST_DATABASE_URL` tanımlıysa çalışır ve yazdıklarını geri alır:
 
 ```powershell
-$env:NHR_TEST_DATABASE_URL = $env:DATABASE_ADMIN_URL
+$env:NHR_TEST_DATABASE_URL = "postgresql://nhr_app:SIFRE@localhost:5433/nhr_legal_ai_test"
 .\.venv\Scripts\python.exe -m pytest tests -q
 ```
+
+`nhr_legal_ai_test` ayrı ve şeması kurulmuş bir test veritabanı olmalıdır.
+Canlı `nhr_legal_ai` veya `DATABASE_ADMIN_URL` test URL'si olarak kullanılmaz.
 
 ## Bilinen sınırlar
 

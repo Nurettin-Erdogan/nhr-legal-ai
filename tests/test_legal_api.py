@@ -241,6 +241,15 @@ def test_corpus_stats_break_down_courts_verification_and_embeddings(connection, 
         (kdk_id, f"{TOKEN} idari karar metni"),
     )
     _use_connection(monkeypatch, connection)
+    # Production uses an approximate pg_stat counter. Transactional fixture
+    # rows are invisible to it, so supply this test's exact in-transaction count.
+    monkeypatch.setattr(
+        legal,
+        "_live_chunk_estimate",
+        lambda: connection.execute("SELECT count(*) AS n FROM legal_chunks").fetchone()["n"],
+    )
+    monkeypatch.setattr(legal, "_live_embedded_count", lambda: None)
+    monkeypatch.setattr(legal, "_read_embed_progress_ready", lambda: None)
 
     stats = legal.corpus_stats()
 
