@@ -9,6 +9,10 @@ _MARKER_PATTERN = re.compile(r"\[\s*K\s*(\d+)\s*\]", re.IGNORECASE)
 _SPACE_BEFORE_PUNCTUATION = re.compile(r"[ \t]+([.,;:!?])")
 _REPEATED_SPACE = re.compile(r"[ \t]{2,}")
 _FOREIGN_SCRIPT_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]")
+_NUMERIC_CLAIM_RE = re.compile(r"(?<![\w])\d+(?:[.,]\d+)*(?![\w])")
+_TRAILING_MARKERS_RE = re.compile(
+    r"([.!?])[ \t]*((?:\[\s*K\s*\d+\s*\][ \t]*)+)", re.IGNORECASE
+)
 _INSUFFICIENT_SOURCE_RE = re.compile(
     r"(kaynak(larda|lar)?\s+((bu konuda\s+)?yeterli bilgi|yetersiz)"
     r"|yeterli kaynak (yok|bulunamadı)"
@@ -65,13 +69,55 @@ def verify_answer(answer: str, contexts: list[RAGContext]) -> VerifiedAnswer:
         text = _REPEATED_SPACE.sub(" ", text)
 
     cited_contexts = tuple(contexts[index - 1] for index in cited)
+    unsupported = list(uncited_claims(text, len(cited_contexts)))
+    unsupported.extend(_unsupported_numeric_claims(text, cited_contexts))
     return VerifiedAnswer(
         text=text.strip(),
         contexts=cited_contexts,
         unverified_markers=tuple(unverified),
-        unsupported_claims=uncited_claims(text, len(cited_contexts)),
+        unsupported_claims=tuple(dict.fromkeys(unsupported)),
         foreign_script_detected=bool(_FOREIGN_SCRIPT_RE.search(text)),
     )
+
+
+def _number_tokens(text: str) -> set[str]:
+    without_markers = _MARKER_PATTERN.sub("", text)
+    return {
+        token.replace(".", "").replace(",", "")
+        for token in _NUMERIC_CLAIM_RE.findall(without_markers)
+    }
+
+
+def _unsupported_numeric_claims(
+    text: str, contexts: tuple[RAGContext, ...]
+) -> tuple[str, ...]:
+    """Reject cited sentences whose concrete numbers do not occur in their evidence."""
+    normalized = _TRAILING_MARKERS_RE.sub(
+        lambda match: f" {match.group(2).strip()}{match.group(1)} ", text
+    )
+    unsupported: list[str] = []
+    for line in normalized.splitlines():
+        for sentence in re.split(r"(?<=[.!?])\s+", line.strip()):
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            numbers = _number_tokens(sentence)
+            if not numbers:
+                continue
+            markers = {
+                int(raw)
+                for raw in _MARKER_PATTERN.findall(sentence)
+                if 1 <= int(raw) <= len(contexts)
+            }
+            if not markers:
+                continue
+            evidence = " ".join(
+                f"{contexts[index - 1].reference_line} {contexts[index - 1].content}"
+                for index in markers
+            )
+            if not numbers.issubset(_number_tokens(evidence)):
+                unsupported.append(sentence)
+    return tuple(unsupported)
 
 
 def is_insufficient_source_reply(text: str) -> bool:

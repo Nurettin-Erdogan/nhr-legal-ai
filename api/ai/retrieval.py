@@ -806,6 +806,11 @@ def retrieve_contexts(
     )
     if statute:
         contexts = merge_lexical_hits(question, statute, contexts, top_k)
+    elif question_law_numbers(question) and question_article_numbers(question):
+        # An explicit statute/article question must be answered from that exact,
+        # verified provision.  Court decisions mentioning the same numbers are
+        # not a safe substitute for the text of the provision itself.
+        return []
     if not lexical_hits_insufficient(question, contexts, top_k):
         return contexts
 

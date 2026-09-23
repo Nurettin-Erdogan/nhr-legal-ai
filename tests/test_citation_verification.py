@@ -88,3 +88,22 @@ def test_answer_with_cjk_text_is_not_grounded():
     assert not result.grounded
     assert result.foreign_script_detected
     assert result.contexts == (FIRST,)
+
+
+def test_numeric_claim_missing_from_cited_source_is_not_grounded():
+    result = verify_answer(
+        "Kıdem tazminatı 30 gün içinde talep edilmelidir. [K1]",
+        [FIRST],
+    )
+
+    assert not result.grounded
+    assert len(result.unsupported_claims) == 1
+    assert "30 gün" in result.unsupported_claims[0]
+
+
+def test_numeric_claim_present_in_source_remains_grounded():
+    source = court_decision_context(content="Başvuru süresi 30 gündür.")
+
+    result = verify_answer("Başvuru süresi 30 gündür. [K1]", [source])
+
+    assert result.grounded
