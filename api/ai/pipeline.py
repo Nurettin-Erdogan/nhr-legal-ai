@@ -17,6 +17,7 @@ from psycopg.errors import InsufficientPrivilege
 from api.ai.cache import answer_cache, answer_cache_key, source_fingerprint
 from api.ai.embeddings import EmbeddingProviderError, create_embedding_provider
 from api.ai.history import record_exchange
+from api.ai.live_verify import verify_third_party_contexts
 from api.ai.on_demand_verify import explicit_statute_reference, verify_pending_statute
 from api.ai.providers import AIProvider, AIProviderError, create_provider
 from api.ai.rag import RAGContext, generate_grounded_answer
@@ -300,6 +301,18 @@ async def execute_answer(
     except psycopg.Error as exc:
         raise HTTPException(status_code=503, detail="Hukuk kaynakları aranamadı") from exc
     timings.retrieval_ms = (monotonic() - retrieval_started) * 1000
+
+    if any(context.verification == "third_party" for context in contexts):
+        await emit("verifying_source", source_type="court_decision")
+        live_verification_started = monotonic()
+        contexts = await asyncio.to_thread(
+            verify_third_party_contexts,
+            contexts,
+        )
+        timings.extra["live_verification_ms"] = round(
+            (monotonic() - live_verification_started) * 1000,
+            1,
+        )
 
     if not contexts:
         raise HTTPException(
