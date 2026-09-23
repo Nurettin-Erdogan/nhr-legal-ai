@@ -53,3 +53,38 @@ def test_answer_citing_only_invalid_markers_is_not_grounded():
     assert not result.grounded
     assert result.contexts == ()
     assert result.unverified_markers == ("K4",)
+
+
+def test_lowercase_and_spaced_markers_are_accepted():
+    result = verify_answer("Kıdem tazminatı doğar [k1] ve madde uygulanır [ K2 ].", [FIRST, SECOND])
+
+    assert result.grounded
+    assert result.text == "Kıdem tazminatı doğar [K1] ve madde uygulanır [K2]."
+    assert result.contexts == (FIRST, SECOND)
+
+
+def test_insufficient_source_reply_is_detected():
+    from api.ai.verification import is_insufficient_source_reply
+
+    assert is_insufficient_source_reply("Kaynaklarda bu konuda yeterli bilgi bulunmuyor.")
+    assert not is_insufficient_source_reply("Kıdem tazminatı bir yıl sonra doğar.")
+    assert not is_insufficient_source_reply("Kaynak yetersiz. [K1]")
+
+
+def test_answer_with_an_uncited_claim_is_not_grounded():
+    result = verify_answer(
+        "İşçi kıdem tazminatına hak kazanabilir. [K1] İşveren ödeme yapar.",
+        [FIRST],
+    )
+
+    assert not result.grounded
+    assert result.contexts == (FIRST,)
+    assert result.unsupported_claims == ("İşveren ödeme yapar.",)
+
+
+def test_answer_with_cjk_text_is_not_grounded():
+    result = verify_answer("Kıdem koşulu uygulanır. 相关规定 [K1]", [FIRST])
+
+    assert not result.grounded
+    assert result.foreign_script_detected
+    assert result.contexts == (FIRST,)

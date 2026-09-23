@@ -131,3 +131,54 @@ def test_provider_receives_grounding_rules_and_context():
     assert "olmayan bir kaynağa atıf yapma" in provider.system_instruction
     assert DECISION.content in provider.prompt
 
+
+def test_generate_repairs_missing_citation_markers():
+    class RepairProvider:
+        name = "fake"
+        model = "test-model"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def generate(self, *, system_instruction: str, prompt: str) -> str:
+            self.calls += 1
+            if self.calls == 1:
+                return "Bir yıllık kıdemi dolduran işçi kıdem tazminatına hak kazanır."
+            assert "[K1]" in prompt
+            assert "TASLAK" in prompt
+            return "Bir yıllık kıdemi dolduran işçi kıdem tazminatına hak kazanır. [K1]"
+
+    provider = RepairProvider()
+    answer = generate_grounded_answer(
+        provider,
+        question="Kıdem tazminatı şartları nelerdir?",
+        contexts=[DECISION],
+    )
+
+    assert provider.calls == 2
+    assert answer.endswith("[K1]")
+
+
+def test_generate_repairs_when_only_one_of_two_claims_is_cited():
+    class RepairProvider:
+        name = "fake"
+        model = "test-model"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def generate(self, *, system_instruction: str, prompt: str) -> str:
+            self.calls += 1
+            if self.calls == 1:
+                return "İşçi kıdem tazminatına hak kazanabilir. [K1] İşveren ödeme yapar."
+            return "İşçi kıdem tazminatına hak kazanabilir. [K1] İşveren ödeme yapar. [K1]"
+
+    provider = RepairProvider()
+    answer = generate_grounded_answer(
+        provider,
+        question="Kıdem tazminatı şartları nelerdir?",
+        contexts=[DECISION],
+    )
+
+    assert provider.calls == 2
+    assert answer.count("[K1]") == 2
