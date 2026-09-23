@@ -16,7 +16,9 @@ _TRAILING_MARKERS_RE = re.compile(
 _INSUFFICIENT_SOURCE_RE = re.compile(
     r"(kaynak(larda|lar)?\s+((bu konuda\s+)?yeterli bilgi|yetersiz)"
     r"|yeterli kaynak (yok|bulunamadı)"
-    r"|atıf (yapılamıyor|yapamadım))",
+    r"|atıf (yapılamıyor|yapamadım)"
+    r"|verilen kaynaklarla.{0,160}(h\u00fck\u00fcm|bilgi|sonu\u00e7).{0,60}bulunma"
+    r"|bilgi(lerin)? eksikli\u011fi nedeniyle)",
     re.IGNORECASE,
 )
 
@@ -122,7 +124,7 @@ def _unsupported_numeric_claims(
 
 def is_insufficient_source_reply(text: str) -> bool:
     compact = " ".join(text.split())
-    if not compact or len(compact) > 280:
+    if not compact or len(compact) > 600:
         return False
     if _MARKER_PATTERN.search(compact):
         return False

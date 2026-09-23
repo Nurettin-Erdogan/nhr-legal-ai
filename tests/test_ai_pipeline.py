@@ -364,3 +364,28 @@ def test_ungrounded_progress_emits_error_without_answer_body(monkeypatch):
     assert events[-1]["stage"] == "error"
     assert events[-1]["status"] == 422
     assert all("result" not in event or event.get("result") is None for event in events)
+
+
+def test_insufficient_source_reply_is_shown_ungrounded(monkeypatch):
+    from api.ai import pipeline as ai_pipeline
+
+    context = court_decision_context()
+    answer_cache.clear()
+    monkeypatch.setattr(ai_pipeline, "get_settings", lambda: _settings())
+    monkeypatch.setattr(
+        ai_pipeline,
+        "create_provider",
+        lambda **kwargs: SimpleNamespace(name="deepseek", model="deepseek-r1:8b"),
+    )
+    monkeypatch.setattr(ai_pipeline, "_retrieve", lambda *args, **kwargs: [context])
+    monkeypatch.setattr(
+        ai_pipeline,
+        "generate_grounded_answer",
+        lambda *args, **kwargs: "Kaynaklarda bu konuda yeterli bilgi bulunmuyor.",
+    )
+
+    request = AIAnswerRequest(question="Kıdem tazminatına hak kazanma şartları nelerdir?")
+    response, _timings = asyncio.run(execute_answer(request, None))
+    assert response.grounded is False
+    assert response.citations == []
+    assert "yeterli bilgi" in response.answer

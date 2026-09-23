@@ -22,7 +22,11 @@ from api.ai.on_demand_verify import explicit_statute_reference, verify_pending_s
 from api.ai.providers import AIProvider, AIProviderError, create_provider
 from api.ai.rag import RAGContext, generate_grounded_answer
 from api.ai.retrieval import retrieve_contexts, retrieve_document_contexts
-from api.ai.verification import VerifiedAnswer, verify_answer
+from api.ai.verification import (
+    VerifiedAnswer,
+    is_insufficient_source_reply,
+    verify_answer,
+)
 from api.config import get_settings
 from api.db import authenticated_database_connection, database_connection
 from api.ai import verification_queue
@@ -429,10 +433,22 @@ async def execute_answer(
     answer = verify_answer(raw_answer, contexts)
     timings.verification_ms = (monotonic() - verify_started) * 1000
     if not answer.grounded:
-        raise HTTPException(
-            status_code=422,
-            detail="Model doğrulanabilir bir kaynak atfı üretmedi; yanıt gösterilmiyor",
-        )
+        if is_insufficient_source_reply(answer.text or raw_answer):
+            answer = VerifiedAnswer(
+                text=(
+                    "Mevcut doğrulanmış kaynaklarda bu soruya güvenilir ve kaynaklı "
+                    "bir cevap vermek için yeterli bilgi bulunmuyor."
+                ),
+                contexts=(),
+                unverified_markers=answer.unverified_markers,
+            )
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Model doğrulanabilir bir kaynak atfı üretmedi; yanıt gösterilmiyor"
+                ),
+            )
 
     persist_started = monotonic()
     if user_id is not None:

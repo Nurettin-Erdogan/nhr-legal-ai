@@ -71,6 +71,19 @@ def test_insufficient_source_reply_is_detected():
     assert not is_insufficient_source_reply("Kaynak yetersiz. [K1]")
 
 
+def test_explicit_source_insufficiency_explanation_is_detected():
+    from api.ai.verification import is_insufficient_source_reply
+
+    answer = (
+        "Kıdem tazminatına hak kazanmanın şartları hukuki bir konudur. "
+        "Ancak, verilen kaynaklarla doğrudan ilişkilendirilebilecek bir hüküm "
+        "bulunmamaktadır. Bilgilerin eksikliği nedeniyle daha kapsamlı bir cevap "
+        "vermek mümkün değildir."
+    )
+
+    assert is_insufficient_source_reply(answer)
+
+
 def test_answer_with_an_uncited_claim_is_not_grounded():
     result = verify_answer(
         "İşçi kıdem tazminatına hak kazanabilir. [K1] İşveren ödeme yapar.",
