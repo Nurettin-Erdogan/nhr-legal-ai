@@ -17,6 +17,7 @@ from psycopg.errors import InsufficientPrivilege
 from api.ai.cache import answer_cache, answer_cache_key, source_fingerprint
 from api.ai.embeddings import EmbeddingProviderError, create_embedding_provider
 from api.ai.history import record_exchange
+from api.ai.on_demand_verify import explicit_statute_reference, verify_pending_statute
 from api.ai.providers import AIProvider, AIProviderError, create_provider
 from api.ai.rag import RAGContext, generate_grounded_answer
 from api.ai.retrieval import retrieve_contexts, retrieve_document_contexts
@@ -262,6 +263,27 @@ async def execute_answer(
         await _embed_question(request.question) if settings.rag_query_embedding else None
     )
     timings.embedding_ms = (monotonic() - embed_started) * 1000 if query_embedding else 0.0
+
+    statute_reference = explicit_statute_reference(request.question)
+    if statute_reference is not None and request.as_of is None:
+        law_no, article_no = statute_reference
+        await emit(
+            "verifying_source",
+            source_type="legislation",
+            law_no=law_no,
+            article_no=article_no,
+        )
+        verification_started = monotonic()
+        verification_status = await asyncio.to_thread(
+            verify_pending_statute,
+            request.question,
+            as_of=request.as_of,
+        )
+        timings.extra["on_demand_legislation"] = verification_status
+        timings.extra["on_demand_legislation_ms"] = round(
+            (monotonic() - verification_started) * 1000,
+            1,
+        )
 
     retrieval_started = monotonic()
     try:

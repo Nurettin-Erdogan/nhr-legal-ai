@@ -39,8 +39,11 @@ def test_qwen_is_no_longer_a_supported_provider():
 
 def test_deepseek_uses_existing_rag_prompt_and_citation_verification():
     context = court_decision_context()
+    calls = 0
 
     def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
         assert request.url.path == "/api/generate"
         body = json.loads(request.content)
         assert body["model"] == "deepseek-r1:8b"
@@ -58,9 +61,17 @@ def test_deepseek_uses_existing_rag_prompt_and_citation_verification():
         assert "<｜Assistant｜>" in body["prompt"]
         assert "<think>\n</think>" in body["prompt"]
         assert "olmayan bir kaynağa atıf yapma" in body["prompt"]
-        assert context.content in body["prompt"]
+        if calls == 1:
+            assert context.content in body["prompt"]
+        else:
+            assert "TASLAK" in body["prompt"]
         assert "[K1]" in body["prompt"]
-        return httpx.Response(200, json={"response": "Sonuç. [K1] Yanlış. [K9]"})
+        response = (
+            "Sonuç. [K1] Yanlış. [K9]"
+            if calls == 1
+            else "Sonuç. [K1] Yanlış. [K1]"
+        )
+        return httpx.Response(200, json={"response": response})
 
     provider = OllamaProvider(
         model="deepseek-r1:8b",
@@ -70,9 +81,10 @@ def test_deepseek_uses_existing_rag_prompt_and_citation_verification():
     raw = generate_grounded_answer(provider, question="Haklı fesih?", contexts=[context])
     answer = verify_answer(raw, [context])
 
-    assert answer.text == "Sonuç. [K1] Yanlış."
+    assert calls == 2
+    assert answer.text == "Sonuç. [K1] Yanlış. [K1]"
     assert answer.contexts == (context,)
-    assert answer.unverified_markers == ("K9",)
+    assert answer.unverified_markers == ()
 
 
 def test_ollama_status_checks_local_model():
