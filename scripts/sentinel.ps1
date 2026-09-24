@@ -170,9 +170,13 @@ while (-not (Test-Path $stopFile)) {
     # Hazir bulk corpus kayitlari gap taramasinda bilinen sayilir. Portal butcesi
     # milyonlarca mevcut kaydi tekrar indirmeye degil gercek bosluklara gider.
     $env:INGEST_SEEDS_AS_KNOWN = '1'
+    # Ayni korpustaki yogun liste sayfalarini arka arkaya istemek 429/90 sn
+    # beklemeye yol aciyor. Dort saniyelik aralik sayfa basina verimi arttirir.
+    $env:INGEST_LIST_DELAY_SECONDS = '4'
     Start-Process -FilePath $py -ArgumentList $cliArgs -WindowStyle Hidden `
       -RedirectStandardOutput $outLog -RedirectStandardError "$logDir\sentinel-campaign-$src.err.log"
     $env:INGEST_SEEDS_AS_KNOWN = $null
+    $env:INGEST_LIST_DELAY_SECONDS = $null
     $launchedAt[$src] = $now
     $nextStart[$src] = $now.AddSeconds(60)
     Write-Log "$src kampanyası başlatıldı: '$chamber' (kuyruk $idx/$($queues[$src].Count - 1))"

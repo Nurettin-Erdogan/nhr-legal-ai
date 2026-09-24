@@ -438,9 +438,13 @@ def test_yargitay_resume_keeps_fixed_page_size_and_row_offset(monkeypatch, tmp_p
 
     monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
     monkeypatch.setenv("YARGITAY_DELAY_SECONDS", "0")
+    monkeypatch.setenv("INGEST_SEEDS_AS_KNOWN", "1")
+    monkeypatch.setenv("INGEST_LIST_DELAY_SECONDS", "4")
     monkeypatch.setenv("INGESTION_SNAPSHOT_DIR", str(tmp_path))
     get_worker_settings.cache_clear()
     monkeypatch.setattr(adapter_module, "decision_from_portal_row", make_decision)
+    listing_pauses = []
+    monkeypatch.setattr(adapter_module, "sleep", listing_pauses.append)
     client = _PagedClient()
     cursor = {}
     seen = []
@@ -469,6 +473,7 @@ def test_yargitay_resume_keeps_fixed_page_size_and_row_offset(monkeypatch, tmp_p
     page_requests = [request for request in client.requests if request[0] != "begin"]
     assert all(size == 20 for _, size, _ in page_requests)
     assert all(chamber == "9. Hukuk Dairesi" for _, _, chamber in page_requests)
+    assert listing_pauses == [4.0]
 
 
 def test_yargitay_failed_row_is_retried_before_window_advances(monkeypatch, tmp_path):

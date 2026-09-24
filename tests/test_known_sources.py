@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from worker.known_sources import SKIPPABLE_SQL, skippable_external_ids, skipped_existing
+from worker.known_sources import SKIPPABLE_SQL, listing_pause_seconds, skippable_external_ids, skipped_existing
 
 DATABASE_URL = os.getenv("NHR_TEST_DATABASE_URL")
 
@@ -47,6 +47,14 @@ def test_skippable_external_ids_empty_on_current_lane():
     connection = _KnownConnection({"yargitay:1"})
     assert skippable_external_ids(connection, ["yargitay:1"], lane="current") == set()
     assert connection.params == []
+
+
+def test_listing_pause_only_applies_to_corpus_gap_campaign(monkeypatch):
+    monkeypatch.setenv("INGEST_LIST_DELAY_SECONDS", "4")
+    monkeypatch.delenv("INGEST_SEEDS_AS_KNOWN", raising=False)
+    assert listing_pause_seconds() == 0
+    monkeypatch.setenv("INGEST_SEEDS_AS_KNOWN", "1")
+    assert listing_pause_seconds() == 4.0
 
 
 def test_skippable_external_ids_looks_up_on_backfill_lane():

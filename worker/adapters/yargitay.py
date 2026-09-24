@@ -25,7 +25,7 @@ from ingestion.yargitay.scraper import (
 )
 from ingestion.yargitay.store import upsert_decision
 from worker.config import get_worker_settings
-from worker.known_sources import skippable_external_ids, skipped_existing
+from worker.known_sources import listing_pause_seconds, skippable_external_ids, skipped_existing
 from worker.lanes import advance_window_start, resolve_sync_window
 from worker.models import AdapterHealth, RecordOutcome, SyncRequest
 from worker.reconciliation import coverage_cursor, listing_is_exhausted, window_may_advance
@@ -204,6 +204,7 @@ class YargitaySourceAdapter:
         expected: int | None = None
         window_complete = False
         page = None
+        list_pause = listing_pause_seconds() if request.lane == "backfill" else 0.0
 
         # pageSize must stay fixed across runs: page + row_offset is the resume key.
         first_filters = _search_filters(config, page_number=page_number, page_size=config.page_size)
@@ -213,6 +214,8 @@ class YargitaySourceAdapter:
             page_size = config.page_size
             filters = _search_filters(config, page_number=page_number, page_size=page_size)
             try:
+                if list_pause and page_number > start_page:
+                    sleep(list_pause)
                 page = scraper.client.search_page(filters)
             except PortalError as exc:
                 if should_retry_same_record(exc):

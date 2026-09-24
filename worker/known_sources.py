@@ -89,6 +89,13 @@ def skipped_existing(extra: dict[str, Any], external_id: str) -> dict[str, Any]:
     return {**extra, "external_id": external_id, "skipped_existing": True}
 
 
+def listing_pause_seconds() -> float:
+    """Pace duplicate-heavy portal listings without slowing other ingestion lanes."""
+    if os.environ.get("INGEST_SEEDS_AS_KNOWN") != "1":
+        return 0.0
+    return max(0.0, float(os.environ.get("INGEST_LIST_DELAY_SECONDS", "0")))
+
+
 def _fetchall(connection: Any, sql: str, params: tuple[Any, ...]) -> list[Any]:
     execute = getattr(connection, "execute", None)
     if callable(execute):
