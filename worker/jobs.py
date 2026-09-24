@@ -22,6 +22,14 @@ def _should_stop_never() -> bool:
     return False
 
 
+def _captcha_resume_page(cursor: dict[str, Any]) -> int:
+    """Resume the active window, never a stale page from another window."""
+    try:
+        return max(1, int(cursor.get("page") or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
 def _carry_backfill_horizon(
     previous: dict[str, Any], current: dict[str, Any], lane: str
 ) -> dict[str, Any]:
@@ -250,7 +258,10 @@ def run_sync(
             error = str(exc)
             checkpoint.health_state = "blocked"
             checkpoint.health_detail = error
-            checkpoint.last_cursor["page"] = checkpoint.last_page
+            # A new date/chamber window can hit CAPTCHA before its first row.
+            # last_page still belongs to the previous window in that case;
+            # copying it here would silently skip early result pages.
+            checkpoint.last_cursor["page"] = _captcha_resume_page(checkpoint.last_cursor)
         except Exception as exc:  # noqa: BLE001
             status = "failed"
             error = str(exc)

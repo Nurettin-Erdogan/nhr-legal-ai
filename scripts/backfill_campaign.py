@@ -39,6 +39,15 @@ def _cursor_key(chamber: str, year: int) -> str:
     return f"{chamber}|{year}"
 
 
+def _ordered_years(start: date, today: date, *, newest_first: bool, priority_years: list[int]) -> list[int]:
+    """Scan likely missing years first, then retain a complete historical sweep."""
+    years = list(range(start.year, today.year + 1))
+    if newest_first:
+        years.reverse()
+    priorities = list(dict.fromkeys(year for year in priority_years if year in years))
+    return priorities + [year for year in years if year not in priorities]
+
+
 def _park_partial_cursor(
     parked: dict[str, dict], chamber: str, cursor: dict, start: date, today: date
 ) -> str | None:
@@ -80,6 +89,7 @@ def main() -> int:
     parser.add_argument("--chamber", default="", help="Kurul/daire adı; boşsa tüm daireler")
     parser.add_argument("--from", dest="date_from", default=None, help="YYYY-MM-DD; varsayılan kaynağın corpus başlangıcı")
     parser.add_argument("--newest-first", action="store_true", help="Yılları yeniden eskiye tara")
+    parser.add_argument("--priority-years", nargs="+", type=int, default=[], help="Önce taranacak yıllar; kalan yıllar da sonra taranır")
     parser.add_argument("--max-records", type=int, default=200, help="Tur başına en fazla karar")
     parser.add_argument("--delay", type=float, default=None, help="Karar başına bekleme (sn); .env değerini ezer")
     parser.add_argument("--cooldown", type=float, default=60.0, help="429 sonrası bekleme (sn)")
@@ -108,9 +118,7 @@ def main() -> int:
     horizon = corpus_start_for(source)
     start = max(date.fromisoformat(args.date_from), horizon) if args.date_from else horizon
     today = datetime.now(UTC).date()
-    years = list(range(start.year, today.year + 1))
-    if args.newest_first:
-        years.reverse()
+    years = _ordered_years(start, today, newest_first=args.newest_first, priority_years=args.priority_years)
     label = f"{source}/{chamber or 'tüm daireler'}"
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -131,13 +139,12 @@ def main() -> int:
         checkpoint = store.load(source)
         cursor = dict(checkpoint.last_cursor or {})
 
-        # The previous run may have been newest-first. Preserve its unfinished
-        # year before starting the oldest-first sweep; restore it upon return.
-        if not args.newest_first:
-            parked_key = _park_partial_cursor(parked, chamber, cursor, start, today)
-            if parked_key:
-                save_parked()
-                print(f"kısmi yıl imleci korundu: {parked_key}", flush=True)
+        # A changed priority order or chamber must not discard a partially
+        # scanned year. The key also records its original chamber.
+        parked_key = _park_partial_cursor(parked, str(cursor.get("chamber") or ""), cursor, start, today)
+        if parked_key:
+            save_parked()
+            print(f"kısmi yıl imleci korundu: {parked_key}", flush=True)
 
         backup = STATE_DIR / f"{source}-original.json"
         if not backup.exists():
@@ -171,7 +178,12 @@ def main() -> int:
                     "window_complete": True,
                     "reconciled": False,
                     "chamber": chamber,
+                    "page": 1,
+                    "row_offset": 0,
                 }
+                checkpoint.last_page = int(checkpoint.last_cursor.get("page") or 1)
+                checkpoint.last_date_from = window_from
+                checkpoint.last_date_to = window_to
                 checkpoint.next_run_at = datetime.now(UTC)
                 store.save(checkpoint)
             print(f"== {label} {year}: {window_from}..{window_to} ({'devam' if same else 'başlıyor'})", flush=True)

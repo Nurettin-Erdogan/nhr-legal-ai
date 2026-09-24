@@ -1,6 +1,12 @@
 from datetime import date
 
-from scripts.backfill_campaign import _park_partial_cursor, _saved_cursor
+from scripts.backfill_campaign import _ordered_years, _park_partial_cursor, _saved_cursor
+
+
+def test_priority_years_do_not_drop_historical_sweep():
+    years = _ordered_years(date(2020, 1, 1), date(2026, 9, 24), newest_first=False, priority_years=[2026, 2022, 2026, 1999])
+
+    assert years == [2026, 2022, 2020, 2021, 2023, 2024, 2025]
 
 
 def test_park_and_restore_partial_year_cursor():

@@ -33,10 +33,16 @@ $others = @(Get-CimInstance Win32_Process -Filter "Name like 'powershell%' or Na
   Where-Object { $_.CommandLine -match 'scripts.sentinel\.ps1' -and $_.ProcessId -ne $me })
 if ($others.Count -gt 0) { Write-Log "başka nöbetçi zaten çalışıyor (PID $($others[0].ProcessId)); çıkılıyor"; exit 0 }
 
-# Kampanya kuyrukları: sırayla biter, her aşama en eski yıldan günümüze tarar.
+# Tam daire taramasi HGK/CGK kararlarini da kapsar; ozel kurul oncelemesi ayni
+# liste sayfalarini iki kez harcamasin. Oncelikli bosluk yillari once, kalan
+# butun tarihsel yillar daha sonra taranir.
 $queues = @{
-  yargitay = @('Hukuk Genel Kurulu', 'Ceza Genel Kurulu', '')
-  danistay = @('Vergi Dava Daireleri Kurulu', 'İdari Dava Daireleri Kurulu', '')
+  yargitay = @('')
+  danistay = @('')
+}
+$priorityYears = @{
+  yargitay = @('2026','2022','2021','2012','2013','2011')
+  danistay = @('2025','2024','2026')
 }
 $state = @{ yargitay = 0; danistay = 0; yargitay_done = $false; danistay_done = $false }
 if (Test-Path $statePath) {
@@ -179,7 +185,7 @@ while (-not (Test-Path $stopFile)) {
     if ($nextStart[$src] -and $now -lt $nextStart[$src]) { continue }
     $chamber = $queues[$src][$idx]
     $sourceDelay = if ($src -eq 'yargitay') { '7.5' } else { '5.5' }
-    $cliArgs = @('-u','scripts\backfill_campaign.py','--source',$src,'--delay',$sourceDelay,'--cooldown','90','--pause','3','--max-records','300')
+    $cliArgs = @('-u','scripts\backfill_campaign.py','--source',$src,'--priority-years') + $priorityYears[$src] + @('--delay',$sourceDelay,'--cooldown','90','--pause','3','--max-records','300')
     if ($chamber -ne '') { $cliArgs += @('--chamber', "`"$chamber`"") }
     # Hazir bulk corpus kayitlari gap taramasinda bilinen sayilir. Portal butcesi
     # milyonlarca mevcut kaydi tekrar indirmeye degil gercek bosluklara gider.
