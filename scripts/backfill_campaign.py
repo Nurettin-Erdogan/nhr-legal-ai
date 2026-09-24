@@ -35,6 +35,39 @@ STATE_DIR = ROOT / "data" / "campaign"
 STOP = False
 
 
+def _cursor_key(chamber: str, year: int) -> str:
+    return f"{chamber}|{year}"
+
+
+def _park_partial_cursor(
+    parked: dict[str, dict], chamber: str, cursor: dict, start: date, today: date
+) -> str | None:
+    """Keep a partially scanned year when switching the traversal direction."""
+    if cursor.get("window_complete") is not False or str(cursor.get("chamber") or "") != chamber:
+        return None
+    try:
+        window_from = date.fromisoformat(str(cursor["window_from"]))
+        window_to = date.fromisoformat(str(cursor["window_to"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not start <= window_from <= today or window_from.year != window_to.year:
+        return None
+    key = _cursor_key(chamber, window_from.year)
+    parked[key] = cursor.copy()
+    return key
+
+
+def _saved_cursor(parked: dict[str, dict], chamber: str, window_from: date, window_to: date) -> dict | None:
+    cursor = parked.get(_cursor_key(chamber, window_from.year))
+    if not isinstance(cursor, dict):
+        return None
+    if cursor.get("window_from") != window_from.isoformat() or cursor.get("window_to") != window_to.isoformat():
+        return None
+    if str(cursor.get("chamber") or "") != chamber or cursor.get("window_complete") is not False:
+        return None
+    return cursor.copy()
+
+
 def _handle_stop(signum: int, _frame: object) -> None:
     global STOP
     STOP = True
@@ -83,6 +116,11 @@ def main() -> int:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     state_path = STATE_DIR / "done.json"
     done: dict[str, str] = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+    parked_path = STATE_DIR / f"{source}-paused-cursor.json"
+    parked: dict[str, dict] = json.loads(parked_path.read_text(encoding="utf-8")) if parked_path.exists() else {}
+
+    def save_parked() -> None:
+        parked_path.write_text(json.dumps(parked, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
     def save_done(key: str) -> None:
         done[key] = datetime.now(UTC).isoformat()
@@ -92,6 +130,14 @@ def main() -> int:
         store = CheckpointStore(SyncRepository(connection))
         checkpoint = store.load(source)
         cursor = dict(checkpoint.last_cursor or {})
+
+        # The previous run may have been newest-first. Preserve its unfinished
+        # year before starting the oldest-first sweep; restore it upon return.
+        if not args.newest_first:
+            parked_key = _park_partial_cursor(parked, chamber, cursor, start, today)
+            if parked_key:
+                save_parked()
+                print(f"kısmi yıl imleci korundu: {parked_key}", flush=True)
 
         backup = STATE_DIR / f"{source}-original.json"
         if not backup.exists():
@@ -118,7 +164,7 @@ def main() -> int:
                 and cursor.get("window_complete") is False
             )
             if not same:
-                checkpoint.last_cursor = {
+                checkpoint.last_cursor = _saved_cursor(parked, chamber, window_from, window_to) or {
                     "full_horizon_start": horizon.isoformat(),
                     "horizon_audit_version": HORIZON_AUDIT_VERSION,
                     "next_window_start": window_from.isoformat(),
@@ -167,6 +213,8 @@ def main() -> int:
                 captcha_streak = 0
                 if cur.get("window_complete") is True and cur.get("window_from") == window_from.isoformat():
                     save_done(key)
+                    if parked.pop(_cursor_key(chamber, year), None) is not None:
+                        save_parked()
                     print(f"{year} tamam", flush=True)
                     break
                 if error and is_rate_limited(str(error)):

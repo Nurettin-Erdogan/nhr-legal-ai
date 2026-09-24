@@ -33,7 +33,7 @@ $others = @(Get-CimInstance Win32_Process -Filter "Name like 'powershell%' or Na
   Where-Object { $_.CommandLine -match 'scripts.sentinel\.ps1' -and $_.ProcessId -ne $me })
 if ($others.Count -gt 0) { Write-Log "başka nöbetçi zaten çalışıyor (PID $($others[0].ProcessId)); çıkılıyor"; exit 0 }
 
-# Kampanya kuyrukları: sırayla biter, sonuncusu tüm daireleri kapsar (en yeniden eskiye).
+# Kampanya kuyrukları: sırayla biter, her aşama en eski yıldan günümüze tarar.
 $queues = @{
   yargitay = @('Hukuk Genel Kurulu', 'Ceza Genel Kurulu', '')
   danistay = @('Vergi Dava Daireleri Kurulu', 'İdari Dava Daireleri Kurulu', '')
@@ -169,7 +169,7 @@ while (-not (Test-Path $stopFile)) {
     if ($nextStart[$src] -and $now -lt $nextStart[$src]) { continue }
     $chamber = $queues[$src][$idx]
     $sourceDelay = if ($src -eq 'yargitay') { '7.5' } else { '5.5' }
-    $cliArgs = @('-u','scripts\backfill_campaign.py','--source',$src,'--newest-first','--delay',$sourceDelay,'--cooldown','90','--pause','3','--max-records','300')
+    $cliArgs = @('-u','scripts\backfill_campaign.py','--source',$src,'--delay',$sourceDelay,'--cooldown','90','--pause','3','--max-records','300')
     if ($chamber -ne '') { $cliArgs += @('--chamber', "`"$chamber`"") }
     # Hazir bulk corpus kayitlari gap taramasinda bilinen sayilir. Portal butcesi
     # milyonlarca mevcut kaydi tekrar indirmeye degil gercek bosluklara gider.
