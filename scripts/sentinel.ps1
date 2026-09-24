@@ -141,9 +141,13 @@ while (-not (Test-Path $stopFile)) {
       continue
     }
     # Süreç yok: önceki tur tamamlandı mı?
-    if ((Test-Path $outLog) -and $launchedAt[$src]) {
+    # A phase may finish just before the sentinel itself restarts. The log's
+    # completed label is durable; $launchedAt is not. Match the *current*
+    # phase so an old completion cannot skip the next queue entry.
+    if (Test-Path $outLog) {
       $tail = (Get-Content $outLog -Tail 5 -Encoding utf8) -join "`n"
-      if ($tail -match 'KAMPANYA TAMAM') {
+      $expectedLabel = if ($queues[$src][$idx] -eq '') { 'tüm daireler' } else { $queues[$src][$idx] }
+      if ($tail.Contains("KAMPANYA TAMAM: $src/$expectedLabel")) {
         if ($state[$src] -lt $queues[$src].Count - 1) {
           $state[$src] = $state[$src] + 1; Save-State
           $idx = $state[$src]
