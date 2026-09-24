@@ -81,6 +81,7 @@ $workers = @(
 )
 $pauseFile = "$stateDir\PAUSE_CAMPAIGNS"   # varsa arama-tabanli kampanyalar baslatilmaz (dogrulayici ayni portali kullanir)
 $pauseBackgroundVerifyFile = "$stateDir\PAUSE_BACKGROUND_VERIFY" # varsa yalniz arka plan dogrulayicilari durur; sorgu-aninda dogrulama etkilenmez
+$verifyCourtAfterGapsFile = "$stateDir\VERIFY_COURT_SEEDS_AFTER_GAPS" # varsa Y/D corpus dogrulama, ilgili bosluk cekimi bitince acilir
 $pauseVerifyFile = "$stateDir\PAUSE_VERIFY"   # varsa dogrulayicilar baslatilmaz (boslugu kapatan kampanya portali kullanir)
 $pauseEmbedFile = "$stateDir\PAUSE_EMBED_ARM"    # varsa embedding kolu baslatilmaz
 $pauseDoneFile = "$stateDir\PAUSE_DONE_SOURCES"  # 2026-09-22: kullanici istegiyle %100 biten kollari durdurmak icin (aym, sayistay, uyusmazlik)
@@ -105,7 +106,16 @@ while (-not (Test-Path $stopFile)) {
   foreach ($w in $workers) {
     if ((Test-Path $pauseDoneFile) -and ($doneSources -contains $w.name)) { continue }
     if ((Get-Procs $w.pattern).Count -gt 0) { continue }
-    if ((Test-Path $pauseBackgroundVerifyFile) -and ($w.name -eq 'dogrulama' -or $w.name -like 'dogrula-*')) { continue }
+    if ((Test-Path $pauseBackgroundVerifyFile) -and ($w.name -eq 'dogrulama' -or $w.name -like 'dogrula-*')) {
+      # Kullanici Yargitay/Danistay seed metinlerinin de dogrulanmasini istedi.
+      # Genel pause diger kaynaklarda kalir; bu iki kaynak ancak kendi eksik-veri
+      # kampanyasi bittikten sonra ayni portali kullanmaya baslar.
+      $courtAfterGap = (Test-Path $verifyCourtAfterGapsFile) -and (
+        ($w.name -eq 'dogrula-yargitay' -and $state.yargitay_done) -or
+        ($w.name -eq 'dogrula-danistay' -and $state.danistay_done)
+      )
+      if (-not $courtAfterGap) { continue }
+    }
     # Dogrulama onceligi: kucuk isler once (mevzuat, Danistay, Emsal); Yargitay (9,8M kayit) en sona kalir.
     # PAUSE_VERIFY yalniz Yargitay dogrulayicisini durdurur.
     if ($w.name -eq 'dogrula-yargitay' -and (Test-Path $pauseVerifyFile)) { continue }
