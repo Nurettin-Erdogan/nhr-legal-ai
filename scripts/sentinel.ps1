@@ -54,10 +54,11 @@ $workers = @(
   @{ name = 'kdk';       pattern = 'worker\.runner backfill --source kdk';     args = @('-u','-m','worker.runner','backfill','--source','kdk','--no-incremental','--no-embed') },
   @{ name = 'mevzuat';   pattern = 'worker\.runner backfill --source mevzuat'; args = @('-u','-m','worker.runner','backfill','--source','mevzuat','--no-incremental','--no-embed') },
   # Yeni doğrulanan/eklenen resmî kayıtları sürekli embedding'e çevirir (yerel Ollama, hafif turlar).
-  # Embedding: 3 dilimli isci. 5 isci denendi (2026-09-21): hiz ayni (~31 parca/sn), tavan GPU (dizustu, ~86C/54W); fazla isci yalniz CPU'yu toplayicilarla paylasir.
-  # Iki shard yerel bilgisayarda disk baskisini sinirlar; ucuncu shard DB I/O'yu doyuruyordu.
-  @{ name = 'embed0';    pattern = 'embed_chunks\.py.*--shard 0/2'; args = @('-X','utf8','-u','scripts\embed_chunks.py','--batch','64','--loop','--include-seeds','--shard','0/2') },
-  @{ name = 'embed1';    pattern = 'embed_chunks\.py.*--shard 1/2'; args = @('-X','utf8','-u','scripts\embed_chunks.py','--batch','64','--loop','--include-seeds','--shard','1/2') },
+  # Embedding: uc dilimli isci. 5 isci denendi (2026-09-21): hiz ayni (~31 parca/sn),
+  # tavan GPU (dizustu, ~86C/54W); uc isci bu makinede olculen en yuksek verimli duzeydir.
+  @{ name = 'embed0';    pattern = 'embed_chunks\.py.*--shard 0/3'; args = @('-X','utf8','-u','scripts\embed_chunks.py','--batch','64','--loop','--include-seeds','--shard','0/3') },
+  @{ name = 'embed1';    pattern = 'embed_chunks\.py.*--shard 1/3'; args = @('-X','utf8','-u','scripts\embed_chunks.py','--batch','64','--loop','--include-seeds','--shard','1/3') },
+  @{ name = 'embed2';    pattern = 'embed_chunks\.py.*--shard 2/3'; args = @('-X','utf8','-u','scripts\embed_chunks.py','--batch','64','--loop','--include-seeds','--shard','2/3') },
   # Sayistay yargi kararlari (resmi site, tam metin): yeniden baslatilabilir; bitince 6 saatte bir yeni karar icin taranir.
   # Iki paralel isci: Temyiz Kurulu (29 bin) ayri, Daire + Genel Kurul (22 bin) ayri.
   @{ name = 'sayistay-temyiz'; pattern = 'collect_sayistay\.py.*--kind temyiz'; backoff = 21600; args = @('-X','utf8','-u','scripts\collect_sayistay.py','--delay','0.6','--kind','temyiz') },
