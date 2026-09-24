@@ -1,6 +1,6 @@
 # Suprevizor: uzun sureli kesintisiz calisma icin her dakika tum bilesenleri denetler ve olenleri
 # yeniden baslatir. Yalniz baslatma/durdurma yapar; veri silmez, commit/push yapmaz.
-#  - keep_awake (uyku engeli), sentinel (7 kaynak kolu), docker DB kabi, API (8766),
+#  - keep_awake (uyku engeli), sentinel (kaynak + kampanya yoneticisi), docker DB kabi, API (8766),
 #    toplu parcalama iscileri, disk alani, parcalama bitince otomatik bakim (post_chunk_maintenance.py)
 # Durdurma: data\campaign\SUPERVISOR_STOP dosyasini olustur.
 # Alarm satirlari data\logs\supervisor.log icinde "ALERT" ile baslar.
@@ -50,11 +50,8 @@ while (-not (Test-Path $stopFile)) {
       Write-Log "ALERT nobetci yoktu, yeniden baslatildi"
     }
 
-    # 2b) bekci (dis veri cekme kampanyalari + Ollama; sen yokken toparlar)
-    if (-not (Test-Path "$stateDir\GUARDIAN_STOP") -and (Find-Procs 'scripts.guardian\.ps1' 'powershell%').Count -eq 0) {
-      Start-Process powershell.exe -ArgumentList '-NoProfile','-WindowStyle','Hidden','-File',"$root\scripts\guardian.ps1" -WindowStyle Hidden
-      Write-Log "ALERT bekci yoktu, baslatildi"
-    }
+    # Kampanyalari yalniz sentinel yonetir. Guardian ayni checkpoint ve surecleri
+    # izlediginde iki yonetici birbirinin saglikli kampanyasini yeniden baslatabiliyordu.
 
     # 3) docker DB kabi
     $running = (& docker inspect -f '{{.State.Running}}' nhr-legal-ai-db 2>$null)
