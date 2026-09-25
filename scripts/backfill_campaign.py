@@ -48,6 +48,44 @@ def _ordered_years(start: date, today: date, *, newest_first: bool, priority_yea
     return priorities + [year for year in years if year not in priorities]
 
 
+def _adjust_pacing(
+    *,
+    document_delay: float,
+    listing_delay: float,
+    base_document_delay: float,
+    base_listing_delay: float,
+    success_streak: int,
+    status: str,
+    error: str,
+) -> tuple[float, float, int]:
+    """Adapt only the throttled request type; recover gradually after clean runs."""
+    if status == "captcha_required":
+        return (
+            min(base_document_delay * 2, document_delay * 1.1),
+            min(max(base_listing_delay * 2, 8), listing_delay * 1.1),
+            0,
+        )
+    if "429" in error or "hız sınırı" in error.casefold() or "hiz siniri" in error.casefold():
+        lowered = error.casefold()
+        if "getdokuman" in lowered:
+            document_delay = min(base_document_delay * 2, document_delay * 1.25)
+        elif "aramadetaylist" in lowered:
+            listing_delay = min(max(base_listing_delay * 2, 8), listing_delay * 1.25)
+        else:
+            document_delay = min(base_document_delay * 2, document_delay * 1.1)
+            listing_delay = min(max(base_listing_delay * 2, 8), listing_delay * 1.1)
+        return document_delay, listing_delay, 0
+    if status == "success":
+        success_streak += 1
+        if success_streak >= 3:
+            return (
+                max(base_document_delay, document_delay * 0.9),
+                max(base_listing_delay, listing_delay * 0.9),
+                0,
+            )
+    return document_delay, listing_delay, success_streak
+
+
 def _park_partial_cursor(
     parked: dict[str, dict], chamber: str, cursor: dict, start: date, today: date
 ) -> str | None:
@@ -103,6 +141,7 @@ def main() -> int:
     from ingestion.source_errors import is_rate_limited
     from worker.backfill import HORIZON_AUDIT_VERSION, corpus_start_for
     from worker.checkpoints import CheckpointStore
+    from worker.config import get_worker_settings
     from worker.jobs import run_sync
     from worker.models import SyncRequest
     from worker.repository import SyncRepository
@@ -114,6 +153,12 @@ def main() -> int:
     if not url:
         raise SystemExit("DATABASE_ADMIN_URL tanımlı değil")
     source = args.source
+    delay_env = f"{source.upper()}_DELAY_SECONDS"
+    base_document_delay = float(os.environ.get(delay_env) or getattr(get_worker_settings(), f"{source}_delay_seconds"))
+    base_listing_delay = float(os.environ.get("INGEST_LIST_DELAY_SECONDS") or 0)
+    document_delay = base_document_delay
+    listing_delay = base_listing_delay
+    success_streak = 0
     chamber = args.chamber.strip()
     horizon = corpus_start_for(source)
     start = max(date.fromisoformat(args.date_from), horizon) if args.date_from else horizon
@@ -189,6 +234,9 @@ def main() -> int:
             print(f"== {label} {year}: {window_from}..{window_to} ({'devam' if same else 'başlıyor'})", flush=True)
 
             while not STOP:
+                os.environ[delay_env] = str(document_delay)
+                os.environ["INGEST_LIST_DELAY_SECONDS"] = str(listing_delay)
+                get_worker_settings.cache_clear()
                 result = run_sync(
                     connection,
                     SyncRequest(
@@ -214,6 +262,18 @@ def main() -> int:
                     f"| {(time.time() - t0) / 60:.0f} dk" + (f" | {str(error)[:60]}" if error else ""),
                     flush=True,
                 )
+                previous_delays = (document_delay, listing_delay)
+                document_delay, listing_delay, success_streak = _adjust_pacing(
+                    document_delay=document_delay,
+                    listing_delay=listing_delay,
+                    base_document_delay=base_document_delay,
+                    base_listing_delay=base_listing_delay,
+                    success_streak=success_streak,
+                    status=status,
+                    error=str(error or ""),
+                )
+                if (document_delay, listing_delay) != previous_delays:
+                    print(f"istek aralığı: belge={document_delay:.1f}sn liste={listing_delay:.1f}sn", flush=True)
                 if status == "captcha_required":
                     captcha_streak += 1
                     if captcha_streak >= 3:

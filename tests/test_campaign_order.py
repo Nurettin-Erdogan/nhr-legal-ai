@@ -1,12 +1,49 @@
 from datetime import date
 
-from scripts.backfill_campaign import _ordered_years, _park_partial_cursor, _saved_cursor
+from scripts.backfill_campaign import _adjust_pacing, _ordered_years, _park_partial_cursor, _saved_cursor
 
 
 def test_priority_years_do_not_drop_historical_sweep():
     years = _ordered_years(date(2020, 1, 1), date(2026, 9, 24), newest_first=False, priority_years=[2026, 2022, 2026, 1999])
 
     assert years == [2026, 2022, 2020, 2021, 2023, 2024, 2025]
+
+
+def test_adaptive_pacing_slows_only_rate_limited_request_type():
+    common = dict(document_delay=7.5, listing_delay=4.0, base_document_delay=7.5, base_listing_delay=4.0, success_streak=2, status="partial")
+    document = _adjust_pacing(**common, error="HTTP 429 (/getDokuman?id=12)")
+    listing = _adjust_pacing(**common, error="HTTP 429 (/aramadetaylist)")
+
+    assert document == (9.375, 4.0, 0)
+    assert listing == (7.5, 5.0, 0)
+
+
+def test_adaptive_pacing_recovers_after_three_clean_runs():
+    result = _adjust_pacing(
+        document_delay=10.0,
+        listing_delay=6.0,
+        base_document_delay=7.5,
+        base_listing_delay=4.0,
+        success_streak=2,
+        status="success",
+        error="",
+    )
+
+    assert result == (9.0, 5.4, 0)
+
+
+def test_adaptive_pacing_does_not_shorten_captcha_wait():
+    result = _adjust_pacing(
+        document_delay=7.5,
+        listing_delay=4.0,
+        base_document_delay=7.5,
+        base_listing_delay=4.0,
+        success_streak=2,
+        status="captcha_required",
+        error="CAPTCHA",
+    )
+
+    assert result == (8.25, 4.4, 0)
 
 
 def test_park_and_restore_partial_year_cursor():
