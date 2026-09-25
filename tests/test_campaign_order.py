@@ -1,6 +1,6 @@
 from datetime import date
 
-from scripts.backfill_campaign import _adjust_pacing, _ordered_years, _park_partial_cursor, _saved_cursor
+from scripts.backfill_campaign import _adjust_pacing, _ordered_years, _park_partial_cursor, _saved_cursor, _unfinished_year_window
 
 
 def test_priority_years_do_not_drop_historical_sweep():
@@ -44,6 +44,20 @@ def test_adaptive_pacing_does_not_shorten_captcha_wait():
     )
 
     assert result == (8.25, 4.4, 0)
+
+
+def test_unfinished_current_year_keeps_original_date_window():
+    cursor = {
+        "window_from": "2026-01-01",
+        "window_to": "2026-09-25",
+        "window_complete": False,
+        "chamber": "",
+        "page": 256,
+    }
+
+    assert _unfinished_year_window(cursor, "", 2026, date(2026, 9, 26)) == (date(2026, 1, 1), date(2026, 9, 25))
+    assert _unfinished_year_window(cursor, "", 2025, date(2026, 9, 26)) is None
+    assert _unfinished_year_window({**cursor, "window_complete": True}, "", 2026, date(2026, 9, 26)) is None
 
 
 def test_park_and_restore_partial_year_cursor():

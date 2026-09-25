@@ -115,6 +115,20 @@ def _saved_cursor(parked: dict[str, dict], chamber: str, window_from: date, wind
     return cursor.copy()
 
 
+def _unfinished_year_window(cursor: dict, chamber: str, year: int, today: date) -> tuple[date, date] | None:
+    """Keep an unfinished date range stable when the calendar day changes."""
+    if cursor.get("window_complete") is not False or str(cursor.get("chamber") or "") != chamber:
+        return None
+    try:
+        window_from = date.fromisoformat(str(cursor["window_from"]))
+        window_to = date.fromisoformat(str(cursor["window_to"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if window_from.year == year and window_from <= window_to <= min(date(year, 12, 31), today):
+        return window_from, window_to
+    return None
+
+
 def _handle_stop(signum: int, _frame: object) -> None:
     global STOP
     STOP = True
@@ -175,8 +189,8 @@ def main() -> int:
     def save_parked() -> None:
         parked_path.write_text(json.dumps(parked, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
-    def save_done(key: str) -> None:
-        done[key] = datetime.now(UTC).isoformat()
+    def save_done(key: str, through: date) -> None:
+        done[key] = through.isoformat()
         state_path.write_text(json.dumps(done, ensure_ascii=False, indent=2), encoding="utf-8")
 
     with psycopg.connect(url, autocommit=True) as connection:
@@ -202,13 +216,29 @@ def main() -> int:
         failures = 0
         for year in years:
             key = f"{label}|{year}"
+            year_end = min(date(year, 12, 31), today)
+            completed_through = None
             if key in done:
+                try:
+                    completed_through = date.fromisoformat(done[key][:10])
+                except (TypeError, ValueError):
+                    pass
+            if key in done and (year < today.year or (completed_through and completed_through >= year_end)):
                 print(f"{year}: zaten tamam", flush=True)
                 continue
             window_from = max(date(year, 1, 1), start)
-            window_to = min(date(year, 12, 31), today)
+            if completed_through and completed_through.year == year:
+                window_from = max(window_from, date.fromordinal(completed_through.toordinal() + 1))
+            if window_from > year_end:
+                continue
+            window_to = year_end
             checkpoint = store.load(source)
             cursor = dict(checkpoint.last_cursor or {})
+            unfinished = _unfinished_year_window(cursor, chamber, year, today)
+            if unfinished is None:
+                unfinished = _unfinished_year_window(parked.get(_cursor_key(chamber, year), {}), chamber, year, today)
+            if unfinished and unfinished[0] >= window_from:
+                window_from, window_to = unfinished
             same = (
                 cursor.get("window_from") == window_from.isoformat()
                 and cursor.get("window_to") == window_to.isoformat()
@@ -284,9 +314,30 @@ def main() -> int:
                     continue
                 captcha_streak = 0
                 if cur.get("window_complete") is True and cur.get("window_from") == window_from.isoformat():
-                    save_done(key)
                     if parked.pop(_cursor_key(chamber, year), None) is not None:
                         save_parked()
+                    if window_to < year_end:
+                        window_from = date.fromordinal(window_to.toordinal() + 1)
+                        window_to = year_end
+                        checkpoint = store.load(source)
+                        checkpoint.last_cursor = {
+                            "full_horizon_start": horizon.isoformat(),
+                            "horizon_audit_version": HORIZON_AUDIT_VERSION,
+                            "next_window_start": window_from.isoformat(),
+                            "window_complete": True,
+                            "reconciled": False,
+                            "chamber": chamber,
+                            "page": 1,
+                            "row_offset": 0,
+                        }
+                        checkpoint.last_page = 1
+                        checkpoint.last_date_from = window_from
+                        checkpoint.last_date_to = window_to
+                        checkpoint.next_run_at = datetime.now(UTC)
+                        store.save(checkpoint)
+                        print(f"{year} kalan günler: {window_from}..{window_to}", flush=True)
+                        continue
+                    save_done(key, window_to)
                     print(f"{year} tamam", flush=True)
                     break
                 if error and is_rate_limited(str(error)):
