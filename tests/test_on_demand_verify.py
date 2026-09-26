@@ -184,7 +184,7 @@ def test_pipeline_verifies_exact_pending_statute_before_retrieval(monkeypatch):
     monkeypatch.setattr(
         ai_pipeline,
         "generate_grounded_answer",
-        lambda *_args, **_kwargs: "İşveren haklı nedenle feshedebilir. [K1]",
+        lambda *_args, **_kwargs: f"{legislation_context().content} [K1]",
     )
 
     response, timings = asyncio.run(

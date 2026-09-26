@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 
 from api.ai.rag import RAGContext, uncited_claims
+from api.ai.source_support import unsupported_source_claims
 
 _MARKER_PATTERN = re.compile(r"\[\s*K\s*(\d+)\s*\]", re.IGNORECASE)
 _SPACE_BEFORE_PUNCTUATION = re.compile(r"[ \t]+([.,;:!?])")
@@ -35,19 +36,22 @@ class VerifiedAnswer:
     def grounded(self) -> bool:
         return (
             bool(self.contexts)
+            and not self.unverified_markers
             and not self.unsupported_claims
             and not self.foreign_script_detected
         )
 
 
 def verify_answer(answer: str, contexts: list[RAGContext]) -> VerifiedAnswer:
-    """Keep only the citation markers backed by a retrieved source.
+    """Validate extractive source support and resolve retrieved citation markers.
 
     The prompt tells the model to cite what it used, but nothing stops it from
     inventing a marker or citing a source it never received. Markers outside the
     retrieved range are stripped from the text so a reader never sees a reference
     that resolves to nothing, and the returned contexts are limited to the
     sources the answer actually leans on rather than everything retrieval found.
+    Even a valid marker is rejected unless its complete claim matches source text.
+    This is not a semantic entailment or legal-correctness guarantee.
     """
     cited: list[int] = []
     unverified: list[str] = []
@@ -73,6 +77,7 @@ def verify_answer(answer: str, contexts: list[RAGContext]) -> VerifiedAnswer:
     cited_contexts = tuple(contexts[index - 1] for index in cited)
     unsupported = list(uncited_claims(text, len(cited_contexts)))
     unsupported.extend(_unsupported_numeric_claims(text, cited_contexts))
+    unsupported.extend(unsupported_source_claims(text, cited_contexts))
     return VerifiedAnswer(
         text=text.strip(),
         contexts=cited_contexts,

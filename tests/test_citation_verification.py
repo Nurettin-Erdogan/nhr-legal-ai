@@ -8,9 +8,9 @@ SECOND = legislation_context()
 
 
 def test_valid_markers_survive_untouched():
-    result = verify_answer("Kıdem tazminatı doğar. [K1]", [FIRST])
+    result = verify_answer(f"{FIRST.content} [K1]", [FIRST])
 
-    assert result.text == "Kıdem tazminatı doğar. [K1]"
+    assert result.text == f"{FIRST.content} [K1]"
     assert result.contexts == (FIRST,)
     assert result.unverified_markers == ()
     assert result.grounded
@@ -56,10 +56,10 @@ def test_answer_citing_only_invalid_markers_is_not_grounded():
 
 
 def test_lowercase_and_spaced_markers_are_accepted():
-    result = verify_answer("Kıdem tazminatı doğar [k1] ve madde uygulanır [ K2 ].", [FIRST, SECOND])
+    result = verify_answer(f"{FIRST.content} [k1]\n{SECOND.content} [ K2 ]", [FIRST, SECOND])
 
     assert result.grounded
-    assert result.text == "Kıdem tazminatı doğar [K1] ve madde uygulanır [K2]."
+    assert result.text == f"{FIRST.content} [K1]\n{SECOND.content} [K2]"
     assert result.contexts == (FIRST, SECOND)
 
 
@@ -86,7 +86,7 @@ def test_explicit_source_insufficiency_explanation_is_detected():
 
 def test_answer_with_an_uncited_claim_is_not_grounded():
     result = verify_answer(
-        "İşçi kıdem tazminatına hak kazanabilir. [K1] İşveren ödeme yapar.",
+        f"{FIRST.content} [K1] İşveren ödeme yapar.",
         [FIRST],
     )
 

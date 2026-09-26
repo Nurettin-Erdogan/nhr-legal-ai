@@ -338,28 +338,14 @@ async def execute_answer(
     message_id: UUID | None = None
     if cached is not None:
         timings.from_cache = True
-        cached_answer = VerifiedAnswer(
-            text=cached["answer"],
-            contexts=tuple(
-                context
-                for context in contexts
-                if str(context.chunk_id)
-                in {item["chunk_id"] for item in cached["citations"]}
-            ),
-            unverified_markers=tuple(cached.get("unverified_markers") or ()),
-        )
         # Keep citation order from the cached payload rather than retrieval rank.
         cited_ids = [item["chunk_id"] for item in cached["citations"]]
         by_id = {str(context.chunk_id): context for context in contexts}
         ordered = tuple(by_id[chunk_id] for chunk_id in cited_ids if chunk_id in by_id)
+        cached_answer = verify_answer(cached["answer"], list(ordered))
         if len(ordered) != len(cited_ids):
             cached = None
-        else:
-            cached_answer = VerifiedAnswer(
-                text=cached["answer"],
-                contexts=ordered,
-                unverified_markers=tuple(cached.get("unverified_markers") or ()),
-            )
+        if cached is not None and cached_answer.grounded:
             persist_started = monotonic()
             if user_id is not None:
                 conversation_id, message_id = await asyncio.to_thread(
@@ -383,6 +369,8 @@ async def execute_answer(
             await emit("done", result=response.model_dump(mode="json"))
             return response, timings
 
+    # Old/invalid cache entries must go through generation and the current gate.
+    timings.from_cache = False
     await emit("generating")
     try:
         async with _generation_lock:
@@ -445,9 +433,7 @@ async def execute_answer(
         else:
             raise HTTPException(
                 status_code=422,
-                detail=(
-                    "Model doğrulanabilir bir kaynak atfı üretmedi; yanıt gösterilmiyor"
-                ),
+                detail="Yanıt kaynak metniyle doğrulanamadı; desteklenmeyen hukuki iddialar gösterilmiyor",
             )
 
     persist_started = monotonic()

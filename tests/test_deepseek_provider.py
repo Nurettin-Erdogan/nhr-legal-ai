@@ -61,16 +61,9 @@ def test_deepseek_uses_existing_rag_prompt_and_citation_verification():
         assert "<｜Assistant｜>" in body["prompt"]
         assert "<think>\n</think>" in body["prompt"]
         assert "olmayan bir kaynağa atıf yapma" in body["prompt"]
-        if calls == 1:
-            assert context.content in body["prompt"]
-        else:
-            assert "TASLAK" in body["prompt"]
+        assert context.content in body["prompt"]
         assert "[K1]" in body["prompt"]
-        response = (
-            "Sonuç. [K1] Yanlış. [K9]"
-            if calls == 1
-            else "Sonuç. [K1] Yanlış. [K1]"
-        )
+        response = "Sonuç. [K1] Yanlış. [K9]"
         return httpx.Response(200, json={"response": response})
 
     provider = OllamaProvider(
@@ -81,10 +74,11 @@ def test_deepseek_uses_existing_rag_prompt_and_citation_verification():
     raw = generate_grounded_answer(provider, question="Haklı fesih?", contexts=[context])
     answer = verify_answer(raw, [context])
 
-    assert calls == 2
-    assert answer.text == "Sonuç. [K1] Yanlış. [K1]"
+    assert calls == 1
+    assert answer.text == "Sonuç. [K1] Yanlış."
     assert answer.contexts == (context,)
-    assert answer.unverified_markers == ()
+    assert answer.unverified_markers == ("K9",)
+    assert not answer.grounded
 
 
 def test_ollama_status_checks_local_model():

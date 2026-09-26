@@ -132,7 +132,7 @@ def test_provider_receives_grounding_rules_and_context():
     assert DECISION.content in provider.prompt
 
 
-def test_generate_repairs_missing_citation_markers():
+def test_generate_does_not_blindly_repair_missing_citation_markers():
     class RepairProvider:
         name = "fake"
         model = "test-model"
@@ -155,11 +155,11 @@ def test_generate_repairs_missing_citation_markers():
         contexts=[DECISION],
     )
 
-    assert provider.calls == 2
-    assert answer.endswith("[K1]")
+    assert provider.calls == 1
+    assert "[K1]" not in answer
 
 
-def test_generate_repairs_when_only_one_of_two_claims_is_cited():
+def test_generate_does_not_attach_citations_to_an_unsupported_draft():
     class RepairProvider:
         name = "fake"
         model = "test-model"
@@ -180,5 +180,5 @@ def test_generate_repairs_when_only_one_of_two_claims_is_cited():
         contexts=[DECISION],
     )
 
-    assert provider.calls == 2
-    assert answer.count("[K1]") == 2
+    assert provider.calls == 1
+    assert answer.count("[K1]") == 1

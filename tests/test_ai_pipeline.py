@@ -203,7 +203,7 @@ def test_answer_cache_skips_generation_on_same_sources(monkeypatch):
 
     def generate(*args, **kwargs):
         generated["count"] += 1
-        return "Kıdem tazminatı doğar. [K1]"
+        return "İşçi, haklı nedenle fesih hâlinde kıdem tazminatına hak kazanır. [K1]"
 
     monkeypatch.setattr(ai_pipeline, "get_settings", lambda: _settings())
     monkeypatch.setattr(
@@ -240,7 +240,7 @@ def test_answer_cache_misses_when_source_hash_changes(monkeypatch):
 
     def generate(*args, **kwargs):
         generated["count"] += 1
-        return "Kıdem tazminatı doğar. [K1]"
+        return "İşçi, haklı nedenle fesih hâlinde kıdem tazminatına hak kazanır. [K1]"
 
     monkeypatch.setattr(ai_pipeline, "get_settings", lambda: _settings())
     monkeypatch.setattr(
@@ -270,7 +270,7 @@ def test_generation_lock_serializes_two_requests(monkeypatch):
         active["max"] = max(active["max"], active["now"])
         time.sleep(0.05)
         active["now"] -= 1
-        return "Kıdem tazminatı doğar. [K1]"
+        return "İşçi, haklı nedenle fesih hâlinde kıdem tazminatına hak kazanır. [K1]"
 
     monkeypatch.setattr(ai_pipeline, "get_settings", lambda: _settings())
     monkeypatch.setattr(
@@ -309,7 +309,7 @@ def test_progress_events_do_not_include_unverified_text(monkeypatch):
     monkeypatch.setattr(
         ai_pipeline,
         "generate_grounded_answer",
-        lambda *args, **kwargs: "Kıdem tazminatı doğar. [K1]",
+        lambda *args, **kwargs: "İşçi, haklı nedenle fesih hâlinde kıdem tazminatına hak kazanır. [K1]",
     )
 
     async def collect():
