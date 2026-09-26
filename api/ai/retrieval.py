@@ -7,6 +7,7 @@ import psycopg
 
 from api.ai.embeddings import vector_literal
 from api.ai.rag import RAGContext
+from api.ai.search_plan import plan_search
 
 _LAW_NO_RE = re.compile(r"(?<!\d)(\d{3,5})(?!\d)")
 _ARTICLE_RE = re.compile(
@@ -95,10 +96,9 @@ LEFT JOIN legislation_details legislation ON legislation.legal_source_id = ls.id
 
 _RECENCY_ORDER = "COALESCE(decision.decision_date, ls.published_at) DESC NULLS LAST"
 
-# Fast path: first two content tokens in question order, ANDed, plus any
-# 3–5 digit identifiers (4857, 2577). Full-question AND emptied the hit
-# set; OR-of-every-token matched ~40% of the corpus. A broader OR query is
-# used only when the AND hits are insufficient.
+# Preserve all content terms after removing question boilerplate. Known compound
+# concepts are mandatory phrases; their words must not be confused with unrelated
+# occurrences (e.g. ortak cocuk ... velayet).
 _TOKEN_CTES = f"""
 tokens AS (
     SELECT token, ord
@@ -156,7 +156,15 @@ search_query AS (
 """
 
 
-_SEARCH_QUERY_CTES = _search_query_ctes(joiner=" & ", token_limit=2)
+_ALL_TERMS_CTES = _search_query_ctes(joiner=" & ", token_limit=None)
+_SEARCH_QUERY_CTES = _ALL_TERMS_CTES.replace("search_query AS (", "base_query AS (") + """,
+search_query AS (
+    SELECT CASE WHEN %(required_phrase)s = '' THEN value
+                ELSE value && phraseto_tsquery('turkish', %(required_phrase)s)
+           END AS value
+    FROM base_query
+)
+"""
 _BROAD_SEARCH_QUERY_CTES = _search_query_ctes(joiner=" | ", token_limit=None)
 _LEGACY_OR_SEARCH_QUERY_CTES = """
 search_query AS (
@@ -592,7 +600,7 @@ def lexical_hits_insufficient(
     contexts: list[RAGContext],
     top_k: int,
 ) -> bool:
-    """True when the fast 2-token AND result should be expanded."""
+    """True when lexical hits are insufficient (mandatory phrases never relax)."""
     if len(contexts) < max(1, top_k):
         return True
     blob = " ".join(_context_blob(context) for context in contexts)
@@ -723,13 +731,11 @@ def _execute_retrieval(
         connection.execute("SET work_mem TO '64MB'")
     except psycopg.Error:
         pass
-    bounded_sql = _bounded_variant(sql)
-    if bounded_sql == sql:  # sözcük araması çağrısı yok (ör. yalnız belge/istatistik sorgusu)
+    if _bounded_variant(sql) == sql:  # sözcük araması çağrısı yok
         return [RAGContext(**row) for row in connection.execute(sql, params).fetchall()]
-    try:
-        rows = _run_retrieval(connection, sql, params, _FULL_RETRIEVAL_TIMEOUT)
-    except psycopg.errors.QueryCanceled:
-        rows = _run_retrieval(connection, bounded_sql, params, _BOUNDED_RETRIEVAL_TIMEOUT)
+    # Rank against the full searchable corpus, not an arbitrary first 6,000 rows.
+    # A timeout is an explicit failure, never a silently incomplete result set.
+    rows = _run_retrieval(connection, sql, params, "15s")
     return [RAGContext(**row) for row in rows]
 
 
@@ -774,10 +780,13 @@ def retrieve_contexts(
     as_of: date | None = None,
     lexical_mode: str = "auto",
 ) -> list[RAGContext]:
+    plan = plan_search(question)
+    pool_size = max(top_k * 4, 24)
     params = {
-        "question": question,
-        "top_k": top_k,
-        "candidate_limit": max(top_k * 4, 20),
+        "question": plan.text,
+        "required_phrase": plan.phrase,
+        "top_k": pool_size,
+        "candidate_limit": pool_size,
         "as_of": as_of,
     }
     historical = as_of is not None
@@ -789,7 +798,7 @@ def retrieve_contexts(
             }
         )
         sql = HYBRID_HISTORICAL_SQL if historical else HYBRID_RETRIEVAL_SQL
-        return _execute_retrieval(connection, sql, params)
+        return merge_lexical_hits(question, _execute_retrieval(connection, sql, params), [], top_k)
 
     mode = lexical_mode if lexical_mode != "auto" else "narrow"
     contexts = _execute_retrieval(
@@ -798,9 +807,9 @@ def retrieve_contexts(
         params,
     )
     if lexical_mode != "auto":
-        return contexts
+        return contexts[:top_k]
 
-    contexts = _diversify_by_source(contexts, top_k)
+    contexts = merge_lexical_hits(question, contexts, [], top_k)
     statute = _retrieve_statute_contexts(
         connection, question=question, top_k=top_k, as_of=as_of
     )
@@ -811,7 +820,7 @@ def retrieve_contexts(
         # verified provision.  Court decisions mentioning the same numbers are
         # not a safe substitute for the text of the provision itself.
         return []
-    if not lexical_hits_insufficient(question, contexts, top_k):
+    if plan.phrase or not lexical_hits_insufficient(question, contexts, top_k):
         return contexts
 
     broad_params = {
@@ -836,8 +845,10 @@ def retrieve_document_contexts(
     query_embedding: list[float] | None = None,
     embedding_model: str | None = None,
 ) -> list[RAGContext]:
+    plan = plan_search(question)
     params = {
-        "question": question,
+        "question": plan.text,
+        "required_phrase": plan.phrase,
         "project_id": project_id,
         "top_k": top_k,
         "candidate_limit": max(top_k * 4, 20),

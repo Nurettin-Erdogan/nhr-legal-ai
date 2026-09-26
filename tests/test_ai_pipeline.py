@@ -57,7 +57,8 @@ def test_regression_set_covers_required_topics():
 
 
 def test_lexical_sql_uses_and_query_and_defers_detail_joins():
-    assert "ORDER BY ord LIMIT 2" in LEXICAL_RETRIEVAL_SQL
+    assert "ORDER BY ord LIMIT 2" not in LEXICAL_RETRIEVAL_SQL
+    assert "phraseto_tsquery" in LEXICAL_RETRIEVAL_SQL
     assert "ts_debug('turkish'" in LEXICAL_RETRIEVAL_SQL
     assert "legal_rag_current_lexical_hits" in LEXICAL_RETRIEVAL_SQL
     assert LEXICAL_RETRIEVAL_SQL.index("legal_rag_current_lexical_hits") < LEXICAL_RETRIEVAL_SQL.index(

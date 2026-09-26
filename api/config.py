@@ -81,7 +81,7 @@ def get_settings() -> Settings:
         ollama_num_ctx=max(512, min(int(os.getenv("OLLAMA_NUM_CTX", "3072")), 8192)),
         ollama_keep_alive=os.getenv("OLLAMA_KEEP_ALIVE", "30m").strip() or "30m",
         rag_top_k=max(
-            1, min(int(os.getenv("RAG_TOP_K", "2" if ai_provider in LOCAL_OLLAMA_PROVIDERS else "6")), 12)
+            1, min(int(os.getenv("RAG_TOP_K", "6")), 12)
         ),
         rag_context_chars=max(400, min(int(os.getenv("RAG_CONTEXT_CHARS", "800")), 4000)),
         rag_query_embedding=os.getenv(

@@ -21,12 +21,14 @@ from api.ai.providers import (
     LOCAL_OLLAMA_PROVIDERS,
     OllamaProvider,
 )
+from api.ai.research import router as research_router
 from api.auth.routes import optional_current_user_id
 from api.config import get_settings
 from api.db import authenticated_database_connection, database_connection
 from api.schemas import AIAnswerRequest, AIAnswerResponse, AIStatusResponse
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
+router.include_router(research_router)
 
 _STATUS_TTL_SECONDS = 30.0
 _status_semantic_cache: tuple[float, bool] | None = None

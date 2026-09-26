@@ -134,10 +134,14 @@ class RAGContext:
         return "; ".join(parts) or None
 
 
-def _clip_source(text: str, max_chars: int) -> str:
+def _clip_source(text: str, max_chars: int, question: str = "") -> str:
     stripped = text.strip()
     if max_chars <= 0 or len(stripped) <= max_chars:
         return stripped
+    if question:
+        from api.ai.passages import select_passage
+
+        return select_passage(stripped, question, max_chars) or "Bu bütçeye sığan tam kaynak cümlesi yok."
     return stripped[: max_chars - 1].rstrip() + "…"
 
 
@@ -175,7 +179,7 @@ def build_grounded_prompt(
                     f"URL: {context.source_url}" if context.source_url else None,
                     context.temporal_line,
                     "Metin:",
-                    _clip_source(context.content, max_context_chars),
+                    _clip_source(context.content, max_context_chars, question),
                 )
                 if line
             )

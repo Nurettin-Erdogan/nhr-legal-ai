@@ -44,8 +44,8 @@ def test_prompt_clips_long_source_text():
     prompt = build_grounded_prompt("Soru?", [long_context], max_context_chars=80)
 
     assert "A" * 2000 not in prompt
-    assert "A" * 79 in prompt
-    assert "…" in prompt
+    assert "A" * 79 not in prompt
+    assert "tam kaynak cümlesi yok" in prompt
 
 
 def test_prompt_labels_legislation_with_law_and_article():
