@@ -49,7 +49,7 @@ def test_duration_rank_prefers_start_and_duration_to_procedural_boilerplate():
 
 
 def test_candidates_keep_third_party_warning_and_drop_allegation():
-    context = replace(court_decision_context(content='Ortak velayet verilmesini talep ve dava etmiştir. Ortak velayet bakımından rapor değerlendirilmelidir.'), verification='third_party')
+    context = replace(court_decision_context(content='Ortak velayet verilmesini talep ve dava etmiştir. Ortak velayet bakımından çocuğun yararına ilişkin rapor değerlendirilmelidir.'), verification='third_party')
     evidence = evidence_candidates('Ortak velayet şartları?', [context])
     assert all('talep ve dava' not in e.text for e in evidence)
     assert 'doğrulanmadı' in selection_prompt('Ortak velayet?', [context], evidence)
@@ -76,7 +76,7 @@ def test_empty_or_cut_evidence_never_falls_back_to_an_invented_answer():
     assert text == 'Kaynaklarda yeterli bilgi bulunmuyor.'
 
 
-def test_duration_expansion_keeps_original_query_and_has_a_short_deadline(monkeypatch):
+def test_matching_statute_does_not_wait_for_expensive_optional_lexical_search(monkeypatch):
     from api.ai import retrieval
     import psycopg
     calls = []
@@ -89,8 +89,7 @@ def test_duration_expansion_keeps_original_query_and_has_a_short_deadline(monkey
     monkeypatch.setattr(retrieval, '_execute_retrieval', execute)
     result = retrieval.retrieve_contexts(object(), question='İtirazın iptali davası süresi nedir?', top_k=6)
     assert result == [context]  # successful primary retrieval survives
-    assert len(calls) == 2
-    assert calls[1][2]['timeout'] == '4s'
-    assert calls[1][1]['required_phrase'] == 'itirazın iptali'
-    assert 'FROM base_query' in calls[1][0]
-    assert 'sene' in calls[1][0]
+    assert len(calls) == 1
+    assert calls[0][2]['timeout'] == '3s'
+    assert calls[0][1]['law_no'] == '2004'
+    assert calls[0][1]['article_no'] == '67'

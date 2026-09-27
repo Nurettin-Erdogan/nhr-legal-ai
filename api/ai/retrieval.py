@@ -9,6 +9,7 @@ from api.ai.embeddings import vector_literal
 from api.ai.rag import RAGContext
 from api.ai.search_plan import plan_search
 from api.ai.passages import is_duration_question, sentence_score
+from api.ai.relevance import question_intent, intent_tsquery, relevant_contexts
 
 _LAW_NO_RE = re.compile(r"(?<!\d)(\d{3,5})(?!\d)")
 _ARTICLE_RE = re.compile(
@@ -736,8 +737,6 @@ def _execute_retrieval(
         connection.execute("SET work_mem TO '64MB'")
     except psycopg.Error:
         pass
-    if _bounded_variant(sql) == sql:  # sözcük araması çağrısı yok
-        return [RAGContext(**row) for row in connection.execute(sql, params).fetchall()]
     # Rank against the full searchable corpus, not an arbitrary first 6,000 rows.
     # A timeout is an explicit failure, never a silently incomplete result set.
     rows = _run_retrieval(connection, sql, params, timeout)
@@ -775,7 +774,7 @@ def _retrieve_statute_contexts(
     )
 
 
-def retrieve_contexts(
+def _retrieve_legacy_contexts(
     connection: psycopg.Connection,
     *,
     question: str,
@@ -856,6 +855,135 @@ def retrieve_contexts(
         broad_params,
     )
     return merge_lexical_hits(question, contexts, broad, top_k)
+
+
+# ANN candidate retrieval must order directly by the distance operator before
+# ranking. A row_number over every embedding prevents a bounded nearest-neighbor
+# plan. RLS, model identity, source status and temporal rules are preserved.
+SEMANTIC_RETRIEVAL_SQL = f"""
+WITH nearest AS MATERIALIZED (
+    SELECT chunk.id, chunk.embedding <=> %(embedding)s::vector AS distance
+    FROM legal_chunks chunk
+    JOIN legal_sources ls ON ls.id = chunk.legal_source_id
+    {_DETAIL_JOINS}
+    WHERE chunk.embedding IS NOT NULL
+      AND chunk.embedding_model = %(embedding_model)s
+      AND ls.deleted_at IS NULL
+      AND {_VERIFIED_SOURCE_FILTER}
+      AND {_TEMPORAL_FILTER}
+    ORDER BY chunk.embedding <=> %(embedding)s::vector
+    LIMIT %(candidate_limit)s
+)
+SELECT {_SELECT_COLUMNS}, (1.0 - nearest.distance)::real AS rank
+FROM nearest
+JOIN legal_chunks chunk ON chunk.id = nearest.id
+JOIN legal_sources ls ON ls.id = chunk.legal_source_id
+{_DETAIL_JOINS}
+ORDER BY nearest.distance, chunk.id
+"""
+
+
+def retrieve_contexts(
+    connection: psycopg.Connection, *, question: str, top_k: int,
+    query_embedding: list[float] | None = None, embedding_model: str | None = None,
+    as_of: date | None = None, lexical_mode: str = "auto", diagnostics: dict | None = None,
+) -> list[RAGContext]:
+    """Selective full-corpus lexical + optional ANN search; never unbounded OR.
+
+    Hints are NOT legal evidence. A mapped statute must exist and pass the same
+    official/current/version filters as an explicit reference. Failed optional
+    branches don't discard successful results. If every branch times out, expose
+    the failure rather than pretend the corpus contains no relevant sources.
+    """
+    if lexical_mode != "auto":
+        return _retrieve_legacy_contexts(
+            connection, question=question, top_k=top_k, as_of=as_of,
+            query_embedding=query_embedding, embedding_model=embedding_model,
+            lexical_mode=lexical_mode,
+        )
+    from time import monotonic
+    info = diagnostics if diagnostics is not None else {}
+    info.update(branches=[], partial=False, semantic_requested=query_embedding is not None)
+    started = monotonic()
+    errors = []
+    completed = 0
+
+    def run(name, sql, params, budget):
+        nonlocal completed
+        tick = monotonic()
+        try:
+            rows = _execute_retrieval(connection, sql, params, timeout=budget)
+            completed += 1
+            status = 'ok'
+            return rows
+        except psycopg.errors.QueryCanceled as exc:
+            errors.append(exc)
+            info['partial'] = True
+            status = 'timeout'
+            return []
+        finally:
+            info['branches'].append(dict(name=name, status=locals().get('status', 'error'),
+                                         seconds=round(monotonic()-tick, 3)))
+
+    law_nos, articles = question_law_numbers(question), question_article_numbers(question)
+    explicit = bool(law_nos and articles)
+    intent = question_intent(question)
+    reference = (law_nos[0], articles[0]) if explicit else (intent.statute if intent else None)
+    statute = []
+    if reference:
+        statute = run('statute', STATUTE_RETRIEVAL_SQL, dict(law_no=reference[0],
+                      article_no=reference[1], as_of=as_of, top_k=max(top_k, 8)), '3s')
+        if explicit:
+            info['seconds'] = round(monotonic()-started, 3)
+            if errors and not completed:
+                raise errors[0]
+            return statute[:top_k]
+
+    plan = plan_search(question)
+    params = dict(question=plan.text, required_phrase=plan.phrase, as_of=as_of,
+                  top_k=max(24, top_k*4), candidate_limit=max(24, top_k*4))
+    if intent:
+        params['intent_query'] = intent_tsquery(intent)
+        ctes = "search_query AS (SELECT to_tsquery('turkish', %(intent_query)s) AS value)"
+        sql = _historical_lexical_sql(ctes) if as_of else _current_lexical_sql(ctes)
+    else:
+        sql = _lexical_sql(historical=as_of is not None, mode='narrow')
+    semantic = []
+    if query_embedding is not None and embedding_model:
+        semantic = run('semantic', SEMANTIC_RETRIEVAL_SQL,
+                       dict(params, embedding=vector_literal(query_embedding),
+                            embedding_model=embedding_model,
+                            candidate_limit=max(96, top_k * 12)), '3s')
+    # Real-corpus measurements show global FTS ranking can dominate latency.
+    # With topical semantic evidence, don't block the answer on that optional
+    # full ranking. The separate research browser remains an exhaustive search.
+    topical_semantic = relevant_contexts(question, semantic)
+    if topical_semantic or relevant_contexts(question, statute):
+        lexical = []
+        info['lexical_skipped'] = 'topical_semantic_or_statutory_evidence_available'
+    else:
+        lexical = run('lexical', sql, params, '4s')
+    candidates = relevant_contexts(question, lexical + semantic)
+    # Reciprocal rank fusion avoids comparing arbitrary ts_rank and cosine units.
+    if semantic:
+        from dataclasses import replace
+        ranks = {}
+        for branch in (lexical, semantic):
+            for position, context in enumerate(branch, 1):
+                ranks[context.chunk_id] = ranks.get(context.chunk_id, 0) + 1 / (60 + position)
+        candidates = [replace(c, rank=ranks[c.chunk_id]) for c in candidates]
+    ranked = merge_lexical_hits(question, relevant_contexts(question, statute), candidates, top_k)
+    # Preserve a matching verified provision even if high-frequency cases outrank it.
+    if statute:
+        provisions = relevant_contexts(question, statute)
+        preferred = sorted(provisions, key=lambda c: _hit_quality_score(question, c), reverse=True)[:2]
+        ids = {c.chunk_id for c in preferred}
+        ranked = (preferred + [c for c in ranked if c.chunk_id not in ids])[:top_k]
+    info['seconds'] = round(monotonic()-started, 3)
+    info['returned'] = len(ranked)
+    if not ranked and errors:
+        raise errors[0]
+    return ranked
 
 
 def retrieve_document_contexts(

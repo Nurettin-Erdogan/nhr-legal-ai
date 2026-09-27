@@ -65,30 +65,31 @@ Uygulama `http://localhost:3000`, API dokümantasyonu
 kullanacaksa `web/.env.local.example` dosyasını `.env.local` adıyla kopyalayıp
 değeri değiştirin.
 
-## DeepSeek kaynaklı cevaplar (yerel Ollama)
+## Qwen kaynaklı cevaplar (yerel Ollama)
 
 Ollama'yı yerel makinede başlatın ve sohbet ile embedding modellerini yükleyin:
 
 ```powershell
-ollama pull deepseek-r1:8b
+ollama pull qwen3.5:4b
 ollama pull nomic-embed-text
 ```
 
-Proje kökündeki `.env` dosyasında sohbet için DeepSeek'i seçin. Embedding
-DeepSeek API'sinde yoktur; 768 boyutlu vektörler Ollama'daki `nomic-embed-text`
-ile üretilir.
+Proje kökündeki `.env` dosyasında sohbet için Qwen'i seçin. Mevcut korpusun
+768 boyutlu `nomic-embed-text` vektörleri korunur; sohbet modelini değiştirmek
+embedding modelini veya veritabanındaki vektörleri değiştirmez.
 
 ```env
-AI_PROVIDER=deepseek
-AI_MODEL=deepseek-r1:8b
+AI_PROVIDER=qwen
+AI_MODEL=qwen3.5:4b
 OLLAMA_BASE_URL=http://127.0.0.1:11434
 OLLAMA_TIMEOUT_SECONDS=180
 OLLAMA_MAX_OUTPUT_TOKENS=768
-OLLAMA_NUM_CTX=3072
+OLLAMA_NUM_CTX=4096
 OLLAMA_KEEP_ALIVE=30m
-RAG_TOP_K=2
-RAG_CONTEXT_CHARS=800
-RAG_QUERY_EMBEDDING=false
+RAG_TOP_K=6
+RAG_CONTEXT_CHARS=2400
+RAG_QUERY_EMBEDDING=true
+RAG_EXPLANATIONS=true
 EMBEDDING_PROVIDER=ollama
 EMBEDDING_MODEL=nomic-embed-text
 EMBEDDING_DIMENSIONS=768
@@ -97,14 +98,17 @@ EMBEDDING_DIMENSIONS=768
 API'yi yeniden başlattıktan sonra `http://localhost:3000/assistant` adresindeki
 ekran etkinleşir. Asistan önce korpusta ilgili mevzuat ve karar parçalarını
 seçer, ardından bu parçaları sabit `[K1]`, `[K2]` kaynak işaretleriyle
-DeepSeek'e gönderir. API, cevaptaki atıf işaretlerinin gerçekten getirilen
+Qwen'e gönderir. API, cevaptaki atıf işaretlerinin gerçekten getirilen
 kaynaklara karşılık geldiğini doğrular; hukuki iddiaların maddi doğruluğunu
 otomatik olarak kanıtlamaz. Yerel Ollama için API anahtarı gerekmez; servisi kimlik doğrulamasız
 internete açmayın. Ollama geçici olarak çalışmazsa embedding yerine sözcüksel
-arama devam eder, fakat DeepSeek yanıtı üretilemez.
-Yerel CPU kurulumunda varsayılan olarak sözcüksel RAG, 3072 bağlam ve 768
-çıktı tokenı kullanılır; DeepSeek-R1 düşünme bloğu kapatılır ki kota gizli
-muhakemeye gitmesin. Semantik soru vektörü için `RAG_QUERY_EMBEDDING=true`.
+arama devam eder, fakat model yanıtı üretilemez.
+Yerel geçiş ve karşılaştırmalı ölçüm ayrıntıları: [RAG iyileştirmesi](docs/rag-upgrade.md).
+DeepSeek silinmedi: geri dönüş için `AI_PROVIDER=deepseek` ve
+`AI_MODEL=deepseek-r1:8b` seçip API'yi yeniden başlatın.
+`RAG_EXPLANATIONS=false` yalnız tam kaynak alıntılarına döner. Açıklama modu,
+atıf/sayı kontrolleri ve ayrı destek/kapsam değerlendirmesi kullanır; doğruluk
+garantisi değildir. Uzun numaralı koşul listeleri eksik özetlenmez, aynen korunur.
 
 ### Semantik arama
 

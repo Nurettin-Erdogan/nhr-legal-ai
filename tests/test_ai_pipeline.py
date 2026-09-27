@@ -283,7 +283,7 @@ def test_generation_lock_serializes_two_requests(monkeypatch):
     monkeypatch.setattr(ai_pipeline, "generate_grounded_answer", blocking_generate)
 
     request_a = AIAnswerRequest(question="Kıdem tazminatı şartları nelerdir?")
-    request_b = AIAnswerRequest(question="Haksız fesih sonuçları nelerdir?")
+    request_b = AIAnswerRequest(question="Haklı fesih halinde kıdem tazminatı alınır mı?")
 
     async def both():
         return await asyncio.gather(

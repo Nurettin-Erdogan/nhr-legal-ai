@@ -7,8 +7,10 @@ from tests.factories import court_decision_context
 def test_explicit_statute_question_does_not_fall_back_to_court_decisions(monkeypatch):
     calls: list[str] = []
 
-    def execute(connection, sql, params):
+    def execute(connection, sql, params, **kwargs):
         calls.append(sql)
+        if sql == retrieval.STATUTE_RETRIEVAL_SQL:
+            return []
         return [court_decision_context(content="Dava açma süresi kararda tartışılmıştır.")]
 
     monkeypatch.setattr(retrieval, "_execute_retrieval", execute)

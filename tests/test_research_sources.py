@@ -143,7 +143,7 @@ def test_hybrid_model_context_does_not_expand_to_whole_candidate_pool(monkeypatc
     rows = [court_decision_context(
         source_id=str(UUID(int=i + 100)), chunk_id=str(UUID(int=i + 200)),
     ) for i in range(24)]
-    monkeypatch.setattr(retrieval, "_execute_retrieval", lambda *a: rows)
+    monkeypatch.setattr(retrieval, "_execute_retrieval", lambda *a, **kw: rows)
     monkeypatch.setattr(retrieval, "vector_literal", lambda vector: "[0]")
     selected = retrieval.retrieve_contexts(object(), question="Kıdem tazminatı", top_k=6, query_embedding=[0.1], embedding_model="test")
     assert len(selected) == 6
@@ -153,7 +153,7 @@ def test_phrase_is_not_silently_relaxed_to_unrelated_or_results(monkeypatch):
     from api.ai import retrieval
 
     calls = []
-    def execute(connection, sql, params):
+    def execute(connection, sql, params, **kwargs):
         calls.append(params)
         return []
     monkeypatch.setattr(retrieval, "_execute_retrieval", execute)

@@ -153,7 +153,8 @@ async def _embed_question(question: str) -> list[float] | None:
             ollama_base_url=settings.ollama_base_url,
             ollama_timeout_seconds=min(8.0, settings.ollama_timeout_seconds),
         )
-        return await asyncio.to_thread(provider.embed_query, question)
+        from api.ai.relevance import semantic_search_text
+        return await asyncio.to_thread(provider.embed_query, semantic_search_text(question))
     except EmbeddingProviderError:
         logger.warning("Soru embedding'i üretilemedi; lexical RAG kullanılacak")
         return None
@@ -349,7 +350,7 @@ async def execute_answer(
         cited_ids = [item["chunk_id"] for item in cached["citations"]]
         by_id = {str(context.chunk_id): context for context in contexts}
         ordered = tuple(by_id[chunk_id] for chunk_id in cited_ids if chunk_id in by_id)
-        cached_answer = verify_answer(cached["answer"], list(ordered))
+        cached_answer = verify_answer(cached["answer"], list(ordered), question=request.question)
         if len(ordered) != len(cited_ids):
             cached = None
         if cached is not None and cached_answer.grounded:
@@ -425,7 +426,7 @@ async def execute_answer(
 
     await emit("verifying")
     verify_started = monotonic()
-    answer = verify_answer(raw_answer, contexts)
+    answer = verify_answer(raw_answer, contexts, question=request.question)
     timings.verification_ms = (monotonic() - verify_started) * 1000
     if not answer.grounded:
         if is_insufficient_source_reply(answer.text or raw_answer):
@@ -443,6 +444,17 @@ async def execute_answer(
                 detail="Yanıt kaynak metniyle doğrulanamadı; desteklenmeyen hukuki iddialar gösterilmiyor",
             )
 
+    if answer.grounded and getattr(settings, "rag_explanations", False):
+        from api.ai.explanation import explain_verified_answer
+        explanation_started = monotonic()
+        async with _generation_lock:
+            answer = await asyncio.to_thread(
+                explain_verified_answer, provider, question=request.question, answer=answer,
+            )
+        timings.extra["explanation_ms"] = round((monotonic() - explanation_started) * 1000, 1)
+
+    from api.ai.explanation import with_coverage_notice
+    answer = with_coverage_notice(answer, request.question)
     persist_started = monotonic()
     if user_id is not None:
         conversation_id, message_id = await asyncio.to_thread(

@@ -35,7 +35,7 @@ class GenerationUsage:
     num_ctx: int | None = None
 
 
-LOCAL_OLLAMA_PROVIDERS = frozenset({"deepseek", "ollama"})
+LOCAL_OLLAMA_PROVIDERS = frozenset({"deepseek", "ollama", "qwen"})
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _AVAILABILITY_TTL_SECONDS = 30.0
 _availability_cache: dict[tuple[str, str], tuple[float, bool]] = {}
@@ -157,6 +157,7 @@ class OllamaProvider:
 
     def _chat_payload(self, *, system_instruction: str, prompt: str) -> dict[str, object]:
         return {
+            **({"format": "json"} if "yalnız json" in system_instruction.lower() else {}),
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system_instruction},

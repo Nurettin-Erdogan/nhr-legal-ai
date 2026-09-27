@@ -42,7 +42,7 @@ class VerifiedAnswer:
         )
 
 
-def verify_answer(answer: str, contexts: list[RAGContext]) -> VerifiedAnswer:
+def verify_answer(answer: str, contexts: list[RAGContext], *, question: str = "") -> VerifiedAnswer:
     """Validate extractive source support and resolve retrieved citation markers.
 
     The prompt tells the model to cite what it used, but nothing stops it from
@@ -78,6 +78,12 @@ def verify_answer(answer: str, contexts: list[RAGContext]) -> VerifiedAnswer:
     unsupported = list(uncited_claims(text, len(cited_contexts)))
     unsupported.extend(_unsupported_numeric_claims(text, cited_contexts))
     unsupported.extend(unsupported_source_claims(text, cited_contexts))
+    if question:
+        from api.ai.relevance import passage_relevant
+        # A real citation is necessary, but an unrelated quotation is not an answer.
+        for line in text.splitlines():
+            if _MARKER_PATTERN.search(line) and not passage_relevant(question, line):
+                unsupported.append(line)
     return VerifiedAnswer(
         text=text.strip(),
         contexts=cited_contexts,

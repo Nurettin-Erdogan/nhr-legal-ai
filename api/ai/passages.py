@@ -9,6 +9,10 @@ def is_duration_question(question: str) -> bool:
     return bool(re.search(r"\bsüre\w*|\bkaç (?:gün|ay|yıl|sene|hafta)", normalize(question)))
 
 
+def contains_duration(text: str) -> bool:
+    return bool(re.search(r"\b(?:\d+|bir|iki|üç|dört|beş|altı|yedi|sekiz|dokuz|on|onbeş|yirmi|otuz|kırk|elli|altmış|doksan)\s+(?:gün|ay|yıl|sene|hafta)\w*", normalize(text)))
+
+
 def sentence_score(sentence: str, question: str) -> float:
     """Relevance is a ranking heuristic, never a legal truth/verification flag."""
     plan = plan_search(question)
@@ -20,7 +24,7 @@ def sentence_score(sentence: str, question: str) -> float:
     duration = 0
     if is_duration_question(question):
         # Prefer an actual duration + starting event, not merely 'süresinde açıldı'.
-        duration = 12 if re.search(r"\b(?:\d+|bir|iki|üç|dört|beş|altı|yedi|sekiz|dokuz|on)\s+(?:gün|ay|yıl|sene|hafta)\w*", normalized) else -5
+        duration = 12 if contains_duration(normalized) else -5
         if duration > 0 and re.search(r"itibaren|tebliğ|başla", normalized):
             duration += 6
     return phrase + overlap + duration - allegation

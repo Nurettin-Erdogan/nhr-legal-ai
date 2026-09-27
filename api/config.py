@@ -34,6 +34,7 @@ class Settings:
     allow_registration: bool
     document_storage_dir: str
     max_document_size_bytes: int
+    rag_explanations: bool = False
 
 
 def _database_url() -> str:
@@ -70,6 +71,7 @@ def get_settings() -> Settings:
         ),
         cors_origins=tuple(value.strip() for value in origins.split(",") if value.strip()),
         ai_provider=ai_provider,
+        rag_explanations=os.getenv("RAG_EXPLANATIONS", "false").lower() in {"1", "true", "yes"},
         ai_model=os.getenv("AI_MODEL", "deepseek-r1:8b").strip(),
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip(),
         ollama_timeout_seconds=max(

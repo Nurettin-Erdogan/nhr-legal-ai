@@ -32,9 +32,10 @@ def test_gemini_is_no_longer_a_supported_provider():
         create_provider(provider_name="gemini", model="gemini-test")
 
 
-def test_qwen_is_no_longer_a_supported_provider():
-    with pytest.raises(AIProviderError, match="Desteklenmeyen"):
-        create_provider(provider_name="qwen", model="qwen3:8b")
+def test_qwen_is_supported_locally_alongside_deepseek():
+    provider = create_provider(provider_name="qwen", model="qwen3.5:4b")
+    assert isinstance(provider, OllamaProvider)
+    assert provider.name == "qwen"
 
 
 def test_deepseek_uses_existing_rag_prompt_and_citation_verification():
