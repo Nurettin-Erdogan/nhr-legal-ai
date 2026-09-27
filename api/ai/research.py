@@ -1,8 +1,8 @@
 """Public-corpus research pages, independent of the LLM context window.
 
-No model, ingestion, verification queue or corpus writes. The existing full
-FTS function is called with NULL limit (PostgreSQL LIMIT ALL); pagination is
-applied only after source deduplication. Never label a candidate count a total.
+No model, ingestion, verification queue or corpus writes. The public-corpus
+function counts distinct sources before pagination, and only the selected page
+is hydrated with full text. Never label a candidate count a total.
 """
 
 from fastapi import APIRouter, HTTPException, Query
@@ -15,26 +15,50 @@ from api.db import database_connection
 
 router = APIRouter()
 
-RESEARCH_SQL = f"""
+LEGACY_RESEARCH_SQL = f"""
 WITH search_query AS ({SEARCH_QUERY_SQL}),
 hits AS MATERIALIZED (
     SELECT hits.chunk_id, hits.rank FROM search_query
     CROSS JOIN LATERAL legal_rag_current_lexical_hits(search_query.value, NULL::integer) hits
     WHERE numnode(search_query.value) > 0
 ),
-sources AS (
-    SELECT DISTINCT ON (ls.id) {_SELECT_COLUMNS}, hits.rank
+source_hits AS MATERIALIZED (
+    -- The function already checks current/deleted/trust for this snapshot.
+    -- Keep ONLY IDs through dedup/count/sort; hydrate large texts on the page.
+    SELECT DISTINCT ON (chunk.legal_source_id)
+        chunk.legal_source_id AS source_id, chunk.id AS chunk_id, hits.rank
     FROM hits
     JOIN legal_chunks chunk ON chunk.id = hits.chunk_id
-    JOIN legal_sources ls ON ls.id = chunk.legal_source_id
-    {_DETAIL_JOINS}
-    WHERE ls.deleted_at IS NULL AND ls.is_current AND {_VERIFIED_SOURCE_FILTER}
-    ORDER BY ls.id, hits.rank DESC, chunk.chunk_index, chunk.id
+    ORDER BY chunk.legal_source_id, hits.rank DESC, chunk.chunk_index, chunk.id
+), page AS (
+    SELECT *, count(*) OVER () AS total FROM source_hits
+    ORDER BY rank DESC, source_id
+    LIMIT %(limit)s OFFSET %(offset)s
 )
-SELECT sources.*, count(*) OVER () AS total
-FROM sources
-ORDER BY rank DESC, source_id
-LIMIT %(limit)s OFFSET %(offset)s
+SELECT {_SELECT_COLUMNS}, page.rank, page.total
+FROM page
+JOIN legal_chunks chunk ON chunk.id = page.chunk_id
+JOIN legal_sources ls ON ls.id = page.source_id
+{_DETAIL_JOINS}
+WHERE ls.deleted_at IS NULL AND ls.is_current AND {_VERIFIED_SOURCE_FILTER}
+ORDER BY page.rank DESC, page.source_id
+"""
+
+RESEARCH_SQL = f"""
+WITH search_query AS ({SEARCH_QUERY_SQL}),
+page AS MATERIALIZED (
+    SELECT result.* FROM search_query
+    CROSS JOIN LATERAL legal_rag_research_page(
+        search_query.value, %(limit)s, %(offset)s
+    ) result
+)
+SELECT {_SELECT_COLUMNS}, page.rank, page.total
+FROM page
+JOIN legal_chunks chunk ON chunk.id = page.chunk_id
+JOIN legal_sources ls ON ls.id = page.source_id
+{_DETAIL_JOINS}
+WHERE ls.deleted_at IS NULL AND ls.is_current AND {_VERIFIED_SOURCE_FILTER}
+ORDER BY page.rank DESC, page.source_id
 """
 
 
@@ -54,10 +78,16 @@ def research_sources(
             connection.execute("SET LOCAL work_mem = '32MB'")
             connection.execute("SET LOCAL max_parallel_workers_per_gather = 0")
             connection.execute("SET LOCAL jit = off")
-            rows = connection.execute(RESEARCH_SQL, {
+            params = {
                 "query": plan.text, "phrase": plan.phrase,
                 "limit": limit + 1, "offset": offset,
-            }).fetchall()
+            }
+            try:
+                with connection.transaction():
+                    rows = connection.execute(RESEARCH_SQL, params).fetchall()
+            except psycopg.errors.UndefinedFunction:
+                # Rolling deployments can serve the old query until 027 is applied.
+                rows = connection.execute(LEGACY_RESEARCH_SQL, params).fetchall()
     except psycopg.errors.QueryCanceled as exc:
         raise HTTPException(504, "Arama süresi doldu; tüm sonuçlar taranmış sayılmaz. Konuyu daraltıp yeniden deneyin.") from exc
     except psycopg.Error as exc:

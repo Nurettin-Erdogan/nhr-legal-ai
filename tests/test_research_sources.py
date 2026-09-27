@@ -1,6 +1,8 @@
 from contextlib import contextmanager
 from dataclasses import asdict
 from uuid import UUID
+from pathlib import Path
+from contextlib import nullcontext
 
 import psycopg
 import pytest
@@ -31,14 +33,24 @@ def test_more_than_two_informative_terms_and_law_numbers_survive():
 
 
 def test_research_has_no_top_k_or_arbitrary_candidate_cap():
-    assert "NULL::integer" in research.RESEARCH_SQL
-    assert "DISTINCT ON (ls.id)" in research.RESEARCH_SQL
-    assert "count(*) OVER ()" in research.RESEARCH_SQL
+    migration = Path('database/migrations/027_rag_research_page.sql').read_text(encoding='utf-8')
+    assert 'DISTINCT ON (ls.id)' in migration
+    assert 'count(*) OVER ()' in migration
+    assert 'SECURITY DEFINER' in migration
+    assert 'REVOKE ALL' in migration
+    assert 'public.legal_chunks' in migration and 'document_chunks' not in migration
+    assert 'candidate_limit' not in migration
+    assert migration == Path('database/init/028_rag_research_page.sql').read_text(encoding='utf-8')
+    assert 'legal_rag_research_page' in research.RESEARCH_SQL
     assert "candidate_limit" not in research.RESEARCH_SQL
     assert "bounded" not in research.RESEARCH_SQL
     assert "ls.deleted_at IS NULL" in research.RESEARCH_SQL
     assert "ls.is_current" in research.RESEARCH_SQL
     assert "bulk_seed" in research.RESEARCH_SQL
+    # Text and subtype details must not be fetched for every counted match.
+    before_page = research.RESEARCH_SQL.split('SELECT \n    chunk.id')[0]
+    assert 'chunk.content' not in before_page
+    assert 'court_decision_details' not in before_page
 
 
 @pytest.fixture
@@ -53,6 +65,9 @@ def pages(monkeypatch):
     statements = []
 
     class Connection:
+        def transaction(self):
+            return nullcontext()
+
         def execute(self, sql, params=None):
             statements.append((sql, params))
             selected = rows[params["offset"]:params["offset"] + params["limit"]] if params else []

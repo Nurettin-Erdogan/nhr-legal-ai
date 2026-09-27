@@ -203,12 +203,14 @@ def uncited_claims(text: str, context_count: int) -> tuple[str, ...]:
     Move those markers before the punctuation for sentence segmentation only;
     the user-visible answer is not modified here.
     """
-    normalized = _TRAILING_MARKERS_RE.sub(
+    from api.ai.source_support import _sentences, _AFTER_SENTENCE
+
+    normalized = _AFTER_SENTENCE.sub(
         lambda match: f" {match.group(2).strip()}{match.group(1)} ", text
     )
     unsupported: list[str] = []
     for line in normalized.splitlines():
-        for sentence in _SENTENCE_BOUNDARY_RE.split(line.strip()):
+        for sentence in _sentences(line.strip()):
             sentence = sentence.strip()
             if not sentence or not any(character.isalnum() for character in sentence):
                 continue
@@ -225,9 +227,19 @@ def generate_grounded_answer(
     max_context_chars: int = 1200,
     history: Sequence[HistoryTurn] = (),
 ) -> str:
-    prompt = build_grounded_prompt(
-        question, contexts, max_context_chars=max_context_chars, history=history
+    from api.ai.evidence_selection import (
+        SELECTION_INSTRUCTION, evidence_candidates, selection_prompt, render_selection,
     )
-    # Never "repair" unsupported prose by attaching a source number blindly.
-    # The pipeline applies the source-support gate before persisting/showing it.
-    return provider.generate(system_instruction=SYSTEM_INSTRUCTION, prompt=prompt)
+
+    evidence = evidence_candidates(
+        question, contexts, per_source_chars=max_context_chars, total_chars=4500,
+    )
+    if not evidence:
+        return "Kaynaklarda yeterli bilgi bulunmuyor."
+    raw = provider.generate(
+        system_instruction=SELECTION_INSTRUCTION,
+        prompt=selection_prompt(question, contexts, evidence, history),
+    )
+    # IDs resolve to the exact source sentences, never to arbitrary model prose.
+    # The independent source-support gate is still mandatory downstream.
+    return render_selection(raw, evidence) or "Kaynaklarda yeterli bilgi bulunmuyor."

@@ -354,7 +354,9 @@ def test_record_exchange_stores_verification_outcome(connection):
         "SELECT metadata FROM messages WHERE id = %s", (message_id,)
     ).fetchone()["metadata"]
 
-    assert metadata["grounded"] is True
+    # A fabricated marker/claim must also persist as ungrounded, not merely be
+    # hidden in the UI while the database calls the answer verified.
+    assert metadata["grounded"] is False
     assert metadata["unverified_markers"] == ["K9"]
 
 

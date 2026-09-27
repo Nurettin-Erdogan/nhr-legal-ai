@@ -248,8 +248,11 @@ def test_corpus_stats_break_down_courts_verification_and_embeddings(connection, 
         "_live_chunk_estimate",
         lambda: connection.execute("SELECT count(*) AS n FROM legal_chunks").fetchone()["n"],
     )
-    monkeypatch.setattr(legal, "_live_embedded_count", lambda: None)
-    monkeypatch.setattr(legal, "_read_embed_progress_ready", lambda: None)
+    # Some deployments have live progress readers; the committed baseline does
+    # not. Stub them only when present, without making them a test prerequisite.
+    for reader in ("_live_embedded_count", "_read_embed_progress_ready"):
+        if hasattr(legal, reader):
+            monkeypatch.setattr(legal, reader, lambda: None)
 
     stats = legal.corpus_stats()
 

@@ -8,6 +8,7 @@ import psycopg
 from api.ai.embeddings import vector_literal
 from api.ai.rag import RAGContext
 from api.ai.search_plan import plan_search
+from api.ai.passages import is_duration_question, sentence_score
 
 _LAW_NO_RE = re.compile(r"(?<!\d)(\d{3,5})(?!\d)")
 _ARTICLE_RE = re.compile(
@@ -640,6 +641,8 @@ def _hit_quality_score(question: str, context: RAGContext) -> float:
         1 for word in distinctive_question_words(question) if _word_in_blob(word, blob)
     )
     score = float(context.rank or 0) * 0.05 + overlap * 2.0
+    from api.ai.source_support import _sentences
+    score += max((sentence_score(s, question) for s in _sentences(context.content, include_tail=False)), default=0)
     if law_match:
         score += 8.0
     if article_match:
@@ -723,6 +726,8 @@ def _execute_retrieval(
     connection: psycopg.Connection,
     sql: str,
     params: dict,
+    *,
+    timeout: str = "15s",
 ) -> list[RAGContext]:
     try:
         connection.execute("SET jit TO off")
@@ -735,7 +740,7 @@ def _execute_retrieval(
         return [RAGContext(**row) for row in connection.execute(sql, params).fetchall()]
     # Rank against the full searchable corpus, not an arbitrary first 6,000 rows.
     # A timeout is an explicit failure, never a silently incomplete result set.
-    rows = _run_retrieval(connection, sql, params, "15s")
+    rows = _run_retrieval(connection, sql, params, timeout)
     return [RAGContext(**row) for row in rows]
 
 
@@ -808,6 +813,23 @@ def retrieve_contexts(
     )
     if lexical_mode != "auto":
         return contexts[:top_k]
+
+    if plan.phrase and is_duration_question(question):
+        # A duration may be written as 'bir sene' rather than the question's
+        # 'süresi'. Search that intent too, but NEVER drop the legal compound.
+        duration_ctes = _SEARCH_QUERY_CTES.replace(
+            "END AS value\n    FROM base_query",
+            "END && to_tsquery('turkish', 'gün | ay | yıl | sene | hafta') AS value\n    FROM base_query",
+        )
+        duration_sql = _lexical_sql(historical=historical, mode="narrow").replace(
+            _SEARCH_QUERY_CTES, duration_ctes
+        )
+        try:
+            extra = _execute_retrieval(connection, duration_sql, params, timeout="4s")
+        except psycopg.errors.QueryCanceled:
+            # Optional intent expansion must not discard successful primary hits.
+            extra = []
+        contexts = merge_lexical_hits(question, contexts, extra, pool_size)
 
     contexts = merge_lexical_hits(question, contexts, [], top_k)
     statute = _retrieve_statute_contexts(

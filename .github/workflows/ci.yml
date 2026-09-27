@@ -66,6 +66,10 @@ jobs:
           do
             psql -h localhost -U nhr_app -d nhr_legal_ai_test -v ON_ERROR_STOP=1 -f "$f"
           done
+      - name: Apply public RAG research pagination
+        env:
+          PGPASSWORD: ci-test-only
+        run: psql -h localhost -U nhr_app -d nhr_legal_ai_test -v ON_ERROR_STOP=1 -f database/migrations/027_rag_research_page.sql
       - name: Pytest
         run: python -m pytest -q
 

@@ -26,7 +26,7 @@ class FakeProvider:
     def generate(self, *, system_instruction: str, prompt: str) -> str:
         self.system_instruction = system_instruction
         self.prompt = prompt
-        return "İşçi kıdem tazminatına hak kazanabilir. [K1]"
+        return '{"evidence_ids":["E1"]}'
 
 
 def test_prompt_contains_question_and_stable_source_marker():
@@ -181,4 +181,4 @@ def test_generate_does_not_attach_citations_to_an_unsupported_draft():
     )
 
     assert provider.calls == 1
-    assert answer.count("[K1]") == 1
+    assert "[K1]" not in answer
