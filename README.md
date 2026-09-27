@@ -56,8 +56,8 @@ Başka bir PowerShell penceresinde frontend'i başlatın:
 
 ```powershell
 cd web
-npm install
-npm run dev
+npm ci
+npm run dev -- --port 3000
 ```
 
 Uygulama `http://localhost:3000`, API dokümantasyonu
@@ -95,7 +95,7 @@ EMBEDDING_MODEL=nomic-embed-text
 EMBEDDING_DIMENSIONS=768
 ```
 
-API'yi yeniden başlattıktan sonra `http://localhost:3000/assistant` adresindeki
+API'yi yeniden başlattıktan sonra `http://localhost:3000/dashboard/ai` adresindeki
 ekran etkinleşir. Asistan önce korpusta ilgili mevzuat ve karar parçalarını
 seçer, ardından bu parçaları sabit `[K1]`, `[K2]` kaynak işaretleriyle
 Qwen'e gönderir. API, cevaptaki atıf işaretlerinin gerçekten getirilen
@@ -152,7 +152,12 @@ RLS oturumuna aktarabilir.
 
 ## Proje ve dava dosyaları
 
-`http://localhost:3000/projects` ekranı oturum kullanıcısının erişebildiği dava,
+Yeni TanStack/Vite arayüzünün kurulum ve ekran sınırları için
+[frontend kurulumu](web/README.md) ve [geçiş raporu](docs/frontend-transition.md).
+Büro ekranlarındaki `office_*` kayıtları aşağıdaki RAG proje/belge API'lerinden
+ayrıdır; büroya yüklenen belge otomatik olarak RAG'e indekslenmiş sayılmaz.
+
+Eski RAG proje API'si oturum kullanıcısının erişebildiği dava,
 icra, danışmanlık ve araştırma projelerini listeler. Yeni proje oluşturulurken
 kullanıcı `owner` üye olarak eklenir. API, JWT içindeki kullanıcı kimliğini
 transaction boyunca `app.user_id` PostgreSQL ayarına aktarır; proje ve belge
@@ -160,7 +165,7 @@ görünürlüğünü mevcut RLS politikaları sınırlar.
 
 ## Kullanıcı belgeleri
 
-`http://localhost:3000/documents` ekranında PDF, DOCX ve UTF-8 TXT belgeleri
+Eski RAG belge API'sinde PDF, DOCX ve UTF-8 TXT belgeleri
 yüklenebilir. Dosyalar varsayılan olarak `uploads/` altında kullanıcı kimliğiyle
 ayrılmış özel dizinlere kaydedilir; bu dizin Git'e eklenmez. Belge metni yükleme
 sırasında parçalanarak `document_chunks` tablosuna yazılır. Listeleme ve ekleme

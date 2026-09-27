@@ -17,10 +17,9 @@ sayaç alanı yoksa kart gösterilmez.
 
 ## Yerel frontend bağlantısı ve Git kapsamı
 
-Yereldeki TanStack/Vite frontend henüz commit edilmemiş geniş bir geçiştir;
-GitHub HEAD farklı bir frontend içerir. Bu görevin bağımsız bileşeni, veri tipi ve
-testleri ayrı tutuldu. **Bu dosyaların tek başına eklenmesi GitHub'daki eski
-arayüzde kartı etkinleştirmez.**
+İlk küçük commit yalnız bağımsız bileşen, veri tipi ve testleri içeriyordu.
+Kullanıcının frontend geçişi onayından sonra TanStack/Vite arayüzü, gerekli
+sohbet/büro API'leri ve bu entegrasyon birlikte yayımlanacak pakete alındı.
 
 Yerel `LegalChat.tsx` ve `ai-api.ts` içine şu entegrasyon yapıldı:
 
@@ -31,8 +30,9 @@ Yerel `LegalChat.tsx` ve `ai-api.ts` içine şu entegrasyon yapıldı:
 - Yeni sohbet/başka sohbet açılınca geçici özet temizlenir; çalışan istek sırasında
   sohbet değiştirip sayıları yanlış sohbete bağlamak engellenir.
 
-Geniş frontend geçişi ve bu iki dosyanın önceki değişiklikleri ayrı inceleme/onay
-olmadan bu küçük görev commit'ine alınmaz. Staged kullanıcı değişiklikleri korunur.
+Veri çekme/embedding işçisi değişiklikleri bu pakete alınmadı. Kullanıcının diğer
+staged değişiklikleri korundu. Eski Supabase migration/ETL betikleri ve tasarım
+arşivleri çalışır uygulamanın parçası değildir; yerelde kaldı.
 
 ## Testler
 

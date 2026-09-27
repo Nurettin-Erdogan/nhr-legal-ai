@@ -1,0 +1,302 @@
+:root {
+  --grad: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  --bg: #f5f6fb;
+  --card: #ffffff;
+  --text: #1f2340;
+  --muted: #6b7192;
+  --border: #e6e8f2;
+  --ok: #16a34a;
+  --err: #dc2626;
+  --warn: #d97706;
+}
+body.dark {
+  --bg: #12142a;
+  --card: #1b1e39;
+  --text: #eef0ff;
+  --muted: #9aa0c4;
+  --border: #2b2f52;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  width: 500px;
+  min-height: 700px;
+  margin: 0;
+  font:
+    13px/1.5 -apple-system,
+    "Segoe UI",
+    Roboto,
+    system-ui,
+    sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  background: var(--grad);
+  color: #fff;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.brand-mark {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.2);
+  font-size: 20px;
+  font-weight: 800;
+}
+.app-header h1 {
+  margin: 0;
+  font-size: 15px;
+}
+.app-header p {
+  margin: 2px 0 0;
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+main {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px;
+  box-shadow: 0 6px 18px rgba(31, 35, 64, 0.06);
+}
+.card h2 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+}
+.row.between {
+  justify-content: space-between;
+  align-items: center;
+}
+.row.tight {
+  gap: 6px;
+}
+.col {
+  flex: 1;
+}
+
+button {
+  flex: 1;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  color: #fff;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.primary {
+  background: var(--grad);
+}
+.secondary {
+  background: #4b53c9;
+  margin-top: 10px;
+}
+.danger {
+  background: #e11d48;
+}
+.ghost {
+  flex: 0 0 auto;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+.ghost.small {
+  padding: 6px 10px;
+  font-size: 11px;
+}
+
+.progress {
+  height: 10px;
+  margin-top: 12px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+.bar {
+  height: 100%;
+  width: 0%;
+  background: var(--grad);
+  transition: width 0.25s ease;
+}
+.meta {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 12px;
+}
+.stats div {
+  display: grid;
+  gap: 2px;
+  padding: 8px;
+  border-radius: 10px;
+  background: rgba(102, 126, 234, 0.08);
+  text-align: center;
+}
+.stats strong {
+  font-size: 14px;
+}
+.stats span {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+label {
+  display: block;
+  margin: 10px 0 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+input {
+  width: 100%;
+  padding: 9px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+}
+.hint {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--ok);
+  min-height: 14px;
+}
+
+.logs {
+  max-height: 190px;
+  overflow: auto;
+  display: grid;
+  gap: 4px;
+  font:
+    11px/1.45 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+.log {
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: rgba(107, 113, 146, 0.1);
+  word-break: break-word;
+}
+.log.success {
+  color: var(--ok);
+}
+.log.error {
+  color: var(--err);
+}
+.log.warn {
+  color: var(--warn);
+}
+
+/* Belge listesi */
+.file-list {
+  max-height: 220px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.file-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(102, 126, 234, 0.08);
+}
+.file-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.file-name {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 250px;
+}
+.file-status {
+  font-size: 11px;
+  opacity: 0.75;
+}
+.file-status.sent {
+  color: #16a34a;
+  opacity: 1;
+}
+.file-status.error {
+  color: #dc2626;
+  opacity: 1;
+}
+.file-status.sending {
+  color: #6366f1;
+  opacity: 1;
+}
+body.dark .file-row {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* Otomasyon başlığı */
+.session {
+  font-size: 12px;
+  line-height: 1.7;
+  margin-bottom: 10px;
+  opacity: 0.9;
+}
+button.big {
+  width: 100%;
+  font-size: 15px;
+  padding: 14px;
+  margin-bottom: 6px;
+}
+.hint.center {
+  text-align: center;
+  margin-bottom: 10px;
+}

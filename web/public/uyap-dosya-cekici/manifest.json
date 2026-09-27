@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "UYAP Dosya Çekici",
+  "version": "2.1.0",
+  "description": "UYAP Vatandaş Portalı'ndaki tüm belgeleri bulur, toplu olarak indirir ve işlem günlüğü tutar.",
+  "permissions": ["storage", "downloads", "tabs", "activeTab", "scripting"],
+  "host_permissions": [
+    "https://vatandas.uyap.gov.tr/*",
+    "https://*.uyap.gov.tr/*",
+    "http://localhost:8766/*",
+    "http://127.0.0.1:8766/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "UYAP Dosya Çekici",
+    "default_icon": {
+      "16": "images/icon-16.png",
+      "48": "images/icon-48.png",
+      "128": "images/icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "images/icon-16.png",
+    "48": "images/icon-48.png",
+    "128": "images/icon-128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*.uyap.gov.tr/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}

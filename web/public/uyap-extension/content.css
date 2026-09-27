@@ -1,0 +1,50 @@
+#jurisai-panel {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 2147483647;
+  width: 250px;
+  font:
+    13px/1.4 system-ui,
+    sans-serif;
+  background: #0f172a;
+  color: #f8fafc;
+  border: 1px solid #1e293b;
+  border-radius: 12px;
+  padding: 12px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+#jurisai-panel h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 700;
+}
+#jurisai-panel button {
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: #2563eb;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+#jurisai-panel button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+#jurisai-status {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #cbd5e1;
+  white-space: pre-wrap;
+}
+#jurisai-close {
+  float: right;
+  background: transparent !important;
+  width: auto !important;
+  margin: 0 !important;
+  padding: 0 4px !important;
+  color: #94a3b8 !important;
+}

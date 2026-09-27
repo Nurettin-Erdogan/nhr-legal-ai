@@ -1,0 +1,175 @@
+import { inMemoryAccessToken } from "@/lib/auth-api";
+import { parseSearchSummary, type SearchSummaryData } from "./search-summary";
+
+const API_BASE_URL = (import.meta.env.VITE_API_URL ?? "http://localhost:8766").replace(/\/$/, "");
+
+export interface Citation {
+  marker: string;
+  source_id: string | null;
+  source_type: string | null;
+  reference: string;
+  source_url: string | null;
+  excerpt: string | null;
+  /** "official" dışındaki her değer üçüncü taraf/doğrulanmamış kaynaktır. */
+  verification: string;
+}
+
+export interface ChatMessage {
+  id?: string;
+  role: "user" | "assistant";
+  content: string;
+  citations?: Citation[];
+  grounded?: boolean | null;
+  unverifiedMarkers?: string[];
+  searchSummary?: SearchSummaryData;
+}
+
+export interface ConversationSummary {
+  id: string;
+  title: string | null;
+  last_message_at: string;
+  message_count: number;
+}
+
+export interface AnswerResult {
+  answer: string;
+  grounded: boolean;
+  unverified_markers: string[];
+  conversation_id: string | null;
+  message_id: string | null;
+  citations: Citation[];
+  search_summary?: SearchSummaryData;
+}
+
+export const STAGE_LABELS: Record<string, string> = {
+  searching: "Kaynaklar aranıyor…",
+  candidates_found: "Aday belgeler bulundu; kaynaklar kontrol ediliyor…",
+  verifying_source: "Adaylar resmî kaynaklarla karşılaştırılıyor…",
+  search_summary: "Kaynak seçimi tamamlandı…",
+  sources_found: "Kaynaklar bulundu…",
+  generating: "Cevap yazılıyor…",
+  verifying: "Atıflar doğrulanıyor…",
+};
+
+function authHeaders(): Record<string, string> {
+  const token = inMemoryAccessToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...init,
+    credentials: "include",
+    headers: {
+      ...(init?.body ? { "Content-Type": "application/json" } : {}),
+      ...authHeaders(),
+      ...init?.headers,
+    },
+  });
+  if (!response.ok) {
+    let detail = `Sunucu isteği başarısız oldu (${response.status}).`;
+    try {
+      const payload = (await response.json()) as { detail?: unknown };
+      if (typeof payload.detail === "string") detail = payload.detail;
+    } catch {
+      /* JSON değil */
+    }
+    throw Object.assign(new Error(detail), { status: response.status });
+  }
+  if (response.status === 204) return undefined as T;
+  return (await response.json()) as T;
+}
+
+export const listConversations = () => api<ConversationSummary[]>("/api/conversations");
+
+export async function getConversation(id: string): Promise<ChatMessage[]> {
+  const detail = await api<{
+    messages: Array<{
+      id: string;
+      role: string;
+      content: string;
+      grounded: boolean | null;
+      unverified_markers: string[];
+      citations: Citation[];
+    }>;
+  }>(`/api/conversations/${id}`);
+  return detail.messages
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .map((m) => ({
+      id: m.id,
+      role: m.role as "user" | "assistant",
+      content: m.content,
+      citations: m.citations,
+      grounded: m.grounded,
+      unverifiedMarkers: m.unverified_markers,
+    }));
+}
+
+export const deleteConversation = (id: string) =>
+  api<void>(`/api/conversations/${id}`, { method: "DELETE" });
+
+/** NDJSON aşama akışını okur; "done" olayındaki sonucu döndürür. */
+export async function askAssistant(
+  question: string,
+  opts: {
+    conversationId?: string | null;
+    projectId?: string | null;
+    onStage?: (stage: string) => void;
+    onSearchSummary?: (summary: SearchSummaryData) => void;
+  },
+): Promise<AnswerResult> {
+  const response = await fetch(`${API_BASE_URL}/api/ai/answer/progress`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({
+      question,
+      conversation_id: opts.conversationId ?? null,
+      project_id: opts.projectId ?? null,
+    }),
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(
+      response.status === 401
+        ? "Oturum süresi doldu, tekrar giriş yapın."
+        : "Asistana ulaşılamadı.",
+    );
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result: AnswerResult | null = null;
+  const handle = (line: string) => {
+    if (!line.trim()) return;
+    const event = JSON.parse(line) as { stage: string; result?: AnswerResult; detail?: unknown };
+    if (event.stage === "error") {
+      throw new Error(typeof event.detail === "string" ? event.detail : "Cevap üretilemedi.");
+    }
+    if (event.stage === "search_summary") {
+      const summary = parseSearchSummary(event);
+      if (summary) opts.onSearchSummary?.(summary);
+    }
+    if (event.stage === "done" && event.result) {
+      result = { ...event.result, search_summary: parseSearchSummary(event.result.search_summary) };
+    }
+    else if (event.stage !== "ping") opts.onStage?.(event.stage);
+  };
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buffer.indexOf("\n")) !== -1) {
+        handle(buffer.slice(0, nl));
+        buffer = buffer.slice(nl + 1);
+      }
+    }
+    handle(buffer + decoder.decode());
+    if (!result) throw new Error("Cevap tamamlanmadan bağlantı kesildi.");
+    return result;
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}

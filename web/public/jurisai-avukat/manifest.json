@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Juris AI - UYAP Avukat Portalı Aktarımı",
+  "version": "2.6.0",
+  "description": "UYAP Avukat Portalı'ndaki evrakları tek tıkla Juris AI hesabınıza aktarır (UDF/PDF destekli).",
+  "permissions": ["activeTab", "scripting", "downloads", "storage"],
+  "host_permissions": [
+    "*://*.adalet.gov.tr/*",
+    "*://*.uyap.gov.tr/*",
+    "https://api.jurisai.local/*",
+    "http://localhost:8766/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Juris AI - UYAP Aktarımı",
+    "default_icon": {
+      "16": "images/icon-16.png",
+      "48": "images/icon-48.png",
+      "128": "images/icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "images/icon-16.png",
+    "48": "images/icon-48.png",
+    "128": "images/icon-128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.adalet.gov.tr/*", "*://*.uyap.gov.tr/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}

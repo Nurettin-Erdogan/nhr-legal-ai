@@ -1,0 +1,102 @@
+* {
+  box-sizing: border-box;
+}
+body {
+  width: 340px;
+  margin: 0;
+  font:
+    14px/1.45 system-ui,
+    "Segoe UI",
+    sans-serif;
+  color: #111827;
+  background: #f9fafb;
+}
+header {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 14px 16px;
+  color: #fff;
+  background: linear-gradient(135deg, #667eea, #764ba2);
+}
+.logo {
+  font-size: 24px;
+}
+header h1 {
+  margin: 0;
+  font-size: 16px;
+}
+header p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  opacity: 0.85;
+}
+main {
+  padding: 14px 16px 18px;
+}
+label {
+  display: block;
+  margin: 10px 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+}
+input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 13px;
+  background: #fff;
+}
+input:focus {
+  outline: 2px solid #667eea;
+  border-color: #667eea;
+}
+.row {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+button {
+  flex: 1;
+  padding: 9px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+button.primary {
+  color: #fff;
+  border: 0;
+  background: linear-gradient(135deg, #667eea, #764ba2);
+}
+button.ghost {
+  width: 100%;
+  margin-top: 8px;
+  background: #eef2ff;
+  border-color: #c7d2fe;
+}
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.status {
+  min-height: 18px;
+  margin: 10px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+.status.ok {
+  color: #15803d;
+}
+.status.err {
+  color: #b91c1c;
+}
+.hint {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: #6b7280;
+}

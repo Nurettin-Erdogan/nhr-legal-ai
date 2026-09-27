@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        width: 280px;
+        margin: 0;
+        padding: 14px;
+        font:
+          13px/1.45 system-ui,
+          sans-serif;
+        background: #0f172a;
+        color: #f8fafc;
+      }
+      h1 {
+        font-size: 14px;
+        margin: 0 0 8px;
+      }
+      label {
+        display: block;
+        font-size: 11px;
+        color: #94a3b8;
+        margin: 10px 0 4px;
+      }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 7px 8px;
+        border-radius: 8px;
+        border: 1px solid #334155;
+        background: #1e293b;
+        color: #f8fafc;
+      }
+      button {
+        width: 100%;
+        margin-top: 12px;
+        padding: 8px;
+        border: 0;
+        border-radius: 8px;
+        background: #2563eb;
+        color: #fff;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      #msg {
+        margin-top: 8px;
+        font-size: 11px;
+        color: #86efac;
+      }
+      p {
+        font-size: 11px;
+        color: #94a3b8;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>JURISAI bağlantısı</h1>
+    <p>Anahtarı JURISAI panelindeki "UYAP'a Bağlan" sayfasından kopyala.</p>
+    <label for="token">Bağlantı anahtarı</label>
+    <input id="token" type="password" placeholder="jsai_..." />
+    <label for="api">JURISAI adresi</label>
+    <input id="api" type="url" placeholder="http://localhost:8766" />
+    <button id="save">Kaydet</button>
+    <div id="msg"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>

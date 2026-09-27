@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+    <title>UYAP Dosya Çekici</title>
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">
+        <div class="brand-mark">U</div>
+        <div>
+          <h1>UYAP Dosya Çekici</h1>
+          <p>Vatandaş Portalı belgelerini toplu indir</p>
+        </div>
+      </div>
+      <button id="themeToggle" class="ghost" title="Karanlık / aydınlık mod">🌙</button>
+    </header>
+
+    <main>
+      <section class="card">
+        <div class="session">
+          <div><strong>JURISAI anahtarı:</strong> <span id="keyState">tanımlı değil</span></div>
+          <div><strong>UYAP oturumu:</strong> <span id="sessionState">kontrol ediliyor…</span></div>
+        </div>
+        <button id="autoBtn" class="primary big">▶ BAŞLAT OTOMASYONU</button>
+        <p class="hint center">
+          Tek tık: belgeler aktarılır, OCR yapılır, dilekçeler yazılır ve indirilir.
+        </p>
+        <div class="row">
+          <button id="startBtn" class="secondary">Sadece İndir</button>
+          <button id="stopBtn" class="danger" disabled>Durdur</button>
+        </div>
+        <div class="progress"><div id="bar" class="bar"></div></div>
+        <div class="meta">
+          <span id="counter">0 / 0</span>
+          <span id="percent">%0</span>
+        </div>
+        <div class="stats">
+          <div><strong id="okCount">0</strong><span>başarılı</span></div>
+          <div><strong id="failCount">0</strong><span>hatalı</span></div>
+          <div><strong id="stateText">hazır</strong><span>durum</span></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="row between">
+          <h2>Belge listesi</h2>
+          <button id="scanBtn" class="ghost small">Listeyi Tara</button>
+        </div>
+        <div id="fileList" class="file-list">
+          <div class="hint">Listeyi görmek için UYAP sekmesinde "Listeyi Tara"ya bas.</div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Ayarlar</h2>
+        <label for="folder">İndirme klasörü (İndirilenler içinde)</label>
+        <input id="folder" type="text" placeholder="UYAP" />
+        <label for="jurisaiToken">JURISAI bağlantı anahtarı</label>
+        <input
+          id="jurisaiToken"
+          type="password"
+          placeholder="JURISAI &gt; UYAP'a Bağlan sayfasından al"
+        />
+        <label for="jurisaiApiUrl">JURISAI adresi</label>
+        <input id="jurisaiApiUrl" type="url" placeholder="http://localhost:8766" />
+        <label for="apiKey">API anahtarı (opsiyonel)</label>
+        <input id="apiKey" type="password" placeholder="Gerekliyse gir" />
+        <label for="apiUrl">API adresi (opsiyonel)</label>
+        <input id="apiUrl" type="url" placeholder="https://vatandas.uyap.gov.tr/api/v1/documents" />
+        <div class="row">
+          <div class="col">
+            <label for="delay">İstek arası bekleme (ms)</label>
+            <input id="delay" type="number" min="200" max="5000" step="100" />
+          </div>
+          <div class="col">
+            <label for="maxPages">En fazla sayfa</label>
+            <input id="maxPages" type="number" min="1" max="200" />
+          </div>
+        </div>
+        <button id="saveBtn" class="secondary">Ayarları Kaydet</button>
+        <div id="saveMsg" class="hint"></div>
+      </section>
+
+      <section class="card">
+        <div class="row between">
+          <h2>İşlem günlüğü</h2>
+          <div class="row tight">
+            <button id="clearBtn" class="ghost small">Günlüğü Temizle</button>
+            <button id="openBtn" class="ghost small">İndirmeleri Aç</button>
+          </div>
+        </div>
+        <div id="logs" class="logs">
+          <div class="log info">Hazır. UYAP sekmesini açıp "Dosyaları Çek"e bas.</div>
+        </div>
+      </section>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -14,9 +14,13 @@ from api.ai.providers import AIProviderError, LOCAL_OLLAMA_PROVIDERS, create_pro
 from api.ai.routes import router as ai_router
 from api.auth.routes import router as auth_router
 from api.config import get_settings
+from api.conversations import router as conversations_router
 from api.db import database_connection
 from api.documents import router as documents_router
 from api.legal import router as legal_router, warm_slow_counts
+from api.office import router as office_router
+from api.office_ai import router as office_ai_router
+from api.office_public import router as office_public_router
 from api.projects import router as projects_router
 from api.schemas import HealthResponse
 
@@ -66,7 +70,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=list(settings.cors_origins),
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -74,7 +78,11 @@ app.include_router(legal_router)
 app.include_router(ai_router)
 app.include_router(auth_router)
 app.include_router(projects_router)
+app.include_router(conversations_router)
 app.include_router(documents_router)
+app.include_router(office_router)
+app.include_router(office_ai_router)
+app.include_router(office_public_router)
 app.include_router(admin_ingestion_router)
 
 
