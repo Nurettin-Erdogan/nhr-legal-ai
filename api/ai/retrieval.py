@@ -963,10 +963,10 @@ def retrieve_contexts(
         # Share one deadline across focused + broad search. Don't double the
         # worst-case latency and don't change source trust or temporal filters.
         lexical_started = monotonic()
-        lexical = run('lexical_focused', sql, dict(params, intent_query=focused_query), '4s')
+        lexical = run('lexical_focused', sql, dict(params, intent_query=focused_query), '8s')
         eligible = relevant_contexts(question, lexical)
         sufficient = len({c.source_id for c in eligible}) >= top_k
-        remaining_ms = int((4 - (monotonic() - lexical_started)) * 1000)
+        remaining_ms = int((8 - (monotonic() - lexical_started)) * 1000)
         info['lexical_strategy'] = 'statute_linked'
         if not sufficient and remaining_ms > 0 and info['branches'][-1]['status'] == 'ok':
             lexical += run('lexical', sql, params, f'{remaining_ms}ms')
@@ -975,7 +975,7 @@ def retrieve_contexts(
         elif not sufficient:
             info['partial'] = True
     else:
-        lexical = run('lexical', sql, params, '4s')
+        lexical = run('lexical', sql, params, '8s')
         info['lexical_strategy'] = 'broad'
     candidates = relevant_contexts(question, lexical + semantic)
     unique_candidates = {c.chunk_id: c for c in statute + lexical + semantic}

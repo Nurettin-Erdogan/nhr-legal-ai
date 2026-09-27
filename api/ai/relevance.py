@@ -101,7 +101,7 @@ def intent_tsquery(intent: Intent) -> str:
 def focused_intent_tsquery(question: str, intent: Intent) -> str | None:
     """A statute-linked first pass, never evidence or an exhaustive search.
 
-    Narrow deadlines and general severance entitlement questions using the
+    Narrow rent increases, deadlines and general severance entitlement questions using the
     already mapped statute/article. Explicit case-law and evidence questions
     retain broad retrieval. No expected duration or legal conclusion is added.
     This is candidate selection, never a claim to have found every related case.
@@ -111,8 +111,9 @@ def focused_intent_tsquery(question: str, intent: Intent) -> str | None:
     entitlement = intent.name == 'severance' and bool(re.search(
         r'\b(?:şart\w*|koşul\w*|hak kazan\w*)', q))
     evidence = bool(re.search(r'\b(?:delil\w*|ispat\w*|kanıt\w*)', q))
+    rent_increase = intent.name == 'rent_increase'
     if (not intent.statute or case_law_requested(question) or evidence
-            or not (is_duration_question(question) or entitlement)):
+            or not (is_duration_question(question) or entitlement or rent_increase)):
         return None
     law, article = intent.statute
     if not law.isdigit() or not article.isdigit():

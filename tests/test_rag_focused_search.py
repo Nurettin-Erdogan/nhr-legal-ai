@@ -37,6 +37,13 @@ def test_focus_is_a_statute_hint_not_a_predetermined_answer():
     assert focused_intent_tsquery(question, question_intent(question)) is None
 
 
+def test_rent_focus_uses_reference_without_adding_a_legal_conclusion():
+    question = 'Kira sözleşmesinde TÜFE üzerinde artış istenirse ne yapılır?'
+    query = focused_intent_tsquery(question, question_intent(question))
+    assert query == f'({intent_tsquery(question_intent(question))}) & 6098 & 344'
+    assert 'yüzde' not in query and 'geçersiz' not in query
+
+
 @pytest.mark.parametrize('question', [
     'Kıdem tazminatına hak kazanma şartları nelerdir?',
     'Kıdem tazminatının koşulları nelerdir?',
@@ -54,7 +61,8 @@ def test_severance_entitlement_uses_reference_not_an_expected_answer(question):
     'Kıdem tazminatına hak kazanmak için hangi deliller gerekir?',
     'Kıdem tazminatı hesabında ücret nedir?',
     'İtirazın iptali süresi hakkındaki içtihatları bul',
-    'Kira sözleşmesinde TÜFE üzerinde artış istenirse ne yapılır?',
+    'Kira artışı hakkında Yargıtay kararları nelerdir?',
+    'Kira artışı talebi nasıl ispat edilir?',
     'Ortak velayet şartları nelerdir?',
 ])
 def test_focus_does_not_narrow_case_law_evidence_or_unmeasured_topics(question):
@@ -65,6 +73,8 @@ def test_focus_does_not_narrow_case_law_evidence_or_unmeasured_topics(question):
     (QUESTION, TEXT),
     ('Kıdem tazminatına hak kazanma şartları nelerdir?',
      'Kıdem tazminatı işçinin fesih durumuna göre değerlendirilmiştir.'),
+    ('Kira sözleşmesinde TÜFE üzerinde artış istenirse ne yapılır?',
+     'Kira artışı tüketici fiyat endeksine göre değerlendirilmiştir.'),
 ])
 def test_sufficient_distinct_focused_candidates_keep_pending_searchable(monkeypatch, question, text):
     calls = []
@@ -77,7 +87,7 @@ def test_sufficient_distinct_focused_candidates_keep_pending_searchable(monkeypa
     stats = {}
     rows = retrieval.retrieve_contexts(object(), question=question, top_k=48, diagnostics=stats)
     assert len(rows) == 48 and all(c.verification == 'third_party' for c in rows)
-    assert len(calls) == 2 and calls[1][2]['timeout'] == '4s'
+    assert len(calls) == 2 and calls[1][2]['timeout'] == '8s'
     assert 'legal_rag_current_lexical_hits(' in calls[1][0]
     assert '_bounded' not in calls[1][0]
     assert stats['lexical_strategy'] == 'statute_linked' and not stats['exhaustive']
@@ -97,7 +107,7 @@ def test_sparse_focused_search_falls_back_with_remaining_budget_and_deduplicates
     stats = {}
     rows = retrieval.retrieve_contexts(object(), question=QUESTION, top_k=48, diagnostics=stats)
     assert len(rows) == 2 and stats['lexical_candidates'] == 2
-    assert calls[0][1]['timeout'] == '4s' and calls[1][1]['timeout'] == '3000ms'
+    assert calls[0][1]['timeout'] == '8s' and calls[1][1]['timeout'] == '7000ms'
     assert calls[1][0]['intent_query'] == intent_tsquery(question_intent(QUESTION))
     assert stats['lexical_strategy'] == 'statute_linked_then_broad'
 

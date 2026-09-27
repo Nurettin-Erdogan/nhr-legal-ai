@@ -72,7 +72,11 @@ jobs:
           PGPASSWORD: ci-test-only
         run: psql -h localhost -U nhr_app -d nhr_legal_ai_test -v ON_ERROR_STOP=1 -f database/migrations/027_rag_research_page.sql
       - name: Pytest
-        run: python -m pytest -q
+        env:
+          PGPASSWORD: ci-test-only
+        run: |
+          psql -h localhost -U nhr_app -d nhr_legal_ai_test -v ON_ERROR_STOP=1 -f database/migrations/028_rank_first_lexical.sql
+          python -m pytest -q
 
   frontend:
     runs-on: ubuntu-latest

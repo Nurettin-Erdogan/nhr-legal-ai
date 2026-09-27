@@ -90,7 +90,7 @@ def test_matching_statute_survives_independent_lexical_timeout(monkeypatch):
     result = retrieval.retrieve_contexts(object(), question='İtirazın iptali davası süresi nedir?', top_k=6)
     assert result == [context]  # successful primary retrieval survives
     assert len(calls) == 2
-    assert calls[1][2]['timeout'] == '4s'
+    assert calls[1][2]['timeout'] == '8s'
     assert calls[0][2]['timeout'] == '3s'
     assert calls[0][1]['law_no'] == '2004'
     assert calls[0][1]['article_no'] == '67'
