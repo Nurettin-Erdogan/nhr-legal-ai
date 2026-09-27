@@ -2,6 +2,10 @@
 
 Hukuki araştırma, doküman analizi ve kaynak gösterimli yapay zekâ soru-cevap süreçleri için geliştirilen hukuk asistanı platformu.
 
+## Dosya düzeni
+
+Kod, yerel veri ve geçici çalışmaların yerleri için [klasör rehberine](docs/file-structure.md) bakın.
+
 ## Veritabanı
 
 Proje PostgreSQL 16, pgvector ve Docker Compose kullanır. Yerel veritabanı varsayılan olarak `localhost:5433` adresinde çalışır.

@@ -11,6 +11,10 @@ __pycache__/
 venv/
 .pytest_cache/
 .pytest-tmp/
+.pytest-tmp-*/
+# Yerel deneyler, test çıktıları ve geri dönüş arşivleri
+/.local/
+/.tmp-*/
 .mypy_cache/
 .ruff_cache/
 

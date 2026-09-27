@@ -8,6 +8,7 @@ pytest startup. Schema setup belongs to the test-DB setup/CI workflow.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 from psycopg.conninfo import conninfo_to_dict
@@ -29,6 +30,9 @@ def pytest_configure() -> None:
     url = os.getenv("NHR_TEST_DATABASE_URL")
     if url:
         validate_test_database_url(url)
+    # Pytest creates/removes basetemp itself, but does not create its parents.
+    # Keep generated files out of the repository root even on a fresh checkout.
+    (Path(__file__).resolve().parents[1] / '.local' / 'tmp').mkdir(parents=True, exist_ok=True)
 
 
 @pytest.fixture(autouse=True)
