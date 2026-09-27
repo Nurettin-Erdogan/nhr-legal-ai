@@ -79,9 +79,31 @@ def relevant_contexts(question, contexts):
 def intent_tsquery(intent: Intent) -> str:
     # Let PostgreSQL's Turkish dictionary stem the words. Prefix expansion on
     # common terms fans out over millions of rows and is deliberately avoided.
+    # These are Python prefix matches, NOT Turkish dictionary headwords.
+    # Feeding "artır" to PostgreSQL stems it again to "ar", losing actual
+    # increase passages and adding unrelated matches. Use complete forms for
+    # SQL only; keep passage/citation relevance checks unchanged.
+    sql_forms = {'artır': ('artırım', 'artırılması', 'artırma')}
     return ' & '.join('(' + ' | '.join(
-        ' <-> '.join(word for word in term.split()) for term in group
+        ' <-> '.join(word for word in form.split())
+        for term in group for form in sql_forms.get(term, (term,))
     ) + ')' for group in intent.groups)
+
+
+def focused_intent_tsquery(question: str, intent: Intent) -> str | None:
+    """A statute-linked first pass, never evidence or an exhaustive search.
+
+    Narrow deadline searches using the already mapped statute/article. There is
+    deliberately no expected duration here (e.g. "one year"): such a hint would
+    bias retrieval toward a predetermined legal answer.
+    """
+    from api.ai.passages import is_duration_question
+    if not intent.statute or not is_duration_question(question):
+        return None
+    law, article = intent.statute
+    if not law.isdigit() or not article.isdigit():
+        return None
+    return f'({intent_tsquery(intent)}) & {law} & {article}'
 
 
 def semantic_search_text(question: str) -> str:

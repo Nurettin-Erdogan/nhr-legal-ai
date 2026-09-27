@@ -9,7 +9,7 @@ from api.ai.embeddings import vector_literal
 from api.ai.rag import RAGContext
 from api.ai.search_plan import plan_search
 from api.ai.passages import is_duration_question, sentence_score
-from api.ai.relevance import question_intent, intent_tsquery, relevant_contexts
+from api.ai.relevance import question_intent, intent_tsquery, focused_intent_tsquery, relevant_contexts
 
 _LAW_NO_RE = re.compile(r"(?<!\d)(\d{3,5})(?!\d)")
 _ARTICLE_RE = re.compile(
@@ -957,7 +957,26 @@ def retrieve_contexts(
     # Embedding coverage is incomplete. Always query the text index as well:
     # finding a few ANN hits is not evidence that the remaining corpus is empty.
     # Each branch retains a deadline; a failed branch cannot erase other hits.
-    lexical = run('lexical', sql, params, '4s')
+    focused_query = focused_intent_tsquery(question, intent) if intent else None
+    lexical = []
+    if focused_query:
+        # Share one deadline across focused + broad search. Don't double the
+        # worst-case latency and don't change source trust or temporal filters.
+        lexical_started = monotonic()
+        lexical = run('lexical_focused', sql, dict(params, intent_query=focused_query), '4s')
+        eligible = relevant_contexts(question, lexical)
+        sufficient = len({c.source_id for c in eligible}) >= top_k
+        remaining_ms = int((4 - (monotonic() - lexical_started)) * 1000)
+        info['lexical_strategy'] = 'statute_linked'
+        if not sufficient and remaining_ms > 0 and info['branches'][-1]['status'] == 'ok':
+            lexical += run('lexical', sql, params, f'{remaining_ms}ms')
+            lexical = list({c.chunk_id: c for c in lexical}.values())
+            info['lexical_strategy'] = 'statute_linked_then_broad'
+        elif not sufficient:
+            info['partial'] = True
+    else:
+        lexical = run('lexical', sql, params, '4s')
+        info['lexical_strategy'] = 'broad'
     candidates = relevant_contexts(question, lexical + semantic)
     unique_candidates = {c.chunk_id: c for c in statute + lexical + semantic}
     relevant_ids = {c.chunk_id for c in relevant_contexts(question, list(unique_candidates.values()))}
