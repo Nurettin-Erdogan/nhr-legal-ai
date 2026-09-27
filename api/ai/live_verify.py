@@ -137,13 +137,18 @@ def verify_third_party_contexts(
         if usable_as_evidence(sources[source_id]):
             accepted.add(source_id)
             continue
+        if sources[source_id].verification != 'third_party':
+            continue
+        if source_id not in pending_ids:
+            stats['stop_reason'] = 'document_budget'
+            break
+        if stats['attempted'] >= max_docs:
+            stats['stop_reason'] = 'document_budget'
+            break
         row = by_id.get(source_id)
         if row is None:
             stats['unavailable'] += 1
             continue
-        if stats['attempted'] >= max_docs:
-            stats['stop_reason'] = 'document_budget'
-            break
         remaining = budget_seconds - (monotonic() - started)
         if remaining <= 0:
             stats['stop_reason'] = 'time_budget'

@@ -26,8 +26,11 @@ def fake_database(monkeypatch, contexts):
     class Connection:
         def __enter__(self): return self
         def __exit__(self, *args): return False
-        def execute(self, *args): return self
-        def fetchall(self): return list(reversed(rows))  # DB ordering is arbitrary
+        def execute(self, sql, params=None):
+            if params is not None: self.ids = params[0]
+            return self
+        def fetchall(self):
+            return [row for row in reversed(rows) if row['id'] in self.ids]
     monkeypatch.setattr(live_verify, 'database_connection', Connection)
 
 
