@@ -91,14 +91,15 @@ def test_every_matching_source_is_reachable_without_two_source_limit(pages):
         response = client.get("/api/ai/sources", params={"q": "ortak velayet", "offset": offset})
         assert response.status_code == 200
         page = response.json()
-        assert page["total"] == 25
-        assert page["results"][1]["verification"] == "third_party"
+        assert page["total"] is None
+        assert page['candidate_total'] == 25
+        assert all(row['verification'] == 'official' for row in page['results'])
         ids.extend(source["source_id"] for source in page["results"])
         if not page["has_more"]:
             assert page["next_offset"] is None
             break
         offset = page["next_offset"]
-    assert len(ids) == len(set(ids)) == 25
+    assert len(ids) == len(set(ids)) == 13  # 12 pending records are not published
     assert sum(sql == "SET TRANSACTION READ ONLY" for sql, _ in statements) == 3
 
 

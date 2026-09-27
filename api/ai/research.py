@@ -1,6 +1,7 @@
 """Public-corpus research pages, independent of the LLM context window.
 
-No model, ingestion, verification queue or corpus writes. The public-corpus
+No model or collector operations. On-demand official verification may promote
+an exactly matched seed; pending records are never published. The public-corpus
 function counts distinct sources before pagination, and only the selected page
 is hydrated with full text. Never label a candidate count a total.
 """
@@ -9,6 +10,8 @@ from fastapi import APIRouter, HTTPException, Query
 import psycopg
 
 from api.ai.rag import RAGContext
+from api.ai.live_verify import verify_third_party_contexts
+from api.ai.trust import verified_contexts
 from api.ai.retrieval import _SELECT_COLUMNS, _DETAIL_JOINS, _VERIFIED_SOURCE_FILTER
 from api.ai.search_plan import plan_search, SEARCH_QUERY_SQL
 from api.db import database_connection
@@ -62,12 +65,8 @@ ORDER BY page.rank DESC, page.source_id
 """
 
 
-@router.get("/sources")
-def research_sources(
-    q: str = Query(min_length=5, max_length=2000),
-    limit: int = Query(default=10, ge=1, le=50),
-    offset: int = Query(default=0, ge=0),
-):
+def load_candidate_page(q: str, limit: int, offset: int):
+    """Read-only candidate retrieval; not a publishable list of evidence."""
     plan = plan_search(q)
     if not plan.text:
         raise HTTPException(422, "Arama için bir hukuki konu veya kavram yazın.")
@@ -93,12 +92,29 @@ def research_sources(
     except psycopg.Error as exc:
         raise HTTPException(503, "Kaynak araması tamamlanamadı.") from exc
     has_more = len(rows) > limit
-    total = int(rows[0]["total"]) if rows else (0 if offset == 0 else None)
-    results = []
+    candidate_total = int(rows[0]["total"]) if rows else (0 if offset == 0 else None)
+    candidates = []
     for raw in rows[:limit]:
         row = dict(raw)
         row.pop("total")
-        context = RAGContext(**row)
+        candidates.append(RAGContext(**row))
+    return plan, candidates, has_more, candidate_total
+
+
+@router.get("/sources")
+def research_sources(
+    q: str = Query(min_length=5, max_length=2000),
+    limit: int = Query(default=10, ge=1, le=50),
+    offset: int = Query(default=0, ge=0),
+):
+    plan, candidates, has_more, candidate_total = load_candidate_page(q, limit, offset)
+    try:
+        contexts = verified_contexts(verify_third_party_contexts(candidates))
+    except Exception:
+        # Already verified records can still be shown; failures never bless seeds.
+        contexts = verified_contexts(candidates)
+    results = []
+    for context in contexts:
         results.append({
             "source_id": str(context.source_id), "reference": context.reference_line,
             "source_url": context.source_url, "verification": context.verification,
@@ -106,7 +122,12 @@ def research_sources(
         })
     return {
         "query": q, "search_text": plan.text, "required_phrase": plan.phrase,
-        "scope": "searchable_current_corpus", "total": total,
+        "scope": "verified_current_corpus",
+        # The SQL count includes candidates, not yet verified matches. Never
+        # display it as the number of officially verified results.
+        "total": 0 if candidate_total == 0 else None,
+        "candidate_total": candidate_total,
+        "verification_pending": len(candidates) - len(contexts),
         "has_more": has_more, "next_offset": offset + limit if has_more else None,
         "results": results,
     }

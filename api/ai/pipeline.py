@@ -18,6 +18,7 @@ from api.ai.cache import answer_cache, answer_cache_key, source_fingerprint
 from api.ai.embeddings import EmbeddingProviderError, create_embedding_provider
 from api.ai.history import record_exchange
 from api.ai.live_verify import verify_third_party_contexts
+from api.ai.trust import usable_as_evidence, verified_contexts
 from api.ai.on_demand_verify import explicit_statute_reference, verify_pending_statute
 from api.ai.providers import AIProvider, AIProviderError, create_provider
 from api.ai.rag import RAGContext, generate_grounded_answer
@@ -103,6 +104,8 @@ def _response_from_verified(
     from_cache: bool,
     timings: PipelineTimings | None = None,
 ) -> AIAnswerResponse:
+    if any(not usable_as_evidence(context) for context in answer.contexts):
+        raise HTTPException(503, "Kaynak doğrulaması tamamlanamadı; doğrulanmamış atıflar gösterilmiyor.")
     if not from_cache:
         _queue_cited_third_party(answer)
     return AIAnswerResponse(
@@ -309,19 +312,23 @@ async def execute_answer(
     if any(context.verification == "third_party" for context in contexts):
         await emit("verifying_source", source_type="court_decision")
         live_verification_started = monotonic()
-        contexts = await asyncio.to_thread(
-            verify_third_party_contexts,
-            contexts,
-        )
+        try:
+            contexts = await asyncio.wait_for(
+                asyncio.to_thread(verify_third_party_contexts, contexts), timeout=15.0
+            )
+        except Exception:
+            logger.warning("Kaynak doğrulaması tamamlanamadı; yalnız doğrulanmış kayıtlar kullanılacak")
+            contexts = verified_contexts(contexts)
         timings.extra["live_verification_ms"] = round(
             (monotonic() - live_verification_started) * 1000,
             1,
         )
 
+    contexts = verified_contexts(contexts)
     if not contexts:
         raise HTTPException(
             status_code=422,
-            detail="Bu soru için mevcut korpusta yeterli kaynak bulunamadı",
+            detail="Bu soru için yeterli resmî doğrulanmış kaynak bulunamadı. Portal doğrulaması tamamlanmamış veya eşleşmeyen kayıtlar cevaba alınmadı.",
         )
 
     await emit("sources_found", count=len(contexts))

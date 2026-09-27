@@ -107,14 +107,20 @@ def test_legacy_cache_is_revalidated_not_trusted(monkeypatch, isolated_pipeline,
     assert cached.grounded and cached.answer == safe
 
 
-def test_supported_third_party_cache_remains_unverified(monkeypatch, isolated_pipeline):
+def test_legacy_third_party_cache_cannot_bypass_official_verification(monkeypatch, isolated_pipeline):
     state = isolated_pipeline
     context = replace(state.context, verification="third_party")
     monkeypatch.setattr(pipeline, "_retrieve", lambda *a, **kw: [context])
-    monkeypatch.setattr(pipeline, "generate_grounded_answer", lambda *a, **kw: f"{context.content} [K1]")
-    first, _ = asyncio.run(pipeline.execute_answer(state.request, None))
-    cached, _ = asyncio.run(pipeline.execute_answer(state.request, None))
-    assert first.grounded and cached.grounded
-    assert cached.from_cache
-    assert first.citations[0].verification == "third_party"
-    assert cached.citations[0].verification == "third_party"
+    state.cache.put(state.key, {
+        "answer": f"{context.content} [K1]",
+        "citations": [{"chunk_id": str(context.chunk_id)}],
+        "grounded": True,
+    })
+    def unexpected_generation(*args, **kwargs):
+        pytest.fail("Unverified evidence must never reach generation")
+    monkeypatch.setattr(pipeline, "generate_grounded_answer", unexpected_generation)
+    for _ in range(2):
+        with pytest.raises(HTTPException) as raised:
+            asyncio.run(pipeline.execute_answer(state.request, uuid4()))
+        assert raised.value.status_code == 422
+    assert state.persisted == []

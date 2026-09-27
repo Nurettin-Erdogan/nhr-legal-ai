@@ -15,7 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from api.ai.providers import create_provider
 from api.ai.rag import generate_grounded_answer
-from api.ai.research import research_sources
+from api.ai.research import load_candidate_page
+from api.ai.trust import verified_contexts
 from api.ai.retrieval import retrieve_contexts
 from api.ai.verification import verify_answer
 from api.config import get_settings
@@ -40,6 +41,9 @@ def main() -> int:
             with database_connection() as connection:
                 connection.execute('SET TRANSACTION READ ONLY')
                 contexts = retrieve_contexts(connection, question=question, top_k=settings.rag_top_k)
+            # This diagnostic cannot promote records. Production verifies them
+            # on demand; the read-only smoke test uses only already trusted rows.
+            contexts = verified_contexts(contexts)
             report['retrieval_seconds'] = round(perf_counter()-started, 3)
             provider = create_provider(
                 provider_name=settings.ai_provider, model=settings.ai_model,
@@ -59,9 +63,11 @@ def main() -> int:
             failed |= not answer.grounded
             if args.include_research:
                 search_started = perf_counter()
-                page = research_sources(q=question, limit=10, offset=0)
+                _, candidates, _, candidate_total = load_candidate_page(question, 10, 0)
                 report['research'] = dict(seconds=round(perf_counter()-search_started, 3),
-                                          total=page['total'], page_size=len(page['results']))
+                                          candidate_total=candidate_total,
+                                          verified_page_size=len(verified_contexts(candidates)),
+                                          live_verification='not_run_readonly')
         except Exception as exc:
             # Never print connection credentials or arbitrary provider error bodies.
             report['error_type'] = type(exc).__name__

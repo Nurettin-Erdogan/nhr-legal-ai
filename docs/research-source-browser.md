@@ -1,5 +1,40 @@
 # Araştırma sonuçları ile cevap atıfları ayrı
 
+## Güncel politika: önce doğrula, sonra göster
+
+Kullanıcı talebiyle artık doğrulanmamış genel hukuk kayıtları cevap, kaynak
+önizlemesi ve araştırma listesinde gösterilmez. Arama bunları **iç aday** olarak
+bulabilir; soru anında resmî portaldan alınan metinle eşleşenler kullanılabilir.
+Doğrulama üretimden/önbellek cevabından önce beklenir. CAPTCHA, hız sınırı, zaman
+aşımı, desteklenmeyen kaynak, metin uyuşmazlığı veya kayıt hatası bir kaydı resmî
+yapmaz. Yeterli doğrulanmış kaynak kalmazsa cevap üretmek yerine açık hata döner.
+
+Canlı doğrulama mevcut Yargıtay/Danıştay bağlayıcılarını kullanır; desteklenmeyen
+bekleyen kayıtlar da saklı tutulur, doğrulanmış gibi sunulmaz. İstek başına 12 sn
+portal bütçesi ve en fazla dört aday kontrolü vardır; bütçe dışında kalanlar da
+gösterilmez. Kullanıcı belgeleri resmî hukuk kaynağı sayılmaz; mevcut proje/RLS
+izolasyonu altında ayrı belge kanıtı olarak kullanılabilir.
+
+Araştırma sayfalaması adaylar üzerinden ilerler; bir sayfadaki doğrulanmamış
+kayıtlar elenir. `candidate_total` aday sayısıdır, doğrulanmış kaynak sayısı
+değildir; bu nedenle kullanıcıya gösterilecek `total` henüz bilinmiyorsa `null`
+olur. `verification_pending` gösterilmeyen aday sayısını belirtir. Boş bir sayfa,
+`has_more=true` ise aramanın bittiği anlamına gelmez.
+
+Eski sohbet cevapları geriye dönük değiştirilmez. Yeni sorular ve önbellek
+yanıtları güncel doğrulama kapısından geçer. Salt-okuma smoke testi canlı portal
+doğrulaması yapmaz; yalnız önceden doğrulanmış kayıtları kullanır.
+
+## Önceki sürüm ve ölçümler (aşağıdaki davranış yukarıdaki politikayla değişti)
+
+27.09.2026 doğrulanmış-kaynak kapısı kontrolü: çalışma ağacında 493 test geçti,
+44 DB testi atlandı. Yalnız commit kapsamındaki temiz kopya, ayrı/geçici test
+veritabanıyla 422 geçti / 1 atlandı. Test veritabanı sonra kaldırıldı; korpus
+veritabanı silinmedi. Gerçek API denemesinde ilk arama 17,8 sn sonunda 503 verdi;
+tekrarında cevap 18,46 sn, HTTP 200 ve tek `official` atıfla döndü. Ortak velayet
+araştırması 2,65 sn, HTTP 200 ve üç `official` kayıt döndürdü. Bunlar tüm portalların
+erişilebilir olduğunu veya her sorunun doğrulanabileceğini kanıtlamaz.
+
 `GET /api/ai/sources?q=...&limit=10&offset=0`, yerel **aranabilir güncel korpus**
 içindeki koşullara uyan farklı kaynakları sayfalar. `027_rag_research_page.sql`
 ile gelen salt-okuma fonksiyonu yalnız genel hukuk korpusuna erişir; kullanıcı

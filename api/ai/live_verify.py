@@ -1,6 +1,6 @@
 """Kullanıcı sorduğunda getirilen tohum kaynakları resmî portaldan doğrular.
 
-CAPTCHA aşılmaz; portal reddederse kaynak yine gösterilir, 'doğrulanmadı' kalır.
+CAPTCHA aşılmaz; eşleşmeyen veya doğrulanamayan kaynak cevapta gösterilmez.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from uuid import UUID
 import psycopg
 
 from api.ai.rag import RAGContext
+from api.ai.trust import verified_contexts
 from api.db import admin_database_connection, database_connection
 from ingestion.seed_verify import (
     document_id_from_external_id,
@@ -23,6 +24,8 @@ from ingestion.seed_verify import (
     promote_verified_seed,
     seed_matches_official,
     source_kind_from_external_id,
+    official_document_url,
+    _nospace,
 )
 from ingestion.source_errors import is_rate_limited
 from ingestion.yargitay.portal import CaptchaRequiredError
@@ -83,25 +86,30 @@ def verify_third_party_contexts(
     promoter=None,
     budget_seconds: float = _BUDGET_SECONDS,
 ) -> list[RAGContext]:
-    """Eşleşen tohumları `official` yapar; portal hata verirse kaydı gizlemez."""
+    """Resmî metinle eşleşenleri döndürür; hata/bütçe aşımında kapalı kalır."""
     if "pytest" in sys.modules and fetcher is fetch_official_text:
-        return contexts
+        return verified_contexts(contexts)
     pending_ids = [
         context.source_id
         for context in contexts
         if context.verification == "third_party"
     ]
     if not pending_ids:
-        return contexts
+        return verified_contexts(contexts)
+    started = monotonic()
     try:
         with database_connection() as connection:
+            # Reading candidates also counts against the request budget.
+            connection.execute("SET LOCAL statement_timeout = '3s'")
             rows = connection.execute(_PENDING_SQL, (pending_ids,)).fetchall()
     except psycopg.Error:
         logger.warning("Canlı doğrulama için tohum kayıtları okunamadı", exc_info=True)
-        return contexts
+        return verified_contexts(contexts)
 
-    verified: set[UUID] = set()
-    started = monotonic()
+    verified: dict[UUID, str] = {}
+    # Preserve relevance order; a DB ANY query has no ordering guarantee.
+    by_id = {row['id']: row for row in rows}
+    rows = [by_id[source_id] for source_id in dict.fromkeys(pending_ids) if source_id in by_id]
     for row in rows[:_MAX_DOCS]:
         remaining = budget_seconds - (monotonic() - started)
         if remaining <= 0:
@@ -128,6 +136,10 @@ def verify_third_party_contexts(
             continue
         if not official.strip() or not seed_matches_official(row["raw_text"] or "", official):
             continue
+        # Metadata/full-text equality alone must not bless a stale/corrupt chunk.
+        if any(not _nospace(c.content) or _nospace(c.content) not in _nospace(official)
+               for c in contexts if c.source_id == row['id']):
+            continue
         try:
             if promoter is not None:
                 promoter(row["id"], kind, document_id, official)
@@ -140,15 +152,13 @@ def verify_third_party_contexts(
                         document_id=document_id,
                         official_text=official,
                     )
-            verified.add(row["id"])
+            verified[row["id"]] = official_document_url(kind, document_id)
         except (psycopg.Error, RuntimeError):
             logger.warning("Doğrulanan tohum yazılamadı", exc_info=True)
 
-    if not verified:
-        return contexts
-    return [
-        replace(context, verification="official")
+    return verified_contexts([
+        replace(context, verification="official", source_url=verified[context.source_id])
         if context.source_id in verified
         else context
         for context in contexts
-    ]
+    ])

@@ -82,4 +82,4 @@ def test_live_verify_keeps_badge_when_portal_blocks(monkeypatch):
         fetcher=blocked,
         promoter=lambda *args: (_ for _ in ()).throw(AssertionError("yazılmamalı")),
     )
-    assert updated[0].verification == "third_party"
+    assert updated == []
