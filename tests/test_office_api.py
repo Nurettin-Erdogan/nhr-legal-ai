@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -175,7 +176,9 @@ def test_storage_paths_are_confined_to_the_users_folder(key):
     assert error.value.status_code == 403
 
 
-def test_storage_path_accepts_own_folder():
+def test_storage_path_accepts_own_folder(monkeypatch, tmp_path):
+    # A filesystem unit test must not require the developer's .env / DB secrets.
+    monkeypatch.setattr(office, "get_settings", lambda: SimpleNamespace(document_storage_dir=str(tmp_path)))
     path = office._storage_path(USER_ID, f"{USER_ID}/2026/dosya.pdf")
 
-    assert office._storage_root() in path.parents
+    assert path == tmp_path / "office" / str(USER_ID) / "2026" / "dosya.pdf"
