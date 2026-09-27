@@ -9,6 +9,8 @@ korpus, DB şeması ve kaynak doğrulama kuralları değiştirilmez.
 - Yalnız kısa ve güncel kira artışı, kıdem şartları ve itirazın iptali süresi
   soruları mevcut kanun/madde eşlemesiyle denenir. Emsal/karar, delil/ispat,
   tarihsel, çok konulu, proje ve devam eden sohbet soruları normal yolda kalır.
+  Açıkça başka kanun/madde isteyen veya tahliye/görev/yetki/hesaplama gibi özel
+  alt sorunlar içeren sorularda konu eşlemesiyle hızlı cevap verilmez.
 - Runtime bağlantısında salt okunur, bir saniye sorgu limitli madde araması
   yapılır. Bağlantı açma ve yoğun yük nedeniyle duvar saati daha uzun olabilir.
   Resmî kaynak, current sürüm ve silinmemiş kayıt filtreleri aynen korunur.
@@ -53,7 +55,7 @@ iyileştirilmelidir. UI/persist ve resmî portal gecikmeleri bu tabloya dahil de
 
 ## Regresyon kontrolleri
 
-- İzole release kopyası ve geçici test veritabanı: **569 Python testi geçti,
+- İzole release kopyası ve geçici test veritabanı: **573 Python testi geçti,
   1 atlandı**. Canlı DB kullanılmadı; yalnız test DB'si kaldırıldı.
 - Arayüz: **14 test geçti**, TypeScript kontrolü geçti.
 - Yanlış/eski/bekleyen madde, parça taşması, tarih/proje/sohbet kapsamı ve model

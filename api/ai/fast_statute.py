@@ -15,11 +15,18 @@ from api.ai.search_plan import normalize
 def fast_reference(question):
     q = normalize(question)
     if len(q) > 200 or case_law_requested(q) or re.search(
-        r'\b(?:delil\w*|ispat\w*|kanıt\w*|eski\w*|tarih\w*|önceki|ayrıca|ve|karar\w*)\b|\b(?:19|20)\d{2}\b', q
+        r'\b(?:delil\w*|ispat\w*|kanıt\w*|eski\w*|tarih\w*|önceki|ayrıca|ve|karar\w*|'
+        r'tahliye\w*|dilekçe\w*|harç\w*|faiz\w*|görev\w*|yetki\w*|hesap\w*|zamanaşım\w*)\b|\b(?:19|20)\d{2}\b', q
     ):
         return None
     intent = question_intent(q)
     if not intent or not intent.statute:
+        return None
+    from api.ai.retrieval import question_law_numbers, question_article_numbers
+    laws, articles = question_law_numbers(question), question_article_numbers(question)
+    if (any(law != intent.statute[0] for law in laws)
+            or any(article != intent.statute[1] for article in articles)):
+        # The user's explicit reference overrides our topic hint.
         return None
     from api.ai.passages import is_duration_question
     if intent.name == 'rent_increase':

@@ -25,6 +25,10 @@ def statute(**kwargs):
     'Kira artışı ve tahliye nasıl yapılır?',
     'Ortak velayet şartları nelerdir?',
     'Kıdem tazminatı nasıl hesaplanır?',
+    'Kira artışı nedeniyle tahliye davası açılır mı?',
+    'İtirazın iptali davası süresinde görevli mahkeme hangisi?',
+    '6098 sayılı kanun madde 345 kira artışı hakkında ne der?',
+    '657 sayılı kanunda kira artışı hangi koşullara bağlı?',
 ])
 def test_ambiguous_case_law_and_historical_questions_keep_full_search(question):
     assert fast_reference(question) is None
