@@ -52,3 +52,39 @@ yalnız izole `NHR_TEST_DATABASE_URL` ile çalışır.
 
 İzole release kopyasında CI şemasıyla tam Python paketi: **521 geçti, 1 atlandı**.
 Test için açılan ayrı veritabanı test sonunda kaldırıldı; canlı korpusa yazılmadı.
+
+## Ek ölçüm: kıdem tazminatı şartları
+
+Genel hak kazanma/şart/koşul soruları için `1475` ve `14` ipucu da odaklı ilk
+arama kapsamına alındı. Kanundaki bir sonuç veya süre sorguya eklenmez. Açıkça
+emsal/içtihat isteyen veya delil/ispat soran sorular geniş konu aramasını korur.
+İlgili ayrı belge sayısı yetersizse mevcut ortak dört saniyelik bütçe içinde
+geniş aramaya dönülür. Semantik arama, tarih filtreleri, bekleyen kayıtların
+aday olabilmesi ve cevap öncesi kaynak kontrolü değişmedi.
+
+Salt okunur metin araması A/B denemesinde kıdem sorusunun eski yolu iki kez
+4,07–4,08 saniyede zaman aşımına uğradı (yalnız doğrudan bulunan kanun kaldı).
+Odaklı yol 2,47 ve 0,79 saniyede 45 ayrı belge getirdi; bunların 9'u korpusta
+resmî etiketliydi. Bu iki ölçüm genel hız veya recall garantisi değildir.
+Kira sorusundaki deney aday dağılımını değiştirdi ama tutarlı bir hız kazancı
+göstermedi; bu yüzden kira aramasına bu daraltma uygulanmadı.
+
+Ardından gerçek embedding + arama + yerel `qwen3.5:4b` denemesi yapıldı:
+
+| Soru | Embedding + arama (sn) | Üretim + kaynak denetimi (sn) | Sonuç |
+| --- | --- | --- | --- |
+| Kıdem şartları | 12,43 | 1,83 | Semantik ve metin araması timeout; mevcut kanuna dayalı cevap |
+| Kira/TÜFE | 4,02 | 0,62 | Arama tamamlandı; TBK 344 kaynaklı cevap |
+| İtirazın iptali süresi | 4,61 | 0,92 | Arama tamamlandı; İİK 67 kaynaklı cevap |
+| Ortak velayet | 2,23 | 1,76 | Arama tamamlandı; iki kaynağa dayalı cevap |
+
+Dört cevap da programatik kaynak denetimini geçti; bu sonuç bağımsız hukuki
+doğruluk değerlendirmesi değildir. İlk satır, yük altında odaklı sorgunun da
+timeout olabildiğini gösterir. Süreler API'nin toplam yanıt süresi değildir:
+portal doğrulaması, sohbet kaydı ve açıklayıcı yeniden yazım bu smoke testinde
+çalıştırılmadı. Test yalnız mevcut resmî etiketli bağlamları modele verdi;
+bekleyen hiçbir kayıt bu nedenle doğrulanmış sayılmadı. Toplama işçilerine ve
+canlı korpus kayıtlarına müdahale edilmedi.
+
+Bu ek değişikliğin izole CI şemasıyla Python regresyon sonucu: **547 geçti,
+1 atlandı**. Yalnız geçici test veritabanı test sonunda kaldırıldı.

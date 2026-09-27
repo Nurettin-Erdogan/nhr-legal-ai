@@ -10,6 +10,14 @@ import re
 from api.ai.search_plan import normalize
 
 
+_CASE_REQUEST = re.compile(r'\b(?:içtihat\w*|emsal\w*|karar(?:ı|ını|ında|ları|larını|larında)|'
+                           r'yargıtay|danıştay|sayıştay|kdk|anayasa mahkemesi)\b')
+
+
+def case_law_requested(question: str) -> bool:
+    return bool(_CASE_REQUEST.search(normalize(question)))
+
+
 @dataclass(frozen=True)
 class Intent:
     name: str
@@ -93,12 +101,18 @@ def intent_tsquery(intent: Intent) -> str:
 def focused_intent_tsquery(question: str, intent: Intent) -> str | None:
     """A statute-linked first pass, never evidence or an exhaustive search.
 
-    Narrow deadline searches using the already mapped statute/article. There is
-    deliberately no expected duration here (e.g. "one year"): such a hint would
-    bias retrieval toward a predetermined legal answer.
+    Narrow deadlines and general severance entitlement questions using the
+    already mapped statute/article. Explicit case-law and evidence questions
+    retain broad retrieval. No expected duration or legal conclusion is added.
+    This is candidate selection, never a claim to have found every related case.
     """
     from api.ai.passages import is_duration_question
-    if not intent.statute or not is_duration_question(question):
+    q = normalize(question)
+    entitlement = intent.name == 'severance' and bool(re.search(
+        r'\b(?:şart\w*|koşul\w*|hak kazan\w*)', q))
+    evidence = bool(re.search(r'\b(?:delil\w*|ispat\w*|kanıt\w*)', q))
+    if (not intent.statute or case_law_requested(question) or evidence
+            or not (is_duration_question(question) or entitlement)):
         return None
     law, article = intent.statute
     if not law.isdigit() or not article.isdigit():

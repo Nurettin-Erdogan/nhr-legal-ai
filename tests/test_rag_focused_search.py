@@ -37,16 +37,45 @@ def test_focus_is_a_statute_hint_not_a_predetermined_answer():
     assert focused_intent_tsquery(question, question_intent(question)) is None
 
 
-def test_sufficient_distinct_focused_candidates_keep_pending_searchable(monkeypatch):
+@pytest.mark.parametrize('question', [
+    'Kıdem tazminatına hak kazanma şartları nelerdir?',
+    'Kıdem tazminatının koşulları nelerdir?',
+    'İşçi kıdem tazminatına nasıl hak kazanır?',
+])
+def test_severance_entitlement_uses_reference_not_an_expected_answer(question):
+    query = focused_intent_tsquery(question, question_intent(question))
+    assert query == f'({intent_tsquery(question_intent(question))}) & 1475 & 14'
+
+
+@pytest.mark.parametrize('question', [
+    'Kıdem tazminatı şartlarına ilişkin Yargıtay kararları nelerdir?',
+    'Kıdem tazminatı şartları hakkında emsal arıyorum',
+    'Kıdem tazminatı şartları nasıl ispat edilir?',
+    'Kıdem tazminatına hak kazanmak için hangi deliller gerekir?',
+    'Kıdem tazminatı hesabında ücret nedir?',
+    'İtirazın iptali süresi hakkındaki içtihatları bul',
+    'Kira sözleşmesinde TÜFE üzerinde artış istenirse ne yapılır?',
+    'Ortak velayet şartları nelerdir?',
+])
+def test_focus_does_not_narrow_case_law_evidence_or_unmeasured_topics(question):
+    assert focused_intent_tsquery(question, question_intent(question)) is None
+
+
+@pytest.mark.parametrize('question,text', [
+    (QUESTION, TEXT),
+    ('Kıdem tazminatına hak kazanma şartları nelerdir?',
+     'Kıdem tazminatı işçinin fesih durumuna göre değerlendirilmiştir.'),
+])
+def test_sufficient_distinct_focused_candidates_keep_pending_searchable(monkeypatch, question, text):
     calls = []
     def execute(conn, sql, params, **kwargs):
         calls.append((sql, params, kwargs))
         if sql == retrieval.STATUTE_RETRIEVAL_SQL:
             return []
-        return [candidate(i) for i in range(1, 55)]
+        return [replace(candidate(i), content=text) for i in range(1, 55)]
     monkeypatch.setattr(retrieval, '_execute_retrieval', execute)
     stats = {}
-    rows = retrieval.retrieve_contexts(object(), question=QUESTION, top_k=48, diagnostics=stats)
+    rows = retrieval.retrieve_contexts(object(), question=question, top_k=48, diagnostics=stats)
     assert len(rows) == 48 and all(c.verification == 'third_party' for c in rows)
     assert len(calls) == 2 and calls[1][2]['timeout'] == '4s'
     assert 'legal_rag_current_lexical_hits(' in calls[1][0]

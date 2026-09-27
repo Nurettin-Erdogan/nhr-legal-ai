@@ -6,17 +6,11 @@ uses that provision, not a free-standing rule copied from a decision. Decisions
 remain searchable and available for explicit case-law questions. This policy is
 not a general legal-conflict detector or a guarantee that corpus metadata is right.
 """
-import re
-
-from api.ai.relevance import question_intent
-from api.ai.search_plan import normalize
-
-_CASE_REQUEST = re.compile(r'\b(?:içtihat\w*|emsal\w*|karar(?:ı|ını|ında|ları|larını|larında)|'
-                           r'yargıtay|danıştay|sayıştay|kdk|anayasa mahkemesi)\b')
+from api.ai.relevance import case_law_requested, question_intent
 
 
 def primary_legislation_markers(question, contexts):
-    if _CASE_REQUEST.search(normalize(question)):
+    if case_law_requested(question):
         return set()
     # Lazy import avoids the retrieval -> relevance -> rag import cycle.
     from api.ai.retrieval import question_law_numbers, question_article_numbers
