@@ -11,10 +11,15 @@ def candidate_pool_size(answer_size: int) -> int:
     return min(96, max(48, answer_size * 8))
 
 
-def select_answer_contexts(contexts: list[RAGContext], limit: int) -> list[RAGContext]:
+def select_answer_contexts(contexts: list[RAGContext], limit: int, *, question: str = '') -> list[RAGContext]:
     """First take one chunk per source, then fill remaining slots in rank order."""
+    from api.ai.authority import primary_legislation_markers
+    eligible = verified_contexts(contexts)
+    primary = primary_legislation_markers(question, eligible) if question else set()
+    if primary:
+        eligible = [c for i, c in enumerate(eligible, 1) if i in primary]
     unique, extra, seen = [], [], set()
-    for context in verified_contexts(contexts):
+    for context in eligible:
         if context.source_id in seen:
             extra.append(context)
         else:

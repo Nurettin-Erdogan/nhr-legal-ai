@@ -29,6 +29,8 @@ yalnız modelin seçtiği bu alıntıları görüyordu.
   Bütçeye sığmayan tam madde kırpılmak yerine yanıttan vazgeçilir.
 - Önbellekteki eski cevabın denetimi yalnız eski atıfları değil, o istek için
   getirilen birincil mevzuat dayanağını da dikkate alır.
+- Mevzuat önceliği model bağlamı seçilirken de uygulanır; `selected_documents`
+  sayacı bu seçimi gösterir. Aday/doğrulanmış havuz sayaçları ayrı korunur.
 - Yalnız mevzuat kuralı bulunmuşsa ve sorulan başvuru adımları desteklenmiyorsa,
   bunun henüz doğrulanamadığı belirtilir; pratik hukuki yol uydurulmaz.
 
@@ -42,6 +44,11 @@ Yerel `qwen3.5:4b`, canlı korpusa salt okunur erişim, aynı kira sorusu:
   istisnalar korunuyor, `grounded=true` ve desteklenmeyen iddia listesi boş.
 - Portal doğrulaması, sohbet kaydı ve işçi durdurma işlemi bu testte yapılmadı.
   Bu yüzden bu ölçüm tarayıcıdan uçtan uca süre değildir.
+
+Son tekrar ölçümünde disk/yük koşulları altında geniş metin araması yeniden
+4 saniyelik timeout'a girdi (toplam arama 5,31 sn, model/denetim 1,67 sn).
+Buna rağmen birincil madde bulundu, cevap yine TBK 344'e dayandı ve doğrulamadan
+geçti. **Genel arama zaman aşımı sorunu tamamen çözülmüş değildir.**
 
 ## Sınırlar
 
@@ -57,4 +64,4 @@ bir hukuki tavsiye verdiği iddia edilmez.
 Bu oturumda API, yalnız `api/` klasörünü izleyen `--reload --reload-dir api`
 ile yeniden başlatıldı; toplama/embedding işçileri yeniden başlatılmadı.
 
-İzole CI şemasıyla release testleri: **534 geçti, 1 atlandı**.
+İzole CI şemasıyla release testleri: **535 geçti, 1 atlandı**.

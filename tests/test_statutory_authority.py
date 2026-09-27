@@ -99,3 +99,13 @@ def test_rule_only_answer_discloses_missing_procedural_steps():
     result = with_coverage_notice(answer,QUESTION)
     assert 'başvuru adımlarını bu kaynaklarla doğrulayamadım' in result.text
     assert result.contexts == answer.contexts and result.grounded
+
+
+def test_model_source_counter_reflects_primary_selection_not_discovery_pool():
+    from api.ai.discovery import select_answer_contexts, search_summary
+    pool = [old_case(), statute()]
+    selected = select_answer_contexts(pool, 6, question=QUESTION)
+    assert selected == [pool[1]]
+    summary = search_summary(pool, pool, selected, {}, {})
+    assert summary['candidate_documents'] == summary['verified_documents'] == 2
+    assert summary['selected_documents'] == 1

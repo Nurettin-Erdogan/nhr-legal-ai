@@ -342,7 +342,7 @@ async def execute_answer(
         timings.extra["live_verification_ms"] = round((monotonic()-live_verification_started)*1000, 1)
 
     verified_pool = verified_contexts(contexts)
-    contexts = select_answer_contexts(verified_pool, settings.rag_top_k)
+    contexts = select_answer_contexts(verified_pool, settings.rag_top_k, question=request.question)
     verification_stats = dict(verification_diagnostics)
     summary = search_summary(candidates, verified_pool, contexts,
                              retrieval_diagnostics, verification_stats)
