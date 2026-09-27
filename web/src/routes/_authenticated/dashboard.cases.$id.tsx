@@ -1,133 +1,120 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useEffect, useRef, useState } from "react";
 import { DashboardLayout } from "@/components/DashboardLayout";
+import { CaseDetailView } from "@/components/CaseDetailView";
 import { Button } from "@/components/ui/button";
 import { useParams, Link } from "@/lib/router-compat";
-import { cases } from "@/data/mock";
-import { ArrowLeft, FileText, MessageSquare, Phone, Sparkles, Clock, Wallet } from "lucide-react";
-
-const tabs = ["Özet", "Evraklar", "Notlar", "Zaman Çizelgesi", "Tahsilat", "Aramalar", "AI Özet"];
+import { loadCaseDetail, type CaseDetailData } from "@/lib/case-detail";
+import { db } from "@/lib/db";
+import { ArrowLeft, RefreshCw } from "lucide-react";
 
 const CaseDetail = () => {
-  const { id } = useParams();
-  const c: any = cases.find((x: any) => String(x.id) === id) || {
-    no: id ?? "—",
-    client: "—",
-    opponent: "—",
-    court: "—",
-    type: "—",
-    status: "—",
-    lawyer: "—",
-    hearing: "—",
+  const { id } = useParams<{ id: string }>();
+  const [result, setResult] = useState<{ id: string; data?: CaseDetailData; error?: string }>();
+  const [revision, setRevision] = useState(0);
+  const [downloading, setDownloading] = useState<string>();
+  const [downloadError, setDownloadError] = useState("");
+  const generation = useRef(0);
+  const current = result?.id === id ? result : undefined;
+  const data = current?.data;
+
+  useEffect(() => {
+    let active = true;
+    ++generation.current;
+    setResult(undefined);
+    setDownloadError("");
+    setDownloading(undefined);
+    loadCaseDetail(id)
+      .then((data) => {
+        if (active) setResult({ id, data });
+      })
+      .catch((error) => {
+        if (active)
+          setResult({ id, error: error instanceof Error ? error.message : "Dava yüklenemedi." });
+      });
+    return () => {
+      active = false;
+      ++generation.current;
+    };
+  }, [id, revision]);
+
+  const download = async (documentId: string) => {
+    const document = data?.documents.rows.find((row) => row.id === documentId);
+    if (!document || downloading) return;
+    const version = generation.current;
+    setDownloading(documentId);
+    setDownloadError("");
+    try {
+      const response = await db.storage.from("case-files").download(document.storage_path);
+      if (version !== generation.current) return;
+      if (response.error || !response.data)
+        throw new Error(response.error?.message || "Dosya indirilemedi.");
+      const url = URL.createObjectURL(response.data);
+      const anchor = window.document.createElement("a");
+      anchor.href = url;
+      anchor.download = document.file_name;
+      window.document.body.appendChild(anchor);
+      try {
+        anchor.click();
+      } finally {
+        anchor.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+    } catch (error) {
+      if (version === generation.current)
+        setDownloadError(error instanceof Error ? error.message : "Dosya indirilemedi.");
+    } finally {
+      if (version === generation.current) setDownloading(undefined);
+    }
   };
 
   return (
     <DashboardLayout
-      title={`Dosya ${c.no}`}
-      subtitle={`${c.client} vs ${c.opponent}`}
+      title={data?.record.title ?? "Dava detayı"}
+      subtitle={
+        data
+          ? `Dosya: ${data.record.case_no || data.record.esas_no || "Numara belirtilmemiş"}`
+          : "Kayıtlı dava bilgileri"
+      }
       actions={
-        <Link to="/dashboard/cases">
-          <Button variant="outline" size="sm">
-            <ArrowLeft className="h-4 w-4" />
-            Listeye Dön
+        <div className="flex gap-2">
+          <Link to="/dashboard/cases">
+            <Button variant="outline" size="sm">
+              <ArrowLeft className="h-4 w-4" />
+              Listeye Dön
+            </Button>
+          </Link>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!current}
+            onClick={() => setRevision((n) => n + 1)}
+          >
+            <RefreshCw className="h-4 w-4" />
+            Yenile
           </Button>
-        </Link>
+        </div>
       }
     >
-      <div className="grid lg:grid-cols-3 gap-6 mb-6">
-        <div className="lg:col-span-2 p-6 rounded-2xl bg-card border border-border shadow-card-elite">
-          <div className="flex flex-wrap gap-2 mb-4 border-b border-border pb-4">
-            {tabs.map((t, i) => (
-              <button
-                key={t}
-                className={`px-3.5 py-1.5 rounded-md text-xs font-medium transition ${i === 0 ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary"}`}
-              >
-                {t}
-              </button>
-            ))}
-          </div>
-
-          <h3 className="font-serif text-xl font-semibold mb-4">Dosya Özeti</h3>
-          <dl className="grid sm:grid-cols-2 gap-x-8 gap-y-3 text-sm">
-            <div>
-              <dt className="text-xs text-muted-foreground">Mahkeme</dt>
-              <dd className="mt-0.5">{c.court}</dd>
-            </div>
-            <div>
-              <dt className="text-xs text-muted-foreground">Dava Türü</dt>
-              <dd className="mt-0.5">{c.type}</dd>
-            </div>
-            <div>
-              <dt className="text-xs text-muted-foreground">Durum</dt>
-              <dd className="mt-0.5">{c.status}</dd>
-            </div>
-            <div>
-              <dt className="text-xs text-muted-foreground">Sorumlu Avukat</dt>
-              <dd className="mt-0.5">{c.lawyer}</dd>
-            </div>
-            <div>
-              <dt className="text-xs text-muted-foreground">Son İşlem</dt>
-              <dd className="mt-0.5">{c.lastAction}</dd>
-            </div>
-            <div>
-              <dt className="text-xs text-muted-foreground">Sıradaki Duruşma</dt>
-              <dd className="mt-0.5 text-gold-deep font-medium">{c.hearing}</dd>
-            </div>
-          </dl>
-
-          <div className="mt-6 p-4 rounded-xl bg-gradient-to-br from-accent-soft to-transparent border border-gold/30">
-            <div className="flex items-center gap-2 text-xs font-semibold text-gold-deep uppercase tracking-wider mb-2">
-              <Sparkles className="h-3.5 w-3.5" /> AI Özet
-            </div>
-            <p className="text-sm leading-relaxed">
-              Dosyada bilirkişi raporuna {c.lawyer} tarafından itiraz edildi. Karşı taraf vekili ek
-              süre talep etti. Önümüzdeki duruşmada tanık dinlenmesi planlanıyor. Başarı tahmini:{" "}
-              <strong>%72</strong>.
-            </p>
-          </div>
+      {!current && (
+        <p role="status" className="text-sm text-muted-foreground">
+          Dava bilgileri yükleniyor…
+        </p>
+      )}
+      {current?.error && (
+        <div role="alert" className="rounded-xl border border-destructive p-4 text-destructive">
+          {current.error}
         </div>
-
-        <div className="space-y-4">
-          <div className="p-5 rounded-2xl bg-card border border-border shadow-card-elite">
-            <h4 className="font-serif font-semibold mb-3">Hızlı İşlemler</h4>
-            <div className="space-y-2">
-              <Button variant="outline" className="w-full justify-start">
-                <FileText className="h-4 w-4" /> Evrak Yükle
-              </Button>
-              <Button variant="outline" className="w-full justify-start">
-                <MessageSquare className="h-4 w-4" /> Not Ekle
-              </Button>
-              <Button variant="outline" className="w-full justify-start">
-                <Phone className="h-4 w-4" /> AI Bilgilendirme Ara
-              </Button>
-              <Button variant="outline" className="w-full justify-start">
-                <Wallet className="h-4 w-4" /> Tahsilat Ekle
-              </Button>
-            </div>
-          </div>
-
-          <div className="p-5 rounded-2xl bg-card border border-border shadow-card-elite">
-            <h4 className="font-serif font-semibold mb-3 flex items-center gap-2">
-              <Clock className="h-4 w-4 text-gold" /> Son Aktivite
-            </h4>
-            <ul className="space-y-3 text-xs">
-              {[
-                "Bilirkişi raporu UYAP'tan indirildi",
-                "Av. Selim Korkmaz not ekledi",
-                "Müvekkile AI bilgilendirme yapıldı",
-                "Duruşma tutanağı eklendi",
-              ].map((a, i) => (
-                <li key={i} className="flex gap-3">
-                  <span className="h-1.5 w-1.5 rounded-full bg-gold mt-1.5 shrink-0" />
-                  <div>
-                    <div>{a}</div>
-                    <div className="text-muted-foreground mt-0.5">{i + 1} gün önce</div>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
-      </div>
+      )}
+      {data && (
+        <CaseDetailView
+          key={id}
+          data={data}
+          onDownload={download}
+          downloading={downloading}
+          downloadError={downloadError}
+        />
+      )}
     </DashboardLayout>
   );
 };
