@@ -76,7 +76,7 @@ def test_empty_or_cut_evidence_never_falls_back_to_an_invented_answer():
     assert text == 'Kaynaklarda yeterli bilgi bulunmuyor.'
 
 
-def test_matching_statute_does_not_wait_for_expensive_optional_lexical_search(monkeypatch):
+def test_matching_statute_survives_independent_lexical_timeout(monkeypatch):
     from api.ai import retrieval
     import psycopg
     calls = []
@@ -89,7 +89,8 @@ def test_matching_statute_does_not_wait_for_expensive_optional_lexical_search(mo
     monkeypatch.setattr(retrieval, '_execute_retrieval', execute)
     result = retrieval.retrieve_contexts(object(), question='İtirazın iptali davası süresi nedir?', top_k=6)
     assert result == [context]  # successful primary retrieval survives
-    assert len(calls) == 1
+    assert len(calls) == 2
+    assert calls[1][2]['timeout'] == '4s'
     assert calls[0][2]['timeout'] == '3s'
     assert calls[0][1]['law_no'] == '2004'
     assert calls[0][1]['article_no'] == '67'

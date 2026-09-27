@@ -14,6 +14,7 @@ from api.ai.evidence_selection import evidence_candidates
 from api.ai.retrieval import retrieve_contexts
 from api.ai.trust import verified_contexts
 from api.ai.relevance import semantic_search_text
+from api.ai.discovery import candidate_pool_size, select_answer_contexts
 from api.config import get_settings
 from api.db import database_connection
 from scripts.compare_local_rag import QUESTIONS
@@ -44,13 +45,17 @@ def main():
             row['embedding_seconds'] = round(perf_counter()-start, 3) if vector else 0
             with database_connection() as connection:
                 connection.execute('SET TRANSACTION READ ONLY')
-                candidates = retrieve_contexts(connection, question=question, top_k=6,
+                candidates = retrieve_contexts(connection, question=question, top_k=candidate_pool_size(6),
                     query_embedding=vector, embedding_model=settings.embedding_model,
                     diagnostics=diagnostics)
             contexts = verified_contexts(candidates)
-            evidence = evidence_candidates(question, contexts, per_source_chars=2000)
-            row.update(contexts=[asdict(c) for c in contexts], pending_excluded=len(candidates)-len(contexts),
-                       evidence=[asdict(e) for e in evidence], count=len(contexts))
+            selected = select_answer_contexts(contexts, 6)
+            evidence = evidence_candidates(question, selected, per_source_chars=2000)
+            row.update(contexts=[asdict(c) for c in selected], pending_excluded=len(candidates)-len(contexts),
+                       evidence=[asdict(e) for e in evidence], count=len(selected),
+                       verified_candidate_documents=len({c.source_id for c in contexts}),
+                       candidate_documents=len({c.source_id for c in candidates}),
+                       selected_documents=len({c.source_id for c in selected}))
         except Exception as exc:
             row['error'] = type(exc).__name__
         row.update(seconds=round(perf_counter()-start,3), diagnostics=diagnostics)

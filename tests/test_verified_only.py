@@ -108,7 +108,7 @@ def answer_pipeline(monkeypatch):
 
 
 def test_no_model_cache_preview_or_answer_when_portal_did_not_verify(answer_pipeline):
-    answer_pipeline.setattr(pipeline,'verify_third_party_contexts',lambda contexts:contexts)
+    answer_pipeline.setattr(pipeline,'verify_third_party_contexts',lambda contexts, **kwargs:contexts)
     events=[]
     with pytest.raises(HTTPException) as error:
         asyncio.run(pipeline.execute_answer(AIAnswerRequest(question='Kıdem tazminatı şartları nelerdir?'),None,on_stage=events.append))
@@ -119,7 +119,7 @@ def test_no_model_cache_preview_or_answer_when_portal_did_not_verify(answer_pipe
 
 def test_verified_source_reaches_model_and_response(answer_pipeline):
     checked=[]
-    def verify(contexts):
+    def verify(contexts, **kwargs):
         checked.append(True)
         return [replace(c,verification='official') for c in contexts]
     def generate(*args,**kwargs):

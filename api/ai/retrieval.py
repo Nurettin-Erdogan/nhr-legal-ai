@@ -953,17 +953,21 @@ def retrieve_contexts(
         semantic = run('semantic', SEMANTIC_RETRIEVAL_SQL,
                        dict(params, embedding=vector_literal(query_embedding),
                             embedding_model=embedding_model,
-                            candidate_limit=max(96, top_k * 12)), '3s')
-    # Real-corpus measurements show global FTS ranking can dominate latency.
-    # With topical semantic evidence, don't block the answer on that optional
-    # full ranking. The separate research browser remains an exhaustive search.
-    topical_semantic = relevant_contexts(question, semantic)
-    if topical_semantic or relevant_contexts(question, statute):
-        lexical = []
-        info['lexical_skipped'] = 'topical_semantic_or_statutory_evidence_available'
-    else:
-        lexical = run('lexical', sql, params, '4s')
+                            candidate_limit=min(192, max(96, top_k * 12))), '3s')
+    # Embedding coverage is incomplete. Always query the text index as well:
+    # finding a few ANN hits is not evidence that the remaining corpus is empty.
+    # Each branch retains a deadline; a failed branch cannot erase other hits.
+    lexical = run('lexical', sql, params, '4s')
     candidates = relevant_contexts(question, lexical + semantic)
+    unique_candidates = {c.chunk_id: c for c in statute + lexical + semantic}
+    relevant_ids = {c.chunk_id for c in relevant_contexts(question, list(unique_candidates.values()))}
+    info.update(
+        lexical_candidates=len(lexical), semantic_candidates=len(semantic),
+        candidate_chunks=len(unique_candidates),
+        candidate_documents=len({c.source_id for c in unique_candidates.values()}),
+        irrelevant_chunks=len(unique_candidates) - len(relevant_ids),
+        exhaustive=False,
+    )
     # Reciprocal rank fusion avoids comparing arbitrary ts_rank and cosine units.
     if semantic:
         from dataclasses import replace

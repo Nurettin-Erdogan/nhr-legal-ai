@@ -188,3 +188,5 @@ class AIAnswerResponse(BaseModel):
     prompt_eval_count: int | None = None
     eval_count: int | None = None
     done_reason: str | None = None
+    # Request-local candidate counts, never the total matching corpus size.
+    search_summary: dict[str, Any] | None = None

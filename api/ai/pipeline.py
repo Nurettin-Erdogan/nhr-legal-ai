@@ -18,6 +18,7 @@ from api.ai.cache import answer_cache, answer_cache_key, source_fingerprint
 from api.ai.embeddings import EmbeddingProviderError, create_embedding_provider
 from api.ai.history import record_exchange
 from api.ai.live_verify import verify_third_party_contexts
+from api.ai.discovery import candidate_pool_size, select_answer_contexts, search_summary
 from api.ai.trust import usable_as_evidence, verified_contexts
 from api.ai.on_demand_verify import explicit_statute_reference, verify_pending_statute
 from api.ai.providers import AIProvider, AIProviderError, create_provider
@@ -126,6 +127,7 @@ def _response_from_verified(
         prompt_eval_count=None if timings is None else timings.prompt_eval_count,
         eval_count=None if timings is None else timings.eval_count,
         done_reason=None if timings is None else timings.done_reason,
+        search_summary=None if timings is None else timings.extra.get('search_summary'),
     )
 
 
@@ -196,6 +198,7 @@ def _retrieve(
     query_embedding: list[float] | None,
     top_k: int,
     embedding_model: str,
+    diagnostics: dict | None = None,
 ) -> list[RAGContext]:
     if request.project_id is not None:
         if user_id is None:
@@ -211,6 +214,7 @@ def _retrieve(
                 query_embedding=query_embedding,
                 embedding_model=embedding_model,
                 as_of=request.as_of,
+                diagnostics=diagnostics,
             )
             document_contexts = retrieve_document_contexts(
                 connection,
@@ -233,6 +237,7 @@ def _retrieve(
             query_embedding=query_embedding,
             embedding_model=embedding_model,
             as_of=request.as_of,
+            diagnostics=diagnostics,
         )
 
 
@@ -295,13 +300,16 @@ async def execute_answer(
         )
 
     retrieval_started = monotonic()
+    retrieval_diagnostics: dict = {}
+    verification_diagnostics: dict = {}
     try:
         contexts = await asyncio.to_thread(
             _retrieve,
             request,
             user_id=user_id,
             query_embedding=query_embedding,
-            top_k=settings.rag_top_k,
+            top_k=candidate_pool_size(settings.rag_top_k),
+            diagnostics=retrieval_diagnostics,
             embedding_model=settings.embedding_model,
         )
     except HTTPException:
@@ -310,22 +318,39 @@ async def execute_answer(
         raise HTTPException(status_code=503, detail="Hukuk kaynakları aranamadı") from exc
     timings.retrieval_ms = (monotonic() - retrieval_started) * 1000
 
+    candidates = list(contexts)
+    timings.extra['retrieval'] = retrieval_diagnostics
+    await emit('candidates_found', candidate_chunks=len(candidates),
+               candidate_documents=len({c.source_id for c in candidates}),
+               partial=bool(retrieval_diagnostics.get('partial')), exhaustive=False)
     if any(context.verification == "third_party" for context in contexts):
         await emit("verifying_source", source_type="court_decision")
         live_verification_started = monotonic()
         try:
             contexts = await asyncio.wait_for(
-                asyncio.to_thread(verify_third_party_contexts, contexts), timeout=15.0
+                asyncio.to_thread(verify_third_party_contexts, contexts, max_docs=12,
+                                  target_sources=settings.rag_top_k,
+                                  diagnostics=verification_diagnostics), timeout=15.0
             )
-        except Exception:
-            logger.warning("Kaynak doğrulaması tamamlanamadı; yalnız doğrulanmış kayıtlar kullanılacak")
+        except asyncio.TimeoutError:
+            verification_diagnostics = {**verification_diagnostics, 'stop_reason': 'timeout'}
             contexts = verified_contexts(contexts)
-        timings.extra["live_verification_ms"] = round(
-            (monotonic() - live_verification_started) * 1000,
-            1,
-        )
+        except Exception:
+            verification_diagnostics = {**verification_diagnostics, 'stop_reason': 'error'}
+            logger.warning("Source verification failed; using verified evidence only")
+            contexts = verified_contexts(contexts)
+        timings.extra["live_verification_ms"] = round((monotonic()-live_verification_started)*1000, 1)
 
-    contexts = verified_contexts(contexts)
+    verified_pool = verified_contexts(contexts)
+    contexts = select_answer_contexts(verified_pool, settings.rag_top_k)
+    verification_stats = dict(verification_diagnostics)
+    summary = search_summary(candidates, verified_pool, contexts,
+                             retrieval_diagnostics, verification_stats)
+    timings.extra['search_summary'] = summary
+    timings.extra['verification'] = verification_stats
+    timings.extra['unverified_excluded'] = summary['unverified_excluded']
+    logger.info('RAG discovery %s', summary)
+    await emit('search_summary', **summary)
     if not contexts:
         raise HTTPException(
             status_code=422,
