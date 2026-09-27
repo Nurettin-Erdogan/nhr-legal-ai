@@ -54,3 +54,20 @@ test('unknown stop reason is not interpreted as successful verification', () => 
 test('only count fields are forwarded, no source text or keys', () => {
   assert.deepEqual(model.parseSearchSummary({ ...sample, secret: 'do-not-forward' }), sample);
 });
+
+test('fast answer reports its scope without claiming a full corpus search', () => {
+  const summary = model.parseSearchSummary({ ...sample, retrieval_strategy: 'verified_statute', research_deferred: true });
+  assert.equal(summary.research_deferred, true);
+  const html = renderToStaticMarkup(createElement(SearchSummary, { summary }));
+  assert.ok(html.includes('Geniş korpus taraması bu sayılara dahil değildir'));
+  assert.ok(html.includes('kaynak panelinde'));
+});
+
+test('only the latest completed fast answer triggers separate research', () => {
+  const summary = { ...sample, retrieval_strategy: 'verified_statute', research_deferred: true };
+  assert.equal(model.shouldAutoResearch(2, 4, false, summary), true);
+  assert.equal(model.shouldAutoResearch(0, 4, false, summary), false);
+  assert.equal(model.shouldAutoResearch(2, 4, true, summary), false);
+  assert.equal(model.shouldAutoResearch(2, 4, false, sample), false);
+  assert.equal(model.shouldAutoResearch(2, 4, false, undefined), false);
+});

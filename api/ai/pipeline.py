@@ -19,6 +19,7 @@ from api.ai.embeddings import EmbeddingProviderError, create_embedding_provider
 from api.ai.history import record_exchange
 from api.ai.live_verify import verify_third_party_contexts
 from api.ai.discovery import candidate_pool_size, select_answer_contexts, search_summary
+from api.ai.fast_statute import try_fast_statute
 from api.ai.trust import usable_as_evidence, verified_contexts
 from api.ai.on_demand_verify import explicit_statute_reference, verify_pending_statute
 from api.ai.providers import AIProvider, AIProviderError, create_provider
@@ -246,6 +247,7 @@ async def execute_answer(
     user_id: UUID | None,
     *,
     on_stage: StageCallback | None = None,
+    _force_full_search: bool = False,
 ) -> tuple[AIAnswerResponse, PipelineTimings]:
     settings = get_settings()
     timings = PipelineTimings()
@@ -272,14 +274,22 @@ async def execute_answer(
     except AIProviderError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+    fast_diagnostics: dict = {}
+    fast_contexts = [] if _force_full_search else await asyncio.to_thread(
+        try_fast_statute, question=request.question, as_of=request.as_of,
+        project_id=request.project_id, conversation_id=request.conversation_id,
+        max_chunks=settings.rag_top_k, max_chars=settings.rag_context_chars,
+        diagnostics=fast_diagnostics,
+    )
+    timings.extra.update(fast_diagnostics)
     embed_started = monotonic()
     query_embedding = (
-        await _embed_question(request.question) if settings.rag_query_embedding else None
+        await _embed_question(request.question) if settings.rag_query_embedding and not fast_contexts else None
     )
     timings.embedding_ms = (monotonic() - embed_started) * 1000 if query_embedding else 0.0
 
     statute_reference = explicit_statute_reference(request.question)
-    if statute_reference is not None and request.as_of is None:
+    if statute_reference is not None and request.as_of is None and not fast_contexts:
         law_no, article_no = statute_reference
         await emit(
             "verifying_source",
@@ -300,10 +310,10 @@ async def execute_answer(
         )
 
     retrieval_started = monotonic()
-    retrieval_diagnostics: dict = {}
+    retrieval_diagnostics: dict = dict(fast_diagnostics) if fast_contexts else {}
     verification_diagnostics: dict = {}
     try:
-        contexts = await asyncio.to_thread(
+        contexts = fast_contexts or await asyncio.to_thread(
             _retrieve,
             request,
             user_id=user_id,
@@ -316,7 +326,7 @@ async def execute_answer(
         raise
     except psycopg.Error as exc:
         raise HTTPException(status_code=503, detail="Hukuk kaynakları aranamadı") from exc
-    timings.retrieval_ms = (monotonic() - retrieval_started) * 1000
+    timings.retrieval_ms = (monotonic() - retrieval_started) * 1000 + fast_diagnostics.get('fast_statute_ms', 0)
 
     candidates = list(contexts)
     timings.extra['retrieval'] = retrieval_diagnostics
@@ -454,6 +464,9 @@ async def execute_answer(
     verify_started = monotonic()
     answer = verify_answer(raw_answer, contexts, question=request.question)
     timings.verification_ms = (monotonic() - verify_started) * 1000
+    if fast_contexts and not answer.grounded:
+        # Never publish an unsupported fast draft; full discovery gets one retry.
+        return await execute_answer(request, user_id, on_stage=on_stage, _force_full_search=True)
     if not answer.grounded:
         if is_insufficient_source_reply(answer.text or raw_answer):
             answer = VerifiedAnswer(

@@ -21,6 +21,7 @@ export function SearchSummary({ summary, citedCount }: {
         </div>)}
       </dl>
       <p className="text-muted-foreground">Bunlar bu istekte değerlendirilen adaylardır; korpustaki bütün ilgili belgelerin toplamı değildir. Atıf sayısı, bulunan belge sayısı değildir.</p>
+      {summary.retrieval_strategy === "verified_statute" && <p className="text-muted-foreground">Cevap ilgili güncel ve doğrulanmış madde üzerinden hazırlandı. Geniş korpus taraması bu sayılara dahil değildir; ayrı araştırmanın durumu sorunun altındaki kaynak panelinde gösterilir.</p>}
       {summary.retrieval_partial && <p className="text-amber-700 dark:text-amber-400">Aramanın bir bölümü zaman aşımına uğradı; araştırma eksik olabilir.</p>}
       {notice && <p className="text-amber-700 dark:text-amber-400">{notice}</p>}
     </section>

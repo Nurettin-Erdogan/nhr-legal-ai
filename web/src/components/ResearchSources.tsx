@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 
 interface Source {
@@ -27,8 +27,9 @@ export function ResearchSources({ question, autoLoad = false }: { question: stri
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const request = useRef<AbortController | null>(null);
+  const autoStarted = useRef(false);
 
-  const load = async (offset: number) => {
+  const load = useCallback(async (offset: number) => {
     request.current?.abort();
     const controller = new AbortController();
     request.current = controller;
@@ -46,7 +47,7 @@ export function ResearchSources({ question, autoLoad = false }: { question: stri
       setPage(next);
       setSources((previous) => {
         const combined = new Map((offset === 0 ? [] : previous).map((s) => [s.source_id, s]));
-        next.results.forEach((s) => combined.set(s.source_id, s));
+        next.results.filter((s) => s.verification === "official").forEach((s) => combined.set(s.source_id, s));
         return [...combined.values()];
       });
     } catch (e) {
@@ -54,14 +55,25 @@ export function ResearchSources({ question, autoLoad = false }: { question: stri
     } finally {
       if (!controller.signal.aborted) setBusy(false);
     }
-  };
+  }, [question]);
 
   useEffect(() => {
     setSources([]);
     setPage(null);
-    if (autoLoad) void load(0);
-    return () => request.current?.abort();
-  }, [question, autoLoad]);
+    setError("");
+    setBusy(false);
+    autoStarted.current = false;
+    return () => { request.current?.abort(); autoStarted.current = false; };
+  }, [question]);
+
+  useEffect(() => {
+    // Only the newly completed answer starts a single first page. Changing
+    // loading state must not erase results or launch repeated portal requests.
+    if (autoLoad && !autoStarted.current) {
+      autoStarted.current = true;
+      void load(0);
+    }
+  }, [autoLoad, load]);
 
   return (
     <section aria-label="Soruyla eşleşen korpus kaynakları" className="mt-3 rounded-xl border border-border bg-card text-foreground p-3 text-left">

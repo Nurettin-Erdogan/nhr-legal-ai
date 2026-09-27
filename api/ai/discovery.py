@@ -43,4 +43,6 @@ def search_summary(candidates, verified, selected, retrieval, verification):
         'lexical_candidates': retrieval.get('lexical_candidates', 0),
         'semantic_candidates': retrieval.get('semantic_candidates', 0),
         'exhaustive': False,
+        'retrieval_strategy': retrieval.get('strategy', 'full_candidates'),
+        'research_deferred': bool(retrieval.get('research_deferred', False)),
     }

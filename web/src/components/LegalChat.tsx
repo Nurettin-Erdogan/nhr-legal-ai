@@ -19,7 +19,7 @@ import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
 import { ResearchSources } from "@/components/ResearchSources";
 import { SearchSummary } from "@/components/SearchSummary";
-import type { SearchSummaryData } from "@/lib/search-summary";
+import { shouldAutoResearch, type SearchSummaryData } from "@/lib/search-summary";
 import {
   askAssistant,
   deleteConversation,
@@ -285,7 +285,8 @@ export function LegalChat({
                       summary={m.searchSummary}
                       citedCount={new Set((m.citations ?? []).map((c) => c.source_id ?? c.reference)).size}
                     />}
-                    {m.role === "user" && <ResearchSources question={m.content} />}
+                    {m.role === "user" && <ResearchSources question={m.content}
+                      autoLoad={shouldAutoResearch(i, messages.length, loading, messages[i + 1]?.searchSummary)} />}
                   </div>
                 </div>
               ))}

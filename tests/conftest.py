@@ -29,3 +29,10 @@ def pytest_configure() -> None:
     url = os.getenv("NHR_TEST_DATABASE_URL")
     if url:
         validate_test_database_url(url)
+
+
+@pytest.fixture(autouse=True)
+def no_implicit_fast_lookup(monkeypatch):
+    # Pipeline unit tests must never discover the live application URL. Fast
+    # lookup tests inject their own loader or override this pipeline boundary.
+    monkeypatch.setattr('api.ai.pipeline.try_fast_statute', lambda **kwargs: [])

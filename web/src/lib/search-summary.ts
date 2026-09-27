@@ -10,6 +10,8 @@ export interface SearchSummaryData {
   verification_stop: string;
   retrieval_partial: boolean;
   exhaustive: false;
+  retrieval_strategy?: "verified_statute" | "full_candidates";
+  research_deferred?: boolean;
 }
 
 export function parseSearchSummary(value: unknown): SearchSummaryData | undefined {
@@ -22,8 +24,19 @@ export function parseSearchSummary(value: unknown): SearchSummaryData | undefine
       || typeof data.verification_stop !== "string" || data.exhaustive !== false) return undefined;
   if ((data.selected_documents as number) > (data.verified_documents as number)
       || (data.verified_documents as number) > (data.candidate_documents as number)) return undefined;
-  return Object.fromEntries([...counts, "verification_stop", "retrieval_partial", "exhaustive"]
+  const result = Object.fromEntries([...counts, "verification_stop", "retrieval_partial", "exhaustive"]
     .map((key) => [key, data[key]])) as unknown as SearchSummaryData;
+  if (data.retrieval_strategy === "verified_statute" || data.retrieval_strategy === "full_candidates") {
+    result.retrieval_strategy = data.retrieval_strategy;
+    result.research_deferred = data.research_deferred === true;
+  }
+  return result;
+}
+
+export function shouldAutoResearch(index: number, messageCount: number, loading: boolean,
+  summary?: SearchSummaryData): boolean {
+  return !loading && index === messageCount - 2 && summary?.retrieval_strategy === "verified_statute"
+    && summary.research_deferred === true;
 }
 
 export function verificationNotice(summary: SearchSummaryData): string | undefined {
