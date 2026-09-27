@@ -33,9 +33,13 @@ class Evidence:
 
 
 def evidence_candidates(question, contexts, *, per_source_chars=1200, total_chars=6000):
+    from api.ai.authority import primary_legislation_markers
+    primary = primary_legislation_markers(question, contexts)
     candidates = []
     seen = set()
     for marker, context in enumerate(contexts, 1):
+        if primary and marker not in primary:
+            continue
         used = 0
         sentences = sorted(_sentences(context.content, include_tail=False),
                            key=lambda s: sentence_score(s, question), reverse=True)
@@ -94,6 +98,22 @@ def preserve_statutory_scope(answer, contexts, question):
     with its original marker; if it cannot fit, abstain rather than cut it.
     """
     selected = {int(i) for i in re.findall(r'\[K(\d+)\]', answer)}
+    from api.ai.authority import primary_legislation_markers
+    primary = primary_legislation_markers(question, contexts)
+    if primary:
+        # Do not separate an article's rule from its following qualifications,
+        # including anaphoric sentences such as "Bu kural ..." / "Ancak ...".
+        # Rebuild in source order, never add an inferred rule or duration.
+        if not selected or not selected.issubset(primary):
+            return ''
+        paragraphs, seen = [], set()
+        for marker in sorted(primary):
+            for sentence in _sentences(contexts[marker-1].content, include_tail=False):
+                if sentence not in seen and len(re.findall(r'\w+', sentence)) >= 4:
+                    seen.add(sentence)
+                    paragraphs.append(f'{sentence} [K{marker}]')
+        complete = '\n\n'.join(paragraphs)
+        return complete if len(complete) <= 6500 else ''
     extra = []
     for marker in sorted(selected):
         context = contexts[marker-1]

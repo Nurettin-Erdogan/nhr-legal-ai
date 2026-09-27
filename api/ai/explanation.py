@@ -45,6 +45,11 @@ def with_coverage_notice(answer: VerifiedAnswer, question: str) -> VerifiedAnswe
         notices.append('Sorudaki süreyi bu alıntılarla doğrulayamadım; aşağıda yalnız kaynaklarda bulunan diğer hususlar yer alıyor.')
     if _CASE_FINDING.search(answer.text):
         notices.append('Aşağıdaki alıntılar olay özelindeki değerlendirmeler içeriyor; genel koşulların eksiksiz listesi olarak okunmamalıdır.')
+    from api.ai.search_plan import normalize
+    if (re.search(r'\bne yap\w*|\bnasıl (?:itiraz|başvur)', normalize(question))
+            and all(c.source_type == 'legislation' for c in answer.contexts)
+            and not re.search(r'\b(?:başvur\w*|itiraz\w*|dava aç\w*|arabulucu\w*|ihtar\w*)', normalize(answer.text))):
+        notices.append('Aşağıda mevzuat dayanağı yer alıyor; somut durumda izlenecek başvuru adımlarını bu kaynaklarla doğrulayamadım.')
     return replace(answer, text='\n\n'.join([*notices, answer.text])) if notices else answer
 
 
@@ -96,7 +101,9 @@ def explain_verified_answer(provider, *, question: str, answer: VerifiedAnswer) 
     # Keep enumerated provisions verbatim until a list-coverage evaluator is
     # calibrated; don't let a four-claim summary silently drop eligibility paths.
     if (len(re.findall(r'(?<!\d)[1-9]\.\s', answer.text)) >= 3
-            or _CASE_FINDING.search(answer.text)):
+            or _CASE_FINDING.search(answer.text)
+            or (any(c.source_type == 'legislation' for c in answer.contexts)
+                and re.search(r'\bancak\b|\bistisna|\bsaklı\b|\bmüstesna', answer.text, re.I))):
         return answer
     try:
         claims = validate_claims(provider.generate(

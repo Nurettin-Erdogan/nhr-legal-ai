@@ -42,7 +42,8 @@ class VerifiedAnswer:
         )
 
 
-def verify_answer(answer: str, contexts: list[RAGContext], *, question: str = "") -> VerifiedAnswer:
+def verify_answer(answer: str, contexts: list[RAGContext], *, question: str = "",
+                  available_contexts: list[RAGContext] | None = None) -> VerifiedAnswer:
     """Validate extractive source support and resolve retrieved citation markers.
 
     The prompt tells the model to cite what it used, but nothing stops it from
@@ -79,10 +80,22 @@ def verify_answer(answer: str, contexts: list[RAGContext], *, question: str = ""
     unsupported.extend(_unsupported_numeric_claims(text, cited_contexts))
     unsupported.extend(unsupported_source_claims(text, cited_contexts))
     if question:
+        from api.ai.authority import answer_uses_primary_basis
+        if not answer_uses_primary_basis(question, cited_contexts,
+                                         contexts if available_contexts is None else available_contexts):
+            unsupported.append('Genel mevzuat yanıtı getirilen birincil mevzuat kaynağına dayanmıyor.')
+    if question:
         from api.ai.relevance import passage_relevant
+        from api.ai.authority import primary_legislation_markers
+        primary = primary_legislation_markers(question, list(cited_contexts))
+        related_primary = {i for i in primary if passage_relevant(question, cited_contexts[i-1].content)}
         # A real citation is necessary, but an unrelated quotation is not an answer.
         for line in text.splitlines():
-            if _MARKER_PATTERN.search(line) and not passage_relevant(question, line):
+            markers = {int(i) for i in _MARKER_PATTERN.findall(line)}
+            # A provision's dependent qualifications need not repeat every query
+            # keyword. Exact source support above is STILL mandatory for them.
+            statutory_qualification = bool(markers) and markers.issubset(related_primary)
+            if markers and not passage_relevant(question, line) and not statutory_qualification:
                 unsupported.append(line)
     return VerifiedAnswer(
         text=text.strip(),

@@ -375,7 +375,8 @@ async def execute_answer(
         cited_ids = [item["chunk_id"] for item in cached["citations"]]
         by_id = {str(context.chunk_id): context for context in contexts}
         ordered = tuple(by_id[chunk_id] for chunk_id in cited_ids if chunk_id in by_id)
-        cached_answer = verify_answer(cached["answer"], list(ordered), question=request.question)
+        cached_answer = verify_answer(cached["answer"], list(ordered), question=request.question,
+                                      available_contexts=contexts)
         if len(ordered) != len(cited_ids):
             cached = None
         if cached is not None and cached_answer.grounded:
