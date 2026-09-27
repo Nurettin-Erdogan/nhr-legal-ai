@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { CaseDetailView } from "@/components/CaseDetailView";
+import { CaseDocumentActions } from "@/components/CaseDocumentActions";
 import { Button } from "@/components/ui/button";
 import { useParams, Link } from "@/lib/router-compat";
 import { loadCaseDetail, type CaseDetailData } from "@/lib/case-detail";
@@ -14,6 +15,7 @@ const CaseDetail = () => {
   const [revision, setRevision] = useState(0);
   const [downloading, setDownloading] = useState<string>();
   const [downloadError, setDownloadError] = useState("");
+  const [savedCase, setSavedCase] = useState<string>();
   const generation = useRef(0);
   const current = result?.id === id ? result : undefined;
   const data = current?.data;
@@ -107,13 +109,32 @@ const CaseDetail = () => {
         </div>
       )}
       {data && (
-        <CaseDetailView
-          key={id}
-          data={data}
-          onDownload={download}
-          downloading={downloading}
-          downloadError={downloadError}
-        />
+        <>
+          {savedCase === id && (
+            <p role="status" className="mb-3 text-sm">
+              Belge davaya kaydedildi. Evrak listesi güncellendi.
+            </p>
+          )}
+          <CaseDetailView
+            key={id}
+            data={data}
+            onDownload={download}
+            downloading={downloading}
+            downloadError={downloadError}
+            initialTab={savedCase === id ? "Evraklar" : "Özet"}
+            documentActions={
+              <CaseDocumentActions
+                key={id}
+                caseId={id}
+                clientId={data.record.client_id}
+                onSaved={() => {
+                  setSavedCase(id);
+                  setRevision((n) => n + 1);
+                }}
+              />
+            }
+          />
+        </>
       )}
     </DashboardLayout>
   );

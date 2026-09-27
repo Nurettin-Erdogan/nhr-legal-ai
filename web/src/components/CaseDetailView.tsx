@@ -43,12 +43,14 @@ export function CaseDetailView({
   onDownload,
   downloading,
   downloadError,
+  documentActions,
   initialTab = "Özet",
 }: {
   data: CaseDetailData;
   onDownload: (id: string) => void;
   downloading?: string;
   downloadError?: string;
+  documentActions?: ReactNode;
   initialTab?: Tab;
 }) {
   const [tab, setTab] = useState<Tab>(initialTab);
@@ -104,8 +106,8 @@ export function CaseDetailView({
             değildir.
           </p>
           <p className="mt-2 text-sm text-muted-foreground">
-            Bu ekran salt okunurdur. Dava bilgileri ve notları dava listesindeki Düzenle işlemiyle
-            güncellenebilir. Tahsilat ve otomatik AI özet bu detaya henüz bağlı değildir.
+            Dava bilgileri ve notları dava listesindeki Düzenle işlemiyle güncellenebilir. Tahsilat
+            ve otomatik AI özet bu detaya henüz bağlı değildir.
           </p>
         </>
       )}
@@ -116,6 +118,7 @@ export function CaseDetailView({
       )}
       {tab === "Evraklar" && (
         <>
+          {documentActions}
           <p className="text-sm text-muted-foreground mb-3">
             Yalnız bu davaya bağlanmış evraklar listelenir; bağlantısız UYAP belgeleri burada
             görünmez.

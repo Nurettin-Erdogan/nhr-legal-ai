@@ -18,6 +18,8 @@ Gateway kullanılmaz. Üretim yerel modelle (DeepSeek/Ollama) yapılır.
 | --- | --- |
 | `POST /api/office/{tablo}` | Genel sorgu (select/insert/update/upsert/delete). Tablo ve sütunlar izin listesindedir. |
 | `POST /api/office/storage/upload`, `GET .../download`, `POST .../remove` | Dosya deposu (`<DOCUMENT_STORAGE_DIR>/office/<kullanıcı>/…`), yalnız kendi klasörü. |
+| `POST /api/office/cases/{case_id}/documents` | Multipart `file`: dava erişimini kontrol eder; belgeyi ve dava/müvekkil ilişkisini kaydeder (50 MB). |
+| `POST /api/office/cases/{case_id}/documents/{document_id}/link` | Sahibinin henüz davaya bağlanmamış belgesini bağlar; başka dava veya uyumsuz müvekkil için 409 döner. |
 | `POST /api/office-ai/run`, `/document`, `/petition` | Belge analizi, özet, risk, sözleşme, dilekçe üretimi. |
 | `POST /api/office-ai/ocr` | OCR (Tesseract + `tur` dil paketi kurulu olmalı; yoksa 503). |
 | `POST /api/public/uyap-ingest`, `/api/public/v1/documents/upload` | UYAP eklentileri; bağlantı anahtarıyla yetkilendirilir. |
@@ -25,6 +27,20 @@ Gateway kullanılmaz. Üretim yerel modelle (DeepSeek/Ollama) yapılır.
 
 Arayüzde `supabase.from(...)` çağrıları `web/src/lib/db.ts` uyumluluk katmanıyla bu uç noktalara gider.
 Desteklenmeyenler: `or()` ve tam metin arama.
+
+## Dava evrakları
+
+`/dashboard/cases/<id>` ekranındaki **Evraklar** sekmesinde dosya yüklenebilir veya mevcut
+bağlantısız belgeler dosya adıyla aranıp sayfalanarak seçilebilir. Başka davadan otomatik taşıma
+yapılmaz. Başarılı işlemden sonra dava detayındaki liste backend'den yeniden okunur.
+Bu işlem yalnız özel dosya saklama ve ilişkilendirmedir; OCR, chunking veya RAG indeksleme yapmaz.
+
+Yeni yükleme UUID dosya anahtarı kullanır; mevcut dosyanın üzerine yazmaz. Belge satırı ve denetim
+kaydı aynı kullanıcı transaction'ında oluşturulur. Commit öncesindeki hatada yalnız yeni dosya
+temizlenir. Commit yanıtı belirsizse olası başarılı kaydı bozmamak için dosya korunur, olay loglanır
+ve istemci listeyi kontrol etmeye yönlendirilir; otomatik yeniden yükleme yapılmaz. Disk/DB arasında
+dağıtık transaction yoktur: süreç çökmesi veya belirsiz commit sonrası sahipsiz dosyaların yönetici
+tarafından incelenmesi gerekebilir. Bu dosyalar otomatik silinmez.
 
 ## Atıf kuralı (üretim akışları)
 Modele yalnız doğrulanmış korpus kaynakları `[K1]…` ile verilir. Kaynak bulunamazsa üretim yapılmaz.

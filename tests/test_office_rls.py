@@ -48,3 +48,18 @@ def test_own_record_and_audit_event_can_be_written(office_db):
     record_event(connection, action="office.insert", actor_user_id=bob, context=AuditContext(uuid4()), entity_type="clients", entity_id=record)
     assert connection.execute("SELECT full_name FROM office_clients WHERE id=%s", (record,)).fetchone()[0] == "Own"
     assert connection.execute("SELECT count(*) FROM activity_logs WHERE entity_id=%s", (record,)).fetchone()[0] == 1
+
+
+def test_case_document_cannot_link_other_users_case(office_db):
+    connection, alice, bob, client = office_db
+    foreign_case, own_case, own_doc, foreign_doc = uuid4(), uuid4(), uuid4(), uuid4()
+    connection.execute("RESET ROLE")
+    for case_id, owner in [(foreign_case, alice), (own_case, bob)]:
+        connection.execute("INSERT INTO office_cases (id, owner_id, title) VALUES (%s,%s,'Test')", (case_id, owner))
+    for doc_id, owner in [(own_doc, bob), (foreign_doc, alice)]:
+        connection.execute("INSERT INTO office_case_documents (id,owner_id,file_name,storage_path) VALUES (%s,%s,'test.txt',%s)", (doc_id, owner, f"{owner}/{doc_id}"))
+    connection.execute("SET LOCAL ROLE nhr_runtime")
+    with pytest.raises(psycopg.errors.ForeignKeyViolation), connection.transaction():
+        connection.execute("UPDATE office_case_documents SET case_id=%s WHERE id=%s", (foreign_case, own_doc))
+    assert connection.execute("UPDATE office_case_documents SET case_id=%s WHERE id=%s", (own_case, foreign_doc)).rowcount == 0
+    assert connection.execute("UPDATE office_case_documents SET case_id=%s WHERE id=%s", (own_case, own_doc)).rowcount == 1

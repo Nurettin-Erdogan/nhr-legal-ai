@@ -465,7 +465,111 @@ def remove_files(
     return {"removed": removed}
 
 
-# Not: `/storage/*` yolları tablo yolundan önce tanımlanmalıdır (aksi halde "storage" tablo sanılır).
+def _case_for_document(connection, case_id: UUID):
+    # RLS applies; a foreign case is indistinguishable from a missing one.
+    case = connection.execute(
+        "SELECT id, client_id FROM office_cases WHERE id = %s FOR SHARE", (case_id,)
+    ).fetchone()
+    if not case:
+        raise HTTPException(status_code=404, detail="Dava bulunamadı veya erişim yetkiniz yok")
+    return case
+
+
+@router.post("/cases/{case_id}/documents", status_code=201)
+async def upload_case_document(
+    case_id: UUID,
+    user_id: Annotated[UUID, Depends(current_user_id)],
+    request: Request,
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    name = (file.filename or "").replace("\\", "/").split("/")[-1].strip()
+    if not name or len(name) > 255 or any(ord(c) < 32 for c in name):
+        raise HTTPException(status_code=400, detail="Geçersiz dosya adı")
+    document_id = uuid4()
+    key = f"{user_id}/cases/{case_id}/{document_id}"
+    target = _storage_path(user_id, key)
+    created = False
+    ready_to_commit = False
+    try:
+        with authenticated_database_connection(str(user_id)) as connection:
+            case = _case_for_document(connection, case_id)
+            data = await file.read(_MAX_UPLOAD_BYTES + 1)
+            if not data:
+                raise HTTPException(status_code=400, detail="Boş dosya yüklenemez")
+            if len(data) > _MAX_UPLOAD_BYTES:
+                raise HTTPException(status_code=413, detail="Dosya 50 MB sınırını aşıyor")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("xb") as output:
+                created = True
+                output.write(data)
+            connection.execute(
+                "INSERT INTO office_case_documents "
+                "(id, owner_id, case_id, client_id, file_name, storage_path, mime_type, size_bytes, source) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'manual')",
+                (document_id, user_id, case_id, case["client_id"], name, key,
+                 (file.content_type or "application/octet-stream")[:255], len(data)),
+            )
+            record_event(connection, action="office.case_document_upload", actor_user_id=user_id,
+                         context=AuditContext.from_request(request), entity_type="case_documents",
+                         entity_id=document_id, metadata={"case_id": str(case_id), "size": len(data)})
+            ready_to_commit = True
+        return {"id": document_id, "case_id": case_id, "file_name": name}
+    except Exception as exc:
+        # A failed COMMIT acknowledgement can still mean the row was committed.
+        # Preserve bytes in that ambiguous case; never leave a committed row with a deleted file.
+        if created and not ready_to_commit:
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                logger.error("Failed to clean up incomplete case upload id=%s", document_id)
+        elif created:
+            logger.error("Case upload commit uncertain; file retained for reconciliation id=%s", document_id)
+        if isinstance(exc, HTTPException):
+            raise
+        if isinstance(exc, (psycopg.Error, OSError)):
+            logger.exception("Case document upload failed id=%s", document_id)
+            raise HTTPException(status_code=503, detail="Belge kaydedilemedi; dava evraklarını kontrol edip yeniden deneyin") from exc
+        raise
+
+
+@router.post("/cases/{case_id}/documents/{document_id}/link")
+def link_case_document(
+    case_id: UUID,
+    document_id: UUID,
+    user_id: Annotated[UUID, Depends(current_user_id)],
+    request: Request,
+) -> dict[str, Any]:
+    try:
+        with authenticated_database_connection(str(user_id)) as connection:
+            case = _case_for_document(connection, case_id)
+            document = connection.execute(
+                "SELECT id, case_id, client_id, storage_path FROM office_case_documents "
+                "WHERE id = %s FOR UPDATE", (document_id,)
+            ).fetchone()
+            if not document:
+                raise HTTPException(status_code=404, detail="Belge bulunamadı veya erişim yetkiniz yok")
+            if document["case_id"] == case_id:
+                return {"id": document_id, "case_id": case_id}
+            if document["case_id"] is not None:
+                raise HTTPException(status_code=409, detail="Belge zaten başka bir davaya bağlı; taşınmadı")
+            if document["client_id"] is not None and document["client_id"] != case["client_id"]:
+                raise HTTPException(status_code=409, detail="Belgenin müvekkili bu davayla eşleşmiyor; bağlanmadı")
+            if not _storage_path(user_id, document["storage_path"]).is_file():
+                raise HTTPException(status_code=404, detail="Belgenin fiziksel dosyası bulunamadı")
+            connection.execute(
+                "UPDATE office_case_documents SET case_id = %s, client_id = %s WHERE id = %s",
+                (case_id, case["client_id"], document_id),
+            )
+            record_event(connection, action="office.case_document_link", actor_user_id=user_id,
+                         context=AuditContext.from_request(request), entity_type="case_documents",
+                         entity_id=document_id, metadata={"case_id": str(case_id)})
+        return {"id": document_id, "case_id": case_id}
+    except psycopg.Error as exc:
+        logger.exception("Case document link failed id=%s", document_id)
+        raise HTTPException(status_code=503, detail="Belge bağlantısı kaydedilemedi") from exc
+
+
+# Specific paths must be registered before the generic table route.
 @router.post("/{table}", response_model=OfficeResult)
 def query_table(
     table: str,
