@@ -15,7 +15,7 @@ export const SiteHeader = () => {
   return (
     <header className="sticky top-0 z-40 w-full border-b border-border bg-background/85 backdrop-blur-xl">
       <div className="mx-auto flex h-16 max-w-5xl items-center justify-between px-4">
-        <Link to="/" aria-label="JURISAI ana sayfa">
+        <Link to="/" aria-label="NHR Hukuk ana sayfa">
           <Logo />
         </Link>
 

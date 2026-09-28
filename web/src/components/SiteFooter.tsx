@@ -12,7 +12,7 @@ export const SiteFooter = () => {
           <Link to="/auth" className="hover:text-foreground">
             Avukat Girişi
           </Link>
-          <span>© 2026 JURISAI</span>
+          <span>© 2026 NHR Hukuk</span>
         </div>
       </div>
     </footer>

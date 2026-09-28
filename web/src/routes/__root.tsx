@@ -81,13 +81,13 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "AvukatAI — Hukuk Bürosu Yönetimi ve Yapay Zekâ" },
+      { title: "NHR Hukuk — Hukuk Bürosu Yönetimi ve Yapay Zekâ" },
       {
         name: "description",
         content:
           "Dava, müvekkil, icra ve belge yönetimini yapay zekâ destekli tek panelde birleştiren hukuk bürosu yazılımı.",
       },
-      { property: "og:title", content: "AvukatAI — Hukuk Bürosu Yönetimi ve Yapay Zekâ" },
+      { property: "og:title", content: "NHR Hukuk — Hukuk Bürosu Yönetimi ve Yapay Zekâ" },
       {
         property: "og:description",
         content: "Hukuk büronuz için yapay zekâ destekli dava, müvekkil ve belge yönetimi.",

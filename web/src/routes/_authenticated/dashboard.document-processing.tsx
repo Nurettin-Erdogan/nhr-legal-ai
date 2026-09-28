@@ -289,8 +289,8 @@ const DocumentProcessing = () => {
         },
       });
       patch(item.id, { status: "sent" });
-      addLog(`${item.file.name} JURISAI dosyalarına kaydedildi`, "success");
-      toast.success("Belge JURISAI dosyalarına aktarıldı");
+      addLog(`${item.file.name} NHR Hukuk dosyalarına kaydedildi`, "success");
+      toast.success("Belge NHR Hukuk dosyalarına aktarıldı");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Aktarılamadı");
     } finally {
@@ -339,7 +339,7 @@ const DocumentProcessing = () => {
     setSummary(null);
     setAutoDone(0);
     const startedAt = Date.now();
-    addLog("Otomatik UYAP → OCR → JURISAI → Dilekçe akışı başladı", "info");
+    addLog("Otomatik UYAP → OCR → NHR Hukuk → Dilekçe akışı başladı", "info");
 
     try {
       addLog("Belge listesi kontrol ediliyor…", "busy");
@@ -759,7 +759,7 @@ const DocumentProcessing = () => {
                           disabled={!item.text || savingDoc}
                           onClick={() => saveToLibrary(item)}
                         >
-                          <Save className="mr-1 h-3.5 w-3.5" /> JURISAI'ye Gönder
+                          <Save className="mr-1 h-3.5 w-3.5" /> NHR Hukuk'a Gönder
                         </Button>
                       </div>
                     </li>
@@ -906,15 +906,15 @@ export const Route = createFileRoute("/_authenticated/dashboard/document-process
   }),
   head: () => ({
     meta: [
-      { title: "Belge İşleme ve OCR | JURISAI" },
+      { title: "Belge İşleme ve OCR | NHR Hukuk" },
       {
         name: "description",
         content: "UYAP belgelerini OCR ile oku, metni düzenle ve tek tıkla dilekçeye dönüştür.",
       },
-      { property: "og:title", content: "Belge İşleme ve OCR | JURISAI" },
+      { property: "og:title", content: "Belge İşleme ve OCR | NHR Hukuk" },
       {
         property: "og:description",
-        content: "Mahkeme belgelerini OCR ile metne çevir, JURISAI ile dilekçe üret.",
+        content: "Mahkeme belgelerini OCR ile metne çevir, NHR Hukuk ile dilekçe üret.",
       },
     ],
   }),

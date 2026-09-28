@@ -144,7 +144,7 @@ const UyapConnect = () => {
             .eq("id", run.id);
         }
         setResult(res);
-        toast.success(`${res.inserted} belge JURISAI'ye aktarıldı`);
+        toast.success(`${res.inserted} belge NHR Hukuk'a aktarıldı`);
       } catch (e) {
         const message = e instanceof Error ? e.message : "Aktarım başarısız";
         if (run?.id) {
@@ -168,7 +168,7 @@ const UyapConnect = () => {
   return (
     <DashboardLayout
       title="UYAP'a Bağlan"
-      subtitle="UYAP'ta oturum aç, indirdiğin dosyalar otomatik olarak JURISAI'ye işlenir."
+      subtitle="UYAP'ta oturum aç, indirdiğin dosyalar otomatik olarak NHR Hukuk'a işlenir."
     >
       {/* Otomatik akış: tarayıcı eklentisi */}
       <section className="mb-6 rounded-xl border bg-card p-5 space-y-4">
@@ -178,9 +178,9 @@ const UyapConnect = () => {
           <h2 className="font-semibold">Tarayıcı eklentisi ile otomatik aktarım</h2>
         </div>
         <p className="text-sm text-muted-foreground leading-relaxed">
-          Apilex benzeri akış: JURISAI eklentisini Chrome'a kurarsın, UYAP'ta kendi oturumunu
-          açarsın ve sağ altta çıkan panelden "Belgeleri JURISAI'ye aktar"a basarsın. Belgeler senin
-          oturumunla indirilip doğrudan JURISAI deponuza kaydedilir; şifre/e-imza hiçbir zaman
+          Apilex benzeri akış: NHR Hukuk eklentisini Chrome'a kurarsın, UYAP'ta kendi oturumunu
+          açarsın ve sağ altta çıkan panelden "Belgeleri NHR Hukuk'a aktar"a basarsın. Belgeler senin
+          oturumunla indirilip doğrudan NHR Hukuk deponuza kaydedilir; şifre/e-imza hiçbir zaman
           okunmaz veya sunucuya gönderilmez.
         </p>
 
@@ -190,7 +190,7 @@ const UyapConnect = () => {
             "Geliştirici modu" → "Paketlenmemiş öğe yükle" ile klasörü seç.
           </li>
           <li>Eklenti simgesine tıkla, aşağıdaki bağlantı anahtarını yapıştır ve kaydet.</li>
-          <li>UYAP dosya/evrak sayfasını aç, sağ alttaki JURISAI panelinden aktarımı başlat.</li>
+          <li>UYAP dosya/evrak sayfasını aç, sağ alttaki NHR Hukuk panelinden aktarımı başlat.</li>
         </ol>
 
         <div className="grid gap-2 sm:grid-cols-2">
@@ -242,7 +242,7 @@ const UyapConnect = () => {
           </div>
           <p className="text-sm text-muted-foreground leading-relaxed">
             Girişi doğrudan resmî UYAP/e-Devlet sayfasında sen yaparsın (e-imza, mobil imza veya
-            e-Devlet şifresi). JURISAI bu bilgileri görmez, saklamaz ve iletmez. Portal yeni sekmede
+            e-Devlet şifresi). NHR Hukuk bu bilgileri görmez, saklamaz ve iletmez. Portal yeni sekmede
             açılır; dosya listesinden ilgili belgeleri veya dosya arşivini indirirsin.
           </p>
           <div className="grid gap-2">
@@ -273,7 +273,7 @@ const UyapConnect = () => {
             </div>
             UYAP'ın açık bir API'si yoktur ve e-imza/e-Devlet kimlik bilgilerinin üçüncü bir
             uygulamada saklanması hem KVKK hem de portal kullanım şartlarına aykırıdır. Bu nedenle
-            oturum senin tarayıcında kalır; JURISAI yalnızca senin indirdiğin belgeleri işler.
+            oturum senin tarayıcında kalır; NHR Hukuk yalnızca senin indirdiğin belgeleri işler.
           </div>
         </section>
 
@@ -363,13 +363,13 @@ export const Route = createFileRoute("/_authenticated/dashboard/uyap")({
   component: UyapConnect,
   head: () => ({
     meta: [
-      { title: "UYAP'a Bağlan · JURISAI" },
+      { title: "UYAP'a Bağlan · NHR Hukuk" },
       {
         name: "description",
-        content: "UYAP oturumunu güvenle aç, indirdiğin dosyaları JURISAI'ye otomatik aktar.",
+        content: "UYAP oturumunu güvenle aç, indirdiğin dosyaları NHR Hukuk'a otomatik aktar.",
       },
-      { property: "og:title", content: "UYAP'a Bağlan · JURISAI" },
-      { property: "og:description", content: "UYAP dosyalarını güvenli akışla JURISAI'ye aktar." },
+      { property: "og:title", content: "UYAP'a Bağlan · NHR Hukuk" },
+      { property: "og:description", content: "UYAP dosyalarını güvenli akışla NHR Hukuk'a aktar." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
     ],

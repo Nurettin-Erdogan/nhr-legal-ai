@@ -115,7 +115,7 @@ export function InteractiveDemo() {
           </span>
           <h2 className="mt-4 font-serif text-4xl md:text-5xl font-semibold">
             Soruyu yazın.{" "}
-            <span className="text-gold-deep">AvukatAI saniyeler içinde cevaplasın.</span>
+            <span className="text-gold-deep">NHR Hukuk saniyeler içinde cevaplasın.</span>
           </h2>
           <p className="mt-4 text-muted-foreground">
             Aşağıdaki demo gerçek bir semantik arama akışını simüle eder — milyonlarca karar
@@ -189,7 +189,7 @@ export function InteractiveDemo() {
               {phase === "thinking" && (
                 <div className="flex items-center gap-3 text-muted-foreground animate-fade-in">
                   <Loader2 className="h-4 w-4 animate-spin text-gold-deep" />
-                  <span className="text-sm">AvukatAI AI emsal kararları analiz ediyor…</span>
+                  <span className="text-sm">NHR Hukuk emsal kararları analiz ediyor…</span>
                 </div>
               )}
 
@@ -260,7 +260,7 @@ export function InteractiveDemo() {
 
           {/* Footnote */}
           <p className="mt-6 text-center text-xs text-muted-foreground">
-            Demo verileri tanıtım amaçlıdır. Gerçek kullanımda AvukatAI, milyonlarca
+            Demo verileri tanıtım amaçlıdır. Gerçek kullanımda NHR Hukuk, milyonlarca
             Yargıtay/Danıştay kararı + ofis arşivinizden cevap üretir.
           </p>
         </div>

@@ -19,7 +19,7 @@ const SORULAR: Array<{ kategori: string; q: string; a: string }> = [
   {
     kategori: "Genel",
     q: "İlk görüşme ücretli mi?",
-    a: "JURISAI üzerinden yaptığınız ön görüşme ve bilgilendirme tamamen ücretsizdir. Dosyanız avukata aktarıldıktan sonra ücret, işin kapsamına göre baro asgari ücret tarifesi esas alınarak belirlenir ve başlamadan önce size yazılı olarak bildirilir.",
+    a: "NHR Hukuk üzerinden yaptığınız ön görüşme ve bilgilendirme tamamen ücretsizdir. Dosyanız avukata aktarıldıktan sonra ücret, işin kapsamına göre baro asgari ücret tarifesi esas alınarak belirlenir ve başlamadan önce size yazılı olarak bildirilir.",
   },
   {
     kategori: "Genel",
@@ -148,13 +148,13 @@ function SSSPage() {
 export const Route = createFileRoute("/sss")({
   head: () => ({
     meta: [
-      { title: "Sık Sorulan Sorular — JURISAI" },
+      { title: "Sık Sorulan Sorular — NHR Hukuk" },
       {
         name: "description",
         content:
           "İşten çıkarılma, boşanma, nafaka, vekâletname ve dava süreleri hakkında en çok sorulan hukuki soruların yanıtları.",
       },
-      { property: "og:title", content: "Sık Sorulan Sorular — JURISAI" },
+      { property: "og:title", content: "Sık Sorulan Sorular — NHR Hukuk" },
       {
         property: "og:description",
         content: "Hukuki süreçler, belgeler ve haklarınız hakkında merak edilenler.",

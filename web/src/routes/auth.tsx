@@ -255,13 +255,13 @@ function AuthPage() {
 export const Route = createFileRoute("/auth")({
   head: () => ({
     meta: [
-      { title: "Avukat Girişi ve Kayıt — JURISAI" },
+      { title: "Avukat Girişi ve Kayıt — NHR Hukuk" },
       {
         name: "description",
         content:
-          "JURISAI avukat paneline ücretsiz kayıt olun veya giriş yapın; başvuruları, dosyaları ve AI araçlarını yönetin.",
+          "NHR Hukuk avukat paneline ücretsiz kayıt olun veya giriş yapın; başvuruları, dosyaları ve AI araçlarını yönetin.",
       },
-      { property: "og:title", content: "Avukat Girişi ve Kayıt — JURISAI" },
+      { property: "og:title", content: "Avukat Girişi ve Kayıt — NHR Hukuk" },
       {
         property: "og:description",
         content: "Ücretsiz kayıt olun veya avukat panelinize giriş yapın.",
