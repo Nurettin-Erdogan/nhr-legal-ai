@@ -177,6 +177,7 @@ class _Connection:
 def test_existing_password_account_is_not_silently_linked_by_matching_email(monkeypatch):
     connection = _Connection(existing_email=True)
     monkeypatch.setattr(routes, "admin_database_connection", lambda: connection)
+    monkeypatch.setattr(routes, "get_settings", lambda: SimpleNamespace(allow_registration=True))
     with pytest.raises(google_oauth.GoogleOAuthError, match="explicit linking"):
         routes._google_user(
             "stable-sub", "existing@gmail.com", "Name",
