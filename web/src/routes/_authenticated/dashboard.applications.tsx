@@ -39,6 +39,7 @@ const durumStyle = (d: string) =>
 function ApplicationsPage() {
   const [items, setItems] = useState<Basvuru[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [filter, setFilter] = useState<string>("tümü");
   const [openId, setOpenId] = useState<string | null>(null);
 
@@ -47,8 +48,11 @@ function ApplicationsPage() {
       .from("basvurular")
       .select("*")
       .order("created_at", { ascending: false });
-    if (error) toast.error("Başvurular yüklenemedi");
-    setItems((data ?? []) as Basvuru[]);
+    if (error) setLoadError(error.message);
+    else {
+      setLoadError("");
+      setItems((data ?? []) as Basvuru[]);
+    }
     setLoading(false);
   };
 
@@ -89,6 +93,10 @@ function ApplicationsPage() {
           <div className="flex justify-center py-16">
             <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
           </div>
+        ) : loadError ? (
+          <p role="alert" className="rounded-lg border border-destructive/30 p-4 text-destructive">
+            Başvurular yüklenemedi: {loadError}
+          </p>
         ) : liste.length === 0 ? (
           <div className="flex flex-col items-center gap-3 rounded-2xl border border-border bg-card py-16 text-center">
             <Inbox className="h-8 w-8 text-muted-foreground" />

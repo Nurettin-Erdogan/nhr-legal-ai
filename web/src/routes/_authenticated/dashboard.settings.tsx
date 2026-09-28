@@ -1,193 +1,191 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { Button } from "@/components/ui/button";
-import { useState } from "react";
-import { cn } from "@/lib/utils";
-import { Building2, Clock, Mic, Phone, Plug, Bell } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { useAuth } from "@/components/AuthProvider";
+import { db } from "@/lib/db";
 
-const tabs = [
-  { id: "office", label: "Ofis Bilgileri", icon: Building2 },
-  { id: "hours", label: "Çalışma Saatleri", icon: Clock },
-  { id: "voice", label: "AI Konuşma Tarzı", icon: Mic },
-  { id: "phone", label: "Telefon Ayarları", icon: Phone },
-  { id: "integrations", label: "Entegrasyonlar", icon: Plug },
-  { id: "notifications", label: "Bildirimler", icon: Bell },
-];
+type CallPreferences = {
+  greeting: string;
+  business_hours_start: string;
+  business_hours_end: string;
+  voicemail_enabled: boolean;
+  ai_summary_enabled: boolean;
+};
 
-const voiceStyles = [
-  { id: "formal", name: "Resmi", desc: "Klasik, mesafeli ve protokol odaklı." },
-  { id: "natural", name: "Doğal", desc: "Akıcı, günlük konuşma diline yakın." },
-  { id: "warm", name: "Sıcak", desc: "Empatik, samimi ve güven verici." },
-  { id: "premium", name: "Premium", desc: "Ölçülü, üst düzey kurumsal tonlama." },
-  { id: "concise", name: "Kısa ve Net", desc: "Hızlı, doğrudan ve verimli." },
-];
-
-const Field = ({ label, ...props }: any) => (
-  <label className="block">
-    <span className="block text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2">
-      {label}
-    </span>
-    <input
-      {...props}
-      className="w-full h-11 px-4 rounded-lg bg-card border border-border focus:border-gold/50 outline-none transition text-sm"
-    />
-  </label>
-);
+const defaults: CallPreferences = {
+  greeting: "",
+  business_hours_start: "09:00",
+  business_hours_end: "18:00",
+  voicemail_enabled: false,
+  ai_summary_enabled: false,
+};
 
 const Settings = () => {
-  const [tab, setTab] = useState("office");
-  const [voice, setVoice] = useState("premium");
+  const { user } = useAuth();
+  const userId = user?.id;
+  const [values, setValues] = useState<CallPreferences>(defaults);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!userId) {
+      setLoading(false);
+      setLoadedFor(null);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    setLoadFailed(false);
+    setNotice("");
+    void (async () => {
+      const { data, error: loadError } = await db
+        .from("call_settings")
+        .select(
+          "greeting,business_hours_start,business_hours_end,voicemail_enabled,ai_summary_enabled",
+        )
+        .maybeSingle();
+      if (cancelled) return;
+      if (loadError) {
+        setValues(defaults);
+        setError(loadError.message);
+        setLoadFailed(true);
+      } else if (data) {
+        const saved = data as CallPreferences;
+        setValues({
+          greeting: saved.greeting ?? "",
+          business_hours_start: saved.business_hours_start?.slice(0, 5) ?? "09:00",
+          business_hours_end: saved.business_hours_end?.slice(0, 5) ?? "18:00",
+          voicemail_enabled: saved.voicemail_enabled ?? false,
+          ai_summary_enabled: saved.ai_summary_enabled ?? false,
+        });
+      } else setValues(defaults);
+      setLoadedFor(userId);
+      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+
+  const save = async () => {
+    setNotice("");
+    setError("");
+    if (!userId || loadedFor !== userId) return setError("Tercihler yüklenmedi.");
+    if (loadFailed) return setError("Tercihler yüklenemedi; sayfayı yenileyin.");
+    if (
+      !/^\d{2}:\d{2}$/.test(values.business_hours_start) ||
+      !/^\d{2}:\d{2}$/.test(values.business_hours_end) ||
+      values.business_hours_start >= values.business_hours_end
+    ) {
+      return setError("Bitiş saati başlangıç saatinden sonra olmalı.");
+    }
+    setSaving(true);
+    try {
+      const { error: saveError } = await db
+        .from("call_settings")
+        .upsert(values, { onConflict: "owner_id" });
+      if (saveError) throw new Error(saveError.message);
+      setNotice("Tercihler kaydedildi. Telefon hizmeti bağlı olmadığı için arama başlatılmaz.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Tercihler kaydedilemedi.");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
-    <DashboardLayout title="Ayarlar" subtitle="Asistan davranışını ve entegrasyonları yönetin">
-      <div className="grid lg:grid-cols-[260px_1fr] gap-6">
-        <aside className="rounded-2xl bg-card border border-border shadow-card-elite p-2 h-fit">
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={cn(
-                "flex items-center gap-3 w-full px-4 py-3 text-sm rounded-lg transition",
-                tab === t.id
-                  ? "bg-primary text-primary-foreground"
-                  : "hover:bg-secondary text-foreground/70",
-              )}
-            >
-              <t.icon className="h-4 w-4" />
-              {t.label}
-            </button>
-          ))}
-        </aside>
-
-        <div className="rounded-2xl bg-card border border-border shadow-card-elite p-8">
-          {tab === "office" && (
-            <div className="space-y-6">
-              <h2 className="font-serif text-2xl font-semibold divider-gold">Ofis Bilgileri</h2>
-              <div className="grid md:grid-cols-2 gap-5">
-                <Field label="Ofis Adı" defaultValue="Korkmaz Hukuk Bürosu" />
-                <Field label="Yetkili Kişi" defaultValue="Av. Selim Korkmaz" />
-                <Field label="Telefon" defaultValue="+90 212 555 00 00" />
-                <Field label="WhatsApp" defaultValue="+90 532 555 00 00" />
-                <Field label="Adres" defaultValue="Levent, İstanbul" />
-                <Field label="E-posta" defaultValue="iletisim@korkmazhukuk.com" />
-              </div>
-              <div className="pt-4 flex justify-end gap-3">
-                <Button variant="outline">İptal</Button>
-                <Button variant="elite">Kaydet</Button>
-              </div>
-            </div>
-          )}
-
-          {tab === "hours" && (
-            <div className="space-y-6">
-              <h2 className="font-serif text-2xl font-semibold divider-gold">Çalışma Saatleri</h2>
-              <div className="grid md:grid-cols-2 gap-5">
-                <Field label="Başlangıç" type="time" defaultValue="09:00" />
-                <Field label="Bitiş" type="time" defaultValue="18:00" />
-              </div>
-              <label className="flex items-center justify-between p-4 rounded-lg border border-border">
-                <div>
-                  <div className="font-medium">Hafta Sonu Açık</div>
-                  <div className="text-xs text-muted-foreground">
-                    Cumartesi-Pazar AI yine cevap versin
-                  </div>
-                </div>
-                <input type="checkbox" className="h-5 w-5 accent-gold" />
-              </label>
-              <label className="flex items-center justify-between p-4 rounded-lg border border-border">
-                <div>
-                  <div className="font-medium">Ön görüşme ücretli</div>
-                  <div className="text-xs text-muted-foreground">
-                    İlk danışmanlık için ücret bilgisi verilsin
-                  </div>
-                </div>
-                <input type="checkbox" className="h-5 w-5 accent-gold" defaultChecked />
-              </label>
-              <div className="pt-4 flex justify-end gap-3">
-                <Button variant="elite">Kaydet</Button>
-              </div>
-            </div>
-          )}
-
-          {tab === "voice" && (
-            <div className="space-y-6">
-              <h2 className="font-serif text-2xl font-semibold divider-gold">AI Konuşma Tarzı</h2>
-              <p className="text-muted-foreground text-sm">
-                Asistanınızın müvekkillerle nasıl konuşmasını istediğinizi seçin.
-              </p>
-              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {voiceStyles.map((v) => (
-                  <button
-                    key={v.id}
-                    onClick={() => setVoice(v.id)}
-                    className={cn(
-                      "text-left p-5 rounded-xl border-2 transition-all",
-                      voice === v.id
-                        ? "border-gold bg-accent-soft shadow-gold"
-                        : "border-border hover:border-gold/40",
-                    )}
-                  >
-                    <div className="font-serif text-lg font-semibold">{v.name}</div>
-                    <div className="text-xs text-muted-foreground mt-1">{v.desc}</div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {tab === "phone" && (
-            <div className="space-y-6">
-              <h2 className="font-serif text-2xl font-semibold divider-gold">Telefon Ayarları</h2>
-              <Field label="AI Numarası" defaultValue="+90 850 000 12 34" />
-              <Field label="Yönlendirilecek Avukat Hattı" defaultValue="+90 532 555 00 00" />
-              <div className="pt-4 flex justify-end gap-3">
-                <Button variant="elite">Kaydet</Button>
-              </div>
-            </div>
-          )}
-
-          {tab === "integrations" && (
-            <div className="space-y-4">
-              <h2 className="font-serif text-2xl font-semibold divider-gold">Entegrasyonlar</h2>
-              {[
-                { name: "Google Calendar", status: "Bağlı" },
-                { name: "Google Sheets", status: "Bağlı" },
-                { name: "WhatsApp Business", status: "Bağlı Değil" },
-                { name: "CRM", status: "Bağlı Değil" },
-              ].map((i) => (
-                <div
-                  key={i.name}
-                  className="flex items-center justify-between p-5 rounded-xl border border-border"
-                >
-                  <div className="font-medium">{i.name}</div>
-                  <Button variant={i.status === "Bağlı" ? "outline" : "elite"} size="sm">
-                    {i.status === "Bağlı" ? "Bağlantıyı Kes" : "Bağlan"}
-                  </Button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {tab === "notifications" && (
-            <div className="space-y-4">
-              <h2 className="font-serif text-2xl font-semibold divider-gold">Bildirimler</h2>
-              {[
-                "Yeni müvekkil adayı",
-                "Kaçan çağrı",
-                "Randevu oluşturuldu",
-                "Günlük özet raporu",
-              ].map((n) => (
-                <label
-                  key={n}
-                  className="flex items-center justify-between p-5 rounded-xl border border-border"
-                >
-                  <span className="font-medium">{n}</span>
-                  <input type="checkbox" defaultChecked className="h-5 w-5 accent-gold" />
-                </label>
-              ))}
-            </div>
-          )}
+    <DashboardLayout title="Ayarlar" subtitle="Büro tercihleri ve entegrasyon durumu">
+      <div className="max-w-3xl space-y-6">
+        <div
+          role="status"
+          className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm"
+        >
+          Telefon hattı, sesli AI, Google Takvim, WhatsApp ve ödeme sağlayıcısı bu kurulumda bağlı
+          değil. Aşağıdaki tercihler veritabanına kaydedilir; tek başına arama veya bildirim
+          göndermez.
         </div>
+        <section className="space-y-5 rounded-xl border border-border bg-card p-6">
+          <h2 className="text-xl font-semibold">Çağrı tercihleri</h2>
+          {!userId ? (
+            <p>Tercihler için oturum açın.</p>
+          ) : loading || loadedFor !== userId ? (
+            <p>Tercihler yükleniyor…</p>
+          ) : (
+            <>
+              <label className="block space-y-2">
+                <span>Karşılama metni</span>
+                <Textarea
+                  value={values.greeting}
+                  maxLength={2000}
+                  onChange={(event) => setValues({ ...values, greeting: event.target.value })}
+                />
+              </label>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="block space-y-2">
+                  <span>Çalışma başlangıcı</span>
+                  <Input
+                    type="time"
+                    value={values.business_hours_start}
+                    onChange={(event) =>
+                      setValues({ ...values, business_hours_start: event.target.value })
+                    }
+                  />
+                </label>
+                <label className="block space-y-2">
+                  <span>Çalışma bitişi</span>
+                  <Input
+                    type="time"
+                    value={values.business_hours_end}
+                    onChange={(event) =>
+                      setValues({ ...values, business_hours_end: event.target.value })
+                    }
+                  />
+                </label>
+              </div>
+              <label className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  checked={values.voicemail_enabled}
+                  onChange={(event) =>
+                    setValues({ ...values, voicemail_enabled: event.target.checked })
+                  }
+                />
+                Sesli mesaj tercihi
+              </label>
+              <label className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  checked={values.ai_summary_enabled}
+                  onChange={(event) =>
+                    setValues({ ...values, ai_summary_enabled: event.target.checked })
+                  }
+                />
+                Çağrı özeti tercihi
+              </label>
+              {error && (
+                <p role="alert" className="text-destructive">
+                  {error}
+                </p>
+              )}
+              {notice && (
+                <p role="status" className="text-emerald-700">
+                  {notice}
+                </p>
+              )}
+              <Button onClick={() => void save()} disabled={saving || loadFailed}>
+                {saving ? "Kaydediliyor…" : "Tercihleri kaydet"}
+              </Button>
+            </>
+          )}
+        </section>
       </div>
     </DashboardLayout>
   );

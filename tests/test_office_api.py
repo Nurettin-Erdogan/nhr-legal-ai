@@ -160,6 +160,38 @@ def test_user_id_alias_maps_to_owner_column(monkeypatch):
     assert response.json()["data"][0]["user_id"] == str(USER_ID)
 
 
+def test_call_preferences_upsert_forces_owner_without_returning(monkeypatch):
+    monkeypatch.setitem(office._column_cache, "office_call_settings", {
+        "id": "uuid", "owner_id": "uuid", "greeting": "text",
+        "business_hours_start": "time", "business_hours_end": "time",
+        "voicemail_enabled": "boolean", "ai_summary_enabled": "boolean",
+    })
+    saved_id = uuid4()
+
+    def handler(statement, params):
+        if statement.startswith("SELECT") and 'WHERE "owner_id" = %s' in statement:
+            return {"id": saved_id}
+        if statement.startswith("SELECT"):
+            return [{"id": saved_id, "owner_id": USER_ID, "greeting": "Merhaba"}]
+        return []
+
+    client, executed = _client(monkeypatch, handler)
+    response = client.post("/api/office/call_settings", json={
+        "op": "upsert", "on_conflict": "owner_id",
+        "values": {"owner_id": str(OTHER_ID), "greeting": "Merhaba",
+                   "business_hours_start": "09:00", "business_hours_end": "18:00",
+                   "voicemail_enabled": False, "ai_summary_enabled": False},
+        "single": "one",
+    })
+    assert response.status_code == 200, response.text
+    statement, params = next((s, p) for s, p in executed if s.startswith("INSERT INTO"))
+    assert 'ON CONFLICT ("owner_id") DO UPDATE' in statement
+    assert "RETURNING" not in statement
+    assert USER_ID in params
+    assert str(OTHER_ID) not in [str(value) for value in params]
+    assert response.json()["data"]["user_id"] == str(USER_ID)
+
+
 @pytest.mark.parametrize(
     "key",
     [
