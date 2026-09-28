@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/components/AuthProvider";
 import { db } from "@/lib/db";
+import { beginGoogleLogin, googleAccountLinked, googleLoginAvailable } from "@/lib/auth-api";
 
 type CallPreferences = {
   greeting: string;
@@ -33,6 +34,37 @@ const Settings = () => {
   const [loadFailed, setLoadFailed] = useState(false);
   const [notice, setNotice] = useState("");
   const [loadedFor, setLoadedFor] = useState<string | null>(null);
+  const [googleAvailable, setGoogleAvailable] = useState(false);
+  const [googleLinked, setGoogleLinked] = useState(false);
+  const [googleLoadedFor, setGoogleLoadedFor] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!userId) {
+      setGoogleLoadedFor(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const available = await googleLoginAvailable();
+        const linked = available ? await googleAccountLinked() : false;
+        if (!cancelled) {
+          setGoogleAvailable(available);
+          setGoogleLinked(linked);
+          setGoogleLoadedFor(userId);
+        }
+      } catch {
+        if (!cancelled) {
+          setGoogleAvailable(false);
+          setGoogleLinked(false);
+          setGoogleLoadedFor(userId);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
 
   useEffect(() => {
     if (!userId) {
@@ -184,6 +216,23 @@ const Settings = () => {
                 {saving ? "Kaydediliyor…" : "Tercihleri kaydet"}
               </Button>
             </>
+          )}
+        </section>
+        <section className="space-y-3 rounded-xl border border-border bg-card p-6">
+          <h2 className="text-xl font-semibold">Google hesabı</h2>
+          {!userId || googleLoadedFor !== userId ? (
+            <p>Bağlantı durumu yükleniyor…</p>
+          ) : googleLinked ? (
+            <p>Google hesabı bu oturuma bağlı. Google ile giriş yapabilirsiniz.</p>
+          ) : googleAvailable ? (
+            <>
+              <p>Mevcut hesabınızı doğrulanmış, aynı e-postalı Google hesabınıza bağlayın.</p>
+              <Button type="button" variant="outline" onClick={() => beginGoogleLogin(true)}>
+                Google hesabını bağla
+              </Button>
+            </>
+          ) : (
+            <p>Google girişi bu ortamda henüz yapılandırılmadı.</p>
           )}
         </section>
       </div>

@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "@/lib/router-compat";
-import { login, register } from "@/lib/auth-api";
+import { beginGoogleLogin, googleLoginAvailable, login, register } from "@/lib/auth-api";
 import { useAuth } from "@/components/AuthProvider";
 import { Logo } from "@/components/Logo";
 import { Button } from "@/components/ui/button";
@@ -43,6 +43,13 @@ function AuthPage() {
   const [showPass, setShowPass] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [googleAvailable, setGoogleAvailable] = useState(false);
+
+  useEffect(() => {
+    void googleLoginAvailable()
+      .then(setGoogleAvailable)
+      .catch(() => setGoogleAvailable(false));
+  }, []);
 
   useEffect(() => {
     if (!authLoading && user) navigate("/dashboard");
@@ -210,11 +217,18 @@ function AuthPage() {
         <Button
           variant="outline"
           className="w-full rounded-full"
-          disabled
-          title="Google ile giriş henüz yapılandırılmadı"
+          type="button"
+          disabled={!googleAvailable || busy}
+          title={googleAvailable ? undefined : "Google OAuth yapılandırması henüz tamamlanmadı"}
+          onClick={() => beginGoogleLogin()}
         >
-          Google ile giriş yakında
+          Google ile devam et
         </Button>
+        {!googleAvailable && (
+          <p className="mt-2 text-center text-xs text-muted-foreground">
+            Google girişi bu ortamda henüz yapılandırılmadı.
+          </p>
+        )}
 
         <p className="mt-6 text-center text-sm text-muted-foreground">
           {mode === "login" ? "Hesabınız yok mu? " : "Zaten hesabınız var mı? "}

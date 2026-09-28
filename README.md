@@ -137,6 +137,9 @@ olarak kullanılamazsa mevcut tam metin aramasıyla çalışmaya devam eder.
 
 ## Kullanıcı hesabı
 
+Google ile giriş kurulumu, mevcut hesabı güvenli bağlama ve üretim ayarları:
+[docs/google-login.md](docs/google-login.md). Google Calendar ayrı bir entegrasyondur.
+
 Kayıt ve giriş ekranı `http://localhost:3000/auth` adresindedir. Parolalar
 Argon2 ile hash'lenir; süreli JWT hem API yanıtında hem de `HttpOnly`, `SameSite=Lax`
 cookie olarak verilir. Yerel `.env` dosyasına en az 32 karakterlik rastgele bir

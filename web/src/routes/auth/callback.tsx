@@ -1,40 +1,58 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { currentUser } from "@/lib/auth-api";
 import { Logo } from "@/components/Logo";
 import { Loader2 } from "lucide-react";
 
 function AuthCallbackPage() {
-  const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     const check = async () => {
-      // Wait for the OAuth session to hydrate, then go to the dashboard.
-      for (let i = 0; i < 20; i++) {
-        const { data } = await supabase.auth.getSession();
-        if (cancelled) return;
-        if (data.session) {
-          navigate({ to: "/dashboard", replace: true });
-          return;
-        }
-        await new Promise((r) => setTimeout(r, 500));
+      const params = new URLSearchParams(window.location.search);
+      const oauthError = params.get("error");
+      if (oauthError) {
+        setError(
+          oauthError === "account_exists"
+            ? "Bu e-posta ile mevcut hesap var. Önce şifrenizle giriş yapıp Ayarlar'dan Google hesabınızı bağlayın."
+            : oauthError === "cancelled"
+              ? "Google girişi iptal edildi."
+              : "Google hesabı doğrulanamadı. Lütfen tekrar deneyin.",
+        );
+        return;
       }
-      if (!cancelled) setError("Oturum doğrulanamadı. Lütfen tekrar deneyin.");
+      try {
+        const user = await currentUser();
+        if (cancelled) return;
+        if (user) {
+          window.location.replace(
+            params.get("linked") === "1" ? "/dashboard/settings" : "/dashboard",
+          );
+        } else setError("Oturum doğrulanamadı. Lütfen tekrar deneyin.");
+      } catch {
+        if (!cancelled) setError("Oturum sunucusuna ulaşılamadı. Lütfen tekrar deneyin.");
+      }
     };
     void check();
     return () => {
       cancelled = true;
     };
-  }, [navigate]);
+  }, []);
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-background px-4">
       <Logo />
       <div className="mt-8 flex items-center gap-3 text-muted-foreground">
         {error ? (
-          <p className="text-sm text-destructive">{error}</p>
+          <div className="space-y-3 text-center">
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+            <Link to="/auth" className="text-sm text-primary underline">
+              Giriş ekranına dön
+            </Link>
+          </div>
         ) : (
           <>
             <Loader2 className="h-5 w-5 animate-spin" />

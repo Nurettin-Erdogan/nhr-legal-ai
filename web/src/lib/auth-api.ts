@@ -101,3 +101,18 @@ export async function logout(): Promise<void> {
 export function inMemoryAccessToken(): string {
   return accessToken;
 }
+
+export async function googleLoginAvailable(): Promise<boolean> {
+  const status = await request<{ configured: boolean }>("/api/auth/google/status");
+  return status.configured;
+}
+
+export async function googleAccountLinked(): Promise<boolean> {
+  const connection = await request<{ linked: boolean }>("/api/auth/google/connection");
+  return connection.linked;
+}
+
+export function beginGoogleLogin(linkAccount = false): void {
+  const suffix = linkAccount ? "?link=true" : "";
+  window.location.assign(`${API_BASE_URL}/api/auth/google/start${suffix}`);
+}

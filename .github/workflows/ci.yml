@@ -63,7 +63,8 @@ jobs:
             database/migrations/019_court_decision_date_index.sql \
             database/migrations/020_seed_verification_queue.sql \
             database/migrations/023_chunk_embedded_partial_index.sql \
-            database/migrations/026_office_workspace.sql
+            database/migrations/026_office_workspace.sql \
+            database/migrations/029_google_auth.sql
           do
             psql -h localhost -U nhr_app -d nhr_legal_ai_test -v ON_ERROR_STOP=1 -f "$f"
           done

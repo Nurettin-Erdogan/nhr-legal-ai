@@ -1,5 +1,7 @@
 import { useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/components/AuthProvider";
+import { beginGoogleLogin, googleLoginAvailable, login, register } from "@/lib/auth-api";
+import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -20,47 +22,38 @@ type Props = {
 };
 
 export function AuthDialog({ open, onOpenChange, defaultMode = "signup" }: Props) {
+  const { refreshAuth } = useAuth();
   const [mode, setMode] = useState<"signup" | "login">(defaultMode);
+  const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const [googleAvailable, setGoogleAvailable] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    void googleLoginAvailable()
+      .then(setGoogleAvailable)
+      .catch(() => setGoogleAvailable(false));
+  }, [open]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (busy) return;
     setBusy(true);
-    if (mode === "login") {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
-      setBusy(false);
-      if (error) return toast.error("Giriş yapılamadı: e-posta veya şifre hatalı");
-      toast.success("Giriş yapıldı, sorunuzu sorabilirsiniz");
-      onOpenChange(false);
-    } else {
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: { emailRedirectTo: window.location.origin },
-      });
-      setBusy(false);
-      if (error) return toast.error(error.message);
-      if (data.session) {
-        toast.success("Kaydınız tamamlandı, sorunuzu sorabilirsiniz");
-        onOpenChange(false);
-      } else {
-        toast.success("Kayıt alındı. E-postanızdaki doğrulama bağlantısına tıklayın.");
-        setMode("login");
-      }
-    }
-  };
-
-  const google = async () => {
     try {
-      const { lovable } = await import("@/integrations/lovable");
-      await lovable.auth.signInWithOAuth("google", {
-        redirect_uri: `${window.location.origin}/auth/callback`,
-      });
-    } catch {
-      toast.error("Google ile giriş başlatılamadı");
+      if (mode === "login") await login(email.trim().toLowerCase(), password);
+      else {
+        if (fullName.trim().length < 2) throw new Error("Ad ve soyadınızı girin.");
+        await register(email.trim().toLowerCase(), password, fullName.trim());
+      }
+      await refreshAuth();
+      toast.success(mode === "login" ? "Giriş yapıldı" : "Kaydınız tamamlandı");
+      onOpenChange(false);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Oturum işlemi başarısız oldu");
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -75,6 +68,19 @@ export function AuthDialog({ open, onOpenChange, defaultMode = "signup" }: Props
         </DialogHeader>
 
         <form onSubmit={submit} className="space-y-4">
+          {mode === "signup" && (
+            <div className="space-y-2">
+              <Label htmlFor="auth-dialog-name">Ad soyad</Label>
+              <Input
+                id="auth-dialog-name"
+                required
+                minLength={2}
+                autoComplete="name"
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+              />
+            </div>
+          )}
           <div className="space-y-2">
             <Label htmlFor="auth-dialog-email">E-posta</Label>
             <Input
@@ -92,7 +98,7 @@ export function AuthDialog({ open, onOpenChange, defaultMode = "signup" }: Props
               id="auth-dialog-password"
               type="password"
               required
-              minLength={6}
+              minLength={mode === "signup" ? 10 : 1}
               autoComplete={mode === "login" ? "current-password" : "new-password"}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -113,9 +119,19 @@ export function AuthDialog({ open, onOpenChange, defaultMode = "signup" }: Props
           <span className="h-px flex-1 bg-border" /> veya <span className="h-px flex-1 bg-border" />
         </div>
 
-        <Button variant="outline" className="w-full rounded-full" onClick={google}>
+        <Button
+          variant="outline"
+          className="w-full rounded-full"
+          disabled={!googleAvailable || busy}
+          onClick={() => beginGoogleLogin()}
+        >
           Google ile devam et
         </Button>
+        {!googleAvailable && (
+          <p className="text-center text-xs text-muted-foreground">
+            Google girişi bu ortamda henüz yapılandırılmadı.
+          </p>
+        )}
 
         <p className="text-center text-sm text-muted-foreground">
           {mode === "signup" ? "Zaten hesabınız var mı? " : "Hesabınız yok mu? "}
