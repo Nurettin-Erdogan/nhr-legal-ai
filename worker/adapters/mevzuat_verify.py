@@ -111,12 +111,17 @@ class MevzuatVerifyAdapter:
                 "requests_made": 0,
             }
             return
+        # Genel INGESTION_MAX_RETRIES'ten bağımsız, daha yüksek bir deneme sayısı: bu iki
+        # istemci ara sıra kısa süreli (birkaç saniyelik) yerel DNS/bağlantı sıçramalarıyla
+        # karşılaşıyor (ölçüldü: 2026-09-28, "getaddrinfo failed", 50 dk içinde 3 kez, her
+        # biri partial turu tüm listesiyle heba ediyordu). 3 denemede ~6 sn'lik pencere bu
+        # sıçramaları aşmıyordu; 6 denemede ~60 sn'lik pencere aşar.
         gazette = self.gazette_client or ResmiGazeteClient(
-            max_retries=settings.max_retries,
+            max_retries=max(6, settings.max_retries),
             retry_backoff_seconds=max(1.0, settings.mevzuat_delay_seconds),
         )
         mbs = self.mbs_client or MbsClient(
-            max_retries=settings.max_retries,
+            max_retries=max(6, settings.max_retries),
             retry_backoff_seconds=max(1.0, settings.mevzuat_delay_seconds),
         )
         processed = 0
@@ -130,14 +135,16 @@ class MevzuatVerifyAdapter:
             dry_run=dry_run,
             skip_gazette=skip_gazette,
             skip_mbs=skip_mbs,
+            pause_seconds=max(3.0, settings.mevzuat_delay_seconds),
         ):
             if should_stop():
                 break
             if item.get("cooldown"):
                 cooling = True
+                # Doğrulama portalları (Resmî Gazete, MBS) engelden 5 dk içinde çıkıyor; 10 dk beklemek boşa gidiyordu.
                 until = (
                     datetime.now(UTC)
-                    + timedelta(minutes=settings.rate_limit_retry_minutes)
+                    + timedelta(minutes=min(settings.rate_limit_retry_minutes, 4.0))
                 ).isoformat()
                 if item["cooldown"] == "gazette":
                     last_cursor["gazette_retry_at"] = until

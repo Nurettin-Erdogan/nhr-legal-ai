@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
 from html.parser import HTMLParser
+from http.client import IncompleteRead
 from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
@@ -73,6 +75,14 @@ def _parse_date(value: Any) -> date | None:
         except ValueError:
             continue
     return None
+
+
+_NON_ALNUM = re.compile(r"[^0-9a-zçğıöşü]+")
+
+
+def _title_key(value: str) -> str:
+    """Başlık karşılaştırması için noktalama/boşluk farkını yutan anahtar."""
+    return _NON_ALNUM.sub("", tr_casefold(normalize_text(value or "")))
 
 
 def _official_url(value: Any, *, base_url: str, expected_path: str | None = None) -> str:
@@ -139,13 +149,19 @@ class MbsClient:
                         retry_after=exc.headers.get("Retry-After") if exc.headers else None,
                     )
                 )
-            except URLError as exc:
+            except (URLError, TimeoutError, IncompleteRead) as exc:
+                # response.read() zaman aşımı bare TimeoutError fırlatır (URLError'ın .reason
+                # sarmalaması yalnız open() sırasındaki hatalarda olur); aksi halde yakalanmadan
+                # turun tamamını başarısız kılıyordu (bkz. resmi_gazete/portal.py, aynı düzeltme).
+                # IncompleteRead de aynı nedenle ayrı yakalanır (http.client.HTTPException,
+                # OSError değil).
                 if attempt == self.max_retries:
-                    raise MbsError(f"MBS bağlantı hatası: {exc.reason}") from exc
+                    detail = getattr(exc, "reason", exc)
+                    raise MbsError(f"MBS bağlantı hatası: {detail}") from exc
                 time.sleep(retry_wait_seconds(attempt, base_seconds=self.retry_backoff_seconds))
         raise AssertionError("unreachable")
 
-    def search_law(self, law_no: str) -> MbsDocument:
+    def search_law(self, law_no: str, *, law_name: str | None = None) -> MbsDocument:
         encoded = base64.b64encode(law_no.strip().encode("utf-8")).decode("ascii")
         body = {
             "draw": 1,
@@ -175,6 +191,14 @@ class MbsClient:
             # Aynı numarayı farklı türler paylaşabilir (ör. 6736 hem Kanun hem CB Kararı);
             # korpus şu an yalnız kanun aldığından tür=1 (Kanunlar) ile daraltılır.
             exact = [item for item in exact if int(item.get("mevzuatTur") or 0) == 1]
+        if len(exact) > 1 and law_name:
+            # Kanun numaraları farklı dönemlerde (tertip) tekrar kullanılabiliyor; aynı numaralı
+            # ve aynı türden iki bambaşka kanun olabilir (ölçüldü: 2026-09-27, "5661" hem Ziraat
+            # Bankası Kanunu hem Yurt-Kurumları Kanunu). Başlık eşleşmesiyle daraltılır.
+            expected = _title_key(law_name)
+            by_title = [item for item in exact if expected and expected in _title_key(str(item.get("mevAdi") or ""))]
+            if len(by_title) == 1:
+                exact = by_title
         if len(exact) != 1:
             raise MbsError(f"{law_no} numaralı mevzuat için tekil MBS kaydı bulunamadı")
         item = exact[0]
@@ -190,9 +214,12 @@ class MbsClient:
         doc_links = [
             _official_url(link, base_url=self.base_url, expected_path="/MevzuatMetin/")
             for link in parser.links
-            if urlparse(urljoin(self.base_url, link)).path.casefold().endswith(".doc")
+            # MBS yeni kanunlar için .docx, eskiler için .doc sunuyor; ikisi de resmî Word kopyasıdır.
+            if urlparse(urljoin(self.base_url, link)).path.casefold().endswith((".doc", ".docx"))
         ]
-        if len(pdf_links) != 1 or len(doc_links) != 1:
+        # Aynı belgenin hem .doc hem .docx sürümü varsa tek bir belge sayılır (ilki alınır).
+        doc_links = list(dict.fromkeys(doc_links))
+        if len(pdf_links) != 1 or not 1 <= len(doc_links) <= 2:
             raise MbsError("MBS detay sayfasında tekil resmî PDF/DOC bağlantısı bulunamadı")
         return MbsDocument(
             law_no=law_no.strip(),
@@ -215,9 +242,12 @@ class MbsClient:
         publication_date: date | None,
         issue_no: str | None,
     ) -> MbsVerification:
-        document = self.search_law(law_no)
-        expected_title = tr_casefold(normalize_text(law_name))
-        observed_title = tr_casefold(document.law_name)
+        document = self.search_law(law_no, law_name=law_name)
+        # Bedesten ve MBS aynı kanunu farklı noktalama ile verebiliyor (ölçüldü: 2026-09-27,
+        # "Ersoy'u" vs "Ersoy U" — kesme işareti kayboluyor). Karşılaştırma yalnız harf/rakam
+        # üzerinden yapılır; noktalama ve boşluk farkları eşleşmeyi bozmaz.
+        expected_title = _title_key(law_name)
+        observed_title = _title_key(document.law_name)
         title_matches = bool(
             expected_title
             and observed_title
@@ -226,7 +256,10 @@ class MbsClient:
         date_matches = publication_date is None or publication_date == document.official_gazette_date
         requested_issue = str(issue_no or "").strip() or None
         issue_matches = requested_issue is None or requested_issue == document.official_gazette_no
-        verified = title_matches and date_matches and issue_matches
+        # Sayı yalnız bilgi amaçlıdır: MBS kaydı zaten kanun no ile tekil bulundu (search_law),
+        # başlık ve tarih de eşleşiyorsa kimlik doğrulanmıştır. Bizim kaydettiğimiz RG sayısı
+        # (Bedesten kaynaklı) hatalıysa bu doğrulamayı reddetmez; bkz. resmi_gazete/portal.py.
+        verified = title_matches and date_matches
         reasons = []
         if not title_matches:
             reasons.append("mevzuat başlığı uyuşmuyor")
@@ -236,7 +269,8 @@ class MbsClient:
             )
         if not issue_matches:
             reasons.append(
-                f"RG sayısı uyuşmuyor: beklenen={requested_issue}, bulunan={document.official_gazette_no}"
+                f"not: kayıtlı sayı ({requested_issue}) MBS'de {document.official_gazette_no}; "
+                "kimlik başlık + tarihle doğrulandı"
             )
         return MbsVerification(
             verified=verified,

@@ -8,6 +8,8 @@ Bekleyen kanunlar ayrı `mevzuat_verify` worker'ı veya
 
 from __future__ import annotations
 
+import time
+
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
@@ -45,11 +47,35 @@ FROM (
       AND ls.deleted_at IS NULL
       AND (ls.metadata->>'verified_against_gazette' IS DISTINCT FROM 'true'
            OR ls.metadata->>'verified_against_mbs' IS DISTINCT FROM 'true')
+      -- 6 haneden uzun law_no'lu yönetmelikler MBS'nin iç referans kimliğidir, RG'nin
+      -- kanunKararNo dizininde hiç yer almaz (ölçüldü: 2026-09-28, 3 örnek doğrudan
+      -- sorgulandı, üçü de sıfır sonuç; bugüne kadar doğrulanmış 2.492 yönetmeliğin
+      -- TAMAMI ≤6 hane). Bunlar denenmeden atlanır; aksi halde her tur RG bütçesini
+      -- boşa harcar ve taze adayların önüne geçerler.
+      AND NOT (d.legislation_type = 'regulation' AND length(d.law_no) > 6)
     ORDER BY d.legislation_type, d.law_no,
              d.official_gazette_date, d.official_gazette_no,
              ls.fetched_at DESC
 ) pending
 ORDER BY
+  -- Bir tür (ör. bazı KHK/Kararname'ler MBS'nin yapısal veritabanında hiç yer almıyor,
+  -- ölçüldü: 2026-09-28, 2023 deprem OHAL kararnameleri 129-140) kalıcı olarak geçemezse
+  -- eskiden tür önceliği bunlara sonsuza dek verilmeye devam ediyordu ve kanun/KHK'nın
+  -- ARDINDAKİ yönetmelik/tebliğ türüne (binlerce çözülebilir aday, ölçüldü: "regulation"
+  -- türünde 495/15.635 zaten geçiyor) hiç sıra gelmiyordu. Tükenme (5+ deneme) artık tür
+  -- önceliğinin de ÖNÜNE geçer: tükenmiş kayıt, türü ne olursa olsun taze adayların gerisine
+  -- düşer; böylece kilitlenen tür diğerlerini sonsuza dek tıkayamaz.
+  CASE WHEN COALESCE((pending.metadata->>'verify_attempt_count')::int, 0) >= 5 THEN 1 ELSE 0 END,
+  -- Tebligin (communique) icin de benzer bir kimlik-alani sorunu var ama regulation kadar
+  -- kesin degil: 5+ haneli tebliğ numaralarinin RG'de aday bulma orani cok dusuk (olculdu:
+  -- 2026-09-28, rastgele 8 ornekten 7'si sifir sonuc; bugune kadar dogrulanan 4 tebligin
+  -- tamami 4 haneli). Yine de kucuk bir pay RG'de bulunabiliyor; bu yuzden sert bir WHERE
+  -- haric tutmasi yerine yumusak bir oncelik dususu: 4 haneli tebligler once denenir,
+  -- 5+ haneli tebligler ancak onlar tukenince veya sira kalmayinca denenir.
+  CASE WHEN pending.legislation_type = 'communique' AND length(pending.law_no) > 4 THEN 1 ELSE 0 END,
+  -- Resmî Gazete ve MBS yalnız kanun, KHK ve Anayasa'yı doğrulayabiliyor; tebliğ/yönetmelik
+  -- (binlerce kanun numarası) sırayı tıkamasın diye bunlar en sona bırakılır.
+  CASE WHEN pending.legislation_type IN ('law', 'decree', 'constitution') THEN 0 ELSE 1 END,
   CASE
     WHEN (pending.metadata->>'verified_against_gazette' = 'true')
          <> (pending.metadata->>'verified_against_mbs' = 'true')
@@ -169,7 +195,12 @@ def apply_law_verification(
     flags: dict[str, bool],
     results: dict[str, Any],
 ) -> None:
-    metadata = {**flags, **results}
+    prior_metadata = law.get("metadata") if isinstance(law.get("metadata"), dict) else {}
+    prior_count = prior_metadata.get("verify_attempt_count")
+    prior_count = prior_count if isinstance(prior_count, int) else 0
+    fully_verified = bool(flags) and all(flags.values())
+    attempt_count = {"verify_attempt_count": 0 if fully_verified else prior_count + 1}
+    metadata = {**flags, **results, **attempt_count}
     connection.execute(
         _APPLY_SQL,
         (Jsonb(metadata),) * 5
@@ -180,6 +211,52 @@ def apply_law_verification(
             law["official_gazette_no"],
         ),
     )
+
+
+def _check_gazette(
+    law: dict[str, Any], *, gazette_client: ResmiGazeteClient, gazette_key: tuple[Any, ...]
+) -> tuple[bool | None, dict[str, Any] | None, int]:
+    """Yalnız RG tarafı. Dönüş: (verified veya None=denenmedi, sonuç kaydı, istek sayısı)."""
+    cached = _GAZETTE_OK.get(gazette_key)
+    if cached:
+        return cached.get("verified") is True, cached, 0
+    try:
+        result = gazette_client.verify_legislation(
+            publication_date=law.get("official_gazette_date"),
+            issue_no=law.get("official_gazette_no"),
+            law_no=law["law_no"],
+            law_name=law.get("law_name"),
+        ).to_json()
+        if result.get("verified") is True:
+            _GAZETTE_OK[gazette_key] = result
+        return result.get("verified") is True, result, 3
+    except ResmiGazeteError as exc:
+        if is_verification_cooldown_error(exc):
+            raise VerificationCooldown("gazette", str(exc)) from exc
+        return False, {"verified": False, "detail": str(exc)}, 3
+
+
+def _check_mbs(
+    law: dict[str, Any], *, mbs_client: MbsClient, law_no: str
+) -> tuple[bool | None, dict[str, Any] | None, int]:
+    """Yalnız MBS tarafı. Dönüş: (verified veya None=denenmedi, sonuç kaydı, istek sayısı)."""
+    cached_mbs = _MBS_OK.get(law_no)
+    if cached_mbs:
+        return cached_mbs.get("verified") is True, cached_mbs, 0
+    try:
+        result = mbs_client.verify_legislation(
+            law_no=law["law_no"],
+            law_name=law.get("law_name"),
+            publication_date=law.get("official_gazette_date"),
+            issue_no=law.get("official_gazette_no"),
+        ).to_json()
+        if result.get("verified") is True:
+            _MBS_OK[law_no] = result
+        return result.get("verified") is True, result, 2
+    except MbsError as exc:
+        if is_verification_cooldown_error(exc):
+            raise VerificationCooldown("mbs", str(exc)) from exc
+        return False, {"verified": False, "detail": str(exc)}, 2
 
 
 def verify_law_against_portals(
@@ -204,53 +281,26 @@ def verify_law_against_portals(
         gazette_date.isoformat() if hasattr(gazette_date, "isoformat") else str(gazette_date or "") or None,
         str(law.get("official_gazette_no") or "") or None,
     )
-    if not flags["verified_against_gazette"] and not skip_gazette:
-        cached = _GAZETTE_OK.get(gazette_key)
-        if cached:
-            flags["verified_against_gazette"] = cached.get("verified") is True
-            results["official_gazette_verification"] = cached
-        else:
-            requests_made += 3
-            try:
-                result = gazette_client.verify_legislation(
-                    publication_date=law.get("official_gazette_date"),
-                    issue_no=law.get("official_gazette_no"),
-                    law_no=law["law_no"],
-                    law_name=law.get("law_name"),
-                ).to_json()
-                flags["verified_against_gazette"] = result.get("verified") is True
-                results["official_gazette_verification"] = result
-                if result.get("verified") is True:
-                    _GAZETTE_OK[gazette_key] = result
-            except ResmiGazeteError as exc:
-                if is_verification_cooldown_error(exc):
-                    raise VerificationCooldown("gazette", str(exc)) from exc
-                results["official_gazette_verification"] = {
-                    "verified": False,
-                    "detail": str(exc),
-                }
-    if not flags["verified_against_mbs"] and not skip_mbs:
-        cached_mbs = _MBS_OK.get(law_no)
-        if cached_mbs:
-            flags["verified_against_mbs"] = cached_mbs.get("verified") is True
-            results["mbs_verification"] = cached_mbs
-        else:
-            requests_made += 2
-            try:
-                result = mbs_client.verify_legislation(
-                    law_no=law["law_no"],
-                    law_name=law.get("law_name"),
-                    publication_date=law.get("official_gazette_date"),
-                    issue_no=law.get("official_gazette_no"),
-                ).to_json()
-                flags["verified_against_mbs"] = result.get("verified") is True
-                results["mbs_verification"] = result
-                if result.get("verified") is True:
-                    _MBS_OK[law_no] = result
-            except MbsError as exc:
-                if is_verification_cooldown_error(exc):
-                    raise VerificationCooldown("mbs", str(exc)) from exc
-                results["mbs_verification"] = {"verified": False, "detail": str(exc)}
+    need_gazette = not flags["verified_against_gazette"] and not skip_gazette
+    need_mbs = not flags["verified_against_mbs"] and not skip_mbs
+    # RG ve MBS sırayla sorgulanır. Eşzamanlı (ThreadPoolExecutor) deneme 2026-09-28'de
+    # geri alındı: RG yolu taranmış PDF'ler için `multiprocessing` (spawn) alt süreci açıyor
+    # ve bunu ana olmayan bir iş parçacığından açmak Windows'ta turların takılmasına yol
+    # açtı (ölçüldü: değişiklikten sonraki 3 tur da 0 işlenmiş kayıtla asılı kaldı).
+    if need_gazette:
+        verified, result, req = _check_gazette(
+            law, gazette_client=gazette_client, gazette_key=gazette_key
+        )
+        flags["verified_against_gazette"] = bool(verified)
+        if result is not None:
+            results["official_gazette_verification"] = result
+        requests_made += req
+    if need_mbs:
+        verified, result, req = _check_mbs(law, mbs_client=mbs_client, law_no=law_no)
+        flags["verified_against_mbs"] = bool(verified)
+        if result is not None:
+            results["mbs_verification"] = result
+        requests_made += req
     results["verify_last_attempt_at"] = datetime.now(UTC).isoformat()
     return flags, results, requests_made
 
@@ -264,10 +314,12 @@ def iter_pending_verifications(
     dry_run: bool = False,
     skip_gazette: bool = False,
     skip_mbs: bool = False,
+    pause_seconds: float = 0.0,
 ) -> Iterator[dict[str, Any]]:
     fetch_limit = limit * 4 if (skip_gazette or skip_mbs) else limit
     laws = pending_laws(connection, limit=fetch_limit)
     processed = 0
+    first = True
     for law in laws:
         metadata = law.get("metadata") if isinstance(law.get("metadata"), dict) else {}
         gazette_done = metadata.get("verified_against_gazette") is True
@@ -276,6 +328,10 @@ def iter_pending_verifications(
         need_mbs = not mbs_done and not skip_mbs
         if not need_gazette and not need_mbs:
             continue
+        # Kanunlar arasında bekle: bekleme olmadan MBS ~24-30 istekte JSON yerine engel sayfası döndürüyor.
+        if pause_seconds > 0 and not first:
+            time.sleep(pause_seconds)
+        first = False
         try:
             flags, results, requests_made = verify_law_against_portals(
                 law,
@@ -285,6 +341,19 @@ def iter_pending_verifications(
                 skip_mbs=skip_mbs,
             )
         except VerificationCooldown as exc:
+            if not dry_run and exc.source != "mbs":
+                # MBS tüm servis olarak JSON dönmüyorsa (kesinti) hiçbir kanuna deneme damgası vurulmaz.
+                # Denemeyi kaydet: aksi halde sıralama (en eski deneme önce) hep aynı kanunu
+                # başa koyar ve kalıcı 5xx veren tek bir kanun tüm kuyruğu kilitler.
+                apply_law_verification(
+                    connection,
+                    law,
+                    flags={},
+                    results={
+                        "verify_last_attempt_at": datetime.now(UTC).isoformat(),
+                        "verify_cooldown_source": exc.source,
+                    },
+                )
             yield {
                 "law_no": law["law_no"],
                 "ready": False,

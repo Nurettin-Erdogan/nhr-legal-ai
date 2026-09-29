@@ -62,9 +62,9 @@ $workers = @(
   # Yeni doğrulanan/eklenen resmî kayıtları sürekli embedding'e çevirir (yerel Ollama, hafif turlar).
   # Embedding: uc dilimli isci. 5 isci denendi (2026-09-21): hiz ayni (~31 parca/sn),
   # tavan GPU (dizustu, ~86C/54W); uc isci bu makinede olculen en yuksek verimli duzeydir.
-  @{ name = 'embed0';    pattern = 'embed_chunks\.py.*--shard 0/3'; args = @('-X','utf8','-u','scripts\embed_chunks.py','--batch','64','--loop','--include-seeds','--shard','0/3') },
-  @{ name = 'embed1';    pattern = 'embed_chunks\.py.*--shard 1/3'; args = @('-X','utf8','-u','scripts\embed_chunks.py','--batch','64','--loop','--include-seeds','--shard','1/3') },
-  @{ name = 'embed2';    pattern = 'embed_chunks\.py.*--shard 2/3'; args = @('-X','utf8','-u','scripts\embed_chunks.py','--batch','64','--loop','--include-seeds','--shard','2/3') },
+  @{ name = 'embed0';    pattern = 'embed_chunks\.py.*--shard 0/3'; args = @('-X','utf8','-u','scripts\embed_chunks.py','--batch','64','--loop','--shard','0/3') },
+  @{ name = 'embed1';    pattern = 'embed_chunks\.py.*--shard 1/3'; args = @('-X','utf8','-u','scripts\embed_chunks.py','--batch','64','--loop','--shard','1/3') },
+  @{ name = 'embed2';    pattern = 'embed_chunks\.py.*--shard 2/3'; args = @('-X','utf8','-u','scripts\embed_chunks.py','--batch','64','--loop','--shard','2/3') },
   # Sayistay yargi kararlari (resmi site, tam metin): yeniden baslatilabilir; bitince 6 saatte bir yeni karar icin taranir.
   # Iki paralel isci: Temyiz Kurulu (29 bin) ayri, Daire + Genel Kurul (22 bin) ayri.
   @{ name = 'sayistay-temyiz'; pattern = 'collect_sayistay\.py.*--kind temyiz'; backoff = 21600; args = @('-X','utf8','-u','scripts\collect_sayistay.py','--delay','0.6','--kind','temyiz') },
@@ -83,6 +83,10 @@ $workers = @(
   # UYAP Emsal (istinaf) dogrulayicisi: ayri sunucu (emsal.uyap.gov.tr), Yargitay/Danistay kampanyalariyla portal paylasmaz ama cekim bitmeden dogrulama acilmaz: PAUSE_VERIFY bunu da durdurur.
   # UYAP Emsal: veri setinde olmayan (resmi portalda olan) kararlari ceker; en yeni aydan eskiye. Cekim suruyorken Emsal dogrulayicisi PAUSE_VERIFY_EMSAL ile beklemede.
   @{ name = 'emsal-cekim'; pattern = 'collect_emsal\.py'; backoff = 1200; args = @('-X','utf8','-u','scripts\collect_emsal.py','--delay','2.0') },
+  # Bedesten (Adalet Bakanlığı) emsal-karar ucu: portalda olup bizde olmayan Yargıtay/Danıştay kararları, CAPTCHA'sız.
+  # Dakikada ~12 istek sınırı iki süreç arasında ortak sıra dosyasıyla paylaşılır.
+  @{ name = 'bedesten-yargitay'; pattern = 'collect_bedesten\.py.*--source yargitay'; backoff = 600; args = @('-X','utf8','-u','scripts\collect_bedesten.py','--source','yargitay') },
+  @{ name = 'bedesten-danistay'; pattern = 'collect_bedesten\.py.*--source danistay'; backoff = 600; args = @('-X','utf8','-u','scripts\collect_bedesten.py','--source','danistay') },
   @{ name = 'dogrula-emsal'; pattern = 'verify_seeds\.py --source emsal'; backoff = 1200; args = @('-X','utf8','-u','scripts\verify_seeds.py','--source','emsal') }
 )
 $pauseFile = "$stateDir\PAUSE_CAMPAIGNS"   # varsa arama-tabanli kampanyalar baslatilmaz (dogrulayici ayni portali kullanir)
@@ -91,7 +95,8 @@ $verifyCourtAfterGapsFile = "$stateDir\VERIFY_COURT_SEEDS_AFTER_GAPS" # varsa Y/
 $pauseVerifyFile = "$stateDir\PAUSE_VERIFY"   # varsa dogrulayicilar baslatilmaz (boslugu kapatan kampanya portali kullanir)
 $pauseEmbedFile = "$stateDir\PAUSE_EMBED_ARM"    # varsa embedding kolu baslatilmaz
 $pauseDoneFile = "$stateDir\PAUSE_DONE_SOURCES"  # 2026-09-22: kullanici istegiyle %100 biten kollari durdurmak icin (aym, sayistay, uyusmazlik)
-$doneSources = @('aym', 'sayistay-temyiz', 'sayistay-daire', 'uyusmazlik', 'rekabet-a', 'rekabet-b')
+# 'mevzuat': Bedesten'in dakikada ~12 istek bütçesi karar toplayıcıya (bedesten-*) verildi; mevzuat çekimi verim getirmiyordu.
+$doneSources = @('aym', 'kdk', 'sayistay-temyiz', 'sayistay-daire', 'uyusmazlik', 'rekabet-a', 'rekabet-b', 'mevzuat')
 $nextStart = @{}   # kol adı -> en erken yeniden başlatma zamanı
 $launchedAt = @{}
 $restarts = @{}
@@ -100,22 +105,49 @@ Write-Log "nöbetçi başladı (PID $me)"
 while (-not (Test-Path $stopFile)) {
   $now = Get-Date
 
+  # Bedesten bosluk toplayicisi bitince (bedesten-<kaynak>-done.json) o kaynagin bosluk asamasi tamamdir:
+  # portal kampanyasi durur ve resmi dogrulayici acilir (kullanici karari: once dis veri cekimi, sonra dogrulama).
+  foreach ($src in @('yargitay','danistay')) {
+    if ((Test-Path "$stateDir/bedesten-$src-done.json") -and -not $state["${src}_done"]) {
+      $state["${src}_done"] = $true; Save-State
+      Write-Log "$src bedesten bosluk cekimi tamam; resmi dogrulayiciya geciliyor"
+    }
+  }
+
   # Once bosluk toplama devam ederken eski bir nobetci tarafindan acilmis ayni-domain
   # dogrulayicisi kalmasin. Embedding ve diger resmî kaynaklar bundan etkilenmez.
   foreach ($src in @('yargitay','danistay')) {
     if (-not $state["${src}_done"]) {
-      Get-Procs "verify_seeds\.py --source $src" |
+      # `--queue-only` (yalniz atif kuyrugu, dakikada 1 istek) toplamayi etkilemedigi icin oldurulmez.
+      Get-Procs "verify_seeds\.py --source $src" | Where-Object { $_.CommandLine -notmatch 'queue-only' } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     }
   }
 
   foreach ($w in $workers) {
     if ((Test-Path $pauseDoneFile) -and ($doneSources -contains $w.name)) { continue }
-    if ((Get-Procs $w.pattern).Count -gt 0) { continue }
-    if ((Test-Path $pauseBackgroundVerifyFile) -and ($w.name -eq 'dogrulama' -or $w.name -like 'dogrula-*')) {
+    $wProcs = Get-Procs $w.pattern
+    if ($wProcs.Count -gt 0) {
+      # Genel takilma korumasi: surec YASIYOR ama log'u uzun suredir sessizse (agir bir
+      # ag kesintisi vb.) bunu hicbir sey yakalamiyordu (olculdu: 2026-09-29, Bedesten
+      # yargitay+danistay 6,5 saat sessiz kaldi, surec canli oldugu icin asagidaki genel
+      # "yoktu, baslatildi" mantigi hic tetiklenmedi). Her isci normalde birkac dakikada
+      # bir log yazar; 30 dk sessizlik anormal - oldurulup asagida yeniden baslatilir.
+      $wLog = "$logDir\sentinel-$($w.name).out.log"
+      if ((Test-Path $wLog) -and ($now - (Get-Item $wLog).LastWriteTime).TotalMinutes -gt 30) {
+        Write-Log "$($w.name) 30 dk sessiz (surec canliydi); oldurulup yeniden baslatilacak"
+        $wProcs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+      } else {
+        continue
+      }
+    }
+    if ((Test-Path $pauseBackgroundVerifyFile) -and ($w.name -like 'dogrula-*')) {
       # Kullanici Yargitay/Danistay seed metinlerinin de dogrulanmasini istedi.
       # Genel pause diger kaynaklarda kalir; bu iki kaynak ancak kendi eksik-veri
       # kampanyasi bittikten sonra ayni portali kullanmaya baslar.
+      # NOT: 'dogrulama' (mevzuat/MBS+Resmi Gazete) buraya dahil degil - Bedesten
+      # butcesiyle hic yarismiyor, bagimsiz bir portal; bu bayrakla durdurulmasi
+      # yanlislikla 2026-09-26'dan 2026-09-27'ye 30+ saat surmus bir yan hasardi.
       $courtAfterGap = (Test-Path $verifyCourtAfterGapsFile) -and (
         ($w.name -eq 'dogrula-yargitay' -and $state.yargitay_done) -or
         ($w.name -eq 'dogrula-danistay' -and $state.danistay_done)
@@ -153,9 +185,32 @@ while (-not (Test-Path $stopFile)) {
         Write-Log "$src kampanyası 75 dk sessiz, öldürülüp yeniden başlatılacak"
         $procs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
         $nextStart[$src] = $now.AddSeconds(30)
+        continue
+      }
+      # 403 döngüsü koruması: süreç YAŞIYOR ve kendi içinde tekrar tekrar 403 alıp
+      # deniyor olabilir (ölçüldü: 2026-09-28, 30+ dk boyunca ~1.5 dk'da bir 403,
+      # 75 dk'lık sessizlik kontrolü bunu yakalamaz çünkü log sürekli yazılıyor).
+      # 2 dk'da bir denemek engeli uzatır; alt alta 403 görülürse öldürülüp 60 dk
+      # beklenir. "403" rakamla eşleşir, Türkçe karakter kodlamasından etkilenmez
+      # (bkz. aşağıdaki -match 'HTTP hat.*403' de aynı nedenle basitleştirildi).
+      if (Test-Path $outLog) {
+        $recent = @(Get-Content $outLog -Tail 5 -Encoding utf8)
+        $hits = @($recent | Where-Object { $_ -match '403' })
+        if ($recent.Count -ge 3 -and $hits.Count -eq $recent.Count) {
+          Write-Log "$src portalı üst üste 403 döngüsünde (süreç canlıydı); öldürülüp 60 dk beklenecek"
+          $procs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          $nextStart[$src] = $now.AddMinutes(60)
+          $launchedAt[$src] = $null
+        }
       }
       continue
     }
+    # Zaten bir soğuma bekleniyorsa (403/CAPTCHA sonrası) tekrar log okuyup
+    # süreyi sıfırlama: bu kontrol aşağıdaki tail-analizinden ÖNCE olmalı,
+    # aksi halde her 30 sn'lik nöbetçi turu "403 gördüm" deyip 60 dk'yı
+    # yeniden şimdiden başlatır ve soğuma asla bitmez (ölçüldü: 2026-09-28,
+    # "60 dk beklenecek" mesajı dakikada birkaç kez tekrarlanıp duruyordu).
+    if ($nextStart[$src] -and $now -lt $nextStart[$src]) { continue }
     # Süreç yok: önceki tur tamamlandı mı?
     # A phase may finish just before the sentinel itself restarts. The log's
     # completed label is durable; $launchedAt is not. Match the *current*
@@ -175,6 +230,12 @@ while (-not (Test-Path $stopFile)) {
           Write-Log "$src bosluk kuyrugu tamam; resmî dogrulayiciya geciliyor"
           continue
         }
+      } elseif ($tail -match '403') {
+        # Portal IP'mize 403 veriyor (engel). 2 dk'da bir denemek engeli uzatır; 60 dk bekle.
+        $nextStart[$src] = $now.AddMinutes(60)
+        $launchedAt[$src] = $null
+        Write-Log "$src portalı 403 verdi (engel); 60 dk beklenecek"
+        continue
       } elseif ($tail -match 'CAPTCHA' -and $tail -match 'durduruldu') {
         $nextStart[$src] = $now.AddMinutes(20)   # 3 CAPTCHA sonrası uzun mola
         $launchedAt[$src] = $null
