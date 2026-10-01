@@ -94,6 +94,25 @@ PAGES = {
         <div id="tree"><ul><li class="jstree-node"><a class="jstree-anchor" href="#" onclick="openNode('1234567')">Gizli Klasör Ahmet</a>
           <ul><li class="jstree-node jstree-leaf"><a class="jstree-anchor" href="#" data-evrak-id="99887">SIRRI-EVRAK-ADI Mehmet</a></li></ul></li></ul></div>
       </div></body></html>""",
+    # Yaprağa tıklayınca XHR + iframe ile ön izleme açan ağaç (tıklama kaydı testi).
+    "/vatandas/evrak-agaci-tikla": """<html><body><h2>Dosya Sorgulama</h2>
+      <div role="dialog" class="modal in" style="display:block"><h4 class="modal-title">2024/2000 - Test</h4>
+        <div id="tree"><ul><li class="jstree-node jstree-leaf"><a class="jstree-anchor" id="yaprak" href="#"
+            data-evrak-id="55">SIRRI-YAPRAK-ADI Mehmet</a></li></ul></div>
+        <div id="onizleme"></div></div>
+      <script>
+        document.getElementById('yaprak').addEventListener('click', function (event) {
+          event.preventDefault();
+          var xhr = new XMLHttpRequest();
+          xhr.open('GET', '/evrak/onizleme-verisi?evrakId=55');
+          xhr.onload = function () {
+            var frame = document.createElement('iframe');
+            frame.src = '/evrak/onizleme?id=55';
+            document.getElementById('onizleme').appendChild(frame);
+          };
+          xhr.send();
+        });
+      </script></body></html>""",
     # Gerçekçi evrak listesi.
     "/dosya/evraklar": f"<html><body><h2>{CASE_TITLE}</h2>{_EVRAK_ROWS}</body></html>",
     # Dosya penceresi: Evrak sekmesine basılınca liste AJAX ile gelir.
@@ -124,6 +143,8 @@ class _UyapHandler(BaseHTTPRequestHandler):
             if "tip=udf" in query:
                 return self._send(200, _udf(f"Bilirkişi raporu {doc_id}"), "application/zip")
             return self._send(200, _pdf(doc_id), "application/pdf")
+        if path.startswith("/evrak/onizleme"):
+            return self._send(200, _pdf(path), "application/pdf")
         if path.endswith(".pdf"):
             return self._send(200, _pdf(path), "application/pdf")
         return self._send(404, b"yok", "text/plain")
@@ -582,4 +603,63 @@ def test_diagnosis_describes_a_tree_based_evrak_list_without_leaking_its_content
     serialized = json.dumps(report, ensure_ascii=False)
     for leaked in ("SIRRI-EVRAK-ADI", "Gizli Klasör", "Ahmet", "Mehmet", "1234567", "99887", "Test Mahkemesi"):
         assert leaked not in serialized, leaked
+    page.close()
+
+
+def _saved_json_reports(lab) -> list[dict]:
+    """Eklentinin yazdığı JSON raporları. Playwright indirmeleri GUID adlı dosyaya aldığından ad yerine
+    MIME türü ve içerikle bulunur."""
+    names = lab.worker.evaluate(
+        "() => chrome.downloads.search({}).then((items) => items.filter((x) => x.mime === 'application/json').map((x) => x.filename))"
+    )
+    return [json.loads(Path(name).read_text("utf-8")) for name in names if Path(name).is_file()]
+
+
+def test_click_recording_captures_what_a_tree_leaf_does_without_leaking_content(lab):
+    """Gerçek UYAP'ta yaprağa tıklayınca ne olduğu tarif ettirilmeden kaydedilir; ad/metin/değer sızmaz."""
+    lab.configure()
+    page = lab.open("/vatandas/evrak-agaci-tikla")
+    tab_id = lab.worker.evaluate(
+        """async () => {
+            const [tab] = await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' });
+            await chrome.tabs.sendMessage(tab.id, { type: 'JURISAI_RECORD_START', seconds: 30 });
+            return tab.id;
+        }"""
+    )
+    page.wait_for_timeout(600)
+    page.locator("#yaprak").click()
+    page.wait_for_timeout(1500)
+    stopped = lab.worker.evaluate(
+        "(id) => chrome.tabs.sendMessage(id, { type: 'JURISAI_RECORD_STOP' })", tab_id
+    )
+    assert stopped["ok"], stopped
+    assert stopped["file"].startswith("NHR-Hukuk-UYAP/tani-kayit-")
+    page.wait_for_timeout(1200)
+
+    [report] = [item for item in _saved_json_reports(lab) if item.get("kind") == "tıklama kaydı"]
+    events = report["events"]
+    clicks = [event for event in events if event["kind"] == "click"]
+    assert clicks and clicks[0]["target"]["chain"][0].startswith("a.jstree-anchor")
+    assert "data-evrak-id" in clicks[0]["target"]["attributeNames"]
+    resources = [event for event in events if event["kind"] == "resource"]
+    assert any(
+        event["initiator"] == "xmlhttprequest" and event["url"] == "/evrak/onizleme-verisi?evrakId" for event in resources
+    ), resources
+    added = [event for event in events if event["kind"] == "dom_added" and event["tag"] == "iframe"]
+    assert added and added[0]["src"] == "/evrak/onizleme?id"
+    assert report["diagnosisAtEnd"]["tree"]["count"] >= 1
+    serialized = json.dumps(report, ensure_ascii=False)
+    for leaked in ("SIRRI-YAPRAK-ADI", "Mehmet", "evrakId=55", "id=55", "2024/2000"):
+        assert leaked not in serialized, leaked
+    assert lab.uploads == []  # kayıt hiçbir şey göndermez
+    page.close()
+
+
+def test_diagnosis_is_also_saved_as_a_file(lab):
+    lab.configure()
+    page = lab.open("/vatandas/evrak-agaci")
+    saved = lab.worker.evaluate("() => saveReportFile('tani', { reports: [{ ornek: true }] })")
+    assert saved.startswith("NHR-Hukuk-UYAP/tani-")
+    page.wait_for_timeout(1000)
+    assert {"reports": [{"ornek": True}]} in _saved_json_reports(lab)
     page.close()

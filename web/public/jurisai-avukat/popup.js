@@ -110,8 +110,14 @@ el("diagnose").addEventListener("click", async () => {
     });
     const reports = frames.map((frame) => frame.result).filter(Boolean);
     if (!reports.length) return say("Bu sekmede UYAP sayfası bulunamadı.", "err");
-    await navigator.clipboard.writeText(JSON.stringify({ reports }, null, 2));
-    say(`Tanı panoya kopyalandı (${reports.length} çerçeve). Kişisel veri içermez; geliştiriciye gönder.`, "ok");
+    const payload = { reports };
+    await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+    // Ayrıca dosyaya da yazılır: pano başka bir şeyle değişirse kaybolmaz, geliştiriciye dosya olarak iletilebilir.
+    const saved = await chrome.runtime.sendMessage({ type: "JURISAI_SAVE_DIAGNOSIS", report: payload });
+    say(
+      `Tanı panoya kopyalandı${saved?.ok ? ` ve İndirilenler\\${saved.file.replace("/", "\\")} dosyasına kaydedildi` : ""} (${reports.length} çerçeve). Kişisel veri içermez.`,
+      "ok",
+    );
   } catch (error) {
     // UYAP dışındaki bir sekmede tarayıcı betik çalıştırmayı reddeder: kullanıcıya anlaşılır söyle.
     const blocked = /Cannot access|permission|host/i.test(String(error?.message));
@@ -121,6 +127,35 @@ el("diagnose").addEventListener("click", async () => {
         : `Tanı alınamadı: ${error.message}`,
       "err",
     );
+  }
+});
+
+// Tıklama kaydı: UYAP'ta bir evrak yaprağına tıklayınca sayfanın ne yaptığını (ağ isteği, indirme, yeni sekme,
+// eklenen iframe) kaydeder; metin/ad/değer içermez. Bitince dosya İndirilenler\NHR-Hukuk-UYAP içine yazılır.
+async function activeTabId() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab?.id;
+}
+el("record").addEventListener("click", async () => {
+  try {
+    const tabId = await activeTabId();
+    if (!tabId) return say("Sekme bulunamadı.", "err");
+    await chrome.tabs.sendMessage(tabId, { type: "JURISAI_RECORD_START", seconds: 60 }, { frameId: 0 });
+    say("Kayıt başladı (60 sn). UYAP'ta evrak yaprağına tıkla; bitince dosya otomatik kaydedilir.", "ok");
+  } catch (_) {
+    say("Bu sekme bir UYAP sayfası değil ya da sayfa yenilenmeli (F5).", "err");
+  }
+});
+el("recordStop").addEventListener("click", async () => {
+  try {
+    const tabId = await activeTabId();
+    const result = await chrome.tabs.sendMessage(tabId, { type: "JURISAI_RECORD_STOP" }, { frameId: 0 });
+    say(
+      result?.ok ? "Kayıt bitti ve dosyaya yazıldı." : `Kayıt yok ya da kaydedilemedi: ${result?.error || ""}`,
+      result?.ok ? "ok" : "err",
+    );
+  } catch (_) {
+    say("Bu sekmede kayıt başlatılmamış.", "err");
   }
 });
 

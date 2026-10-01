@@ -239,7 +239,96 @@ async function handleAutoIngest(payload) {
   }
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+/* ---------- Tıklama kaydı (tanı) ----------
+   İçerik betiği kaydı başlatınca indirme ve yeni sekme olayları da toplanır (oturum belleğinde, servis
+   çalışanı kapansa da kaybolmaz). Yalnız YOL BİÇİMLERİ ve uzantı/MIME türü saklanır; ad ve içerik yok. */
+const RECORD_KEY = "jurisaiRecording";
+const maskDigits = (value) => String(value || "").replace(/\d+/g, "#");
+function shapeOf(raw) {
+  if (!raw) return "";
+  if (/^blob:/i.test(raw)) return "blob:";
+  if (/^data:/i.test(raw)) return `data:${(raw.slice(5).split(/[;,]/)[0] || "").slice(0, 40)}`;
+  try {
+    const url = new URL(raw);
+    const keys = [...url.searchParams.keys()].slice(0, 8).join(",");
+    return `${url.hostname}${maskDigits(url.pathname).slice(0, 80)}${keys ? "?" + keys : ""}`;
+  } catch (_) {
+    return "(çözümlenemedi)";
+  }
+}
+async function recordingState() {
+  const stored = await chrome.storage.session.get(RECORD_KEY);
+  return stored[RECORD_KEY] || null;
+}
+async function recordBackgroundEvent(state, event) {
+  if (state.events.length < 200) state.events.push({ t: Date.now() - state.startedAt, ...event });
+  await chrome.storage.session.set({ [RECORD_KEY]: state });
+}
+chrome.downloads.onCreated.addListener(async (item) => {
+  const state = await recordingState();
+  if (!state || item.byExtensionId === chrome.runtime.id) return;
+  const source = item.finalUrl || item.url || "";
+  await recordBackgroundEvent(state, {
+    kind: "download",
+    url: shapeOf(source),
+    mime: item.mime || "",
+    extension: (/\.([a-z0-9]{2,5})(\?|#|$)/i.exec(item.filename || source) || [])[1] || "",
+    bytes: item.totalBytes || 0,
+  });
+});
+chrome.tabs.onCreated.addListener(async (tab) => {
+  const state = await recordingState();
+  if (!state || tab.openerTabId !== state.tabId) return;
+  state.openedTabs = [...(state.openedTabs || []), tab.id];
+  await recordBackgroundEvent(state, { kind: "new_tab", url: shapeOf(tab.pendingUrl || tab.url || "") });
+});
+chrome.tabs.onUpdated.addListener(async (tabId, change) => {
+  if (!change.url) return;
+  const state = await recordingState();
+  if (!state || !(state.openedTabs || []).includes(tabId)) return;
+  await recordBackgroundEvent(state, { kind: "new_tab_url", url: shapeOf(change.url) });
+});
+
+/** Tanı/kayıt raporunu İndirilenler\NHR-Hukuk-UYAP altına JSON dosyası olarak yazar (kişisel veri içermez). */
+async function saveReportFile(prefix, report) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const file = `NHR-Hukuk-UYAP/${prefix}-${stamp}.json`;
+  const json = JSON.stringify(report, null, 2);
+  await chrome.downloads.download({
+    url: `data:application/json;charset=utf-8,${encodeURIComponent(json)}`,
+    filename: file,
+    saveAs: false,
+    conflictAction: "uniquify",
+  });
+  return file;
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "JURISAI_RECORD_STARTED") {
+    chrome.storage.session
+      .set({ [RECORD_KEY]: { tabId: sender.tab?.id ?? null, startedAt: Date.now(), events: [], openedTabs: [] } })
+      .then(() => sendResponse({ ok: true }));
+    return true;
+  }
+  if (message?.type === "JURISAI_RECORD_FINISHED") {
+    (async () => {
+      try {
+        const state = await recordingState();
+        await chrome.storage.session.remove(RECORD_KEY);
+        const report = { ...message.report, backgroundEvents: state?.events || [] };
+        sendResponse({ ok: true, file: await saveReportFile("tani-kayit", report) });
+      } catch (error) {
+        sendResponse({ ok: false, error: error.message || "bilinmeyen hata" });
+      }
+    })();
+    return true;
+  }
+  if (message?.type === "JURISAI_SAVE_DIAGNOSIS") {
+    saveReportFile("tani", message.report || {})
+      .then((file) => sendResponse({ ok: true, file }))
+      .catch((error) => sendResponse({ ok: false, error: error.message || "bilinmeyen hata" }));
+    return true;
+  }
   if (message?.type === "AUTO_INGEST_CASE") {
     handleAutoIngest(message.payload || {}).then(sendResponse);
     return true;

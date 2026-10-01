@@ -686,7 +686,148 @@
   }
   window.__jurisaiDiagnose = diagnose;
 
+  /* ---------- Tıklama kaydı ----------
+     "Evrak ağacında bir yaprağa tıklayınca ne oluyor?" sorusunu kullanıcıya tarif ettirmeden yanıtlar:
+     belirli bir süre boyunca tıklamaları, sayfanın yaptığı ağ isteklerini (yalnız YOL BİÇİMİ), eklenen
+     iframe/embed/dialog öğelerini kaydeder. İndirme ve yeni sekme olaylarını arka plan betiği ekler.
+     Hiçbir metin, ad, öznitelik değeri, rakam ya da sorgu değeri kaydedilmez. Bitince rapor
+     İndirilenler\NHR-Hukuk-UYAP klasörüne bir JSON dosyası olarak yazılır. */
+  const STATIC_RESOURCE_RE = /\.(js|css|png|gif|jpe?g|svg|ico|woff2?|ttf|map)(\?|#|$)/i;
+  let recorder = null;
+
+  function srcShape(raw) {
+    if (!raw) return "";
+    if (/^blob:/i.test(raw)) return "blob:";
+    if (/^data:/i.test(raw)) return `data:${(raw.slice(5).split(/[;,]/)[0] || "").slice(0, 40)}`;
+    return urlShape(raw);
+  }
+  function describeTarget(el) {
+    const chain = [];
+    for (let node = el, i = 0; node && node.nodeType === 1 && i < 5; node = node.parentElement, i += 1) {
+      const classes = [...node.classList].slice(0, 3).map(maskClass).join(".");
+      chain.push(`${node.tagName.toLowerCase()}${classes ? "." + classes : ""}`);
+    }
+    const onclick = el.getAttribute("onclick") || "";
+    const href = el.getAttribute("href");
+    return {
+      chain,
+      attributeNames: [...el.attributes].map((attr) => attr.name).filter((name) => name !== "class").slice(0, 8),
+      onclickFunction: onclick ? onclick.replace(/\(.*$/s, "(…)").slice(0, 40) : "",
+      href: href === null ? "" : /^(#|javascript)/i.test(href) ? href.slice(0, 20) : urlShape(href),
+    };
+  }
+  function startRecording(seconds) {
+    if (recorder) stopRecording("yeniden başlatıldı");
+    const started = performance.now();
+    const events = [];
+    const push = (event) => {
+      if (events.length < 300) events.push({ t: Math.round(performance.now() - started), ...event });
+    };
+    const listeners = ["click", "dblclick", "contextmenu"].map((type) => {
+      const handler = (event) => {
+        const target = event.target instanceof Element ? event.target : null;
+        if (target && !target.closest(".jurisai-toast, .jurisai-toolbar")) {
+          push({ kind: type, target: describeTarget(target) });
+        }
+      };
+      document.addEventListener(type, handler, true);
+      return [type, handler];
+    });
+    let skippedStatic = 0;
+    let resources = null;
+    try {
+      resources = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          if (STATIC_RESOURCE_RE.test(entry.name)) {
+            skippedStatic += 1;
+            continue;
+          }
+          push({
+            kind: "resource",
+            initiator: entry.initiatorType,
+            url: urlShape(entry.name),
+            bytes: entry.encodedBodySize || entry.transferSize || 0,
+            ms: Math.round(entry.duration),
+          });
+        }
+      });
+      resources.observe({ type: "resource" });
+    } catch (_) {
+      /* PerformanceObserver yoksa yalnız tıklama ve DOM olayları kaydedilir */
+    }
+    const mutations = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (!(node instanceof Element)) continue;
+          const found = [
+            node,
+            ...node.querySelectorAll("iframe, embed, object, video, audio, canvas, a[download], [role='dialog'], .modal"),
+          ];
+          for (const el of found) {
+            const interesting =
+              /^(iframe|embed|object|video|audio|canvas)$/i.test(el.tagName) ||
+              el.hasAttribute("download") ||
+              el.matches("[role='dialog'], .modal");
+            if (!interesting) continue;
+            push({
+              kind: "dom_added",
+              tag: el.tagName.toLowerCase(),
+              classes: [...el.classList].slice(0, 3).map(maskClass),
+              src: srcShape(el.getAttribute("src") || el.getAttribute("data") || el.getAttribute("href") || ""),
+            });
+          }
+        }
+      }
+    });
+    mutations.observe(document.documentElement, { childList: true, subtree: true });
+    const timer = setTimeout(() => stopRecording("süre doldu"), Math.min(180, Math.max(5, seconds || 60)) * 1000);
+    recorder = { started, events, listeners, resources, mutations, timer, skipped: () => skippedStatic };
+    chrome.runtime.sendMessage({ type: "JURISAI_RECORD_STARTED" }).catch(() => {});
+    toast(`Kayıt başladı (${seconds || 60} sn). Şimdi UYAP'ta bir evrak yaprağına tıkla.`, "info");
+  }
+  async function stopRecording(reason) {
+    const active = recorder;
+    if (!active) return { ok: false, error: "kayıt yok" };
+    recorder = null;
+    clearTimeout(active.timer);
+    for (const [type, handler] of active.listeners) document.removeEventListener(type, handler, true);
+    active.resources?.disconnect();
+    active.mutations.disconnect();
+    const report = {
+      kind: "tıklama kaydı",
+      reason,
+      seconds: Math.round((performance.now() - active.started) / 1000),
+      skippedStaticResources: active.skipped(),
+      events: active.events,
+      diagnosisAtEnd: diagnose(),
+    };
+    try {
+      const result = await chrome.runtime.sendMessage({ type: "JURISAI_RECORD_FINISHED", report });
+      toast(
+        result?.ok
+          ? `Kayıt dosyası kaydedildi: İndirilenler\\${result.file.replace("/", "\\")}`
+          : `Kayıt kaydedilemedi: ${result?.error || "bilinmeyen hata"}`,
+        result?.ok ? "success" : "error",
+      );
+      return result;
+    } catch (error) {
+      toast(`Kayıt kaydedilemedi: ${error.message}`, "error");
+      return { ok: false, error: error.message };
+    }
+  }
+
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    // Kayıt yalnız üst çerçevede tutulur; iç çerçeveler (ön izleme iframe'i vb.) "kayıt yok" yanıtıyla araya girmesin.
+    if (/^JURISAI_RECORD_(START|STOP)$/.test(message?.type || "") && window !== window.top) return false;
+    if (message?.type === "JURISAI_RECORD_START") {
+      startRecording(Number(message.seconds) || 60);
+      sendResponse({ ok: true });
+      return true;
+    }
+    if (message?.type === "JURISAI_RECORD_STOP") {
+      stopRecording("elle bitirildi").then(sendResponse);
+      return true;
+    }
     if (message?.type === "JURISAI_TOAST") {
       toast(message.message, message.kind || "info");
       sendResponse({ ok: true });
