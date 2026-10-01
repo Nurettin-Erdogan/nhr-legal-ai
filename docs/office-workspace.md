@@ -52,5 +52,6 @@ Kullanıcının yüklediği "karar" kişisel belge deposuna gider; korpusa girme
 ## Bilinen sınırlar
 - Yerel model yavaştır (bir dilekçe birkaç dakika); bağlam penceresi küçüktür (`OLLAMA_NUM_CTX`).
 - OCR motoru bu makinede kurulu değildir.
+- Dava belgelerinin (UYAP dahil) aranabilir yapılması: [office-document-rag.md](office-document-rag.md).
 - UYAP eklentileri varsayılan olarak `http://localhost:8766` adresine gönderir.
 - Bağlantı anahtarı düz saklanır (arayüz tekrar gösterir); RLS ve iptal (`revoked`) ile korunur.

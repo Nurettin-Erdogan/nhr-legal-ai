@@ -47,3 +47,9 @@ data/
 
 # Docker/PostgreSQL yerel hacimleri
 postgres_data/
+
+# Yerel araç artıkları (IDE/ajan yapılandırması, kurulum silici, geçici betikler)
+/.abacusai/
+/.mcp.json
+/unins000.*
+scripts/_tmp_*.py

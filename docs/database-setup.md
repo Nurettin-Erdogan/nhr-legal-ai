@@ -125,6 +125,29 @@ Get-Content -Raw .\database\migrations\007_ingestion_worker.sql |
 
 Bir migration başarıyla uygulanmış veritabanında aynı migration'ı tekrar çalıştırma. İleride migration runner eklendiğinde dosya sürümleri ayrıca takip edilmelidir.
 
+## Mevcut veritabanına sonradan eklenen migrationlar (021–033)
+
+Yeni kurulum `database/init/` ile (Docker'ın dosya sırasıyla) bunların hepsini alır; CI de aynı sırayı
+kullanır. Mevcut bir veritabanında `database/migrations/` altındaki dosyalar numara sırasıyla `psql -f` ile
+uygulanır. Her birinin `init/` karşılığı vardır (numara farklıdır; içerik aynıdır).
+
+| Migration | Konu |
+| --- | --- |
+| 021–022 | Yalnız resmî arama, ardından toplu (doğrulanmamış) kararların aranabilir geri getirilmesi |
+| 023 | `legal_chunks` embedding'li parçalar için kısmi indeks |
+| 024–025 | MBS metin doğrulaması, karantina arama indeksi |
+| 026 | Ofis çalışma alanı (müvekkil, dava, belge, UYAP bağlantısı) |
+| 027–028 | Araştırma sayfası sayfalama, sıralama öncelikli sözcük araması |
+| 029 | Google ile giriş |
+| 030 | UYAP belgelerinin RAG indeksi (`documents.office_case_document_id`) |
+| 031 | Belge çöp kutusu (`office_case_documents.deleted_at`) |
+| 032 | Katmanlı sözcük araması + `idx_legal_chunks_search_vector_official` |
+| 033 | UYAP bağlantı anahtarı özetlenir (`token_hash`), düz değer silinir |
+
+`CREATE INDEX CONCURRENTLY` içeren dosyalar (`023`, `025`, `032`) transaction dışında, tek başına `psql -f`
+ile çalıştırılmalıdır. Büyük korpusta 032'deki dizin ~10 dk sürer ve `lock_timeout` konmamalıdır
+([docs/legal-search-performance.md](legal-search-performance.md)).
+
 ## 6. Embedding modelini etkinleştir
 
 `document_chunks.embedding` ve `legal_chunks.embedding` model seçilene kadar boyutsuz `VECTOR` kalır. Modelin gerçek çıktı boyutu kesinleştiğinde parametreli migration'ı bir kez çalıştır:

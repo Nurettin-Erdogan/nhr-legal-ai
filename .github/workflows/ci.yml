@@ -37,47 +37,16 @@ jobs:
       - name: Apply database schema
         env:
           PGPASSWORD: ci-test-only
+        # Yeni kurulumdaki gibi: Docker'ın yaptığı sıralamayla database/init/*.sql
+        # (CONCURRENTLY dizinleri transaction dışında, dosya başına bir psql).
         run: |
           set -e
-          for f in \
-            database/init/001_extensions.sql \
-            database/init/002_schema.sql \
-            database/init/003_v2_schema.sql \
-            database/init/004_rls.sql \
-            database/init/005_v2_hardening.sql \
-            database/init/006_v2_integrity_fixes.sql \
-            database/init/007_message_ordering.sql \
-            database/migrations/006_legal_data_layer.sql \
-            database/migrations/007_ingestion_worker.sql \
-            database/migrations/008_current_source_integrity.sql \
-            database/migrations/009_kdk_source_checkpoint.sql \
-            database/migrations/010_activate_danistay_source.sql \
-            database/migrations/011_activate_resmi_gazete_verification.sql \
-            database/migrations/012_activate_kdk_source.sql \
-            database/migrations/013_activate_aym_source.sql \
-            database/migrations/014_legal_rag_indexes.sql \
-            database/migrations/015_bulk_seed_inventory.sql \
-            database/migrations/016_bulk_seed_search.sql \
-            database/migrations/017_superseded_by_index.sql \
-            database/migrations/018_bounded_lexical_hits.sql \
-            database/migrations/019_court_decision_date_index.sql \
-            database/migrations/020_seed_verification_queue.sql \
-            database/migrations/023_chunk_embedded_partial_index.sql \
-            database/migrations/026_office_workspace.sql \
-            database/migrations/029_google_auth.sql
+          for f in database/init/*.sql
           do
             psql -h localhost -U nhr_app -d nhr_legal_ai_test -v ON_ERROR_STOP=1 -f "$f"
           done
-      - name: Apply public RAG research pagination
-        env:
-          PGPASSWORD: ci-test-only
-        run: psql -h localhost -U nhr_app -d nhr_legal_ai_test -v ON_ERROR_STOP=1 -f database/migrations/027_rag_research_page.sql
       - name: Pytest
-        env:
-          PGPASSWORD: ci-test-only
-        run: |
-          psql -h localhost -U nhr_app -d nhr_legal_ai_test -v ON_ERROR_STOP=1 -f database/migrations/028_rank_first_lexical.sql
-          python -m pytest -q
+        run: python -m pytest -q
 
   frontend:
     runs-on: ubuntu-latest
