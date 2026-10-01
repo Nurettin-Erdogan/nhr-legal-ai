@@ -16,7 +16,7 @@ export const Logo = ({ className, variant = "dark", showText = true }: Props) =>
       </div>
       {showText && (
         <span className={cn("text-lg font-bold tracking-tight", textColor)}>
-          NHR <span className="text-primary">Hukuk</span>
+          Juris<span className="text-primary">AI</span>
         </span>
       )}
     </div>

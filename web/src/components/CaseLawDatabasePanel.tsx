@@ -92,7 +92,7 @@ export const CaseLawDatabasePanel = () => {
           </div>
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="font-semibold">NHR Türk Hukuku Korpusu</h2>
+              <h2 className="font-semibold">JurisAI Türk Hukuku Korpusu</h2>
               <Badge variant="secondary">{format(courtTotal)} yargı kararı</Badge>
               <Badge variant="outline">canlı</Badge>
             </div>

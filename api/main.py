@@ -9,6 +9,7 @@ import psycopg
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.admin_audit import router as admin_audit_router
 from api.admin_ingestion import router as admin_ingestion_router
 from api.ai.providers import AIProviderError, LOCAL_OLLAMA_PROVIDERS, create_provider
 from api.ai.routes import router as ai_router
@@ -59,7 +60,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(
-    title="NHR Legal AI API",
+    title="JurisAI API",
     description="Türk hukuku araştırma ve kaynaklı yapay zekâ platformu API'si.",
     version="0.1.0",
     lifespan=lifespan,
@@ -84,6 +85,7 @@ app.include_router(office_router)
 app.include_router(office_ai_router)
 app.include_router(office_public_router)
 app.include_router(admin_ingestion_router)
+app.include_router(admin_audit_router)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["system"])

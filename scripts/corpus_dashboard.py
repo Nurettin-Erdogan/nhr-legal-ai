@@ -24,7 +24,7 @@ HTML = r"""<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>NHR Korpus Canlı Durum</title>
+  <title>JurisAI Korpus Canlı Durum</title>
   <style>
     :root{color-scheme:dark;--bg:#071511;--panel:#0d211b;--line:#234239;--text:#eff8f4;--muted:#91aaa1;--green:#42d392;--gold:#e7ba62;--red:#ff8b7b}
     *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 85% 0,#183c30 0,transparent 32%),var(--bg);color:var(--text);font:14px Inter,system-ui,sans-serif}
@@ -42,7 +42,7 @@ HTML = r"""<!doctype html>
   </style>
 </head>
 <body><main>
-  <header><div><div class="eyebrow">NHR Legal AI</div><h1>Türk Hukuku Korpusu</h1><div class="muted">PostgreSQL + pgvector canlı veri durumu</div></div><div class="live"><span class="dot"></span><span id="status">Bağlanıyor…</span><button id="refresh">Yenile</button></div></header>
+  <header><div><div class="eyebrow">JurisAI</div><h1>Türk Hukuku Korpusu</h1><div class="muted">PostgreSQL + pgvector canlı veri durumu</div></div><div class="live"><span class="dot"></span><span id="status">Bağlanıyor…</span><button id="refresh">Yenile</button></div></header>
   <div id="error" class="error"></div>
   <section class="grid">
     <div class="card"><div class="label">Toplam yargı kararı</div><div class="value" id="courtTotal">—</div><div class="hint">resmî + doğrulanmamış arşiv</div></div>
