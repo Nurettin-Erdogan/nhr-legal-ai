@@ -238,16 +238,16 @@ export const Route = createFileRoute("/_authenticated/dashboard/automation")({
   }),
   head: () => ({
     meta: [
-      { title: "Tek Tuşla Dilekçe Otomasyonu | NHR Hukuk" },
+      { title: "Tek Tuşla Dilekçe Otomasyonu | JurisAI" },
       {
         name: "description",
         content:
           "Tek düğmeyle tüm dosyaları okut, belge türünü belirlet, dilekçeleri yazdır ve Word/PDF olarak indir.",
       },
-      { property: "og:title", content: "Tek Tuşla Dilekçe Otomasyonu | NHR Hukuk" },
+      { property: "og:title", content: "Tek Tuşla Dilekçe Otomasyonu | JurisAI" },
       {
         property: "og:description",
-        content: "NHR Hukuk otomasyonu: belge okuma, tür tespiti ve dilekçe üretimi tek tuşla.",
+        content: "JurisAI otomasyonu: belge okuma, tür tespiti ve dilekçe üretimi tek tuşla.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },

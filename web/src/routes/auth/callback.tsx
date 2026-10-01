@@ -66,7 +66,7 @@ function AuthCallbackPage() {
 
 export const Route = createFileRoute("/auth/callback")({
   head: () => ({
-    meta: [{ title: "Giriş Doğrulanıyor — NHR Hukuk" }],
+    meta: [{ title: "Giriş Doğrulanıyor — JurisAI" }],
   }),
   component: AuthCallbackPage,
 });

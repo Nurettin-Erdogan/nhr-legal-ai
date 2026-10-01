@@ -124,7 +124,7 @@ function HomePage() {
   };
 
   const ozet = messages
-    .map((m) => `${m.role === "user" ? "Vatandaş" : "NHR Hukuk"}: ${m.content}`)
+    .map((m) => `${m.role === "user" ? "Vatandaş" : "JurisAI"}: ${m.content}`)
     .join("\n\n");
 
   return (
@@ -299,13 +299,13 @@ function HomePage() {
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "NHR Hukuk — Ücretsiz Hukuki Yapay Zekâ Asistanı" },
+      { title: "JurisAI — Ücretsiz Hukuki Yapay Zekâ Asistanı" },
       {
         name: "description",
         content:
-          "İş, aile, kira ve tazminat konularında sorunuzu yazın; NHR Hukuk haklarınızı ve atmanız gereken adımları sade bir dille anlatsın.",
+          "İş, aile, kira ve tazminat konularında sorunuzu yazın; JurisAI haklarınızı ve atmanız gereken adımları sade bir dille anlatsın.",
       },
-      { property: "og:title", content: "NHR Hukuk — Ücretsiz Hukuki Yapay Zekâ Asistanı" },
+      { property: "og:title", content: "JurisAI — Ücretsiz Hukuki Yapay Zekâ Asistanı" },
       {
         property: "og:description",
         content: "Hukuki sorununuzu anlatın, haklarınızı ve izlemeniz gereken adımları öğrenin.",

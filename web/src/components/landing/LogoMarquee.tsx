@@ -20,7 +20,7 @@ export function LogoMarquee() {
     <section className="py-14 lg:py-16 bg-background border-b border-border">
       <div className="container-elite">
         <p className="text-center text-xs font-semibold tracking-[0.25em] text-muted-foreground uppercase mb-8">
-          Türkiye'nin önde gelen <span className="text-gold-deep">350+ hukuk ofisi</span> NHR Hukuk
+          Türkiye'nin önde gelen <span className="text-gold-deep">350+ hukuk ofisi</span> JurisAI
           kullanıyor
         </p>
 

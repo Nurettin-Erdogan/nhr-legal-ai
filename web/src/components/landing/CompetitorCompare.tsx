@@ -97,7 +97,7 @@ type Col = {
   highlight?: boolean;
 };
 const COLS: Col[] = [
-  { key: "apilex", label: "NHR Hukuk", sub: "Yeni nesil hukuk SaaS", highlight: true },
+  { key: "apilex", label: "JurisAI", sub: "Yeni nesil hukuk SaaS", highlight: true },
   { key: "manual", label: "Manuel", sub: "Klasör + Word + telefon" },
   { key: "excel", label: "Excel + Drive", sub: "Tablo bazlı takip" },
   { key: "legacy", label: "Eski yazılımlar", sub: "On-premise / klasik" },
@@ -120,10 +120,10 @@ export function CompetitorCompare() {
             Karşılaştırma
           </span>
           <h2 className="mt-4 font-serif text-4xl md:text-5xl font-semibold">
-            NHR Hukuk vs. Diğer Çözümler
+            JurisAI vs. Diğer Çözümler
           </h2>
           <p className="mt-4 text-muted-foreground">
-            Hukuk ofisleri NHR Hukuk'a geçtiğinde ne kazanır? Manuel iş akışları, tablolar ve eski
+            Hukuk ofisleri JurisAI'a geçtiğinde ne kazanır? Manuel iş akışları, tablolar ve eski
             yazılımlarla doğrudan karşılaştırma.
           </p>
         </div>
