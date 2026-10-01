@@ -71,7 +71,23 @@ def document_id_from_external_id(external_id: str) -> str:
     return external_id.split(":", 1)[1]
 
 
+def _fetch_from_bedesten(kind: str, document_id: str) -> str:
+    """Adalet Bakanlığı Bedesten karar ucu: CAPTCHA'sız, portalla aynı doküman kimliği ve metin."""
+    from ingestion.bedesten_emsal import BedestenClient
+
+    html = BedestenClient(timeout=12.0).content_html(document_id)
+    text = normalize_text(html_to_text(html))
+    if not text:
+        raise ValueError(f"Bedesten karar metni boş: {document_id}")
+    return text
+
+
 def fetch_official_text(kind: str, document_id: str) -> str:
+    if kind in ("yargitay", "danistay"):
+        try:
+            return _fetch_from_bedesten(kind, document_id)
+        except Exception:  # noqa: BLE001 - Bedesten hız sınırı/kesinti: portala düş
+            pass
     if kind == "yargitay":
         from ingestion.yargitay.portal import YargitayPortalClient
 

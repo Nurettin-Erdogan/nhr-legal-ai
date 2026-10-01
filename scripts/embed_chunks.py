@@ -12,9 +12,11 @@ varsayılan kapsam yalnız resmî (`ready`) kayıtlardır. Yeniden başlatılabi
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import signal
 import sys
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,6 +29,49 @@ sys.path.insert(0, str(ROOT))
 load_dotenv(ROOT / ".env")
 
 STOP = False
+SHARD_PROGRESS_DIR = ROOT / "data" / "cache"
+
+
+def read_all_shard_progress() -> dict[str, list]:
+    snapshot: dict[str, list] = {}
+    for path in SHARD_PROGRESS_DIR.glob("embed_shard_*.json"):
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            snapshot[path.stem] = [raw["started"], raw["done"]]
+        except (OSError, ValueError, KeyError):
+            continue
+    return snapshot
+
+
+def write_embedded_base(url: str) -> None:
+    """Kesin 'embedding hazır' sayısı (admin bağlantısı, ~10-30 sn) + o andaki işçi ilerlemesi.
+
+    API bu sayıya işçilerin sonradan ürettiklerini ekler (api/legal.py `_live_embedded_count`).
+    Sayım başlamadan önceki ilerleme kaydedilir: sayım o anın görüntüsünü görür.
+    """
+    try:
+        snapshot = read_all_shard_progress()
+        with psycopg.connect(url, autocommit=True) as connection:
+            connection.execute("SET statement_timeout = '600s'")
+            count = connection.execute("SELECT count(*) FROM legal_chunks WHERE embedding IS NOT NULL").fetchone()[0]
+        target = SHARD_PROGRESS_DIR / "embed_base.json"
+        tmp = target.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps({"count": count, "snapshot": snapshot, "ts": time.time()}), encoding="utf-8")
+        tmp.replace(target)
+    except (OSError, psycopg.Error):
+        pass
+
+
+def write_shard_progress(shard: int, started: float, done: int) -> None:
+    """Dilimin ürettiği parça sayısı; API bunu son kesin sayıma ekleyerek sayacı canlı tutar."""
+    try:
+        SHARD_PROGRESS_DIR.mkdir(parents=True, exist_ok=True)
+        target = SHARD_PROGRESS_DIR / f"embed_shard_{shard}.json"
+        tmp = target.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"started": started, "done": done}), encoding="utf-8")
+        tmp.replace(target)
+    except OSError:
+        pass
 
 
 def _handle_stop(signum: int, _frame: object) -> None:
@@ -43,12 +88,15 @@ def main() -> int:
     parser.add_argument("--loop", action="store_true", help="Sürekli çalış: her turda son değişen resmî kayıtları embedding'e çevirir")
     parser.add_argument("--loop-interval", type=int, default=180, help="--loop turları arası saniye")
     parser.add_argument("--full-every-hours", type=float, default=6.0, help="--loop: tüm resmî kayıtları yeniden tarama aralığı")
+    parser.add_argument("--include-seeds", action="store_true", help="--loop: resmî işler bitince doğrulanmamış (bulk_seed) kayıtları da çevir (en yeniden eskiye)")
+    parser.add_argument("--seed-batch-sources", type=int, default=400, help="--include-seeds: bir turda kaç kaynak")
     parser.add_argument("--limit", type=int, default=0, help="0 = sınırsız")
     args = parser.parse_args()
     shard, shards = (int(part) for part in args.shard.split("/"))
 
     from api.ai.embeddings import EmbeddingProviderError, create_embedding_provider, vector_literal
     from api.config import get_settings
+    from api.embed_pause import wait_if_embeddings_paused
 
     settings = get_settings()
     provider = create_embedding_provider(
@@ -100,6 +148,7 @@ def main() -> int:
             for start in range(0, len(rows), args.batch):
                 if STOP:
                     break
+                wait_if_embeddings_paused()  # asistan cevap üretirken GPU'yu ona bırak
                 batch = rows[start : start + args.batch]
                 try:
                     vectors = provider.embed_documents([row[1] for row in batch])
@@ -125,6 +174,7 @@ def main() -> int:
                         [(vector_literal(v), provider.model, row[0]) for row, v in zip(batch, vectors, strict=True)],
                     )
                 done += len(batch)
+                write_shard_progress(shard, started, done)  # API sayacı her partide ilerler
             elapsed = time.time() - started
             print(
                 f"{time.strftime('%H:%M:%S')} kaynak {offset + len(group):,}/{len(source_ids):,} | "
@@ -132,26 +182,110 @@ def main() -> int:
                 flush=True,
             )
 
+    base_cursor = ROOT / "data" / "campaign" / "embed-seed-cursor.json"
+    # Dilimli çalışmada her işçinin kendi imleci vardır; hepsi aynı noktadan (varsa eski imleçten) başlar
+    # ve aynı sıralamayı izler, gruplar dilimlere (grup indeksi mod N) bölündüğü için çakışmazlar.
+    cursor_path = base_cursor if shards == 1 else base_cursor.with_name(f"embed-seed-cursor-{shard}of{shards}.json")
+    if shards > 1 and not cursor_path.exists() and base_cursor.exists():
+        cursor_path.write_text(base_cursor.read_text(encoding="utf-8"), encoding="utf-8")
+
+    def seed_batch(connection: psycopg.Connection, count: int) -> int:
+        """Doğrulanmamış (bulk_seed) kayıtları en yeni karardan eskiye, imleçle çevirir.
+
+        İmleç (decision_date, legal_source_id) `data/campaign/embed-seed-cursor.json` içinde
+        durur; süreç yeniden başlarsa kaldığı yerden sürer. Döndürdüğü sayı 0 ise bitti.
+        """
+        cursor: dict = {}
+        if cursor_path.exists():
+            try:
+                cursor = json.loads(cursor_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                cursor = {}
+        after = ""
+        params: list = []
+        if cursor.get("date") and cursor.get("id"):
+            after = "AND (d.decision_date, d.legal_source_id) < (%s::date, %s::uuid)"
+            params += [cursor["date"], cursor["id"]]
+        params.append(count)
+        rows = connection.execute(
+            f"""
+            SELECT d.legal_source_id, d.decision_date
+            FROM court_decision_details d
+            JOIN legal_sources s ON s.id = d.legal_source_id
+            WHERE d.decision_date IS NOT NULL
+              AND s.ingestion_method = 'bulk_seed' AND s.ingest_status = 'pending'
+              AND s.is_current AND s.deleted_at IS NULL
+              {after}
+            ORDER BY d.decision_date DESC, d.legal_source_id DESC
+            LIMIT %s
+            """,
+            params,
+        ).fetchall()
+        if not rows:
+            return 0
+        run_pass(connection, [row[0] for row in rows])
+        last = rows[-1]
+        cursor_path.write_text(json.dumps({"date": last[1].isoformat(), "id": str(last[0])}), encoding="utf-8")
+        return len(rows)
+
+    if shard == 0:
+        def base_loop() -> None:
+            while not STOP:
+                write_embedded_base(url)
+                for _ in range(1800):  # 30 dk; durdurmada hızlı çıkış
+                    if STOP:
+                        return
+                    time.sleep(1)
+
+        threading.Thread(target=base_loop, name="embed-base-count", daemon=True).start()
+
     with psycopg.connect(url, autocommit=True) as connection:
         connection.execute("SET statement_timeout = '120s'")
         run_pass(connection, source_ids_for(connection, None))
         last_full = time.time()
+        last_light = time.time()
         while args.loop and not STOP:
-            # Yeni doğrulanan/eklenen kayıtlar için hafif tur; ara sıra tam tarama (atlananlar için).
-            time.sleep(args.loop_interval)
-            if STOP:
-                break
-            pass_started = time.time()
-            if pass_started - last_full >= args.full_every_hours * 3600:
-                ids, last_full = source_ids_for(connection, None), pass_started
-            else:
-                since = datetime.fromtimestamp(pass_started - args.loop_interval - 600, UTC).isoformat()
-                ids = source_ids_for(connection, since)
-            if ids:
-                run_pass(connection, ids)
+            # Önce resmî kayıtlar (yeni doğrulanan/eklenen: hafif tur; ara sıra tam tarama), sonra
+            # --include-seeds ile doğrulanmamışlar. Çevrilecek iş varken beklemeden sürer.
+            worked = 0
+            now = time.time()
+            if now - last_light >= args.loop_interval:
+                if now - last_full >= args.full_every_hours * 3600:
+                    ids, last_full = source_ids_for(connection, None), now
+                else:
+                    since = datetime.fromtimestamp(last_light - 600, UTC).isoformat()
+                    ids = source_ids_for(connection, since)
+                last_light = now
+                if ids:
+                    run_pass(connection, ids)
+                    worked += len(ids)
+            if args.include_seeds and not STOP:
+                worked += seed_batch(connection, args.seed_batch_sources)
+            if not worked:
+                time.sleep(min(args.loop_interval, 30))
     print(f"BİTTİ: {done:,} parça, atlanan {skipped:,} | {(time.time() - started) / 60:.0f} dk", flush=True)
     return 0
 
 
+def _run_forever() -> int:
+    """Beklenmeyen hata (veritabanı zaman aşımı, bağlantı kopması) işçiyi öldürmesin: nedeni kalıcı dosyaya
+    yazılır, kısa beklemeden sonra yeniden bağlanıp kaldığı yerden (imleç dosyadan) devam edilir."""
+    import traceback
+
+    crash_log = ROOT / "data" / "logs" / f"embed-crash-{sys.argv[sys.argv.index('--shard') + 1].replace('/', 'of')}.log" if "--shard" in sys.argv else ROOT / "data" / "logs" / "embed-crash.log"
+    while True:
+        try:
+            return main()
+        except (SystemExit, KeyboardInterrupt):
+            raise
+        except Exception:  # noqa: BLE001
+            with crash_log.open("a", encoding="utf-8") as handle:
+                handle.write(f"--- {datetime.now().isoformat(timespec='seconds')}\n{traceback.format_exc()}\n")
+            print(f"{time.strftime('%H:%M:%S')} hata (crash logu yazıldı); 20 sn sonra yeniden bağlanılıyor", flush=True)
+            if STOP:
+                return 1
+            time.sleep(20)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(_run_forever())

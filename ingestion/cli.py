@@ -224,6 +224,8 @@ def _run_embed(args: argparse.Namespace) -> int:
     import psycopg
 
     from api.ai.embeddings import EmbeddingProviderError, create_embedding_provider
+    from api.embed_progress import baseline_ready, write_ready
+    from api.embed_pause import wait_if_embeddings_paused
     from ingestion.embeddings import embed_document_chunks, embed_legal_chunks
 
     load_dotenv()
@@ -233,7 +235,7 @@ def _run_embed(args: argparse.Namespace) -> int:
             model=args.model,
             dimensions=args.dimensions,
             ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
-            ollama_timeout_seconds=float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "120")),
+            ollama_timeout_seconds=float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "300")),
         )
     except EmbeddingProviderError as exc:
         logger.error("Embedding başlatılamadı: %s", exc)
@@ -244,6 +246,8 @@ def _run_embed(args: argparse.Namespace) -> int:
         # Her başarılı batch bağımsız transaction olarak kalıcılaşır. Uzun bir
         # backfill sonradan kota hatası alırsa önceki vektörler geri alınmaz.
         with psycopg.connect(database_url, autocommit=True) as connection:
+            connection.execute("SET statement_timeout = 0")
+            connection.execute("SET synchronous_commit = off")
             targets = (
                 ("legal", embed_legal_chunks),
                 ("documents", embed_document_chunks),
@@ -251,23 +255,53 @@ def _run_embed(args: argparse.Namespace) -> int:
             selected = [item for item in targets if args.target in {item[0], "all"}]
             embedded = 0
             remaining = 0
+            start_ready = baseline_ready()
+            write_ready(start_ready)
             for target_name, embedder in selected:
-                target_summary = embedder(
-                    connection,
-                    provider,
-                    limit=args.limit,
-                    batch_size=args.batch_size,
-                    delay_seconds=args.delay,
-                    max_retries=args.max_retries,
-                    retry_backoff_seconds=args.retry_backoff,
-                )
-                embedded += target_summary.embedded
-                remaining += target_summary.remaining
+                after_id = None
+                cycled = False
+                while True:
+                    wait_if_embeddings_paused()
+                    target_summary = embedder(
+                        connection,
+                        provider,
+                        limit=args.limit,
+                        batch_size=args.batch_size,
+                        delay_seconds=args.delay,
+                        max_retries=args.max_retries,
+                        retry_backoff_seconds=args.retry_backoff,
+                        count_remaining=not args.until_empty,
+                        after_id=after_id,
+                        shard_index=args.shard_index,
+                        shard_count=args.shard_count,
+                        jobs=args.jobs,
+                    )
+                    embedded += target_summary.embedded
+                    remaining = target_summary.remaining
+                    write_ready(start_ready + embedded)
+                    logger.info(
+                        "Embedding turu | hedef=%s | tur_yazılan=%s | toplam=%s | kalan=%s | after=%s",
+                        target_name,
+                        target_summary.embedded,
+                        embedded,
+                        remaining,
+                        target_summary.last_id,
+                    )
+                    if not args.until_empty:
+                        break
+                    if target_summary.embedded == 0:
+                        if after_id is not None and not cycled:
+                            after_id = None
+                            cycled = True
+                            continue
+                        break
+                    after_id = target_summary.last_id
+                    cycled = False
                 logger.info(
                     "Embedding hedefi bitti | hedef=%s | yazılan=%s | kalan=%s",
                     target_name,
-                    target_summary.embedded,
-                    target_summary.remaining,
+                    embedded,
+                    remaining,
                 )
     except EmbeddingProviderError as exc:
         logger.error("Embedding aktarımı durdu: %s", exc)
@@ -424,6 +458,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     embed.add_argument("--max-retries", type=int, default=4)
     embed.add_argument("--retry-backoff", type=float, default=15)
+    embed.add_argument(
+        "--until-empty",
+        action="store_true",
+        help="Bekleyen parça kalmayana kadar aynı bağlantıda tur atar; 21M satırda count(*) yapmaz",
+    )
+    embed.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="Aynı turda paralel Ollama istek sayısı",
+    )
+    embed.add_argument("--shard-index", type=int, default=0)
+    embed.add_argument("--shard-count", type=int, default=1)
     embed.set_defaults(handler=_run_embed)
 
     def _run_worker(ns: argparse.Namespace) -> int:

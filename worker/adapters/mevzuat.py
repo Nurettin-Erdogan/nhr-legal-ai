@@ -278,6 +278,10 @@ class MevzuatSourceAdapter:
         law_name = str(document.get("mevzuatAdi") or "").strip()
         mevzuat_id = str(document.get("mevzuatId") or "").strip()
         try:
+            # Madde ağacı isteği de aynı gecikmeyle: kayıtlı kanunlar taranırken bu istek hiç
+            # beklemeden gidiyor, Bedesten ~30 istekte 429 veriyordu.
+            if settings.mevzuat_delay_seconds:
+                sleep(settings.mevzuat_delay_seconds)
             tree = client.fetch_article_tree(mevzuat_id)
         except MevzuatPortalError as exc:
             if not is_missing_article_tree_error(str(exc)):

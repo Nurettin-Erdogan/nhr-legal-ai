@@ -3,7 +3,7 @@
 #  - Yargitay/Danistay bosluk kampanyalari (backfill_campaign.py): olurse yeniden baslatir;
 #    3 ust uste CAPTCHA ile durursa 20 dk sonra; "KAMPANYA TAMAM" ise siradaki asamaya gecer.
 #  - Ollama (11434): yanit vermezse paralel modda yeniden baslatir.
-#  - Iki kampanya da tum asamalari bitirince PAUSE_VERIFY ve PAUSE_EMBED silinir (nobetci
+#  - Iki kampanya da tum asamalari bitirince PAUSE_VERIFY ve PAUSE_EMBED_ARM silinir (nobetci
 #    dogrulayicilari ve embedding kolunu baslatir).
 # Yalniz baslatma/durdurma yapar; veri silmez, commit/push yapmaz, CAPTCHA/429 asmaz.
 # Durdurma: data\campaign\GUARDIAN_STOP dosyasini olustur. Log: data\logs\guardian.log
@@ -45,6 +45,9 @@ if (Test-Path $statePath) {
 }
 function Save-State { ($state | ConvertTo-Json -Depth 4) | Set-Content -Path $statePath -Encoding utf8 }
 
+# Karar başına bekleme (sn): 429 döngüsü sıklaşırsa yavaş ama sürekli gitmek daha çok karar getirebilir.
+# 2026-09-22: 7.5->6.0 denendi, 5 dk icinde CAPTCHA (900sn bekleme) tetiklendi, net hiz dustu (450->153/sa); 7.5'e geri alindi.
+$delays = @{ yargitay = '7.5'; danistay = '5.5' }
 $nextStart = @{}
 $ollamaFails = 0
 Write-Log "bekci basladi (PID $PID); asama durumu yargitay=$($state.yargitay) danistay=$($state.danistay)"
@@ -76,16 +79,16 @@ while (-not (Test-Path $stopFile)) {
       $env:PYTHONIOENCODING = 'utf-8'; $env:INGEST_SEEDS_AS_KNOWN = '1'
       $from = $phases[$src][$state[$src]]
       Start-Process -FilePath $py -WindowStyle Hidden -WorkingDirectory $root `
-        -ArgumentList @('-u','scripts\backfill_campaign.py','--source',$src,'--from',$from,'--newest-first','--delay','5.5','--cooldown','90','--pause','3','--max-records','300') `
+        -ArgumentList @('-u','scripts\backfill_campaign.py','--source',$src,'--from',$from,'--newest-first','--delay',$delays[$src],'--cooldown','90','--pause','3','--max-records','300') `
         -RedirectStandardOutput $out -RedirectStandardError "$logDir\gap2-$src.err.log"
       $env:INGEST_SEEDS_AS_KNOWN = $null
       $nextStart[$src] = $now.AddSeconds(120)
       Write-Log "$src kampanyasi baslatildi (from=$from, asama $($state[$src]))"
     }
 
-    # Kampanyalar bitmeden PAUSE_VERIFY / PAUSE_EMBED kaybolursa geri koy (biri silerse sira bozulmasin)
+    # Kampanyalar bitmeden PAUSE_VERIFY / PAUSE_EMBED_ARM kaybolursa geri koy (biri silerse sira bozulmasin)
     if (-not $state.verifyOpened) {
-      foreach ($f in 'PAUSE_VERIFY','PAUSE_EMBED') {
+      foreach ($f in 'PAUSE_VERIFY','PAUSE_EMBED_ARM') {
         if (-not (Test-Path "$stateDir\$f")) {
           New-Item -ItemType File -Path "$stateDir\$f" -Force | Out-Null
           Write-Log "ALERT $f silinmisti, geri konuldu (kampanyalar suruyor)"
@@ -111,9 +114,9 @@ while (-not (Test-Path $stopFile)) {
 
     # Iki kampanya da bitti: dogrulama + embedding'i ac
     if ($state.finished['yargitay'] -and $state.finished['danistay'] -and -not $state.verifyOpened) {
-      Remove-Item "$stateDir\PAUSE_VERIFY","$stateDir\PAUSE_EMBED" -ErrorAction SilentlyContinue
+      Remove-Item "$stateDir\PAUSE_VERIFY","$stateDir\PAUSE_EMBED_ARM" -ErrorAction SilentlyContinue
       $state.verifyOpened = $true; Save-State
-      Write-Log "ALERT dis veri cekme kampanyalari bitti; PAUSE_VERIFY ve PAUSE_EMBED kaldirildi (dogrulama + embedding basliyor)"
+      Write-Log "ALERT dis veri cekme kampanyalari bitti; PAUSE_VERIFY ve PAUSE_EMBED_ARM kaldirildi (dogrulama + embedding basliyor)"
     }
   } catch {
     Write-Log "hata: $($_.Exception.Message)"

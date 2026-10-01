@@ -19,7 +19,7 @@ def tr_casefold(text: str) -> str:
 
 def normalize_text(text: str) -> str:
     """Satır sonlarını ve boşlukları tekilleştirir."""
-    unified = text.replace("\r\n", "\n").replace("\r", "\n")
+    unified = text.replace("\x00", "").replace("\r\n", "\n").replace("\r", "\n")
     collapsed = _INLINE_WHITESPACE.sub(" ", unified)
     stripped = "\n".join(line.strip() for line in collapsed.split("\n"))
     return _EXCESS_BLANK_LINES.sub("\n\n", stripped).strip()

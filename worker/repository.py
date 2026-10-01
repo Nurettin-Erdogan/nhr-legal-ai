@@ -245,6 +245,27 @@ class SyncRepository:
         content_hash: str | None = None,
     ) -> None:
         with self.connection.cursor() as cursor:
+            if external_id:
+                # Rescans revisit the same unavailable records every cycle.
+                cursor.execute(
+                    """
+                    UPDATE legal_source_quarantine
+                    SET reason = %s, raw_payload = %s, content_hash = %s,
+                        quarantined_at = NOW()
+                    WHERE source_adapter = %s AND external_id = %s
+                      AND reason_code = %s AND resolved_at IS NULL
+                    """,
+                    (
+                        reason,
+                        Jsonb(raw_payload),
+                        content_hash,
+                        source_name,
+                        external_id,
+                        reason_code,
+                    ),
+                )
+                if cursor.rowcount:
+                    return
             cursor.execute(
                 """
                 INSERT INTO legal_source_quarantine (

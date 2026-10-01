@@ -49,6 +49,12 @@ SOURCES = {
         "method": "danistay_public_json_http",
         "canonical": "Danıştay Karar Arama",
     },
+    # UYAP Emsal (istinaf / ilk derece): Yargıtay ile aynı API ailesi, ayrı sunucu (kendi hız sınırı).
+    "emsal": {
+        "prefix": "emsal:",
+        "method": "uyap_emsal_public_json_http",
+        "canonical": "UYAP Emsal Karar Arama",
+    },
 }
 
 _SELECT_BATCH = """
@@ -129,9 +135,28 @@ def _handle_stop(signum: int, _frame: object) -> None:
     print(f"durdurma sinyali ({signum}); mevcut karardan sonra çıkılıyor", flush=True)
 
 
+_BEDESTEN = None
+
+
 def _fetch_official_text(source: str, client, document_id: str) -> str:
     from ingestion.text import html_to_text, normalize_text
 
+    if source in ("yargitay", "danistay"):
+        # Adalet Bakanlığı Bedesten: CAPTCHA'sız, portalla aynı kimlik ve metin. Hız sınırında (429)
+        # istisna yukarı fırlatılır ve döngünün kendi bekleme mantığı devreye girer; başka hatada portala düşülür.
+        global _BEDESTEN
+        from ingestion.bedesten_emsal import BedestenClient, BedestenError, BedestenRateLimited
+
+        if _BEDESTEN is None:
+            _BEDESTEN = BedestenClient(timeout=20.0)
+        try:
+            text = normalize_text(html_to_text(_BEDESTEN.content_html(document_id)))
+            if text:
+                return text
+        except BedestenRateLimited:
+            raise
+        except BedestenError:
+            pass
     html = client.fetch_document_html(document_id)
     if source == "danistay":
         from ingestion.danistay.scraper import extract_decision_text
@@ -150,6 +175,8 @@ def main() -> int:
     parser.add_argument("--captcha-wait", type=float, default=900.0)
     parser.add_argument("--batch", type=int, default=50)
     parser.add_argument("--max-docs", type=int, default=0, help="0 = sınırsız")
+    parser.add_argument("--queue-only", action="store_true",
+                        help="Yalnız atıf kuyruğunu doğrula (tarih taraması yok); kuyruk boşsa 5 dk bekler")
     parser.add_argument("--dry-run", action="store_true", help="Yazma; yalnız eşleşme oranını göster")
     parser.add_argument("--restart", action="store_true", help="İmleci sıfırla (en yeni tarihten başla)")
     args = parser.parse_args()
@@ -163,6 +190,15 @@ def main() -> int:
         from ingestion.yargitay.portal import YargitayPortalClient, document_url
 
         client = YargitayPortalClient(timeout_seconds=30, max_retries=2)
+    elif args.source == "emsal":
+        from ingestion.yargitay.portal import YargitayPortalClient
+        from ingestion.yargitay.portal import document_url as _document_url
+
+        emsal_base = "https://emsal.uyap.gov.tr/"
+        client = YargitayPortalClient(base_url=emsal_base, timeout_seconds=30, max_retries=2)
+
+        def document_url(document_id: str) -> str:
+            return _document_url(document_id, base_url=emsal_base)
     else:
         from ingestion.danistay.portal import DanistayPortalClient, document_url
 
@@ -204,6 +240,9 @@ def main() -> int:
                 _SELECT_QUEUE, {"prefix": cfg["prefix"] + "%", "batch": args.batch}
             ).fetchall()
             from_queue = bool(rows)
+            if args.queue_only and not from_queue:
+                time.sleep(300)
+                continue
             if from_queue:
                 print(f"atıf kuyruğundan {len(rows)} kayıt öncelikli işleniyor", flush=True)
             else:
@@ -349,5 +388,27 @@ def main() -> int:
     return 0
 
 
+def _run_forever() -> int:
+    """Beklenmeyen hata (veritabanı zaman aşımı, bağlantı kopması) doğrulayıcıyı öldürmesin: nedeni kalıcı
+    dosyaya yazılır, kısa beklemeden sonra yeniden bağlanıp imleçten devam edilir. CAPTCHA'da durma (dönüş kodu)
+    ve normal bitiş bu döngüden geçmez."""
+    import traceback
+
+    source = sys.argv[sys.argv.index("--source") + 1] if "--source" in sys.argv else "genel"
+    crash_log = ROOT / "data" / "logs" / f"verify-crash-{source}.log"
+    while True:
+        try:
+            return main()
+        except (SystemExit, KeyboardInterrupt):
+            raise
+        except Exception:  # noqa: BLE001
+            with crash_log.open("a", encoding="utf-8") as handle:
+                handle.write(f"--- {datetime.now().isoformat(timespec='seconds')}\n{traceback.format_exc()}\n")
+            print(f"{time.strftime('%H:%M:%S')} hata (crash logu yazıldı); 30 sn sonra yeniden bağlanılıyor", flush=True)
+            if STOP:
+                return 1
+            time.sleep(30)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(_run_forever())

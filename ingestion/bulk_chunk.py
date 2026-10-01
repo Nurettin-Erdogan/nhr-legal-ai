@@ -37,6 +37,41 @@ ORDER BY ls.id
 LIMIT %s
 """
 
+_FETCH_BY_EXTERNAL_SQL = """
+SELECT ls.id, ls.raw_text, ls.external_id
+FROM legal_sources ls
+WHERE ls.source_type = 'court_decision'
+  AND ls.external_id = ANY(%s)
+  AND ls.deleted_at IS NULL
+  AND ls.is_current
+  AND NOT EXISTS (
+    SELECT 1 FROM legal_chunks chunk WHERE chunk.legal_source_id = ls.id
+  )
+"""
+
+
+def chunk_sources_by_external_ids(connection, external_ids: list[str]) -> int:
+    """Yeni aktarılan kayıtları kimlikle parçalar (tam tablo taraması yok). Yazılan parça sayısı."""
+    ids = [value for value in external_ids if value]
+    if not ids:
+        return 0
+    rows = connection.execute(_FETCH_BY_EXTERNAL_SQL, (ids,)).fetchall()
+    outgoing: list[tuple[Any, ...]] = []
+    for row in rows:
+        source_id = row["id"] if isinstance(row, dict) else row[0]
+        raw_text = row["raw_text"] if isinstance(row, dict) else row[1]
+        external_id = row["external_id"] if isinstance(row, dict) else row[2]
+        outgoing.extend(chunk_rows_for_source(str(source_id), raw_text or "", external_id))
+    if outgoing:
+        with connection.cursor() as cursor:
+            with cursor.copy(_COPY_SQL) as copy:
+                for item in outgoing:
+                    metadata = item[-1]
+                    payload = metadata.obj if hasattr(metadata, "obj") else metadata
+                    copy.write_row(item[:-1] + (json.dumps(payload, ensure_ascii=False),))
+    return len(outgoing)
+
+
 def chunk_rows_for_source(
     legal_source_id: str,
     raw_text: str,

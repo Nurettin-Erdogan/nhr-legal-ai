@@ -118,6 +118,13 @@ class AymDecisionRow:
         return decision_url(self.official_id, karar_tipi=self.decision_type or "BireyselBasvuru")
 
 
+def preferred_full_text_files(files: tuple[AymDecisionFile, ...]) -> tuple[AymDecisionFile, ...]:
+    """Norm denetimi listelerinde künyesiz HTML parçası UDF'den önce gelebiliyor."""
+    udf = tuple(item for item in files if item.filename.lower().endswith(".udf"))
+    other = tuple(item for item in files if not item.filename.lower().endswith(".udf"))
+    return udf + other
+
+
 @dataclass(frozen=True, slots=True)
 class AymDecisionFile:
     file_id: str
@@ -309,7 +316,7 @@ class AymPortalClient:
                 continue
         if not files:
             raise AymFullTextUnavailable("AYM kararı için public tam metin dosyası bulunamadı")
-        return tuple(files)
+        return preferred_full_text_files(tuple(files))
 
     def download_udf(self, decision_file: AymDecisionFile) -> tuple[bytes, str]:
         path = (

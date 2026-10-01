@@ -11,6 +11,7 @@ from ingestion.aym.portal import (
     AymFullTextUnavailable,
     AymPortalClient,
     AymPortalError,
+    preferred_full_text_files,
 )
 from ingestion.corpus_bounds import AYM_DECISION_TYPES
 from ingestion.raw_capture import save_raw_response
@@ -223,26 +224,48 @@ class AymSourceAdapter:
                         yield "unchanged", skipped_existing(extra, external_id)
                         row_offset = row_index + 1
                         continue
-                    files = client.list_decision_files(row)
-                    if settings.aym_delay_seconds:
-                        sleep(settings.aym_delay_seconds)
-                    raw, download_url = client.download_udf(files[0])
-                    extra["requests_made"] = 3
-                    save_raw_response(
-                        root=settings.snapshot_dir,
-                        source="aym",
-                        record_id=row.official_id,
-                        url=download_url,
-                        method="GET",
-                        body=raw,
-                        request={"kararTipi": karar_tipi, "official_id": row.official_id},
-                    )
-                    decision = decision_from_file(
-                        row,
-                        raw,
-                        download_url=download_url,
-                        filename=files[0].filename,
-                    )
+                    files = preferred_full_text_files(client.list_decision_files(row))
+                    decision = None
+                    parse_error: Exception | None = None
+                    requests_made = 1
+                    for decision_file in files:
+                        if settings.aym_delay_seconds:
+                            sleep(settings.aym_delay_seconds)
+                        raw, download_url = client.download_udf(decision_file)
+                        requests_made += 2
+                        extra["requests_made"] = requests_made
+                        save_raw_response(
+                            root=settings.snapshot_dir,
+                            source="aym",
+                            record_id=row.official_id,
+                            url=download_url,
+                            method="GET",
+                            body=raw,
+                            request={
+                                "kararTipi": karar_tipi,
+                                "official_id": row.official_id,
+                                "filename": decision_file.filename,
+                            },
+                        )
+                        try:
+                            decision = decision_from_file(
+                                row,
+                                raw,
+                                download_url=download_url,
+                                filename=decision_file.filename,
+                            )
+                            parse_error = None
+                            break
+                        except AymPortalError as exc:
+                            if should_retry_same_record(exc):
+                                raise
+                            parse_error = exc
+                    if decision is None:
+                        if parse_error is not None:
+                            raise parse_error
+                        raise AymFullTextUnavailable(
+                            "AYM kararı için public tam metin dosyası bulunamadı"
+                        )
                     missing = self.validate(decision)
                     if missing:
                         quarantined += 1

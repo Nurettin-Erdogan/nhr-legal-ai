@@ -28,6 +28,7 @@ $others = @(Get-CimInstance Win32_Process -Filter "Name like 'powershell%' or Na
 if ($others.Count -gt 0) { Write-Log "baska suprevizor var (PID $($others[0].ProcessId)); cikiliyor"; exit 0 }
 
 $apiFails = 0
+$ollamaFails = 0
 $apiLastRestart = (Get-Date).AddMinutes(-10)
 $chunkRestarts = 0
 $maintStarted = $false
@@ -58,6 +59,18 @@ while (-not (Test-Path $stopFile)) {
     if ($running -ne 'true') {
       Write-Log "ALERT DB kabi calismiyor, baslatiliyor"
       & docker start nhr-legal-ai-db 2>&1 | Out-Null
+    }
+
+    # 3b) Ollama (11434): embedding isciler bagli olmadan sessizce bos doner; guardian emekli oldugu icin burada canli tutulur
+    $ollamaOk = $false
+    try { $r = Invoke-WebRequest 'http://127.0.0.1:11434/api/version' -UseBasicParsing -TimeoutSec 8; $ollamaOk = ($r.StatusCode -eq 200) } catch { $ollamaOk = $false }
+    if ($ollamaOk) { $ollamaFails = 0 } else { $ollamaFails++ }
+    if ($ollamaFails -ge 2) {
+      $env:OLLAMA_NUM_PARALLEL = '4'; $env:OLLAMA_MAX_LOADED_MODELS = '2'
+      Start-Process -FilePath "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe" -ArgumentList 'serve' -WindowStyle Hidden `
+        -RedirectStandardOutput "$logDir\ollama-serve.log" -RedirectStandardError "$logDir\ollama-serve.err.log"
+      Write-Log "ALERT Ollama yanit vermiyordu, yeniden baslatildi"
+      $ollamaFails = 0
     }
 
     # 4) API (8766): 3 ust uste basarisizlik + 5 dk sogumadan sonra yeniden baslat

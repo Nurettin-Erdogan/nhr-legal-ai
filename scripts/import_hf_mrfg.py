@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 load_dotenv(ROOT / ".env")
 
+from ingestion.bulk_chunk import chunk_sources_by_external_ids  # noqa: E402
 from ingestion.bulk_copy import insert_pending_seed, load_bulk_checkpoint, save_bulk_checkpoint  # noqa: E402
 from ingestion.hf_mrfg import CANONICAL_SOURCE_NAME, HF_DATASET, IMPORT_TYPE, SOURCES, prepare_mrfg_row  # noqa: E402
 
@@ -57,6 +58,7 @@ def download(name: str) -> Path:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", choices=sorted(SOURCES), required=True)
+    ap.add_argument("--ignore-checkpoint", action="store_true", help="Bitmiş dosyaları da yeniden işle (mevcut kayıtları parçalamak için)")
     ap.add_argument("--limit-rows", type=int, default=0, help="Deneme: toplam bu kadar satırda dur")
     a = ap.parse_args()
     url = os.getenv("DATABASE_ADMIN_URL")
@@ -70,7 +72,7 @@ def main() -> int:
         connection.execute("SET statement_timeout = 0")
         connection.execute("SET synchronous_commit = off")
         state = load_bulk_checkpoint(connection, checkpoint_name)
-        files_done = set(state.get("files_done") or [])
+        files_done = set() if a.ignore_checkpoint else set(state.get("files_done") or [])
         for k in totals:
             totals[k] = int(state.get(k) or 0)
         seen_rows = 0
@@ -100,6 +102,9 @@ def main() -> int:
                     )
                     for k in ("inserted", "existing", "official_ready", "duplicate_batch", "quarantine", "copied"):
                         totals[k] += getattr(stats, k)
+                    totals["chunks"] = totals.get("chunks", 0) + chunk_sources_by_external_ids(
+                        connection, [row.external_id for row in chunk if not row.quarantine_code]
+                    )
                     connection.commit()
                     chunk = []
                 print(f"  satır={seen_rows:,} eklenen={totals['inserted']:,} | {(time.time() - t0) / 60:.1f} dk", flush=True)
