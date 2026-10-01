@@ -219,7 +219,10 @@ class MbsClient:
         ]
         # Aynı belgenin hem .doc hem .docx sürümü varsa tek bir belge sayılır (ilki alınır).
         doc_links = list(dict.fromkeys(doc_links))
-        if len(pdf_links) != 1 or not 1 <= len(doc_links) <= 2:
+        # Kurum tebliğleri gibi bazı türlerde MBS yalnız Word kopyası sunar (PDF yoktur; ölçüldü:
+        # 2026-10-01, tür 9 tebliğler). Kimlik başlık + tarihle doğrulandığından PDF zorunlu değil;
+        # ama birden fazla PDF belirsizlik demektir ve reddedilir.
+        if len(pdf_links) > 1 or not 1 <= len(doc_links) <= 2:
             raise MbsError("MBS detay sayfasında tekil resmî PDF/DOC bağlantısı bulunamadı")
         return MbsDocument(
             law_no=law_no.strip(),
@@ -230,7 +233,7 @@ class MbsClient:
             official_gazette_date=_parse_date(item.get("resmiGazeteTarihi")),
             official_gazette_no=str(item.get("resmiGazeteSayisi") or "").strip() or None,
             detail_url=detail_url,
-            pdf_url=pdf_links[0],
+            pdf_url=pdf_links[0] if pdf_links else None,
             doc_url=doc_links[0],
         )
 

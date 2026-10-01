@@ -151,3 +151,36 @@ def test_same_number_in_other_legislation_type_resolves_to_law():
 
     assert document.law_name == "İŞ KANUNU"
     assert document.legislation_type == 1
+
+
+def _detail_with(*links: str) -> bytes:
+    anchors = "".join(f'<a href="https://www.mevzuat.gov.tr/MevzuatMetin/{name}">x</a>' for name in links)
+    return f"<html><body>{anchors}</body></html>".encode()
+
+
+def test_doc_only_detail_page_is_accepted_without_pdf():
+    # Kurum tebliğlerinde MBS yalnız Word kopyası sunar; kimlik başlık + tarihle doğrulanır.
+    opener = _Opener(
+        [json.dumps(_search_payload(), ensure_ascii=False).encode(),
+         _detail_with("9.5.4857.doc")]
+    )
+    document = MbsClient(opener=opener, timeout_seconds=5).search_law("4857")
+    assert document.pdf_url is None
+    assert document.doc_url.endswith("9.5.4857.doc")
+
+
+def test_page_without_any_official_document_is_still_rejected():
+    opener = _Opener(
+        [json.dumps(_search_payload(), ensure_ascii=False).encode(), _detail_with()]
+    )
+    with pytest.raises(MbsError, match="bağlantısı bulunamadı"):
+        MbsClient(opener=opener, timeout_seconds=5).search_law("4857")
+
+
+def test_multiple_pdfs_are_ambiguous_and_rejected():
+    opener = _Opener(
+        [json.dumps(_search_payload(), ensure_ascii=False).encode(),
+         _detail_with("1.5.4857.doc", "1.5.4857.pdf", "1.5.9999.pdf")]
+    )
+    with pytest.raises(MbsError, match="bağlantısı bulunamadı"):
+        MbsClient(opener=opener, timeout_seconds=5).search_law("4857")
