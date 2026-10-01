@@ -17,7 +17,7 @@ görünecek şekilde (RLS) yazılır. İndeksleme ve belgeden soru-cevap için b
 İndirilen zip'ler (`web/public/*.zip`) klasörlerle birebir aynı tutulmalıdır; eklenti değişince zip
 yeniden oluşturulur.
 
-## Gizlilik varsayılanları (Avukat Portalı eklentisi, v2.8.2)
+## Gizlilik varsayılanları (Avukat Portalı eklentisi, v2.9.0)
 
 - **Otomatik aktarım kapalıdır.** Açılırsa (ayar penceresinde, bilgilendirme onayıyla) UYAP'ta bir
   dosya görüntülenince evraklar ve künye (mahkeme, esas no, **taraf adı**) kendiliğinden gönderilir.
@@ -100,6 +100,13 @@ açılınca yüklenir; "Ön İzlemeyi Aktifleştir" düğmesi var). Eklentinin s
 bulamaz. v2.8.2 tanı çıktısı artık açık pencerenin yapı iskeletini (etiket, sınıf, öznitelik adları, ağaç
 düğümü örnekleri, düğme/sekme etiketleri) verir; metin, ad ve değer içermez (testle doğrulanır). Ağaç yapraklarını
 açıp indirme yolunu bulmak için bu çıktı gerekir.
+
+**Tanı dosyası ve tıklama kaydı (v2.9.0):** pano yerine dosya kullanılır. "Sayfa tanısını kopyala" aynı çıktıyı
+`İndirilenler\NHR-Hukuk-UYAP\tani-<zaman>.json` olarak da yazar. "Tıklama kaydını başlat (60 sn)" süre boyunca
+tıklamaları, sayfanın yaptığı ağ isteklerini (yalnız yol biçimi), eklenen iframe/dialog öğelerini, indirmeleri ve
+açılan yeni sekmeleri kaydeder ve `tani-kayit-<zaman>.json` yazar. Bu, "evrak yaprağına tıklayınca ne oluyor?"
+sorusunu kullanıcıya tarif ettirmeden yanıtlar. Hiçbir metin, ad, öznitelik değeri, rakam ya da sorgu değeri
+kaydedilmez (tarayıcı testiyle doğrulanır). Eklentiye yeni izin eklenmedi.
 
 Yine de gerçek evrak listesi sayfasında seçicilerin tutup tutmadığı doğrulanmadı: "Sayfa tanısını kopyala"
 çıktısı bekleniyor. Sunucuda içerik özetiyle yinelenen denetimi henüz yok.
