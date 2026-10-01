@@ -86,6 +86,14 @@ PAGES = {
         <a href="/files/kullanim-kilavuzu.pdf">Kullanım kılavuzu</a>
         <a href="https://cdn.e-devlet.gov.tr/downloads/portal/IkiAsamaliGirisIslemleri_Web_Kilavuz.pdf">Kılavuz</a></div>
       <footer><a href="/dokumanlar/kullanim-sozlesmesi.pdf">Sözleşme</a></footer></body></html>""",
+    # Gerçek Vatandaş Portalı dosya penceresi: evrak listesi tablo değil, klasör AĞACI (yapraklar bağlantı değil).
+    "/vatandas/evrak-agaci": """<html><body><h2>Dosya Sorgulama</h2>
+      <div role="dialog" class="modal in" style="display:block"><h4 class="modal-title">2024/2000 - Test Mahkemesi</h4>
+        <ul class="nav nav-tabs"><li><a>Taraf Bilgileri</a></li><li class="active"><a>Evrak</a></li></ul>
+        <button type="button">Ön İzlemeyi Aktifleştir</button>
+        <div id="tree"><ul><li class="jstree-node"><a class="jstree-anchor" href="#" onclick="openNode('1234567')">Gizli Klasör Ahmet</a>
+          <ul><li class="jstree-node jstree-leaf"><a class="jstree-anchor" href="#" data-evrak-id="99887">SIRRI-EVRAK-ADI Mehmet</a></li></ul></li></ul></div>
+      </div></body></html>""",
     # Gerçekçi evrak listesi.
     "/dosya/evraklar": f"<html><body><h2>{CASE_TITLE}</h2>{_EVRAK_ROWS}</body></html>",
     # Dosya penceresi: Evrak sekmesine basılınca liste AJAX ile gelir.
@@ -549,3 +557,29 @@ def test_documents_are_never_fetched_from_outside_uyap(lab):
     )
     assert result["ok"] is False and "UYAP dışı" in result["error"]
     assert lab.uploads == []
+
+
+def test_diagnosis_describes_a_tree_based_evrak_list_without_leaking_its_content(lab):
+    """Gerçek Vatandaş Portalı'nda evrak listesi klasör ağacı: tanı bu yapıyı ANLATIR, metni/adı sızdırmaz."""
+    lab.configure()
+    page = lab.open("/vatandas/evrak-agaci")
+    report = lab.worker.evaluate(
+        """async () => {
+            const [tab] = await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' });
+            const frames = await chrome.scripting.executeScript({
+                target: { tabId: tab.id, allFrames: true },
+                func: () => (typeof window.__jurisaiDiagnose === 'function' ? window.__jurisaiDiagnose() : null),
+            });
+            return frames.map((frame) => frame.result).filter(Boolean)[0];
+        }"""
+    )
+    assert report["scope"] == "açık pencere"
+    assert report["tree"]["count"] >= 2 and any(item["isLeaf"] for item in report["tree"]["sample"])
+    assert any(item["onclickFunction"].startswith("openNode(") for item in report["tree"]["sample"])
+    assert "Ön İzlemeyi Aktifleştir" in report["buttonLabels"]
+    assert "Evrak" in report["tabLabels"]
+    assert any("jstree-anchor" in item["element"] for item in report["structure"])
+    serialized = json.dumps(report, ensure_ascii=False)
+    for leaked in ("SIRRI-EVRAK-ADI", "Gizli Klasör", "Ahmet", "Mehmet", "1234567", "99887", "Test Mahkemesi"):
+        assert leaked not in serialized, leaked
+    page.close()

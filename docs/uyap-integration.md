@@ -17,7 +17,7 @@ görünecek şekilde (RLS) yazılır. İndeksleme ve belgeden soru-cevap için b
 İndirilen zip'ler (`web/public/*.zip`) klasörlerle birebir aynı tutulmalıdır; eklenti değişince zip
 yeniden oluşturulur.
 
-## Gizlilik varsayılanları (Avukat Portalı eklentisi, v2.8.1)
+## Gizlilik varsayılanları (Avukat Portalı eklentisi, v2.8.2)
 
 - **Otomatik aktarım kapalıdır.** Açılırsa (ayar penceresinde, bilgilendirme onayıyla) UYAP'ta bir
   dosya görüntülenince evraklar ve künye (mahkeme, esas no, **taraf adı**) kendiliğinden gönderilir.
@@ -93,6 +93,13 @@ Kişisel belge gitmedi, ama dava adları ve sahte kayıtlar geldi. Düzeltmeler:
 - Otomatik aktarımda aynı içerik (SHA-256) oturumda bir kez gönderilir; elle gönderim engellenmez.
 - Dosya künyesi artık yalnız esas numarası belli ve indirilmeye çalışılmış evrakı olan dosyada gönderilir.
 - Regresyon testleri: gerçek ekranın benzeri sahte sayfa (`/vatandas/dosya-sorgulama`), eski sürümde başarısız.
+
+**Bulunan yapı:** Vatandaş Portalı'nda dosya penceresinin "Evrak" sekmesi tablo değil **klasör ağacıdır**
+("Dosyaya Eklenen Son 20 Evrak", "Tüm Evraklar → <esas no> (Ceza Dava Dosyası)"; klasörler kapalıdır, evraklar
+açılınca yüklenir; "Ön İzlemeyi Aktifleştir" düğmesi var). Eklentinin satır/bağlantı varsayımı bu yapıda evrak
+bulamaz. v2.8.2 tanı çıktısı artık açık pencerenin yapı iskeletini (etiket, sınıf, öznitelik adları, ağaç
+düğümü örnekleri, düğme/sekme etiketleri) verir; metin, ad ve değer içermez (testle doğrulanır). Ağaç yapraklarını
+açıp indirme yolunu bulmak için bu çıktı gerekir.
 
 Yine de gerçek evrak listesi sayfasında seçicilerin tutup tutmadığı doğrulanmadı: "Sayfa tanısını kopyala"
 çıktısı bekleniyor. Sunucuda içerik özetiyle yinelenen denetimi henüz yok.

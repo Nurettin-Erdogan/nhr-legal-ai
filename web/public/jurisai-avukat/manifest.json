@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "NHR Hukuk - UYAP Avukat Portalı Aktarımı",
-  "version": "2.8.1",
+  "version": "2.8.2",
   "description": "UYAP Avukat Portalı'ndaki evrakları tek tıkla NHR Hukuk hesabınıza aktarır (UDF/PDF destekli). Otomatik aktarım varsayılan olarak kapalıdır.",
   "permissions": ["activeTab", "scripting", "downloads", "storage"],
   "host_permissions": [

@@ -587,7 +587,59 @@
       return "(çözümlenemedi)";
     }
   }
+  /* Yapı iskeleti: etiket + sınıf + öznitelik ADLARI ve sayıları. Metin ve öznitelik DEĞERİ yok. */
+  const maskClass = (value) => String(value).replace(/\d+/g, "#").slice(0, 40);
+  function structureSketch(root) {
+    const signatures = new Map();
+    let seen = 0;
+    for (const el of root.querySelectorAll("*")) {
+      if (++seen > 4000) break;
+      if (/^(script|style|svg|path|link|meta|noscript|br|hr)$/i.test(el.tagName)) continue;
+      const classes = [...el.classList].slice(0, 3).map(maskClass).join(".");
+      const attrs = [...el.attributes]
+        .map((attr) => attr.name)
+        .filter((name) => !["class", "style", "id"].includes(name))
+        .sort()
+        .slice(0, 6)
+        .join(",");
+      const key = `${el.tagName.toLowerCase()}${classes ? "." + classes : ""}${attrs ? `[${attrs}]` : ""}`;
+      signatures.set(key, (signatures.get(key) || 0) + 1);
+    }
+    return [...signatures]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 45)
+      .map(([element, count]) => ({ element, count }));
+  }
+  /* Klasör ağacı (jsTree vb.) düğümleri: evraklar bağlantı değil ağaç yaprağıysa seçiciler buna göre yazılır. */
+  function treeSketch(root) {
+    const nodes = [...root.querySelectorAll("li, a, [role='treeitem'], span, div")].filter(
+      (el) => /tree|node|leaf|folder|jstree|dtree|fancytree/i.test(el.className || "") || el.getAttribute("role") === "treeitem",
+    );
+    const sample = nodes.slice(0, 8).map((el) => {
+      const onclick = el.getAttribute("onclick") || "";
+      const href = el.getAttribute("href");
+      return {
+        tag: el.tagName.toLowerCase(),
+        classes: [...el.classList].slice(0, 4).map(maskClass),
+        attributeNames: [...el.attributes].map((attr) => attr.name).filter((n) => n !== "class").slice(0, 8),
+        onclickFunction: onclick ? onclick.replace(/\(.*$/s, "(…)").slice(0, 40) : "",
+        href: href === null ? "" : /^(#|javascript)/i.test(href) ? href.slice(0, 20) : urlShape(href),
+        hasChildList: !!el.querySelector("ul"),
+        isLeaf: !el.querySelector("ul, li"),
+      };
+    });
+    return { count: nodes.length, sample };
+  }
+  function activeRoot() {
+    const dialogs = [...document.querySelectorAll("[role='dialog'], .modal")].filter((el) => {
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    });
+    return dialogs[dialogs.length - 1] || null;
+  }
   function diagnose() {
+    const root = activeRoot();
+    const scope = root || document.body;
     const rows = [...document.querySelectorAll(ROW_SELECTOR)];
     const withUrls = rows.filter((row) => collectDocUrls(row).length);
     const shapes = new Map();
@@ -610,6 +662,25 @@
       buttonsInjected: document.querySelectorAll(`.${BTN_CLASS}`).length,
       toolbar: !!document.querySelector(".jurisai-toolbar"),
       docUrlShapes: [...shapes].map(([shape, count]) => ({ shape, count })).slice(0, 12),
+      scope: root ? "açık pencere" : "sayfa",
+      // Düğme etiketleri arayüz metnidir (kişisel veri değil); evrak/kişi adı taşıyan bağlantılar dahil değil.
+      buttonLabels: [
+        ...new Set(
+          [...scope.querySelectorAll("button, input[type='button'], a.btn")]
+            .map((el) => textOf(el) || el.value || "")
+            .filter((text) => text && text.length <= 40),
+        ),
+      ].slice(0, 20),
+      tabLabels: [
+        ...new Set(
+          [...scope.querySelectorAll("[role='tab'], .nav-tabs a, .nav-tabs li, ul.nav li")]
+            .map((el) => textOf(el))
+            .filter((text) => text && text.length <= 30),
+        ),
+      ].slice(0, 12),
+      iframes: [...scope.querySelectorAll("iframe")].slice(0, 5).map((el) => urlShape(el.getAttribute("src") || "about:blank")),
+      tree: treeSketch(scope),
+      structure: structureSketch(scope),
       autoSync,
     };
   }
