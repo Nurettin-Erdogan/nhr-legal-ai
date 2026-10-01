@@ -107,3 +107,39 @@ def test_prepare_row_omits_cluster_fields():
     assert row is not None
     assert "orig-e5_hdbscan_cluster_id" not in row.metadata
     assert row.metadata["cluster_ids_omitted"] is True
+
+
+def test_mrfg_extra_sources_are_imported_as_unverifiable_seeds():
+    from ingestion.hf_mrfg import prepare_mrfg_row
+
+    emsal = prepare_mrfg_row(
+        {
+            "source": "emsal",
+            "document_id": "E1",
+            "court": "İstanbul BAM 12. Hukuk Dairesi",
+            "esas_no": "2021/123",
+            "karar_no": "2022/456",
+            "karar_tarihi": "2022-05-03",
+            "text": "Bu bir karar metnidir. Davanın kabulüne karar verilmiştir.",
+            "masked_count": 0,
+        }
+    )
+    assert emsal is not None and emsal.quarantine_code is None
+    assert emsal.external_id == "emsal:E1"
+    assert emsal.court_name == "İstanbul BAM 12. Hukuk Dairesi"
+    assert emsal.metadata["official_verified"] is False and emsal.metadata["verifiable"] is False
+
+    norm = prepare_mrfg_row(
+        {
+            "source": "aym_norm",
+            "document_id": "N9",
+            "court": "Genel Kurul",
+            "esas_no": "2020/5",
+            "karar_no": "2021/9",
+            "karar_tarihi": "2021-03-04",
+            "text": "İptal davası karar metni. Anayasa Mahkemesi kararı.",
+            "masked_count": 0,
+        }
+    )
+    assert norm is not None and norm.court_name == "Anayasa Mahkemesi" and norm.chamber == "Norm Denetimi"
+    assert prepare_mrfg_row({"source": "emsal", "document_id": "E2", "masked_count": 3}) is None

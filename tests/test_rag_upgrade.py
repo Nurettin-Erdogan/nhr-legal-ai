@@ -65,7 +65,7 @@ def test_optional_search_timeout_keeps_verified_statute(monkeypatch):
                                          query_embedding=[0.1]*768, embedding_model='nomic-embed-text')
     assert result == [context]
     assert diagnostics['partial']
-    assert len(calls) == 3  # statute + ANN + independent lexical branch
+    assert len(calls) == 4  # statute + ANN + independent lexical branch + katmanlı yeniden deneme
 
 
 def test_all_timeout_is_failure_not_empty_corpus(monkeypatch):

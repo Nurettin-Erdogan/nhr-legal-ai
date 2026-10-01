@@ -83,14 +83,16 @@ def test_matching_statute_survives_independent_lexical_timeout(monkeypatch):
     context = court_decision_context(content='İtirazın iptali davası iki hafta içinde açılır.')
     def execute(connection, sql, params, **kwargs):
         calls.append((sql, params, kwargs))
-        if len(calls) == 2:
+        # Sözcük aramasının katmanlı yeniden denemesi de zaman aşımına uğrar (soğuk disk).
+        if len(calls) >= 2:
             raise psycopg.errors.QueryCanceled('optional intent lookup timed out')
         return [context]
     monkeypatch.setattr(retrieval, '_execute_retrieval', execute)
     result = retrieval.retrieve_contexts(object(), question='İtirazın iptali davası süresi nedir?', top_k=6)
     assert result == [context]  # successful primary retrieval survives
-    assert len(calls) == 2
+    assert len(calls) == 3  # ilişkili madde + sözcük + katmanlı yeniden deneme
     assert calls[1][2]['timeout'] == '8s'
+    assert '_tiered(' in calls[2][0]
     assert calls[0][2]['timeout'] == '3s'
     assert calls[0][1]['law_no'] == '2004'
     assert calls[0][1]['article_no'] == '67'

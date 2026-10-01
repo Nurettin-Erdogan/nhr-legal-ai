@@ -66,9 +66,96 @@ def test_ingest_stores_allowed_files_for_the_token_owner(monkeypatch):
         },
     )
 
-    assert response.json() == {"ok": True, "found": 2, "inserted": 1, "skipped": 1}
+    assert response.json() == {"ok": True, "found": 2, "inserted": 1, "duplicates": 0, "skipped": 1}
     assert stored[0]["owner_id"] == OWNER
     assert "/" not in stored[0]["file_name"] and stored[0]["file_name"].endswith(".pdf")
+
+
+def test_ingest_reports_duplicates_separately_from_rejected_files(monkeypatch):
+    client, _ = _client(monkeypatch, outcome=("duplicate", uuid4()))
+
+    response = client.post(
+        "/api/public/uyap-ingest",
+        json={
+            "token": TOKEN,
+            "files": [
+                {"name": "dilekce.pdf", "contentBase64": _b64(b"%PDF")},
+                {"name": "virus.exe", "contentBase64": _b64(b"MZ")},
+            ],
+        },
+    )
+
+    body = response.json()
+    assert body["duplicates"] == 1
+    assert body["inserted"] == 0
+    assert body["skipped"] == 2  # eski istemciler: yinelenen + geçersiz
+
+
+def test_ingest_body_is_capped_before_the_token_is_looked_up(monkeypatch):
+    client, stored = _client(monkeypatch)
+    looked_up: list[str] = []
+    monkeypatch.setattr(office_public, "_owner_for_token", lambda token: looked_up.append(token))
+    monkeypatch.setattr(office_public, "MAX_INGEST_REQUEST_BYTES", 1024)
+
+    response = client.post(
+        "/api/public/uyap-ingest",
+        json={"token": TOKEN, "files": [{"name": "a.pdf", "contentBase64": _b64(b"x" * 4096)}]},
+    )
+
+    assert response.status_code == 413
+    assert response.headers["access-control-allow-origin"] == "*"
+    assert not looked_up and not stored
+
+
+def test_ingest_rejects_malformed_json_without_a_token_lookup(monkeypatch):
+    client, stored = _client(monkeypatch)
+
+    response = client.post(
+        "/api/public/uyap-ingest", content=b"{not json", headers={"content-type": "application/json"}
+    )
+
+    assert response.status_code == 422
+    assert not stored
+
+
+def test_extension_connection_check_gets_400_with_a_file_message(monkeypatch):
+    """Eklentinin "Bağlantıyı dene" düğmesi: geçerli anahtar + dosyasız istek → 400 ve "dosya" mesajı."""
+    client, stored = _client(monkeypatch)
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+
+    empty_form = client.post("/api/public/v1/documents/upload", data={"evrakId": "1"}, headers=headers)
+    empty_multipart = client.post(
+        "/api/public/v1/documents/upload",
+        content=b"--nhrtest--\r\n",
+        headers={**headers, "content-type": "multipart/form-data; boundary=nhrtest"},
+    )
+    bad_token = client.post(
+        "/api/public/v1/documents/upload", data={"evrakId": "1"}, headers={"Authorization": "Bearer " + "z" * 32}
+    )
+
+    for response in (empty_form, empty_multipart):
+        assert response.status_code == 400
+        assert "dosya" in response.json()["error"].lower()
+    assert bad_token.status_code == 401
+    assert not stored
+
+
+def test_upload_checks_token_before_parsing_the_multipart_body(monkeypatch):
+    client, stored = _client(monkeypatch)
+    monkeypatch.setattr(office_public, "MAX_FILE_BYTES", 10)
+    monkeypatch.setattr(office_public, "MULTIPART_OVERHEAD_BYTES", 10)
+    big = {"file": ("evrak.pdf", b"x" * 5000, "application/pdf")}
+
+    no_token = client.post("/api/public/v1/documents/upload", files=big)
+    wrong = client.post(
+        "/api/public/v1/documents/upload", files=big, headers={"Authorization": "Bearer " + "z" * 32}
+    )
+    too_big = client.post(
+        "/api/public/v1/documents/upload", files=big, headers={"Authorization": f"Bearer {TOKEN}"}
+    )
+
+    assert (no_token.status_code, wrong.status_code, too_big.status_code) == (401, 401, 413)
+    assert not stored
 
 
 def test_upload_requires_bearer_token_and_known_extension(monkeypatch):

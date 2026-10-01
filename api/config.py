@@ -60,7 +60,9 @@ def _database_url() -> str:
 def get_settings() -> Settings:
     load_dotenv()
     file_values = dotenv_values(".env")
-    origins = os.getenv("CORS_ORIGINS", "http://localhost:3000")
+    origins = os.getenv(
+        "CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+    )
     ai_provider = os.getenv("AI_PROVIDER", "deepseek").strip().lower()
     return Settings(
         database_url=_database_url(),
@@ -78,9 +80,9 @@ def get_settings() -> Settings:
             1.0, min(float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180")), 600.0)
         ),
         ollama_max_output_tokens=max(
-            64, min(int(os.getenv("OLLAMA_MAX_OUTPUT_TOKENS", "768")), 4096)
+            64, min(int(os.getenv("OLLAMA_MAX_OUTPUT_TOKENS", "256")), 4096)
         ),
-        ollama_num_ctx=max(512, min(int(os.getenv("OLLAMA_NUM_CTX", "3072")), 8192)),
+        ollama_num_ctx=max(512, min(int(os.getenv("OLLAMA_NUM_CTX", "2048")), 8192)),
         ollama_keep_alive=os.getenv("OLLAMA_KEEP_ALIVE", "30m").strip() or "30m",
         rag_top_k=max(
             1, min(int(os.getenv("RAG_TOP_K", "6")), 12)

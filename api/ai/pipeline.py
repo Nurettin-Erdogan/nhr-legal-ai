@@ -14,19 +14,39 @@ import psycopg
 from fastapi import HTTPException
 from psycopg.errors import InsufficientPrivilege
 
-from api.ai.cache import answer_cache, answer_cache_key, source_fingerprint
+from api.audit import AI_ANSWER, AuditContext, record_event
+from api.ai.case_questions import is_case_file_question
+from api.ai.cache import (
+    answer_cache,
+    answer_cache_key,
+    history_fingerprint,
+    source_fingerprint,
+)
+from api.ai.conversation_history import (
+    ConversationNotFound,
+    load_conversation_context,
+    retrieval_question,
+)
 from api.ai.embeddings import EmbeddingProviderError, create_embedding_provider
+from api.embed_pause import pause_embeddings, resume_embeddings, unload_ollama_model
 from api.ai.history import record_exchange
+from api.document_indexing import case_document_coverage, sweep_unindexed
 from api.ai.live_verify import verify_third_party_contexts
 from api.ai.discovery import candidate_pool_size, select_answer_contexts, search_summary
 from api.ai.fast_statute import try_fast_statute
 from api.ai.trust import usable_as_evidence, verified_contexts
-from api.ai.on_demand_verify import explicit_statute_reference, verify_pending_statute
+from api.ai.turkish_text import restore_turkish
+from api.ai.on_demand_verify import (
+    explicit_statute_reference,
+    verify_pending_statute,
+    verify_relevant_pending_statute,
+)
 from api.ai.providers import AIProvider, AIProviderError, create_provider
-from api.ai.rag import RAGContext, generate_grounded_answer
+from api.ai.rag import HistoryTurn, RAGContext, generate_grounded_answer
 from api.ai.retrieval import retrieve_contexts, retrieve_document_contexts
 from api.ai.verification import (
     VerifiedAnswer,
+    has_insufficient_source_signal,
     is_insufficient_source_reply,
     verify_answer,
 )
@@ -39,6 +59,13 @@ logger = logging.getLogger(__name__)
 
 StageCallback = Callable[[dict[str, Any]], Coroutine[Any, Any, None] | None]
 _generation_lock = asyncio.Lock()
+_PROGRESS_HEARTBEAT_SECONDS = 8.0
+# Canlı portal doğrulaması LLM üretimiyle paralel çalışır. Önbellek isabetinde gizleyecek bir
+# LLM süresi olmadığından yalnız kısa beklenir; LLM sonrasında ise doğrulamanın kendi bütçesi
+# (`live_verify`) zaten sınırlı olduğundan bu değer yalnız emniyet payıdır.
+_CACHE_HIT_VERIFY_WAIT_SECONDS = 2.0
+_VERIFY_GRACE_SECONDS = 5.0
+_PRE_GENERATION_VERIFY_WAIT_SECONDS = 15.0
 
 
 @dataclass(slots=True)
@@ -129,6 +156,9 @@ def _response_from_verified(
         eval_count=None if timings is None else timings.eval_count,
         done_reason=None if timings is None else timings.done_reason,
         search_summary=None if timings is None else timings.extra.get('search_summary'),
+        document_scope=(
+            None if timings is None else (timings.extra.get('retrieval') or {}).get('document_scope')
+        ),
     )
 
 
@@ -142,6 +172,7 @@ def _payload_from_response(response: AIAnswerResponse) -> dict[str, Any]:
             "prompt_eval_count",
             "eval_count",
             "done_reason",
+            "document_scope",  # her istekte yeniden hesaplanır; önbellekte bayatlar
         },
     )
 
@@ -163,16 +194,116 @@ async def _embed_question(question: str) -> list[float] | None:
         return None
 
 
+def _consume_task_result(task: "asyncio.Future[Any]") -> None:
+    """Beklenmeyen bir görevin istisnası "never retrieved" uyarısına dönmesin."""
+    if not task.cancelled() and task.exception() is not None:
+        logger.warning("Canlı doğrulama görevi başarısız", exc_info=task.exception())
+
+
+def _start_live_verification(
+    contexts: list[RAGContext],
+    *, target_sources: int = 6, diagnostics: dict | None = None,
+) -> "asyncio.Future[list[RAGContext]] | None":
+    """Doğrulanmamış kaynak varsa portal doğrulamasını arka planda başlatır."""
+    if not any(context.verification == "third_party" for context in contexts):
+        return None
+    task = asyncio.ensure_future(asyncio.to_thread(
+        verify_third_party_contexts, contexts, max_docs=12,
+        target_sources=target_sources, diagnostics=diagnostics,
+    ))
+    task.add_done_callback(_consume_task_result)
+    return task
+
+
+async def _resolve_verification(
+    task: "asyncio.Future[list[RAGContext]] | None",
+    contexts: list[RAGContext],
+    *,
+    wait: float,
+    timings: PipelineTimings,
+) -> list[RAGContext]:
+    """Paralel doğrulamanın sonucunu alır.
+
+    Bitmediyse ya da hata verdiyse rozetler olduğu gibi kalır: kaynak "doğrulanmadı" görünmeye
+    devam eder, yani yavaş bir portal cevabı yanlış biçimde "resmî" gösteremez. Görev iptal
+    edilmez (kalıcı terfi kendi başına tamamlanır); yalnız bu cevap onu beklemez.
+    """
+    if task is None:
+        return contexts
+    started = monotonic()
+    try:
+        result = await asyncio.wait_for(asyncio.shield(task), timeout=wait)
+        timings.extra["live_verify"] = "done"
+        return result
+    except asyncio.TimeoutError:
+        logger.info("Canlı doğrulama %.1f sn içinde bitmedi; kaynaklar doğrulanmadı kalıyor", wait)
+        timings.extra["live_verify"] = "timeout"
+        return contexts
+    except Exception:
+        logger.warning("Canlı doğrulama sonucu alınamadı", exc_info=True)
+        timings.extra["live_verify"] = "error"
+        return contexts
+    finally:
+        timings.extra["live_verify_wait_ms"] = round((monotonic() - started) * 1000, 1)
+
+
+def _source_preview(contexts: list[RAGContext]) -> list[dict[str, Any]]:
+    """Cevap hazır olmadan gösterilecek kaynak özeti. İddia içermez: yalnız künye ve durum."""
+    return [
+        {
+            "marker": f"K{position}",
+            "source_id": str(context.source_id),
+            "source_type": context.source_type,
+            "reference": context.reference_line,
+            "verification": context.verification,
+        }
+        for position, context in enumerate(contexts, start=1)
+    ]
+
+
+async def _load_history(
+    request: AIAnswerRequest, user_id: UUID | None
+) -> tuple[HistoryTurn, ...]:
+    """Devam eden sohbetin önceki turlarını RLS altında okur."""
+    if request.conversation_id is None:
+        return ()
+    if user_id is None:
+        raise HTTPException(
+            status_code=401, detail="Sohbeti sürdürmek için oturum açmalısınız"
+        )
+
+    def load():
+        with authenticated_database_connection(str(user_id)) as connection:
+            return load_conversation_context(connection, request.conversation_id)
+
+    try:
+        context = await asyncio.to_thread(load)
+    except ConversationNotFound as exc:
+        raise HTTPException(status_code=404, detail="Sohbet bulunamadı") from exc
+    except psycopg.Error as exc:
+        logger.exception("Sohbet geçmişi okunamadı")
+        raise HTTPException(
+            status_code=503, detail="Sohbet geçmişi okunamadı"
+        ) from exc
+    if request.project_id != context.project_id:
+        raise HTTPException(
+            status_code=409, detail="Bu sohbet farklı bir projeye ait"
+        )
+    return context.turns
+
+
 def persist_answer(
     request: AIAnswerRequest,
     answer: VerifiedAnswer,
     *,
     user_id: UUID,
     model_name: str,
+    audit: AuditContext | None = None,
+    from_cache: bool = False,
 ) -> tuple[UUID | None, UUID | None]:
     try:
         with authenticated_database_connection(str(user_id)) as connection:
-            return record_exchange(
+            conversation_id, message_id = record_exchange(
                 connection,
                 user_id=user_id,
                 conversation_id=request.conversation_id,
@@ -182,6 +313,31 @@ def persist_answer(
                 model_name=model_name,
                 as_of=request.as_of,
             )
+            # Soru ve cevap metni denetim günlüğüne yazılmaz; yalnız olayın özeti.
+            record_event(
+                connection,
+                action=AI_ANSWER,
+                actor_user_id=user_id,
+                context=audit,
+                entity_type="conversation",
+                entity_id=conversation_id,
+                project_id=request.project_id,
+                metadata={
+                    "message_id": str(message_id),
+                    "model": model_name,
+                    "grounded": answer.grounded,
+                    "from_cache": from_cache,
+                    "citation_count": len(answer.contexts),
+                    "third_party_citations": sum(
+                        1 for context in answer.contexts if context.verification == "third_party"
+                    ),
+                    "document_citations": sum(
+                        1 for context in answer.contexts if context.source_type == "document"
+                    ),
+                },
+                strict=False,
+            )
+            return conversation_id, message_id
     except InsufficientPrivilege as exc:
         raise HTTPException(
             status_code=403,
@@ -199,18 +355,40 @@ def _retrieve(
     query_embedding: list[float] | None,
     top_k: int,
     embedding_model: str,
+    question: str | None = None,
     diagnostics: dict | None = None,
 ) -> list[RAGContext]:
-    if request.project_id is not None:
+    search_question = question or request.question
+    if request.project_id is not None or request.case_id is not None:
         if user_id is None:
             raise HTTPException(
                 status_code=401,
                 detail="Proje belgeleriyle çalışmak için oturum açmalısınız",
             )
+        if request.case_id is not None:
+            # Hangi yoldan geldiğinden bağımsız, henüz indekslenmemiş dava belgelerini bütçe içinde hazırlar.
+            sweep_unindexed(user_id, case_id=request.case_id)
+            if diagnostics is not None:
+                diagnostics["document_scope"] = case_document_coverage(user_id, request.case_id)
+        file_only = request.case_id is not None and is_case_file_question(search_question)
+        if diagnostics is not None:
+            diagnostics["case_file_only"] = file_only
         with authenticated_database_connection(str(user_id)) as connection:
+            if file_only:
+                # "Davalının adresi nedir?" gibi kendi dosyasına dair soru: başka davaların kararlarından
+                # alıntı yapılmaz; belgelerde yoksa "yeterli bilgi yok" denir.
+                return retrieve_document_contexts(
+                    connection,
+                    question=search_question,
+                    project_id=None if request.project_id is None else str(request.project_id),
+                    case_id=str(request.case_id),
+                    top_k=top_k,
+                    query_embedding=query_embedding,
+                    embedding_model=embedding_model,
+                )[:top_k]
             legal_contexts = retrieve_contexts(
                 connection,
-                question=request.question,
+                question=search_question,
                 top_k=top_k,
                 query_embedding=query_embedding,
                 embedding_model=embedding_model,
@@ -219,21 +397,22 @@ def _retrieve(
             )
             document_contexts = retrieve_document_contexts(
                 connection,
-                question=request.question,
-                project_id=str(request.project_id),
+                question=search_question,
+                project_id=None if request.project_id is None else str(request.project_id),
+                case_id=None if request.case_id is None else str(request.case_id),
                 top_k=top_k,
                 query_embedding=query_embedding,
                 embedding_model=embedding_model,
             )
-            return sorted(
-                (*legal_contexts, *document_contexts),
-                key=lambda context: context.rank,
-                reverse=True,
-            )[:top_k]
+            # Dava belgeleri ve hukuk kaynaklarının puanları aynı ölçekte değildir (ts_rank / RRF).
+            # Kullanıcının kendi belgeleri önce gelir; geri kalan yer hukuk kaynaklarına kalır.
+            own = sorted(document_contexts, key=lambda context: context.rank, reverse=True)
+            others = sorted(legal_contexts, key=lambda context: context.rank, reverse=True)
+            return [*own, *others][:top_k]
     with database_connection() as connection:
         return retrieve_contexts(
             connection,
-            question=request.question,
+            question=search_question,
             top_k=top_k,
             query_embedding=query_embedding,
             embedding_model=embedding_model,
@@ -247,6 +426,7 @@ async def execute_answer(
     user_id: UUID | None,
     *,
     on_stage: StageCallback | None = None,
+    audit: AuditContext | None = None,
     _force_full_search: bool = False,
 ) -> tuple[AIAnswerResponse, PipelineTimings]:
     settings = get_settings()
@@ -261,6 +441,42 @@ async def execute_answer(
             await result
 
     await emit("searching")
+    pause_embeddings("assistant")
+    try:
+        if not settings.rag_query_embedding:
+            await asyncio.to_thread(
+                unload_ollama_model, settings.ollama_base_url, settings.embedding_model
+            )
+        return await _execute_answer_body(
+            request,
+            user_id,
+            settings=settings,
+            timings=timings,
+            started=started,
+            emit=emit,
+            audit=audit,
+            _force_full_search=_force_full_search,
+        )
+    finally:
+        resume_embeddings()
+
+
+async def _execute_answer_body(
+    request: AIAnswerRequest,
+    user_id: UUID | None,
+    *,
+    settings,
+    timings: PipelineTimings,
+    started: float,
+    emit: StageCallback,
+    audit: AuditContext | None = None,
+    _force_full_search: bool = False,
+) -> tuple[AIAnswerResponse, PipelineTimings]:
+    history = await _load_history(request, user_id)
+    # Türkçe karakter olmadan yazılan soru ("davaci kac yil") arama için geri getirilir; kullanıcının
+    # yazdığı soru (`request.question`) olduğu gibi saklanır.
+    search_question = restore_turkish(retrieval_question(request.question, history))
+
     try:
         provider = create_provider(
             provider_name=settings.ai_provider,
@@ -274,86 +490,122 @@ async def execute_answer(
     except AIProviderError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    fast_diagnostics: dict = {}
-    fast_contexts = [] if _force_full_search else await asyncio.to_thread(
-        try_fast_statute, question=request.question, as_of=request.as_of,
-        project_id=request.project_id, conversation_id=request.conversation_id,
-        max_chunks=settings.rag_top_k, max_chars=settings.rag_context_chars,
-        diagnostics=fast_diagnostics,
-    )
-    timings.extra.update(fast_diagnostics)
-    embed_started = monotonic()
-    query_embedding = (
-        await _embed_question(request.question) if settings.rag_query_embedding and not fast_contexts else None
-    )
-    timings.embedding_ms = (monotonic() - embed_started) * 1000 if query_embedding else 0.0
+    verify_task: asyncio.Future[list[RAGContext]] | None = None
+    warmup_task: asyncio.Task[None] | None = None
+    warmup = getattr(provider, "warmup", None)
+    if callable(warmup):
+        warmup_task = asyncio.create_task(asyncio.to_thread(warmup))
 
-    statute_reference = explicit_statute_reference(request.question)
-    if statute_reference is not None and request.as_of is None and not fast_contexts:
-        law_no, article_no = statute_reference
-        await emit(
-            "verifying_source",
-            source_type="legislation",
-            law_no=law_no,
-            article_no=article_no,
-        )
-        verification_started = monotonic()
-        verification_status = await asyncio.to_thread(
-            verify_pending_statute,
-            request.question,
-            as_of=request.as_of,
-        )
-        timings.extra["on_demand_legislation"] = verification_status
-        timings.extra["on_demand_legislation_ms"] = round(
-            (monotonic() - verification_started) * 1000,
-            1,
-        )
-
-    retrieval_started = monotonic()
-    retrieval_diagnostics: dict = dict(fast_diagnostics) if fast_contexts else {}
-    verification_diagnostics: dict = {}
     try:
-        contexts = fast_contexts or await asyncio.to_thread(
-            _retrieve,
-            request,
-            user_id=user_id,
-            query_embedding=query_embedding,
-            top_k=candidate_pool_size(settings.rag_top_k),
-            diagnostics=retrieval_diagnostics,
-            embedding_model=settings.embedding_model,
+        fast_diagnostics: dict = {}
+        fast_contexts = [] if _force_full_search else await asyncio.to_thread(
+            try_fast_statute, question=search_question, as_of=request.as_of,
+            project_id=request.project_id or request.case_id, conversation_id=request.conversation_id,
+            max_chunks=settings.rag_top_k, max_chars=settings.rag_context_chars,
+            diagnostics=fast_diagnostics,
         )
-    except HTTPException:
-        raise
-    except psycopg.Error as exc:
-        raise HTTPException(status_code=503, detail="Hukuk kaynakları aranamadı") from exc
-    timings.retrieval_ms = (monotonic() - retrieval_started) * 1000 + fast_diagnostics.get('fast_statute_ms', 0)
+        timings.extra.update(fast_diagnostics)
+        embed_started = monotonic()
+        query_embedding = (
+            await _embed_question(search_question)
+            if settings.rag_query_embedding and not fast_contexts
+            else None
+        )
+        timings.embedding_ms = (
+            (monotonic() - embed_started) * 1000 if query_embedding else 0.0
+        )
 
-    candidates = list(contexts)
-    timings.extra['retrieval'] = retrieval_diagnostics
-    await emit('candidates_found', candidate_chunks=len(candidates),
-               candidate_documents=len({c.source_id for c in candidates}),
-               partial=bool(retrieval_diagnostics.get('partial')), exhaustive=False)
-    if any(context.verification == "third_party" for context in contexts):
-        await emit("verifying_source", source_type="court_decision")
-        live_verification_started = monotonic()
-        try:
-            contexts = await asyncio.wait_for(
-                asyncio.to_thread(verify_third_party_contexts, contexts, max_docs=12,
-                                  target_sources=settings.rag_top_k,
-                                  diagnostics=verification_diagnostics), timeout=15.0
+        statute_reference = explicit_statute_reference(search_question)
+        if statute_reference is not None and request.as_of is None and not fast_contexts:
+            law_no, article_no = statute_reference
+            await emit(
+                "verifying_source",
+                source_type="legislation",
+                law_no=law_no,
+                article_no=article_no,
             )
-        except asyncio.TimeoutError:
-            verification_diagnostics = {**verification_diagnostics, 'stop_reason': 'timeout'}
-            contexts = verified_contexts(contexts)
-        except Exception:
-            verification_diagnostics = {**verification_diagnostics, 'stop_reason': 'error'}
-            logger.warning("Source verification failed; using verified evidence only")
-            contexts = verified_contexts(contexts)
-        timings.extra["live_verification_ms"] = round((monotonic()-live_verification_started)*1000, 1)
+            verification_started = monotonic()
+            verification_status = await asyncio.to_thread(
+                verify_pending_statute,
+                search_question,
+                as_of=request.as_of,
+            )
+            timings.extra["on_demand_legislation"] = verification_status
+            timings.extra["on_demand_legislation_ms"] = round(
+                (monotonic() - verification_started) * 1000,
+                1,
+            )
 
-    verified_pool = verified_contexts(contexts)
-    contexts = select_answer_contexts(verified_pool, settings.rag_top_k, question=request.question)
+        if request.as_of is None and not fast_contexts:
+            relevant_verification_started = monotonic()
+            relevant_verification_status = await asyncio.to_thread(
+                verify_relevant_pending_statute,
+                search_question,
+                as_of=request.as_of,
+            )
+            timings.extra[
+                "on_demand_relevant_legislation"
+            ] = relevant_verification_status
+            timings.extra["on_demand_relevant_legislation_ms"] = round(
+                (monotonic() - relevant_verification_started) * 1000,
+                1,
+            )
+
+        retrieval_started = monotonic()
+        retrieval_diagnostics: dict = dict(fast_diagnostics) if fast_contexts else {}
+        verification_diagnostics: dict = {}
+        try:
+            contexts = fast_contexts or await asyncio.to_thread(
+                _retrieve,
+                request,
+                user_id=user_id,
+                query_embedding=query_embedding,
+                top_k=candidate_pool_size(settings.rag_top_k),
+                embedding_model=settings.embedding_model,
+                question=search_question,
+                diagnostics=retrieval_diagnostics,
+            )
+        except HTTPException:
+            raise
+        except psycopg.Error as exc:
+            raise HTTPException(
+                status_code=503, detail="Hukuk kaynakları aranamadı"
+            ) from exc
+        timings.retrieval_ms = (monotonic() - retrieval_started) * 1000 + fast_diagnostics.get('fast_statute_ms', 0)
+        # Portal verification overlaps model warmup, never answer generation.
+        candidates = list(contexts)
+        timings.extra['retrieval'] = retrieval_diagnostics
+        await emit('candidates_found', candidate_chunks=len(candidates),
+                   candidate_documents=len({c.source_id for c in candidates}),
+                   partial=bool(retrieval_diagnostics.get('partial')), exhaustive=False)
+        verify_task = _start_live_verification(
+            contexts, target_sources=settings.rag_top_k, diagnostics=verification_diagnostics,
+        )
+        if warmup_task is not None:
+            await warmup_task
+            warmup_task = None
+    finally:
+        if warmup_task is not None:
+            warmup_task.cancel()
+            try:
+                await warmup_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    # Verify BEFORE cache, source previews or generation. A timeout must not
+    # release pending text to the model or user, even if it is correctly quoted.
+    if verify_task is not None:
+        await emit("verifying_source", source_type="court_decision")
+        contexts = await _resolve_verification(
+            verify_task, contexts, wait=_PRE_GENERATION_VERIFY_WAIT_SECONDS, timings=timings
+        )
+        verify_task = None
+    contexts = verified_contexts(contexts)
+    verified_pool = contexts
+    contexts = select_answer_contexts(verified_pool, settings.rag_top_k, question=search_question)
     verification_stats = dict(verification_diagnostics)
+    if timings.extra.get('live_verify') in ('timeout', 'error'):
+        verification_stats['stop_reason'] = timings.extra['live_verify']
     summary = search_summary(candidates, verified_pool, contexts,
                              retrieval_diagnostics, verification_stats)
     timings.extra['search_summary'] = summary
@@ -362,30 +614,43 @@ async def execute_answer(
     logger.info('RAG discovery %s', summary)
     await emit('search_summary', **summary)
     if not contexts:
+        pending = int((retrieval_diagnostics.get('document_scope') or {}).get('pending') or 0)
+        if request.case_id is not None and pending:
+            # Asıl neden "kaynak yok" değil, davadaki belgelerin henüz hazır olmaması (ör. OCR sürüyor).
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Bu davadaki {pending} belge henüz işleniyor (taranmış belgeler OCR ile okunur, "
+                    "birkaç dakika sürebilir). İşlem bitince soruyu tekrar sorun."
+                ),
+            )
         raise HTTPException(
             status_code=422,
             detail="Bu soru için yeterli resmî doğrulanmış kaynak bulunamadı. Portal doğrulaması tamamlanmamış veya eşleşmeyen kayıtlar cevaba alınmadı.",
         )
 
-    await emit("sources_found", count=len(contexts))
+    await emit("sources_found", count=len(contexts), sources=_source_preview(contexts))
     fingerprint = source_fingerprint(contexts)
     cache_key = answer_cache_key(
         question=request.question,
-        project_id=request.project_id,
+        project_id=request.project_id or request.case_id,
         as_of=request.as_of,
         model=provider.model,
         fingerprint=fingerprint,
+        history_key=history_fingerprint(history),
     )
     cached = answer_cache.get(cache_key)
     conversation_id: UUID | None = None
     message_id: UUID | None = None
     if cached is not None:
         timings.from_cache = True
-        # Keep citation order from the cached payload rather than retrieval rank.
+        cached_contexts = await _resolve_verification(
+            verify_task, contexts, wait=_CACHE_HIT_VERIFY_WAIT_SECONDS, timings=timings
+        )
         cited_ids = [item["chunk_id"] for item in cached["citations"]]
-        by_id = {str(context.chunk_id): context for context in contexts}
+        by_id = {str(context.chunk_id): context for context in cached_contexts}
         ordered = tuple(by_id[chunk_id] for chunk_id in cited_ids if chunk_id in by_id)
-        cached_answer = verify_answer(cached["answer"], list(ordered), question=request.question,
+        cached_answer = verify_answer(cached["answer"], list(ordered), question=search_question,
                                       available_contexts=contexts)
         if len(ordered) != len(cited_ids):
             cached = None
@@ -398,6 +663,8 @@ async def execute_answer(
                     cached_answer,
                     user_id=user_id,
                     model_name=provider.model,
+                    audit=audit,
+                    from_cache=True,
                 )
             timings.persist_ms = (monotonic() - persist_started) * 1000
             timings.total_ms = (monotonic() - started) * 1000
@@ -422,9 +689,12 @@ async def execute_answer(
             raw_answer = await asyncio.to_thread(
                 generate_grounded_answer,
                 provider,
-                question=request.question,
+                # Kanıt cümlelerini seçen alaka filtresi aksanlara duyarlıdır: ASCII yazılmış soru burada
+                # da geri getirilir (aksi halde tüm cümleler elenir, model hiç çağrılmaz).
+                question=restore_turkish(request.question),
                 contexts=contexts,
                 max_context_chars=settings.rag_context_chars,
+                history=history,
             )
             timings.llm_ms = (monotonic() - llm_started) * 1000
     except AIProviderError as exc:
@@ -461,14 +731,25 @@ async def execute_answer(
         )
 
     await emit("verifying")
+    final_contexts = await _resolve_verification(
+        verify_task, contexts, wait=_VERIFY_GRACE_SECONDS, timings=timings
+    )
     verify_started = monotonic()
-    answer = verify_answer(raw_answer, contexts, question=request.question)
+    answer = verify_answer(raw_answer, final_contexts, question=search_question)
     timings.verification_ms = (monotonic() - verify_started) * 1000
     if fast_contexts and not answer.grounded:
-        # Never publish an unsupported fast draft; full discovery gets one retry.
-        return await execute_answer(request, user_id, on_stage=on_stage, _force_full_search=True)
+        # A plausible provision is not proof that it answers the question.
+        # Run the full pipeline once; no unsupported fast draft is published.
+        timings.extra['fast_statute_fallback'] = 'unsupported_draft'
+        return await _execute_answer_body(
+            request, user_id, settings=settings, timings=timings, started=started,
+            emit=emit, audit=audit, _force_full_search=True,
+        )
     if not answer.grounded:
-        if is_insufficient_source_reply(answer.text or raw_answer):
+        logger.warning("Atıfsız taslak: %s", raw_answer[:400])
+        if is_insufficient_source_reply(
+            answer.text or raw_answer
+        ) or has_insufficient_source_signal(raw_answer):
             answer = VerifiedAnswer(
                 text=(
                     "Mevcut doğrulanmış kaynaklarda bu soruya güvenilir ve kaynaklı "
@@ -488,12 +769,12 @@ async def execute_answer(
         explanation_started = monotonic()
         async with _generation_lock:
             answer = await asyncio.to_thread(
-                explain_verified_answer, provider, question=request.question, answer=answer,
+                explain_verified_answer, provider, question=search_question, answer=answer,
             )
         timings.extra["explanation_ms"] = round((monotonic() - explanation_started) * 1000, 1)
 
     from api.ai.explanation import with_coverage_notice
-    answer = with_coverage_notice(answer, request.question)
+    answer = with_coverage_notice(answer, search_question)
     persist_started = monotonic()
     if user_id is not None:
         conversation_id, message_id = await asyncio.to_thread(
@@ -502,6 +783,7 @@ async def execute_answer(
             answer,
             user_id=user_id,
             model_name=provider.model,
+            audit=audit,
         )
     timings.persist_ms = (monotonic() - persist_started) * 1000
     response = _response_from_verified(
@@ -513,7 +795,8 @@ async def execute_answer(
         from_cache=False,
         timings=timings,
     )
-    answer_cache.put(cache_key, _payload_from_response(response))
+    if answer.grounded:
+        answer_cache.put(cache_key, _payload_from_response(response))
     timings.total_ms = (monotonic() - started) * 1000
     await emit("done", result=response.model_dump(mode="json"))
     return response, timings
@@ -522,6 +805,7 @@ async def execute_answer(
 async def iter_answer_events(
     request: AIAnswerRequest,
     user_id: UUID | None,
+    audit: AuditContext | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
@@ -530,7 +814,7 @@ async def iter_answer_events(
 
     async def run() -> None:
         try:
-            await execute_answer(request, user_id, on_stage=on_stage)
+            await execute_answer(request, user_id, on_stage=on_stage, audit=audit)
         except HTTPException as exc:
             await queue.put(
                 {"stage": "error", "status": exc.status_code, "detail": exc.detail}
@@ -550,7 +834,14 @@ async def iter_answer_events(
     task = asyncio.create_task(run())
     try:
         while True:
-            event = await queue.get()
+            try:
+                event = await asyncio.wait_for(
+                    queue.get(),
+                    timeout=_PROGRESS_HEARTBEAT_SECONDS,
+                )
+            except TimeoutError:
+                yield {"stage": "ping"}
+                continue
             if event.get("stage") == "_end":
                 break
             yield event

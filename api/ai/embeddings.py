@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from math import isfinite
 from typing import Protocol
 from urllib.parse import urlsplit
@@ -33,6 +34,7 @@ class OllamaEmbeddingProvider:
     timeout_seconds: float = 120.0
     name: str = "ollama"
     transport: httpx.BaseTransport | None = None
+    _clients: dict = field(default_factory=dict, repr=False, compare=False, init=False)
 
     def __post_init__(self) -> None:
         parsed = urlsplit(self.base_url)
@@ -55,7 +57,16 @@ class OllamaEmbeddingProvider:
             timeout=self.timeout_seconds,
             transport=self.transport,
             trust_env=False,
+            limits=httpx.Limits(max_connections=16, max_keepalive_connections=16),
         )
+
+    def _thread_client(self) -> httpx.Client:
+        ident = threading.get_ident()
+        client = self._clients.get(ident)
+        if client is None:
+            client = self._client()
+            self._clients[ident] = client
+        return client
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
@@ -64,19 +75,18 @@ class OllamaEmbeddingProvider:
         if any(not text for text in cleaned):
             raise EmbeddingProviderError("Boş metin için embedding üretilemez")
         try:
-            with self._client() as client:
-                response = client.post(
-                    "/api/embed",
-                    json={
-                        "model": self.model,
-                        "input": cleaned,
-                        "dimensions": self.dimensions,
-                        "truncate": True,
-                        "keep_alive": "30m",
-                    },
-                )
-                response.raise_for_status()
-                payload = response.json()
+            response = self._thread_client().post(
+                "/api/embed",
+                json={
+                    "model": self.model,
+                    "input": cleaned,
+                    "dimensions": self.dimensions,
+                    "truncate": True,
+                    "keep_alive": "5m",
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
         except httpx.TimeoutException as exc:
             raise EmbeddingProviderError("Ollama embedding yanıt süresini aştı") from exc
         except httpx.ConnectError as exc:

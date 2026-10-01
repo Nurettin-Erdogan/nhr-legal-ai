@@ -132,7 +132,8 @@ def test_exhausted_deadline_does_not_launch_another_four_second_query(monkeypatc
     def execute(conn, sql, params, **kwargs):
         if sql == retrieval.STATUTE_RETRIEVAL_SQL:
             return []
-        calls.append(params)
+        if '_tiered(' not in sql:
+            calls.append(params)
         clock[0] += 4.1
         raise psycopg.errors.QueryCanceled()
     monkeypatch.setattr(retrieval, '_execute_retrieval', execute)

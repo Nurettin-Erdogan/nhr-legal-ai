@@ -261,6 +261,12 @@ def test_answer_route_rejects_uncited_legal_response(monkeypatch):
     )
 
     with pytest.raises(HTTPException) as error:
-        asyncio.run(routes.answer_question(AIAnswerRequest(question="Haklı fesih?"), None))
+        asyncio.run(
+            routes.answer_question(
+                AIAnswerRequest(question="Haklı fesih?"),
+                None,
+                SimpleNamespace(client=None, headers={}),  # denetim bağlamı için istek
+            )
+        )
 
     assert error.value.status_code == 422

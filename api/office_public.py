@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import logging
 import os
 from datetime import datetime, timezone
@@ -19,12 +20,15 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import psycopg
-from fastapi import APIRouter, File, Form, Header, Request, Response, UploadFile
+from fastapi import APIRouter, Header, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
+from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from api.audit import AuditContext, record_event
 from api.db import admin_database_connection, authenticated_database_connection
+from api.document_indexing import schedule_index
 from api.office import _storage_path
 from api.uyap_meta import (
     MAX_FILE_BYTES,
@@ -38,6 +42,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/public", tags=["office-public"])
 
+# Anahtar JSON gövdesinin içinde olduğundan gövde doğrulamadan önce okunur; tavan kimliksiz
+# isteğin tüketebileceği belleği sınırlar (tek dosya 50 MB → base64 ≈ 67 MB, biraz pay).
+MAX_INGEST_REQUEST_BYTES = 100 * 1024 * 1024
+MULTIPART_OVERHEAD_BYTES = 1024 * 1024
+
 _CORS = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -49,13 +58,19 @@ def _reply(body: dict[str, Any], status: int = 200) -> JSONResponse:
     return JSONResponse(body, status_code=status, headers=_CORS)
 
 
+def token_digest(token: str) -> str:
+    """Anahtar veritabanında yalnız bu SHA-256 özetiyle saklanır (düz değer tutulmaz)."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
 def _owner_for_token(token: str) -> tuple[UUID, UUID] | None:
     """(anahtar kimliği, sahip kimliği) döndürür; anahtar yoksa ya da iptal edilmişse None."""
     if not 20 <= len(token) <= 200:
         return None
     with admin_database_connection() as connection:
         row = connection.execute(
-            "SELECT id, owner_id, revoked FROM office_uyap_ingest_tokens WHERE token = %s", (token,)
+            "SELECT id, owner_id, revoked FROM office_uyap_ingest_tokens WHERE token_hash = %s",
+            (token_digest(token),),
         ).fetchone()
         if row is None or row["revoked"]:
             # Sabit süreli karşılaştırma gerekmez (veritabanı araması); yine de ayrım sızdırılmaz.
@@ -66,6 +81,56 @@ def _owner_for_token(token: str) -> tuple[UUID, UUID] | None:
         )
         connection.commit()
         return row["id"], row["owner_id"]
+
+
+def _schedule_index(owner_id: UUID, document_id: UUID | None, audit: AuditContext) -> None:
+    """Yeni belgenin metnini arka planda aranabilir yapar; hata yüklemeyi etkilemez."""
+    if document_id is None:
+        return
+    try:
+        schedule_index(owner_id, document_id, audit=audit)
+    except Exception:  # noqa: BLE001
+        logger.warning("Belge indeksleme zamanlanamadı id=%s", document_id, exc_info=True)
+
+
+def find_duplicate(
+    connection: psycopg.Connection,
+    *,
+    file_name: str,
+    size_bytes: int,
+    uyap_file_no: str | None,
+    source: str | None,
+) -> UUID | None:
+    """Aynı belgeyi bulur. Yalnız dosya adı yetmez: farklı davalardaki "dilekce.pdf" ayrı belgedir.
+
+    Ad + boyut + UYAP dosya numarası (boşsa boşla) eşleşirse yinelenen sayılır. RLS nedeniyle yalnız
+    çağıranın kendi belgeleri aranır.
+    """
+    query = (
+        "SELECT id FROM office_case_documents WHERE file_name = %s AND size_bytes = %s "
+        "AND uyap_file_no IS NOT DISTINCT FROM %s AND deleted_at IS NULL"  # çöpteki belge "yinelenen" değildir
+    )
+    params: list[Any] = [file_name, size_bytes, uyap_file_no]
+    if source is not None:
+        query += " AND source = %s"
+        params.append(source)
+    row = connection.execute(query + " LIMIT 1", params).fetchone()
+    return None if row is None else row["id"] if isinstance(row, dict) else row[0]
+
+
+async def _read_limited_body(request: Request, limit: int) -> bytes | None:
+    """İstek gövdesini en çok `limit` bayt okur; aşarsa None. Kimliksiz uçta bellek tavanı sağlar."""
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > limit:
+        return None
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > limit:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _store(
@@ -80,15 +145,19 @@ def _store(
     audit: AuditContext,
 ) -> tuple[str, UUID | None]:
     """Belgeyi diske ve tabloya yazar. ('inserted'|'duplicate'|'failed', kimlik) döndürür."""
+    excerpt = " ".join(extract_text_sample(file_name, data).split())
+    meta = parse_uyap_meta(file_name, excerpt)
+    file_no = overrides.get("uyap_file_no") or meta["uyap_file_no"]
     with authenticated_database_connection(str(owner_id)) as connection:
-        params: list[Any] = [file_name]
-        query = "SELECT id FROM office_case_documents WHERE file_name = %s"
-        if dedupe_by_source:
-            query += " AND source = %s"
-            params.append(source)
-        existing = connection.execute(query + " LIMIT 1", params).fetchone()
-        if existing:
-            return "duplicate", existing["id"]
+        existing_id = find_duplicate(
+            connection,
+            file_name=file_name,
+            size_bytes=len(data),
+            uyap_file_no=file_no,
+            source=source if dedupe_by_source else None,
+        )
+        if existing_id is not None:
+            return "duplicate", existing_id
 
         key = f"{owner_id}/{datetime.now(timezone.utc).year}/{uuid4()}-{file_name}"
         target = _storage_path(owner_id, key)
@@ -100,8 +169,6 @@ def _store(
         finally:
             temporary.unlink(missing_ok=True)
 
-        excerpt = " ".join(extract_text_sample(file_name, data).split())
-        meta = parse_uyap_meta(file_name, excerpt)
         document_id = uuid4()
         try:
             connection.execute(
@@ -116,7 +183,7 @@ def _store(
                     len(data),
                     source,
                     mime_type,
-                    overrides.get("uyap_file_no") or meta["uyap_file_no"],
+                    file_no,
                     overrides.get("uyap_birim") or meta["uyap_birim"],
                     meta["doc_date"],
                     overrides.get("doc_type") or meta["doc_type"],
@@ -159,7 +226,20 @@ def preflight() -> Response:
 
 
 @router.post("/uyap-ingest")
-def uyap_ingest(body: IngestRequest, request: Request) -> JSONResponse:
+async def uyap_ingest(request: Request) -> JSONResponse:
+    # Gövde, anahtar doğrulanmadan önce okunur (anahtar JSON içinde); bu yüzden pydantic'e
+    # bırakmadan, kimliksiz istekler için sabit bir bellek tavanıyla okunur.
+    raw = await _read_limited_body(request, MAX_INGEST_REQUEST_BYTES)
+    if raw is None:
+        return _reply({"error": "İstek çok büyük"}, 413)
+    try:
+        body = IngestRequest.model_validate_json(raw)
+    except ValidationError:
+        return _reply({"error": "Geçersiz istek"}, 422)
+    return await run_in_threadpool(_ingest, body, request)
+
+
+def _ingest(body: IngestRequest, request: Request) -> JSONResponse:
     try:
         owner = _owner_for_token(body.token)
     except psycopg.Error:
@@ -170,7 +250,7 @@ def uyap_ingest(body: IngestRequest, request: Request) -> JSONResponse:
     _, owner_id = owner
     audit = AuditContext.from_request(request)
 
-    inserted = skipped = 0
+    inserted = duplicates = skipped = 0
     for item in body.files:
         file_name = safe_file_name(item.name)
         if not is_allowed_file(file_name):
@@ -190,7 +270,7 @@ def uyap_ingest(body: IngestRequest, request: Request) -> JSONResponse:
             skipped += 1
             continue
         try:
-            outcome, _ = _store(
+            outcome, document_id = _store(
                 owner_id,
                 file_name=file_name,
                 data=data,
@@ -206,28 +286,31 @@ def uyap_ingest(body: IngestRequest, request: Request) -> JSONResponse:
             continue
         if outcome == "inserted":
             inserted += 1
+            _schedule_index(owner_id, document_id, audit)
         else:
-            skipped += 1
-    return _reply({"ok": True, "found": len(body.files), "inserted": inserted, "skipped": skipped})
+            duplicates += 1
+    return _reply(
+        {
+            "ok": True,
+            "found": len(body.files),
+            "inserted": inserted,
+            "duplicates": duplicates,
+            # Eski istemciler için: eklenmeyen her dosya (yinelenen + geçersiz).
+            "skipped": skipped + duplicates,
+        }
+    )
 
 
 @router.post("/v1/documents/upload")
 async def upload_document(
     request: Request,
-    file: UploadFile = File(...),
     authorization: str | None = Header(default=None),
-    evrakAdi: str | None = Form(default=None),
-    evrakId: str | None = Form(default=None),
-    evrakTuru: str | None = Form(default=None),
-    dosyaEsasNo: str | None = Form(default=None),
-    birim: str | None = Form(default=None),
-    source: str | None = Form(default=None),
 ) -> JSONResponse:
     token = (authorization or "").removeprefix("Bearer ").removeprefix("bearer ").strip()
     if not 20 <= len(token) <= 200:
         return _reply({"error": "Bağlantı anahtarı eksik"}, 401)
     try:
-        owner = _owner_for_token(token)
+        owner = await run_in_threadpool(_owner_for_token, token)
     except psycopg.Error:
         logger.exception("UYAP anahtarı doğrulanamadı")
         return _reply({"error": "Servis şu an kullanılamıyor"}, 503)
@@ -235,10 +318,34 @@ async def upload_document(
         return _reply({"error": "Geçersiz bağlantı anahtarı"}, 401)
     _, owner_id = owner
 
+    # Çok parçalı gövde, anahtar doğrulandıktan sonra ayrıştırılır; yoksa kimliksiz bir istek
+    # devasa bir gövdeyi diske yazdırabilirdi.
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > MAX_FILE_BYTES + MULTIPART_OVERHEAD_BYTES:
+        return _reply({"error": "Dosya çok büyük"}, 413)
+    # Eklentinin "Bağlantıyı dene" düğmesi dosyasız istek gönderir ve 400 + "dosya" bekler:
+    # anahtar doğrulandıktan sonra gelen boş/bozuk gövde de aynı biçimde yanıtlanır.
+    try:
+        form = await request.form()
+    except Exception:  # noqa: BLE001 - çok parçalı ayrıştırıcı farklı istisnalar atabilir
+        return _reply({"error": "Dosya eksik veya istek gövdesi okunamadı"}, 400)
+    file = form.get("file")
+    if not isinstance(file, StarletteUploadFile):
+        return _reply({"error": "Dosya eksik"}, 400)
+
+    def field(name: str) -> str | None:
+        value = form.get(name)
+        return value if isinstance(value, str) else None
+
+    evrakAdi, evrakId, evrakTuru = field("evrakAdi"), field("evrakId"), field("evrakTuru")
+    dosyaEsasNo, birim, source = field("dosyaEsasNo"), field("birim"), field("source")
+
     file_name = safe_file_name((evrakAdi or file.filename or "uyap-evrak.pdf").strip()[:300])
     if not is_allowed_file(file_name):
         return _reply({"error": "Desteklenmeyen dosya türü"}, 415)
     data = await file.read(MAX_FILE_BYTES + 1)
+    mime_type = file.content_type
+    await form.close()
     if not data:
         return _reply({"error": "Boş dosya"}, 400)
     if len(data) > MAX_FILE_BYTES:
@@ -246,12 +353,13 @@ async def upload_document(
 
     unique_name = f"{evrakId.strip()[:80]}-{file_name}" if evrakId and evrakId.strip() else file_name
     try:
-        outcome, document_id = _store(
+        outcome, document_id = await run_in_threadpool(
+            _store,
             owner_id,
             file_name=unique_name,
             data=data,
             source=(source or "uyap-avukat-eklentisi").strip()[:40],
-            mime_type=file.content_type,
+            mime_type=mime_type,
             overrides={
                 "doc_type": (evrakTuru or "").strip()[:120] or None,
                 "uyap_file_no": (dosyaEsasNo or "").strip()[:60] or None,
@@ -265,6 +373,7 @@ async def upload_document(
         return _reply({"error": "Kayıt hatası"}, 500)
     if outcome == "duplicate":
         return _reply({"ok": True, "duplicate": True, "id": str(document_id)})
+    _schedule_index(owner_id, document_id, AuditContext.from_request(request))
     return _reply({"ok": True, "id": str(document_id), "name": unique_name})
 
 

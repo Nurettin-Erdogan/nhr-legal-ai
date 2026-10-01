@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -10,6 +11,8 @@ from zipfile import BadZipFile, ZipFile
 from docx import Document as DocxDocument
 from pypdf import PdfReader
 
+from api.ocr import OcrTooLarge, OcrUnavailable, ocr_image_pages, ocr_pdf_pages
+from api.udf import UdfError, extract_udf_text
 from ingestion.yargitay.chunking import chunk_text
 
 
@@ -39,12 +42,22 @@ class ProcessedDocument:
     mime_type: str
     checksum_sha256: str
     chunks: tuple[ProcessedChunk, ...]
+    # Metin OCR ile okundu: okuma hataları olabilir, arayüzde belirtilmelidir.
+    ocr: bool = False
 
 
 _SUPPORTED_TYPES = {
     ".pdf": "application/pdf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".txt": "text/plain",
+    ".udf": "application/vnd.uyap.udf",
+}
+_IMAGE_TYPES = {
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
 }
 
 
@@ -59,25 +72,127 @@ def safe_file_name(file_name: str | None) -> str:
     return name
 
 
-def _extract_pdf(data: bytes) -> list[ExtractedSection]:
+_GLYPH_PLACEHOLDER_RE = re.compile(r"/gid\d+")
+
+
+def is_readable_text(text: str) -> bool:
+    """Çıkarılan metin gerçekten okunabilir mi?
+
+    Özel yazı tipi kodlamalı PDF'lerde (gerçek bir UYAP PDF'inde görüldü) metin katmanı yoktur;
+    okuyucu her harf yerine `/gid00001` gibi glif numarası döndürür. Böyle çıktı boş değildir ama
+    arama için anlamsızdır. Glif yer tutucuları metnin büyük kısmıysa ya da harf oranı çok düşükse
+    okunamaz sayılır.
+    """
+    compact = "".join(text.split())
+    if not compact:
+        return False
+    placeholders = sum(len(match) for match in _GLYPH_PLACEHOLDER_RE.findall(compact))
+    if placeholders / len(compact) >= 0.2:
+        return False
+    return sum(character.isalpha() for character in compact) / len(compact) >= 0.25
+
+
+class OcrRequired(DocumentProcessingError):
+    """Belge OCR gerektiriyor ama bu çağrıda OCR ertelendi (arka planda çalıştırılmalı)."""
+
+
+# OCR kipleri: "off" hiç çalıştırma (senkron yüklemeler), "defer" gerekirse OcrRequired fırlat
+# (soru anındaki hızlı yol; ağır iş arka plana bırakılır), "run" gerekiyorsa çalıştır.
+_OCR_MIN_PAGE_CHARS = 20
+
+
+def _has_images(page) -> bool:
+    try:
+        return bool(page.images)
+    except Exception:  # noqa: BLE001 - görüntü listelenemezse taranmış sayfa varsay (OCR denenir)
+        return True
+
+
+def _usable_ocr_text(text: str) -> bool:
+    return len(text.strip()) >= _OCR_MIN_PAGE_CHARS and is_readable_text(text)
+
+
+def _extract_pdf(data: bytes, ocr: str = "off") -> tuple[list[ExtractedSection], bool]:
+    """PDF sayfalarını okur; (bölümler, OCR kullanıldı mı) döndürür.
+
+    Metin katmanı olan okunabilir sayfalar olduğu gibi alınır. Metni olmayan ama görüntü içeren
+    (taranmış) sayfalar ile çöp metin üreten (özel yazı tipi kodlaması, `/gid00001…`) sayfalar
+    OCR gerektirir. Gerçekten boş sayfalar atlanır.
+    """
     try:
         reader = PdfReader(BytesIO(data))
         if reader.is_encrypted and reader.decrypt("") == 0:
             raise DocumentProcessingError("Parolalı PDF dosyaları henüz desteklenmiyor.")
-        sections = [
-            ExtractedSection(content=(page.extract_text() or "").strip(), page_number=index)
-            for index, page in enumerate(reader.pages, start=1)
+        pages = [
+            ((page.extract_text() or "").strip(), _has_images(page)) for page in reader.pages
         ]
     except DocumentProcessingError:
         raise
     except Exception as exc:
         raise DocumentProcessingError("PDF dosyası okunamadı veya bozuk.") from exc
 
-    if not any(section.content for section in sections):
+    readable = {
+        number: text for number, (text, _) in enumerate(pages, start=1) if text and is_readable_text(text)
+    }
+    needs_ocr = [
+        number
+        for number, (text, has_images) in enumerate(pages, start=1)
+        if number not in readable and (text or has_images)
+    ]
+
+    ocr_used = False
+    ocr_failure = ""
+    if needs_ocr and ocr == "defer":
+        raise OcrRequired("Belge OCR gerektiriyor; arka planda işlenecek.")
+    if needs_ocr and ocr == "run":
+        try:
+            for number, text in ocr_pdf_pages(data, needs_ocr).items():
+                if _usable_ocr_text(text):
+                    readable[number] = text
+                    ocr_used = True
+        except (OcrUnavailable, OcrTooLarge) as exc:
+            ocr_failure = str(exc)
+
+    if not readable:
+        if ocr_failure:
+            raise DocumentProcessingError(f"PDF'in metni okunamadı; OCR yapılamadı: {ocr_failure}")
+        if needs_ocr and ocr == "run":
+            raise DocumentProcessingError(
+                "PDF'in metni okunamadı: OCR ile de okunabilir metin çıkmadı; belge aranamaz."
+            )
+        if needs_ocr:
+            raise DocumentProcessingError(
+                "PDF'in metni okunamadı: belge taranmış ya da özel bir yazı tipi kodlaması kullanıyor. "
+                "Bu yüklemede OCR çalıştırılmadı; belge aranamaz."
+            )
+        raise DocumentProcessingError("Bu PDF metin içermiyor; belge aranamaz.")
+    sections = [
+        ExtractedSection(content=readable[number], page_number=number) for number in sorted(readable)
+    ]
+    return sections, ocr_used
+
+
+def _extract_image(data: bytes, ocr: str) -> tuple[list[ExtractedSection], bool]:
+    if ocr == "defer":
+        raise OcrRequired("Görüntü OCR gerektiriyor; arka planda işlenecek.")
+    if ocr != "run":
         raise DocumentProcessingError(
-            "Bu PDF metin içermiyor veya taranmış görünüyor; OCR henüz desteklenmiyor."
+            "Görüntü dosyaları metin içermez; bu işlemde OCR çalıştırılmadı, belge aranamaz."
         )
-    return [section for section in sections if section.content]
+    try:
+        pages = ocr_image_pages(data)
+    except (OcrUnavailable, OcrTooLarge) as exc:
+        raise DocumentProcessingError(f"Görüntü OCR ile okunamadı: {exc}") from exc
+    sections = [
+        ExtractedSection(content=text, page_number=number)
+        for number, text in pages
+        if _usable_ocr_text(text)
+    ]
+    if not sections:
+        raise DocumentProcessingError(
+            "Görüntü OCR ile okundu ama okunabilir metin çıkmadı; belge aranamaz."
+        )
+    return sections, True
 
 
 def _extract_docx(data: bytes) -> list[ExtractedSection]:
@@ -137,21 +252,46 @@ def _extract_txt(data: bytes) -> list[ExtractedSection]:
     return [ExtractedSection(content=text)]
 
 
-def process_document(file_name: str, data: bytes) -> ProcessedDocument:
+def _extract_udf(data: bytes) -> list[ExtractedSection]:
+    try:
+        text = extract_udf_text(data).strip()
+    except UdfError as exc:
+        raise DocumentProcessingError(str(exc)) from exc
+    if not text:
+        raise DocumentProcessingError("UDF belgesinde işlenebilir metin bulunamadı.")
+    return [ExtractedSection(content=text)]
+
+
+def process_document(file_name: str, data: bytes, *, ocr: str = "off") -> ProcessedDocument:
+    """Belgeden aranabilir parçalar üretir.
+
+    `ocr`: "off" (varsayılan; senkron yüklemelerde OCR çalıştırılmaz), "defer" (OCR gerekirse
+    `OcrRequired` fırlatılır, çağıran arka planda yeniden dener) ya da "run" (gerekirse OCR yapılır).
+    OCR ile okunan belge `ProcessedDocument.ocr` ile işaretlenir; okuma hataları olabilir.
+    """
+    if ocr not in ("off", "defer", "run"):
+        raise ValueError(f"Geçersiz OCR kipi: {ocr}")
     extension = Path(file_name).suffix.lower()
-    if extension not in _SUPPORTED_TYPES:
-        raise DocumentProcessingError("Yalnız PDF, DOCX ve TXT belgeleri desteklenir.")
+    if extension not in _SUPPORTED_TYPES and extension not in _IMAGE_TYPES:
+        raise DocumentProcessingError("Yalnız PDF, DOCX, UDF, TXT ve görüntü belgeleri desteklenir.")
     if not data:
         raise DocumentProcessingError("Yüklenen dosya boş.")
 
-    if extension == ".pdf":
+    ocr_used = False
+    if extension in _IMAGE_TYPES:
+        sections, ocr_used = _extract_image(data, ocr)
+    elif extension == ".pdf":
         if not data.startswith(b"%PDF-"):
             raise DocumentProcessingError("Dosya uzantısı PDF olsa da içerik PDF değil.")
-        sections = _extract_pdf(data)
+        sections, ocr_used = _extract_pdf(data, ocr)
     elif extension == ".docx":
         if not data.startswith(b"PK"):
             raise DocumentProcessingError("Dosya uzantısı DOCX olsa da içerik DOCX değil.")
         sections = _extract_docx(data)
+    elif extension == ".udf":
+        if not data.startswith(b"PK"):
+            raise DocumentProcessingError("Dosya uzantısı UDF olsa da içerik UDF değil.")
+        sections = _extract_udf(data)
     else:
         if b"\x00" in data[:4096]:
             raise DocumentProcessingError("Dosya uzantısı TXT olsa da içerik metin değil.")
@@ -174,9 +314,10 @@ def process_document(file_name: str, data: bytes) -> ProcessedDocument:
 
     return ProcessedDocument(
         extension=extension,
-        mime_type=_SUPPORTED_TYPES[extension],
+        mime_type=_SUPPORTED_TYPES.get(extension) or _IMAGE_TYPES[extension],
         checksum_sha256=hashlib.sha256(data).hexdigest(),
         chunks=tuple(chunks),
+        ocr=ocr_used,
     )
 
 

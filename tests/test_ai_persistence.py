@@ -225,6 +225,46 @@ def test_retrieval_excludes_unverified_legislation(connection):
     assert not any(context.source_type == "legislation" for context in contexts)
 
 
+def test_retrieval_includes_pending_bulk_seed(connection):
+    pending_token = "PYTESTBULKSEEDX"
+    source_id = connection.execute(
+        """
+        INSERT INTO legal_sources (
+            source_type, title, external_id, authority, raw_text, published_at,
+            ingest_status, canonical_source_name, ingestion_method, source_version
+        )
+        VALUES (
+            'court_decision', %s, %s, 'Yargıtay', %s, %s, 'pending',
+            'üçüncü taraf arşiv', 'bulk_seed', '1'
+        )
+        RETURNING id
+        """,
+        (
+            "Tohum Yargıtay kararı",
+            f"test/{pending_token}/decision/1",
+            f"{pending_token} kıdem tazminatı tohum metni.",
+            date(2013, 10, 11),
+        ),
+    ).fetchone()["id"]
+    connection.execute(
+        """
+        INSERT INTO court_decision_details (
+            legal_source_id, court_name, chamber, docket_no, decision_no, decision_date
+        )
+        VALUES (%s, 'Yargıtay', '22. Hukuk Dairesi', '2012/1', '2013/1', %s)
+        """,
+        (source_id, date(2013, 10, 11)),
+    )
+    connection.execute(
+        "INSERT INTO legal_chunks (legal_source_id, chunk_index, content) VALUES (%s, 0, %s)",
+        (source_id, f"{pending_token} kıdem tazminatı tohum metni."),
+    )
+    contexts = retrieve_contexts(connection, question=pending_token, top_k=10)
+    matched = [context for context in contexts if pending_token in context.content]
+    assert matched
+    assert all(context.verification == "third_party" for context in matched)
+
+
 def test_retrieval_builds_readable_references_per_source_type(connection):
     _seed_legislation(connection)
     _seed_decision(connection)

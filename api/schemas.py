@@ -4,7 +4,7 @@ from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class HealthResponse(BaseModel):
@@ -16,10 +16,22 @@ class CourtDecisionBreakdown(BaseModel):
     yargitay: int = 0
     danistay: int = 0
     anayasa_mahkemesi: int = 0
+    istinaf_emsal: int = 0
 
 
 class AdministrativeBreakdown(BaseModel):
     kamu_denetciligi_kurumu: int = 0
+    sayistay: int = 0
+    uyusmazlik_mahkemesi: int = 0
+
+
+class ThirdPartyBreakdown(BaseModel):
+    """Resmî portalla doğrulanmamış (üçüncü taraf arşiv) kararlar, kaynak bazında."""
+
+    yargitay: int = 0
+    danistay: int = 0
+    istinaf_emsal: int = 0
+    aym_norm_denetimi: int = 0
 
 
 class LegislationVerificationBreakdown(BaseModel):
@@ -44,6 +56,7 @@ class CorpusStats(BaseModel):
     latest_decision_date: date | None
     court_decisions: CourtDecisionBreakdown = Field(default_factory=CourtDecisionBreakdown)
     administrative: AdministrativeBreakdown = Field(default_factory=AdministrativeBreakdown)
+    third_party: ThirdPartyBreakdown = Field(default_factory=ThirdPartyBreakdown)
     legislation_verification: LegislationVerificationBreakdown = Field(
         default_factory=LegislationVerificationBreakdown
     )
@@ -81,6 +94,9 @@ class LegalSearchResponse(BaseModel):
     query: str
     as_of: date | None = None
     total: int
+    # true: doğrulanmamış toplu katmanın yalnız bir bölümü puanlandı veya tam sürüm zaman aşımına
+    # uğrayıp sınırlı sürüme geçildi; sonuçlar eksik olabilir.
+    partial: bool = False
     limit: int
     offset: int
     results: list[LegalSearchHit]
@@ -143,7 +159,15 @@ class AIAnswerRequest(BaseModel):
     question: str = Field(min_length=5, max_length=2000)
     conversation_id: UUID | None = None
     project_id: UUID | None = None
+    # Büro davası: dava belgeleri (UYAP dahil) kullanıcının özel belgeleri olarak aranır.
+    case_id: UUID | None = None
     as_of: date | None = None
+
+    @model_validator(mode="after")
+    def _single_document_scope(self) -> "AIAnswerRequest":
+        if self.project_id is not None and self.case_id is not None:
+            raise ValueError("project_id ve case_id birlikte verilemez")
+        return self
 
 
 class AICitation(BaseModel):
@@ -190,3 +214,5 @@ class AIAnswerResponse(BaseModel):
     done_reason: str | None = None
     # Request-local candidate counts, never the total matching corpus size.
     search_summary: dict[str, Any] | None = None
+    # Dava kapsamlı sorularda: davadaki kaç belgenin cevaba katılabildiği, hangilerinin okunamadığı.
+    document_scope: dict[str, Any] | None = None

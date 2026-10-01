@@ -72,7 +72,10 @@ def test_insufficient_source_reply_is_detected():
 
 
 def test_explicit_source_insufficiency_explanation_is_detected():
-    from api.ai.verification import is_insufficient_source_reply
+    from api.ai.verification import (
+        has_insufficient_source_signal,
+        is_insufficient_source_reply,
+    )
 
     answer = (
         "Kıdem tazminatına hak kazanmanın şartları hukuki bir konudur. "
@@ -82,6 +85,22 @@ def test_explicit_source_insufficiency_explanation_is_detected():
     )
 
     assert is_insufficient_source_reply(answer)
+    assert has_insufficient_source_signal(answer)
+
+
+def test_mixed_draft_insufficiency_signal_never_approves_the_model_text():
+    from api.ai.verification import (
+        has_insufficient_source_signal,
+        is_insufficient_source_reply,
+    )
+
+    answer = (
+        "Bir yıl çalışmak gerekir. [K1] Ancak, verilen kaynaklar arasında bu "
+        "konuya direkt atıf yapılmamıştır. [K2]"
+    )
+
+    assert not is_insufficient_source_reply(answer)
+    assert has_insufficient_source_signal(answer)
 
 
 def test_answer_with_an_uncited_claim_is_not_grounded():

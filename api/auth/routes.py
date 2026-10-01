@@ -278,7 +278,6 @@ def me(user_id: Annotated[UUID, Depends(current_user_id)]) -> UserResponse:
 
 @router.post("/logout", status_code=204)
 def logout(
-    response: Response,
     http_request: Request,
     user_id: Annotated[UUID | None, Depends(optional_current_user_id)],
 ) -> Response:
@@ -290,6 +289,9 @@ def logout(
             entity_type="user",
             entity_id=user_id,
         )
+    # Enjekte edilen `Response` nesnesi döndürülmez: yeni FastAPI sürümlerinde durum kodu boş kalır ve
+    # bağlantı kesilirdi (çıkış hiç çalışmazdı). 204'ü açıkça kendimiz kurarız.
+    response = Response(status_code=204)
     response.delete_cookie(COOKIE_NAME, path="/")
     return response
 

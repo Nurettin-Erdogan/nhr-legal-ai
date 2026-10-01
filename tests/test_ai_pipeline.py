@@ -75,6 +75,36 @@ def test_lexical_sql_uses_and_query_and_defers_detail_joins():
     assert "legislation.law_no" in STATUTE_RETRIEVAL_SQL
 
 
+def test_execute_retrieval_ranks_full_corpus_not_first_arbitrary_rows():
+    from contextlib import nullcontext
+
+    from api.ai.retrieval import _execute_retrieval
+
+    executed: list[str] = []
+
+    class DummyConnection:
+        def execute(self, query, params=None):
+            executed.append(str(query))
+
+            class Result:
+                def fetchall(self):
+                    return []
+
+            return Result()
+
+        def transaction(self):
+            return nullcontext()
+
+    _execute_retrieval(DummyConnection(), LEXICAL_RETRIEVAL_SQL, {})
+    retrieval = [query for query in executed if "legal_rag_current_lexical_hits" in query]
+    assert retrieval
+    assert "legal_rag_current_lexical_hits_bounded" not in retrieval[0]
+    assert all(
+        "legal_rag_current_lexical_hits(" in query
+        for query in retrieval
+    )
+
+
 def _kdk_context(**overrides):
     from api.ai.rag import RAGContext
 
@@ -170,6 +200,30 @@ def test_merge_lexical_hits_keeps_distinct_sources():
     source_ids = {item.source_id for item in merged}
     assert len(merged) == 2
     assert len(source_ids) == 2
+
+
+def test_retrieve_contexts_never_expands_unknown_topic_to_unbounded_or(monkeypatch):
+    import api.ai.retrieval as retrieval
+
+    narrow = [_kdk_context()]
+    broad = [court_decision_context(content="Fazla mesai ücretinin koşulları açıklanmıştır.")]
+    calls: list[str] = []
+
+    def execute(connection, sql, params, **kwargs):
+        calls.append(sql)
+        return narrow if len(calls) == 1 else broad
+
+    monkeypatch.setattr(retrieval, "_execute_retrieval", execute)
+    monkeypatch.setattr(retrieval, "_retrieve_statute_contexts", lambda *args, **kwargs: [])
+
+    result = retrieval.retrieve_contexts(
+        object(),
+        question="Fazla mesai ücretinin koşulları nelerdir?",
+        top_k=1,
+    )
+
+    assert len(calls) == 1
+    assert calls[0] == retrieval.LEXICAL_RETRIEVAL_SQL
 
 
 def test_cache_key_changes_when_source_version_changes():
@@ -332,6 +386,42 @@ def test_progress_events_do_not_include_unverified_text(monkeypatch):
     assert "result" not in events[stages.index("generating")]
     assert events[-1]["result"]["answer"].endswith("[K1]")
     assert events[-1]["result"]["grounded"] is True
+
+
+def test_slow_generation_keeps_progress_stream_alive_with_pings(monkeypatch):
+    from api.ai import pipeline as ai_pipeline
+
+    context = court_decision_context()
+    answer_cache.clear()
+    monkeypatch.setattr(ai_pipeline, "_PROGRESS_HEARTBEAT_SECONDS", 0.05)
+    monkeypatch.setattr(ai_pipeline, "get_settings", lambda: _settings())
+    monkeypatch.setattr(
+        ai_pipeline,
+        "create_provider",
+        lambda **kwargs: SimpleNamespace(name="deepseek", model="deepseek-r1:8b"),
+    )
+    monkeypatch.setattr(ai_pipeline, "_retrieve", lambda *args, **kwargs: [context])
+
+    def slow_generate(*args, **kwargs):
+        import time
+
+        time.sleep(0.18)
+        return "İşçi, haklı nedenle fesih hâlinde kıdem tazminatına hak kazanır. [K1]"
+
+    monkeypatch.setattr(ai_pipeline, "generate_grounded_answer", slow_generate)
+
+    async def collect():
+        events = []
+        async for event in iter_answer_events(
+            AIAnswerRequest(question="Kıdem tazminatı şartları nelerdir acaba?"),
+            None,
+        ):
+            events.append(event)
+        return events
+
+    events = asyncio.run(collect())
+    assert any(event["stage"] == "ping" for event in events)
+    assert events[-1]["stage"] == "done"
 
 
 def test_ungrounded_progress_emits_error_without_answer_body(monkeypatch):

@@ -6,9 +6,10 @@ from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 import psycopg
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from api.audit import PROJECT_CREATE, AuditContext, record_event
 from api.auth.routes import current_user_id
 from api.db import authenticated_database_connection
 
@@ -93,6 +94,7 @@ def list_projects(
 def create_project(
     request: ProjectCreate,
     user_id: Annotated[UUID, Depends(current_user_id)],
+    http_request: Request,
 ) -> ProjectResponse:
     try:
         with authenticated_database_connection(str(user_id)) as connection:
@@ -127,6 +129,16 @@ def create_project(
                 VALUES (%s, %s, 'owner', %s)
                 """,
                 (project_id, user_id, user_id),
+            )
+            record_event(
+                connection,
+                action=PROJECT_CREATE,
+                actor_user_id=user_id,
+                context=AuditContext.from_request(http_request),
+                entity_type="project",
+                entity_id=project_id,
+                project_id=project_id,
+                metadata={"matter_type": request.matter_type},
             )
             row = connection.execute(
                 _PROJECT_SELECT + " AND project.id = %s", (project_id,)

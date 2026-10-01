@@ -115,3 +115,83 @@ def test_upgrade_dry_run_writes_nothing_and_noop_when_nothing_new():
     already = _FakeConn({"verified_against_mbs": True})
     assert sync._upgrade_verification(already, "local", source, dry_run=False) is False
     assert already.writes == []
+
+
+SEED = {"id": "local", "content_hash": "seed-hash", "ingestion_method": "bulk_seed",
+        "ingest_status": "pending", "raw_text": "T.C.\nKONYA\nKARAR NO : 1"}
+
+
+def _official(**over):
+    row = {"id": "remote", "content_hash": "official-hash",
+           "ingestion_method": "uyap_emsal_public_json_http", "ingest_status": "ready",
+           "raw_text": "T.C.\n\nKONYA\n\nKARAR NO : 1", "metadata": {}}
+    row.update(over)
+    return row
+
+
+def test_seed_promotion_when_official_text_equals_seed_ignoring_whitespace():
+    assert sync.seed_promotion(SEED, _official()) is True
+
+
+def test_seed_promotion_refuses_when_text_really_differs():
+    assert sync.seed_promotion(SEED, _official(raw_text="T.C.\nKONYA\nKARAR NO : 2")) is False
+
+
+def test_seed_promotion_never_uses_unofficial_or_unready_remote():
+    assert sync.seed_promotion(SEED, _official(ingestion_method="bulk_seed")) is False
+    assert sync.seed_promotion(SEED, _official(ingest_status="pending")) is False
+    assert sync.seed_promotion(SEED, _official(metadata={"third_party": True})) is False
+
+
+def test_seed_promotion_only_replaces_pending_seed_rows():
+    verified = {**SEED, "ingestion_method": "uyap_emsal_public_json_http", "ingest_status": "ready"}
+    assert sync.seed_promotion(verified, _official()) is False
+
+
+def test_merge_reports_promoted_in_dry_run(monkeypatch):
+    monkeypatch.setattr(sync, "_existing_source", lambda _c, _r: dict(SEED))
+    assert sync.merge_record(object(), _official(), dry_run=True) == "promoted"
+
+
+def test_remote_sql_keyset_cursor_and_limit():
+    after = (datetime(2026, 10, 1, 12, 10, 20, 787357, tzinfo=timezone.utc),
+             "114c2b71-00ca-4bd0-a181-7b45e59b24ba")
+    sql = sync._remote_sql(None, after=after, limit=1500)
+    assert ("(s.updated_at, s.id) > (TIMESTAMPTZ '2026-10-01T12:10:20.787357+00:00', "
+            "'114c2b71-00ca-4bd0-a181-7b45e59b24ba'::uuid)") in sql
+    assert "ORDER BY s.updated_at, s.id LIMIT 1500" in sql
+    assert "LIMIT" not in sync._remote_sql(None)
+
+
+def test_remote_sql_cursor_rejects_non_uuid_and_naive_time():
+    stamp = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    with pytest.raises(ValueError):
+        sync._remote_sql(None, after=(stamp, "x'; DROP TABLE legal_sources;--"))
+    with pytest.raises(ValueError, match="timezone"):
+        sync._remote_sql(None, after=(datetime(2026, 10, 1),
+                                      "114c2b71-00ca-4bd0-a181-7b45e59b24ba"))
+
+
+def test_lock_allows_only_one_sync_and_releases():
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as folder:
+        lock = Path(folder) / "sync.lock"
+        assert sync._acquire_lock(lock) is True
+        assert sync._acquire_lock(lock) is False
+        lock.unlink()
+        assert sync._acquire_lock(lock) is True
+
+
+def test_stale_lock_from_killed_run_is_taken_over():
+    import os
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as folder:
+        lock = Path(folder) / "sync.lock"
+        lock.write_text("123")
+        old = datetime.now().timestamp() - sync.LOCK_STALE_SECONDS - 60
+        os.utime(lock, (old, old))
+        assert sync._acquire_lock(lock) is True

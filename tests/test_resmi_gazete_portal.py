@@ -119,6 +119,59 @@ def test_non_official_result_url_is_rejected():
         client.search_legislation(law_no="9999", expected_issue_no="39999")
 
 
+def test_issue_number_mismatch_is_tolerated_when_date_and_law_no_match():
+    # Ölçüldü (2026-09-27): Bedesten'in kaydettiği sayı gerçek RG sayısından farklı olabilir
+    # (ör. 31455 kaydedilmiş, gerçeği 31457); tarih + kanun no zaten tekil bir kimlik anahtarıdır,
+    # sayı uyuşmazlığı doğrulamayı reddetmemelidir.
+    archive = """
+    <html><head><meta charset="windows-1254"></head><body>
+    <p>2 Ocak 2099</p><p>Sayı : 39999</p>
+    <a>9999 Sentetik Test Kanunu</a></body></html>
+    """.encode("windows-1254")
+    opener = _Opener(
+        [b"<html>root</html>", json.dumps(_search_payload(), ensure_ascii=False).encode(), archive]
+    )
+
+    result = ResmiGazeteClient(opener=opener, timeout_seconds=5).verify_legislation(
+        publication_date=date(2099, 1, 2),
+        issue_no="11111111",  # yanlış/kayıtlı sayı
+        law_no="9999",
+        law_name="Sentetik Test Kanunu",
+    )
+
+    assert result.verified is True
+    assert result.text_confirmed is True
+    assert result.observed_issue_no == "39999"
+    body = json.loads(opener.requests[1].data.decode())
+    # Tarih varken sayı sunucuya filtre olarak gönderilmez.
+    assert body["parameters"]["genelsayi"] == ""
+
+
+def test_scanned_pdf_archive_is_verified_structurally_without_text_confirmation():
+    # 1980 öncesi sayılar taranmış görüntü PDF'idir (metin katmanı yok). Kanun no + tarih RG'nin
+    # kendi arama dizininde tekil eşleştiği için kimlik doğrulanır, ama tam metin karşılaştırması
+    # yapılamayacağı açıkça `text_confirmed=False` ile işaretlenir.
+    scanned_pdf = b"%PDF-1.3\r%\xe2\xe3\xcf\xd3\r\nnot a real page stream"
+    opener = _Opener(
+        [
+            b"<html>root</html>",
+            json.dumps(_search_payload()).encode(),
+            scanned_pdf,
+        ]
+    )
+
+    result = ResmiGazeteClient(opener=opener, timeout_seconds=5).verify_legislation(
+        publication_date=date(2099, 1, 2),
+        issue_no="39999",
+        law_no="9999",
+        law_name="Sentetik Test Kanunu",
+    )
+
+    assert result.verified is True
+    assert result.text_confirmed is False
+    assert "taranmış" in result.detail
+
+
 def test_mismatching_structured_identity_is_rejected():
     opener = _Opener(
         [b"<html>root</html>", json.dumps(_search_payload()).encode()]

@@ -19,6 +19,8 @@ _INSUFFICIENT_SOURCE_RE = re.compile(
     r"|yeterli kaynak (yok|bulunamadı)"
     r"|atıf (yapılamıyor|yapamadım)"
     r"|verilen kaynaklarla.{0,160}(h\u00fck\u00fcm|bilgi|sonu\u00e7).{0,60}bulunma"
+    r"|verilen kaynaklar (aras\u0131nda|ile).{0,160}(do\u011frudan|direkt)"
+    r".{0,100}(at\u0131f|h\u00fck\u00fcm|bilgi).{0,60}(bulunma|yap\u0131lma)"
     r"|bilgi(lerin)? eksikli\u011fi nedeniyle)",
     re.IGNORECASE,
 )
@@ -95,7 +97,14 @@ def verify_answer(answer: str, contexts: list[RAGContext], *, question: str = ""
             # A provision's dependent qualifications need not repeat every query
             # keyword. Exact source support above is STILL mandatory for them.
             statutory_qualification = bool(markers) and markers.issubset(related_primary)
-            if markers and not passage_relevant(question, line) and not statutory_qualification:
+            # Yalnız kullanıcı belgelerine atıf yapan satır, mevzuat konu kapısıyla değil belge
+            # alaka kuralıyla değerlendirilir (bkz. relevance.document_passage_relevant).
+            document_only = bool(markers) and all(
+                1 <= m <= len(cited_contexts) and cited_contexts[m - 1].source_type == 'document'
+                for m in markers
+            )
+            if (markers and not statutory_qualification
+                    and not passage_relevant(question, line, source_type='document' if document_only else None)):
                 unsupported.append(line)
     return VerifiedAnswer(
         text=text.strip(),
@@ -153,3 +162,17 @@ def is_insufficient_source_reply(text: str) -> bool:
     if _MARKER_PATTERN.search(compact):
         return False
     return bool(_INSUFFICIENT_SOURCE_RE.search(compact))
+
+
+def has_insufficient_source_signal(text: str) -> bool:
+    """Reddedilecek karma bir taslakta kaynak yetersizliği itirafı var mı?
+
+    Bu sonuç tek başına model metnini güvenilir yapmaz. Pipeline bu sinyali
+    yalnız model metninin tamamını atıp sabit, hukuki iddia içermeyen bir
+    yetersizlik mesajı göstermek için kullanır.
+    """
+
+    compact = " ".join(_MARKER_PATTERN.sub("", text).split())
+    return bool(compact) and len(compact) <= 900 and bool(
+        _INSUFFICIENT_SOURCE_RE.search(compact)
+    )

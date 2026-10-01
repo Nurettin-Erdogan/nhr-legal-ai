@@ -11,6 +11,7 @@ from api.ai.on_demand_verify import (
     clear_on_demand_verification_cache,
     explicit_statute_reference,
     verify_pending_statute,
+    verify_relevant_pending_statute,
 )
 from api.ai import pipeline as ai_pipeline
 from api.ai.cache import answer_cache
@@ -175,6 +176,11 @@ def test_pipeline_verifies_exact_pending_statute_before_retrieval(monkeypatch):
         "verify_pending_statute",
         lambda question, **_kwargs: verified.append(question) or "verified",
     )
+    monkeypatch.setattr(
+        ai_pipeline,
+        "verify_relevant_pending_statute",
+        lambda question, **_kwargs: "not_pending",
+    )
 
     def retrieve(*_args, **_kwargs):
         assert verified, "resmî doğrulama retrieval'dan önce çalışmalı"
@@ -196,3 +202,55 @@ def test_pipeline_verifies_exact_pending_statute_before_retrieval(monkeypatch):
 
     assert response.grounded is True
     assert timings.extra["on_demand_legislation"] == "verified"
+
+
+def test_relevant_pending_statute_promotes_only_matching_official_text():
+    candidate = {
+        **_candidate(),
+        "source_id": "00000000-0000-0000-0000-000000000099",
+        "article_no": "14",
+        "raw_text": "uzun madde metni",
+        "metadata": {
+            "verified_against_mbs": True,
+            "mbs_pdf_url": "https://www.mevzuat.gov.tr/MevzuatMetin/1.5.1475.pdf",
+        },
+    }
+    promoted: list[tuple[dict, float, str]] = []
+
+    status = verify_relevant_pending_statute(
+        "Kıdem tazminatına hak kazanma şartları nelerdir?",
+        candidate_loader=lambda _question: [candidate],
+        text_verifier=lambda _law: (
+            True,
+            0.947,
+            "https://www.mevzuat.gov.tr/MevzuatMetin/1.5.1475.pdf",
+        ),
+        promoter=lambda law, ratio, url: promoted.append((law, ratio, url)),
+    )
+
+    assert status == "verified"
+    assert promoted == [
+        (
+            candidate,
+            0.947,
+            "https://www.mevzuat.gov.tr/MevzuatMetin/1.5.1475.pdf",
+        )
+    ]
+
+
+def test_relevant_pending_statute_does_not_promote_text_mismatch():
+    promoted: list[object] = []
+
+    status = verify_relevant_pending_statute(
+        "Kıdem tazminatına hak kazanma şartları nelerdir?",
+        candidate_loader=lambda _question: [{"source_id": "x"}],
+        text_verifier=lambda _law: (
+            False,
+            0.51,
+            "https://www.mevzuat.gov.tr/MevzuatMetin/1.5.1475.pdf",
+        ),
+        promoter=lambda *args: promoted.append(args),
+    )
+
+    assert status == "pending"
+    assert promoted == []

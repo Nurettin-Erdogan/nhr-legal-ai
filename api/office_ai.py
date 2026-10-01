@@ -223,7 +223,7 @@ def _document_context(user_id: UUID, doc_ids: list[UUID], budget: int) -> str:
         with authenticated_database_connection(str(user_id)) as connection:
             rows = connection.execute(
                 "SELECT file_name, uyap_file_no, uyap_birim, doc_date, content_excerpt "
-                "FROM office_case_documents WHERE id = ANY(%s::uuid[]) LIMIT 40",
+                "FROM office_case_documents WHERE id = ANY(%s::uuid[]) AND deleted_at IS NULL LIMIT 40",
                 (doc_ids,),
             ).fetchall()
     except psycopg.Error as exc:
@@ -382,34 +382,26 @@ class OcrRequest(BaseModel):
 
 
 def _ocr_available() -> tuple[bool, str]:
-    try:
-        import pytesseract  # noqa: F401
-        from PIL import Image  # noqa: F401
-    except ImportError:
-        return False, "OCR için `pytesseract` ve `Pillow` kurulu değil (pip install pytesseract pillow)."
-    if shutil.which("tesseract") is None:
-        return False, "Tesseract OCR kurulu değil (Türkçe dil paketiyle: tur.traineddata)."
-    return True, ""
+    # Ortak OCR motoru (Tesseract'ı PATH dışında da bulur, Türkçe dil paketini şart koşar).
+    from api.ocr import ocr_status
+
+    return ocr_status()
 
 
 def _ocr_pages(images: list[str]) -> list[str]:
-    import pytesseract
-    from PIL import Image
+    from api.ocr import OcrTooLarge, OcrUnavailable, ocr_image_pages
 
-    try:
-        available = set(pytesseract.get_languages(config=""))
-    except Exception:  # noqa: BLE001
-        available = set()
-    language = "tur+eng" if {"tur", "eng"} <= available else ("tur" if "tur" in available else "eng")
-    pages = []
+    pages: list[str] = []
     for image in images:
         raw = image.split(",", 1)[1] if image.startswith("data:") and "," in image else image
         try:
             data = base64.b64decode(raw, validate=False)
-            with Image.open(io.BytesIO(data)) as picture:
-                pages.append(pytesseract.image_to_string(picture, lang=language).strip())
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=400, detail="Görsel okunamadı") from exc
+        try:
+            pages.extend(text for _, text in ocr_image_pages(data))
+        except (OcrUnavailable, OcrTooLarge) as exc:
+            raise HTTPException(status_code=400, detail=f"Görsel okunamadı: {exc}") from exc
     return pages
 
 

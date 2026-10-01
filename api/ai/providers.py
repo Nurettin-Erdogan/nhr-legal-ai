@@ -177,7 +177,7 @@ class OllamaProvider:
         estimated_prompt = max(1, prompt_chars // 3)
         room = max(128, self.num_ctx - estimated_prompt)
         return {
-            "temperature": 0.15,
+            "temperature": 0,
             "num_predict": min(self.max_output_tokens, room),
             "num_ctx": self.num_ctx,
         }

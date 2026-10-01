@@ -45,7 +45,7 @@ def evidence_candidates(question, contexts, *, per_source_chars=1200, total_char
                            key=lambda s: sentence_score(s, question), reverse=True)
         for sentence in sentences:
             if (sentence in seen or len(re.findall(r"\w+", sentence)) < 4
-                    or not passage_relevant(question, sentence)):
+                    or not passage_relevant(question, sentence, source_type=context.source_type)):
                 continue
             score = sentence_score(sentence, question)
             if score <= 0 or used + len(sentence) > per_source_chars:

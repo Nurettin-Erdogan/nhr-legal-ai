@@ -50,8 +50,33 @@ def question_intent(question: str) -> Intent | None:
     return None
 
 
-def passage_relevant(question: str, text: str) -> bool:
+def document_passage_relevant(question: str, text: str) -> bool:
+    """Kullanıcı belgesi cümlesi için alaka: konu-niyeti (mevzuat) kapısı uygulanmaz.
+
+    `passage_relevant` hukuki bir konu (ör. kıdem tazminatı) tanıdığında cümlenin o konunun tüm
+    terim gruplarını (kanun/fesih sözcükleri...) içermesini ister; bu, mevzuat ve karar pasajları
+    için ayarlıdır. Bilirkişi raporu gibi bir belgedeki somut olgu cümlesi ("Kıdem tazminatı 8 yıl
+    için 340.000 TL hesaplanmıştır") bu terimleri taşımaz ve eleniyordu. Belgede aranan, sorunun
+    sözcükleriyle örtüşmedir; cevap yine kaynak-destek denetiminden geçer.
+    """
+    q = normalize(question)
+    value = normalize(text)
+    # Tutar sorusunda süre değil tutar içeren cümle aranır (passage_relevant ile aynı kural).
+    if any(t in q for t in ('kaç lira', 'harcı ne kadar', 'harç tutarı')):
+        return bool(re.search(r'\b(?:tl|lira|harç|harcı|ücret)', value))
+    from api.ai.search_plan import plan_search
+    words = [w for w in plan_search(question).text.split() if len(w) >= 4
+             and not w.isdigit() and w not in ('kanun', 'madde', 'sayılı', 'sayili')]
+    if not words:
+        return True
+    stems = {w[:max(4, len(w) - 2)] for w in words}
+    return sum(stem in value for stem in stems) >= min(2, len(stems))
+
+
+def passage_relevant(question: str, text: str, *, source_type: str | None = None) -> bool:
     """Reject known topic mismatches even when the source is genuine."""
+    if source_type == 'document':
+        return document_passage_relevant(question, text)
     intent = question_intent(question)
     value = normalize(text)
     if intent and not all(any(re.search(r'(?<!\w)' + re.escape(term), value) for term in group) for group in intent.groups):

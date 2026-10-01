@@ -90,6 +90,11 @@ def _use_connection(monkeypatch, connection) -> None:
 
 def test_search_returns_legislation_metadata(connection, monkeypatch):
     source_id = _seed_legislation(connection)
+    # VEYA yedeği yalnız resmî katmanı (embedding'li parçalar) tarar.
+    connection.execute(
+        "UPDATE legal_chunks SET embedding = '[0.1,0.2,0.3]'::vector WHERE legal_source_id = %s",
+        (source_id,),
+    )
     _use_connection(monkeypatch, connection)
 
     response = legal.search_legal_sources(

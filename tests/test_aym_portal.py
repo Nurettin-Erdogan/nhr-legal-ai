@@ -323,6 +323,44 @@ def test_adapter_quarantines_unreadable_udf_and_keeps_scanning(monkeypatch):
     assert adapter.last_cursor["type_index"] == 1
 
 
+def test_adapter_prefers_udf_over_unkunyed_html_fragment(monkeypatch):
+    row = AymDecisionRow.from_mapping(SYNTHETIC_ROW)
+    downloaded: list[str] = []
+
+    class Client:
+        def search_page(self, **_kwargs):
+            return SearchPage((row,), total=1, page=1, page_size=20)
+
+        def list_decision_files(self, _row):
+            return (
+                AymDecisionFile("html", row.official_id, "bireysel-basvuru", "fragment.html", "BireyselBasvuru"),
+                AymDecisionFile("udf", row.official_id, "bireysel-basvuru", "full.udf", "BireyselBasvuru"),
+            )
+
+        def download_udf(self, decision_file):
+            downloaded.append(decision_file.filename)
+            if decision_file.filename.endswith(".html"):
+                return b"<html><body>" + b"kunyesiz metin " * 20 + b"</body></html>", "https://kararlarbilgibankasi.anayasa.gov.tr/f.html"
+            return _synthetic_udf(), "https://kararlarbilgibankasi.anayasa.gov.tr/full.udf"
+
+    monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
+    monkeypatch.setenv("AYM_DELAY_SECONDS", "0")
+    from worker.config import get_worker_settings
+
+    get_worker_settings.cache_clear()
+    events = list(
+        AymSourceAdapter(client=Client()).sync(
+            SyncRequest(source="aym", max_records=1, resume=True),
+            cursor={},
+            connection=None,
+            dry_run=True,
+            should_stop=lambda: False,
+        )
+    )
+    assert downloaded == ["full.udf"]
+    assert events[0][0] == "created"
+
+
 def test_adapter_rate_limit_on_search_keeps_cursor_and_stays_alive(monkeypatch):
     class Client:
         def search_page(self, **_kwargs):

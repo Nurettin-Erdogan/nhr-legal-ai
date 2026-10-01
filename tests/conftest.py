@@ -40,3 +40,24 @@ def no_implicit_fast_lookup(monkeypatch):
     # Pipeline unit tests must never discover the live application URL. Fast
     # lookup tests inject their own loader or override this pipeline boundary.
     monkeypatch.setattr('api.ai.pipeline.try_fast_statute', lambda **kwargs: [])
+
+
+class _RecordingExecutor:
+    """Arka plan indekslemeyi çalıştırmaz, yalnız istenen işleri kaydeder."""
+
+    def __init__(self) -> None:
+        self.submitted: list[tuple] = []
+
+    def submit(self, function, *args, **kwargs) -> None:
+        self.submitted.append((function.__name__, args, kwargs))
+
+
+@pytest.fixture(autouse=True)
+def scheduled_indexing(monkeypatch):
+    # Yükleme uç noktaları belgeyi arka planda indeksler; testler bunu asla gerçek veritabanına
+    # göndermemeli. Zamanlamayı doğrulamak isteyen test bu fixture'ı adıyla ister.
+    recorder = _RecordingExecutor()
+    monkeypatch.setattr("api.document_indexing._executor", recorder)
+    # Kayıtçı iş bitirmediği için "işleniyor" işaretleri kalkmaz; testler birbirinin belgesini engellemesin.
+    monkeypatch.setattr("api.document_indexing._inflight", set())
+    return recorder.submitted

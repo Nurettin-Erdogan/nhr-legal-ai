@@ -73,7 +73,7 @@ def test_ollama_embedding_calls_embed_with_configured_dimensions():
             "input": ["hukuk", "karar"],
             "dimensions": 3,
             "truncate": True,
-            "keep_alive": "30m",
+            "keep_alive": "5m",
         }
         return httpx.Response(
             200,
@@ -133,6 +133,26 @@ def test_embedding_batch_retries_transient_quota_error():
     assert waits == [3]
 
 
+def test_embedding_retry_waits_while_assistant_paused(monkeypatch):
+    provider = _TransientProvider()
+    pauses: list[int] = []
+    monkeypatch.setattr(
+        "ingestion.embeddings.wait_if_embeddings_paused",
+        lambda **kwargs: pauses.append(1),
+    )
+
+    vectors = _embed_batch_with_retry(
+        provider,
+        ["metin"],
+        max_retries=2,
+        retry_backoff_seconds=0,
+        sleeper=lambda _: None,
+    )
+
+    assert vectors == [[0.1, 0.2]]
+    assert len(pauses) >= 2
+
+
 def test_embedding_batch_does_not_retry_permanent_error():
     class PermanentProvider(_TransientProvider):
         def embed_documents(self, texts: list[str]) -> list[list[float]]:
@@ -153,6 +173,12 @@ def test_embedding_cli_keeps_private_documents_opt_in():
 
     assert parser.parse_args(["embed"]).target == "legal"
     assert parser.parse_args(["embed", "--target", "documents"]).target == "documents"
+    assert parser.parse_args(["embed"]).until_empty is False
+    assert parser.parse_args(["embed", "--until-empty"]).until_empty is True
+    assert parser.parse_args(["embed"]).jobs == 1
+    assert parser.parse_args(["embed", "--jobs", "6", "--shard-index", "1", "--shard-count", "6"]).jobs == 6
+    assert parser.parse_args(["embed", "--jobs", "6", "--shard-index", "1", "--shard-count", "6"]).shard_index == 1
+    assert parser.parse_args(["embed", "--jobs", "6", "--shard-index", "1", "--shard-count", "6"]).shard_count == 6
 
 
 def test_embedding_cli_defaults_to_ollama_without_provider_env(monkeypatch):

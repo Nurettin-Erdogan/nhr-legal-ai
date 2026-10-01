@@ -7,10 +7,11 @@ from typing import Annotated
 from uuid import UUID, uuid4
 
 import psycopg
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel
 
+from api.audit import DOCUMENT_UPLOAD, AuditContext, record_event
 from api.auth.routes import current_user_id
 from api.config import get_settings
 from api.db import authenticated_database_connection
@@ -82,6 +83,7 @@ def list_documents(
 async def upload_document(
     user_id: Annotated[UUID, Depends(current_user_id)],
     file: Annotated[UploadFile, File()],
+    http_request: Request,
     project_id: Annotated[UUID | None, Form()] = None,
 ) -> DocumentResponse:
     settings = get_settings()
@@ -155,6 +157,21 @@ async def upload_document(
                         for chunk in processed.chunks
                     ],
                 )
+            # Dosya adı ve içerik günlüğe yazılmaz; yalnız belge kimliği ve boyut/parça özeti.
+            record_event(
+                connection,
+                action=DOCUMENT_UPLOAD,
+                actor_user_id=user_id,
+                context=AuditContext.from_request(http_request),
+                entity_type="document",
+                entity_id=document_id,
+                project_id=project_id,
+                metadata={
+                    "extension": processed.extension,
+                    "file_size": len(data),
+                    "chunk_count": len(processed.chunks),
+                },
+            )
             row = connection.execute(
                 _DOCUMENT_SELECT + " AND document.id = %s", (document_id,)
             ).fetchone()

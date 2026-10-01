@@ -100,7 +100,25 @@ def test_metadata_mismatch_is_not_verified():
     assert result.verified is False
     assert result.title_matches is False
     assert "başlığı uyuşmuyor" in result.detail
-    assert "RG sayısı uyuşmuyor" in result.detail
+    # Sayı uyuşmazlığı artık reddetmez, yalnız bilgi notu olarak eklenir (bkz. sayı hatası testi).
+    assert "kayıtlı sayı" in result.detail
+
+
+def test_issue_number_mismatch_alone_does_not_block_verification():
+    # Bedesten'den gelen resmi_gazete_no kayıt hatası içerebilir (ör. "mükerrer" sayılar); başlık
+    # ve tarih eşleştiği sürece kimlik zaten kanun no ile tekil bulunmuştur, sayı yalnız bilgi notudur.
+    opener = _Opener(
+        [json.dumps(_search_payload(), ensure_ascii=False).encode(), _detail_html()]
+    )
+    result = MbsClient(opener=opener, timeout_seconds=5).verify_legislation(
+        law_no="4857",
+        law_name="İş Kanunu",
+        publication_date=date(2003, 6, 10),
+        issue_no="99999",
+    )
+
+    assert result.verified is True
+    assert result.observed_gazette_no == "25134"
 
 
 def test_non_official_document_link_is_rejected():

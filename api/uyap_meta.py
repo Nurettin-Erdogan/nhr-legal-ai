@@ -10,9 +10,10 @@ from __future__ import annotations
 import io
 import re
 import unicodedata
-import zipfile
 from datetime import date
 from typing import TypedDict
+
+from api.udf import extract_udf_text
 
 ALLOWED_EXTENSIONS = frozenset(
     {"pdf", "udf", "docx", "doc", "txt", "tif", "tiff", "jpg", "jpeg", "png", "xml", "eyp"}
@@ -95,12 +96,7 @@ def extract_text_sample(name: str, data: bytes, limit: int = 20000) -> str:
         if ext in ("txt", "xml"):
             return data[:limit].decode("utf-8", errors="ignore")
         if ext == "udf":
-            with zipfile.ZipFile(io.BytesIO(data)) as archive:
-                key = next((n for n in archive.namelist() if n.lower().endswith("content.xml")), None)
-                if key is None:
-                    return ""
-                xml = archive.read(key).decode("utf-8", errors="ignore")
-                return re.sub(r"<[^>]+>", " ", xml)[:limit]
+            return extract_udf_text(data, limit)
         if ext == "pdf":
             from pypdf import PdfReader
 

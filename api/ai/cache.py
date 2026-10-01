@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Sequence
 from datetime import date
 from hashlib import sha256
 from threading import Lock
 from typing import Any
 from uuid import UUID
 
-from api.ai.rag import RAGContext
+from api.ai.rag import HistoryTurn, RAGContext
 
 
 def normalize_question(question: str) -> str:
@@ -27,6 +28,14 @@ def source_fingerprint(contexts: list[RAGContext]) -> str:
     return sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
+def history_fingerprint(history: Sequence[HistoryTurn]) -> str:
+    """Önceki turlar cevabı etkilediği için önbellek anahtarına girer."""
+    if not history:
+        return ""
+    material = "\n".join(f"{turn.question}\n{turn.answer}" for turn in history)
+    return sha256(material.encode("utf-8")).hexdigest()
+
+
 def answer_cache_key(
     *,
     question: str,
@@ -34,6 +43,7 @@ def answer_cache_key(
     as_of: date | None,
     model: str,
     fingerprint: str,
+    history_key: str = "",
 ) -> str:
     material = "\n".join(
         (
@@ -42,6 +52,7 @@ def answer_cache_key(
             "" if as_of is None else as_of.isoformat(),
             model,
             fingerprint,
+            history_key,
         )
     )
     return sha256(material.encode("utf-8")).hexdigest()

@@ -14,6 +14,7 @@ from api.ai.live_verify import verify_third_party_contexts
 from api.ai.trust import verified_contexts
 from api.ai.retrieval import _SELECT_COLUMNS, _DETAIL_JOINS, _VERIFIED_SOURCE_FILTER
 from api.ai.search_plan import plan_search, SEARCH_QUERY_SQL
+from api.ai.turkish_text import restore_turkish
 from api.db import database_connection
 
 router = APIRouter()
@@ -107,7 +108,8 @@ def research_sources(
     limit: int = Query(default=10, ge=1, le=50),
     offset: int = Query(default=0, ge=0),
 ):
-    plan, candidates, has_more, candidate_total = load_candidate_page(q, limit, offset)
+    # ASCII yazılmış soru için aksanlar yalnız arama metninde geri getirilir (`query` yazıldığı gibi döner).
+    plan, candidates, has_more, candidate_total = load_candidate_page(restore_turkish(q), limit, offset)
     try:
         contexts = verified_contexts(verify_third_party_contexts(candidates))
     except Exception:

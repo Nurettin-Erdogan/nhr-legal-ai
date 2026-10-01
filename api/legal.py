@@ -13,6 +13,7 @@ import psycopg
 from fastapi import APIRouter, HTTPException, Query
 from psycopg.errors import QueryCanceled
 
+from api.ai.turkish_text import restore_turkish
 from api.db import database_connection
 from api.schemas import (
     AdministrativeBreakdown,
@@ -22,6 +23,7 @@ from api.schemas import (
     LegalSearchResponse,
     LegalSourceDetail,
     LegislationVerificationBreakdown,
+    ThirdPartyBreakdown,
 )
 
 router = APIRouter(prefix="/api/legal", tags=["legal"])
@@ -38,10 +40,13 @@ _stats_cache: tuple[float, CorpusStats] | None = None
 # memory. Common-word queries can still need 15+ s on ~10M chunks, hence 45 s.
 _SEARCH_TIMEOUT = "45s"
 # Tam sıralı arama bu sürede bitmezse (soğuk diskte yaygın sözcükler) sınırlı adaylı sürüme
-# geçilir; toplam en kötü durum ~12 + 25 sn, arayüzün 50 sn bütçesi içinde.
-_SEARCH_FULL_TIMEOUT = "12s"
-_SEARCH_BOUNDED_TIMEOUT = "25s"
-_SEARCH_MAX_CANDIDATES = 60000
+# geçilir; toplam en kötü durum ~15 + 20 sn, arayüzün 50 sn bütçesi içinde.
+_SEARCH_FULL_TIMEOUT = "15s"
+_SEARCH_BOUNDED_TIMEOUT = "20s"
+# Katmanlı aramada doğrulanmamış toplu katmandan puanlanan en çok eşleşme sayısı.
+_SEARCH_SEED_CAP = 5000
+# VEYA yedeğinde resmî katmandan puanlanan en çok eşleşme sayısı.
+_SEARCH_OR_CANDIDATES = 10000
 _SEARCH_WORK_MEM = "64MB"
 _SEARCH_CACHE_TTL_SECONDS = 300.0
 _SEARCH_CACHE_MAX_ENTRIES = 256
@@ -52,16 +57,33 @@ _search_cache: dict[tuple, tuple[float, LegalSearchResponse]] = {}
 # approximate. It only overlays the cached exact value.
 _LIVE_CHUNKS_TTL_SECONDS = 2.0
 _live_chunks: tuple[float, int] | None = None
+# "Embedding hazır" sayacı: embedding işçilerinin yazdığı kesin sayım + ilerleme dosyaları (bkz. scripts/embed_chunks.py).
+_SHARD_PROGRESS_DIR = Path(__file__).resolve().parents[1] / "data" / "cache"
 
 # The slow counts also live on disk so a restarted API serves the last known totals
 # immediately instead of blocking on multi-minute count(*) scans of ~20M chunks.
 _SLOW_COUNTS_FILE = Path(__file__).resolve().parents[1] / "data" / "cache" / "slow_counts.json"
 
-_SLOW_COUNTS_TTL_SECONDS = 15.0
+_SLOW_COUNTS_TTL_SECONDS = 600.0
 # Üçüncü taraf sayısı ağır (10M satır filtresi): chunk sayımı 15 sn'de bir, bu 10 dk'da bir.
 _SEED_COUNT_TTL_SECONDS = 600.0
 _seed_count_at = 0.0
-_SLOW_COUNTS_TIMEOUT = "120s"
+_SLOW_COUNTS_TIMEOUT = "900s"
+_SEED_BREAKDOWN_KEYS = ("seed_yargitay", "seed_danistay", "seed_aym_norm", "seed_emsal")
+# Embedding yalnız resmî (`ingest_status = 'ready'`) kayıtlara yapılır; "bekleyen" yalnız onların
+# henüz vektörü olmayan parçalarıdır. Doğrulanmamış arşivin parçaları hedef dışıdır ve sayılmaz.
+_OFFICIAL_PENDING_SQL = """
+SELECT count(*)::int AS official_pending
+FROM legal_chunks c
+WHERE c.embedding IS NULL
+  AND c.legal_source_id = ANY(ARRAY(
+      SELECT id FROM legal_sources
+      WHERE ingest_status = 'ready' AND is_current AND deleted_at IS NULL
+  ))
+"""
+# `= ANY(ARRAY(...))` planlayıcıyı kaynak-kimliği indeksine zorlar; JOIN'li biçim 28M satırlık
+# tam tarama yapıp 15 dakikayı aşıyordu.
+_official_pending_at = 0.0
 _slow_counts: tuple[float, dict[str, int]] | None = None
 _slow_counts_lock = threading.Lock()
 _slow_counts_refreshing = False
@@ -133,11 +155,13 @@ _SEARCH_SELECT_COLUMNS = """
         left(chunk.content, 700) AS excerpt
 """
 
-def _current_search_sql(hits_call: str) -> str:
+def _current_search_sql(
+    hits_call: str, partial_sql: str = "true", hits_columns: str = "hits.chunk_id, hits.rank"
+) -> str:
     return f"""
 {_SEARCH_TSQUERY_SQL},
 hits AS (
-    SELECT hits.chunk_id, hits.rank
+    SELECT {hits_columns}
     FROM search_query
     CROSS JOIN LATERAL {hits_call} AS hits
     WHERE search_query.value IS NOT NULL
@@ -156,7 +180,7 @@ ranked AS (
       AND {_VERIFIED_SOURCE_FILTER}
     ORDER BY ls.id, hits.rank DESC, chunk.chunk_index
 )
-SELECT ranked.*, count(*) OVER () AS total
+SELECT ranked.*, count(*) OVER () AS total, {partial_sql} AS partial
 FROM ranked
 ORDER BY rank DESC,
          COALESCE(decision_date, official_gazette_date, version_date) DESC NULLS LAST,
@@ -165,13 +189,18 @@ LIMIT %(limit)s OFFSET %(offset)s
 """
 
 
+# Katmanlı arama: resmî parçalar (kısmi GIN dizini) tam puanlanır, doğrulanmamış toplu katmanda
+# yalnız ilk %(seed_cap)s eşleşme puanlanır; sınır aşıldıysa sonuç "kısmi" işaretlenir.
 _CURRENT_SEARCH_SQL = _current_search_sql(
-    "legal_rag_current_lexical_hits(search_query.value, %(candidate_limit)s)"
+    "legal_rag_current_lexical_hits_tiered("
+    "search_query.value, %(candidate_limit)s, %(seed_cap)s)",
+    "(SELECT COALESCE(bool_or(hits.capped), false) FROM hits)",
+    "hits.chunk_id, hits.rank, hits.capped",
 )
-# Tam sürüm zaman aşımına uğrarsa: eşleşmelerin ilk N tanesi sıralanır (IO sınırlı, kapsam kısmi).
-_CURRENT_SEARCH_BOUNDED_SQL = _current_search_sql(
-    "legal_rag_current_lexical_hits_bounded("
-    "search_query.value, %(candidate_limit)s, %(max_candidates)s)"
+# Geniş (VEYA) yedek: yalnız resmî katmanda sınırlı örnek.
+_CURRENT_SEARCH_OR_SQL = _current_search_sql(
+    "legal_rag_current_lexical_hits_official_bounded("
+    "search_query.value, %(candidate_limit)s, %(or_candidates)s)"
 )
 
 _HISTORICAL_SEARCH_SQL = f"""
@@ -289,9 +318,18 @@ def _stats_from_row(row: dict[str, object]) -> CorpusStats:
             yargitay=int(row["yargitay_count"] or 0),
             danistay=int(row["danistay_count"] or 0),
             anayasa_mahkemesi=int(row["aym_count"] or 0),
+            istinaf_emsal=int(row.get("emsal_count") or 0),
         ),
         administrative=AdministrativeBreakdown(
             kamu_denetciligi_kurumu=int(row["kdk_count"] or 0),
+            sayistay=int(row.get("sayistay_count") or 0),
+            uyusmazlik_mahkemesi=int(row.get("uyusmazlik_count") or 0),
+        ),
+        third_party=ThirdPartyBreakdown(
+            yargitay=int(row.get("seed_yargitay") or 0),
+            danistay=int(row.get("seed_danistay") or 0),
+            istinaf_emsal=int(row.get("seed_emsal") or 0),
+            aym_norm_denetimi=int(row.get("seed_aym_norm") or 0),
         ),
         legislation_verification=LegislationVerificationBreakdown(
             bedesten=int(row["legislation_bedesten_count"] or 0),
@@ -317,9 +355,11 @@ def _live_chunk_estimate() -> int | None:
     try:
         with database_connection() as connection:
             connection.execute("SET LOCAL statement_timeout = '2s'")
+            # n_live_tup DB kabı yeniden başlayınca sıfırlanır; reltuples ANALYZE'dan gelir ve korunur.
             row = connection.execute(
-                "SELECT n_live_tup::bigint AS n FROM pg_stat_user_tables "
-                "WHERE schemaname = 'public' AND relname = 'legal_chunks'"
+                "SELECT greatest(coalesce(s.n_live_tup, 0), c.reltuples::bigint)::bigint AS n "
+                "FROM pg_class c LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid "
+                "WHERE c.oid = 'public.legal_chunks'::regclass"
             ).fetchone()
     except psycopg.Error:
         return cached[1] if cached is not None else None
@@ -329,16 +369,68 @@ def _live_chunk_estimate() -> int | None:
     return value
 
 
+def _read_shard_progress() -> dict[str, tuple[float, int]]:
+    """Embedding işçilerinin (dilim -> (başlangıç, üretilen)) ilerleme dosyaları."""
+    progress: dict[str, tuple[float, int]] = {}
+    for path in _SHARD_PROGRESS_DIR.glob("embed_shard_*.json"):
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            progress[path.stem] = (float(raw["started"]), int(raw["done"]))
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return progress
+
+
+def _read_embedded_base() -> tuple[int, dict[str, tuple[float, int]]] | None:
+    """Embedding işçisinin (admin bağlantısıyla) yazdığı son kesin sayım ve o andaki işçi ilerlemesi.
+
+    nhr_runtime ile bu sayım RLS yüzünden 5 dakikada bile bitmiyor; bu yüzden API saymaz, dosyayı okur.
+    """
+    try:
+        raw = json.loads((_SHARD_PROGRESS_DIR / "embed_base.json").read_text(encoding="utf-8"))
+        snapshot = {name: (float(pair[0]), int(pair[1])) for name, pair in raw["snapshot"].items()}
+        return int(raw["count"]), snapshot
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _live_embedded_count() -> int | None:
+    """Embedding hazır sayısı = son kesin sayım + o günden beri işçilerin ürettiği parçalar.
+
+    İşçiler her partide (birkaç sn) ilerleme yazar; kesin sayım işçi tarafından 30 dakikada bir tazelenir.
+    """
+    if "pytest" in sys.modules:
+        return None
+    base = _read_embedded_base()
+    if base is None:
+        return None
+    count, snapshot = base
+    extra = 0
+    for name, (started, done) in _read_shard_progress().items():
+        earlier = snapshot.get(name)
+        extra += done - earlier[1] if earlier is not None and earlier[0] == started else done
+    return count + max(extra, 0)
+
+
+def _read_embed_progress_ready() -> int | None:
+    from api.embed_progress import read_ready
+
+    return read_ready()
+
+
 def _with_live_chunks(stats: CorpusStats) -> CorpusStats:
     live = _live_chunk_estimate()
     if not live:
         return stats
-    ready = stats.embeddings.ready
+    ready = _live_embedded_count() or _read_embed_progress_ready() or stats.embeddings.ready
     total = max(live, ready)
+    # Bekleyen sayısı yavaş sayımdan gelir ve yalnız resmî parçaları kapsar; toplu arşivin
+    # embedding'i yapılmadığı için `toplam - hazır` "bekleyen" olarak gösterilmez.
+    pending = stats.embeddings.pending if _official_pending_at else total - ready
     return stats.model_copy(
         update={
             "chunk_count": total,
-            "embeddings": stats.embeddings.model_copy(update={"pending": total - ready}),
+            "embeddings": stats.embeddings.model_copy(update={"ready": ready, "pending": pending}),
         }
     )
 
@@ -383,7 +475,14 @@ FROM (
 """
 
 _SEED_COUNT_SQL = """
-SELECT count(*)::int AS seed_count
+SELECT
+    count(*)::int AS seed_count,
+    count(*) FILTER (WHERE COALESCE(ls.authority, '') = 'Yargıtay')::int AS seed_yargitay,
+    count(*) FILTER (WHERE COALESCE(ls.authority, '') = 'Danıştay')::int AS seed_danistay,
+    count(*) FILTER (WHERE COALESCE(ls.authority, '') = 'Anayasa Mahkemesi')::int AS seed_aym_norm,
+    count(*) FILTER (
+        WHERE COALESCE(ls.authority, '') NOT IN ('Yargıtay', 'Danıştay', 'Anayasa Mahkemesi')
+    )::int AS seed_emsal
 FROM legal_sources ls
 WHERE ls.ingestion_method = 'bulk_seed'
   AND ls.ingest_status = 'pending'
@@ -401,10 +500,33 @@ def _load_slow_counts(previous: dict[str, int] | None = None) -> dict[str, int]:
     """
     counts: dict[str, int] = dict(previous or {})
     failures: list[str] = []
-    global _seed_count_at
-    queries = [("chunk", _CHUNK_COUNTS_SQL)]
+    global _seed_count_at, _official_pending_at
+
+    # Exact count(*) on legal_chunks takes minutes once the corpus has tens of
+    # millions of rows.  The API already has lightweight live/progress counters;
+    # use those so a stats refresh cannot compete with ingestion for disk I/O.
+    chunk_count = _live_chunk_estimate()
+    if chunk_count is not None:
+        counts["chunk_count"] = chunk_count
+    embedded_count = _live_embedded_count()
+    if embedded_count is None:
+        embedded_count = _read_embed_progress_ready()
+    if embedded_count is not None:
+        counts["chunk_embedded_count"] = embedded_count
+    if "official_pending" not in counts and "chunk_count" in counts and "chunk_embedded_count" in counts:
+        counts["chunk_embedding_pending_count"] = max(
+            counts["chunk_count"] - counts["chunk_embedded_count"], 0
+        )
+
+    queries: list[tuple[str, str]] = []
+    if "chunk_embedded_count" not in counts or "chunk_count" not in counts:
+        # Canlı sayaç/ilerleme dosyası yoksa (yeni kurulum, dosya silinmiş) eski kısmi indeks
+        # sayımına düşülür; aksi halde istatistik ucu anahtar eksikliğiyle çöker.
+        queries.append(("chunk", _CHUNK_COUNTS_SQL))
     if "seed_count" not in counts or time.monotonic() - _seed_count_at >= _SEED_COUNT_TTL_SECONDS:
         queries.append(("seed", _SEED_COUNT_SQL))
+    if "official_pending" not in counts or time.monotonic() - _official_pending_at >= _SEED_COUNT_TTL_SECONDS:
+        queries.append(("official", _OFFICIAL_PENDING_SQL))
     for label, sql in queries:
         try:
             with database_connection() as connection:
@@ -412,8 +534,12 @@ def _load_slow_counts(previous: dict[str, int] | None = None) -> dict[str, int]:
                 counts.update(dict(connection.execute(sql).fetchone()))
             if label == "seed":
                 _seed_count_at = time.monotonic()
+            elif label == "official":
+                _official_pending_at = time.monotonic()
         except psycopg.Error:
             failures.append(label)
+    if "official_pending" in counts:
+        counts["chunk_embedding_pending_count"] = counts["official_pending"]
     if failures:
         logger.warning("Ağır sayımlar tazelenemedi: %s (eski değer korunuyor)", ", ".join(failures))
     if not counts:
@@ -422,11 +548,17 @@ def _load_slow_counts(previous: dict[str, int] | None = None) -> dict[str, int]:
 
 
 def _read_slow_counts_file() -> dict[str, int] | None:
+    global _official_pending_at
     if "pytest" in sys.modules:
         return None
     try:
         raw = json.loads(_SLOW_COUNTS_FILE.read_text(encoding="utf-8"))
-        return {key: int(raw[key]) for key in ("chunk_count", "chunk_embedded_count", "chunk_embedding_pending_count", "seed_count")}
+        counts = {key: int(raw[key]) for key in ("chunk_count", "chunk_embedded_count", "chunk_embedding_pending_count", "seed_count")}
+        counts.update({key: int(raw[key]) for key in (*_SEED_BREAKDOWN_KEYS, "official_pending") if key in raw})
+        if "official_pending" in counts:
+            # Dosyadaki değer son sayımdan; yeniden başlatmada da "toplam - hazır" gösterilmesin.
+            _official_pending_at = time.monotonic()
+        return counts
     except (OSError, ValueError, KeyError, TypeError):
         return None
 
@@ -522,12 +654,24 @@ def _load_corpus_stats() -> CorpusStats:
                       AND COALESCE(ls.authority, '') = 'Anayasa Mahkemesi'
                 )::int AS aym_count,
                 count(*) FILTER (
+                    WHERE ls.source_type = 'court_decision'
+                      AND COALESCE(ls.authority, '') NOT IN ('Yargıtay', 'Danıştay', 'Anayasa Mahkemesi')
+                )::int AS emsal_count,
+                count(*) FILTER (
                     WHERE ls.source_type = 'other'
                 )::int AS other_count,
                 count(*) FILTER (
                     WHERE ls.source_type = 'other'
                       AND COALESCE(ls.authority, '') = 'Kamu Denetçiliği Kurumu'
                 )::int AS kdk_count,
+                count(*) FILTER (
+                    WHERE ls.source_type = 'other'
+                      AND COALESCE(ls.authority, '') = 'Sayıştay'
+                )::int AS sayistay_count,
+                count(*) FILTER (
+                    WHERE ls.source_type = 'other'
+                      AND COALESCE(ls.authority, '') = 'Uyuşmazlık Mahkemesi'
+                )::int AS uyusmazlik_count,
                 max(ls.published_at) FILTER (
                     WHERE ls.source_type = 'court_decision'
                 )::date AS latest_decision_date
@@ -597,12 +741,14 @@ def search_legal_sources(
 ) -> LegalSearchResponse:
     query = " ".join(q.split())
     params: dict[str, object] = {
-        "query": query,
+        # ASCII yazılmış arama ("kidem tazminati") için aksanlar yalnız arama metninde geri getirilir.
+        "query": restore_turkish(query),
         "limit": limit,
         "offset": offset,
         "as_of": as_of,
         "candidate_limit": max(80, (offset + limit) * 10),
-        "max_candidates": _SEARCH_MAX_CANDIDATES,
+        "seed_cap": _SEARCH_SEED_CAP,
+        "or_candidates": _SEARCH_OR_CANDIDATES,
     }
     sql = _HISTORICAL_SEARCH_SQL if as_of is not None else _CURRENT_SEARCH_SQL
 
@@ -611,7 +757,12 @@ def search_legal_sources(
     if cached is not None and time.monotonic() - cached[0] < _SEARCH_CACHE_TTL_SECONDS:
         return cached[1]
 
-    def run(joiner: str, statement: str = sql, timeout: str = _SEARCH_TIMEOUT) -> list[dict]:
+    def run(
+        joiner: str,
+        statement: str = sql,
+        timeout: str = _SEARCH_TIMEOUT,
+        overrides: dict[str, object] | None = None,
+    ) -> list[dict]:
         # Docker'ın 64 MB /dev/shm'i büyük paralel taramalarda dolabilir ("could not resize
         # shared memory segment", DiskFull); o zaman aynı sorgu paralel işçisiz yeniden denenir.
         for parallel_workers in (2, 0):
@@ -625,7 +776,9 @@ def search_legal_sources(
                     connection.execute(
                         f"SET LOCAL max_parallel_workers_per_gather = {parallel_workers}"
                     )
-                    return connection.execute(statement, {**params, "joiner": joiner}).fetchall()
+                    return connection.execute(
+                        statement, {**params, **(overrides or {}), "joiner": joiner}
+                    ).fetchall()
             except psycopg.errors.DiskFull:
                 if parallel_workers == 0:
                     raise
@@ -639,28 +792,39 @@ def search_legal_sources(
         except QueryCanceled:
             if not bounded:
                 raise
-            logger.warning("Tam sıralı arama zaman aşımı, sınırlı aday sürümü: %r", query)
-            rows = run(" & ", _CURRENT_SEARCH_BOUNDED_SQL, _SEARCH_BOUNDED_TIMEOUT)
+            # Soğuk diskte doğrulanmamış toplu katman yetişmedi: yalnız resmî katman (küçük dizin,
+            # tam puanlı) döner; toplu katmanda eşleşme varsa sonuç "kısmi" işaretlenir.
+            logger.warning("Katmanlı arama zaman aşımı, yalnız resmî katman: %r", query)
+            rows = run(" & ", sql, _SEARCH_BOUNDED_TIMEOUT, {"seed_cap": 0})
         if not rows:
             try:
                 rows = (
-                    run(" | ", _CURRENT_SEARCH_BOUNDED_SQL, _SEARCH_BOUNDED_TIMEOUT)
+                    run(" | ", _CURRENT_SEARCH_OR_SQL, _SEARCH_BOUNDED_TIMEOUT)
                     if bounded
                     else run(" | ")
                 )
             except QueryCanceled:
                 logger.warning("Geniş (VEYA) arama zaman aşımına uğradı: %r", query)
+    except QueryCanceled as exc:
+        logger.warning("Arama zaman aşımına uğradı: %r", query)
+        raise HTTPException(
+            status_code=504,
+            detail="Arama zaman aşımına uğradı; daha belirgin sözcüklerle yeniden deneyin",
+        ) from exc
     except psycopg.Error as exc:
         raise _database_unavailable(exc) from exc
 
     total = int(rows[0]["total"]) if rows else 0
+    partial = bool(rows[0].get("partial")) if rows else False
     results = [dict(row) for row in rows]
     for result in results:
         result.pop("total", None)
+        result.pop("partial", None)
     response = LegalSearchResponse(
         query=query,
         as_of=as_of,
         total=total,
+        partial=partial,
         limit=limit,
         offset=offset,
         results=results,

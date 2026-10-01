@@ -6,7 +6,7 @@ from typing import Annotated
 from uuid import UUID
 
 import psycopg
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from api.ai.pipeline import (
@@ -22,6 +22,7 @@ from api.ai.providers import (
     OllamaProvider,
 )
 from api.ai.research import router as research_router
+from api.audit import AuditContext
 from api.auth.routes import optional_current_user_id
 from api.config import get_settings
 from api.db import authenticated_database_connection, database_connection
@@ -105,13 +106,36 @@ def _require_project_access(user_id: UUID | None, project_id: UUID | None) -> No
         raise HTTPException(status_code=404, detail="Proje bulunamadı")
 
 
+def _require_case_access(user_id: UUID | None, case_id: UUID | None) -> None:
+    if case_id is None:
+        return
+    if user_id is None:
+        raise HTTPException(
+            status_code=401, detail="Dava belgeleriyle çalışmak için oturum açmalısınız"
+        )
+    try:
+        with authenticated_database_connection(str(user_id)) as connection:
+            case = connection.execute(
+                "SELECT id FROM office_cases WHERE id = %s", (case_id,)
+            ).fetchone()
+    except psycopg.Error as exc:
+        raise HTTPException(status_code=503, detail="Dava erişimi doğrulanamadı") from exc
+    # RLS: başkasının davası ile olmayan dava ayırt edilemez.
+    if case is None:
+        raise HTTPException(status_code=404, detail="Dava bulunamadı")
+
+
 @router.post("/answer", response_model=AIAnswerResponse)
 async def answer_question(
     request: AIAnswerRequest,
     user_id: Annotated[UUID | None, Depends(optional_current_user_id)],
+    http_request: Request,
 ) -> AIAnswerResponse:
     _require_project_access(user_id, request.project_id)
-    response, _timings = await execute_answer(request, user_id)
+    _require_case_access(user_id, request.case_id)
+    response, _timings = await execute_answer(
+        request, user_id, audit=AuditContext.from_request(http_request)
+    )
     return response
 
 
@@ -119,12 +143,15 @@ async def answer_question(
 async def answer_question_progress(
     request: AIAnswerRequest,
     user_id: Annotated[UUID | None, Depends(optional_current_user_id)],
+    http_request: Request,
 ) -> StreamingResponse:
     _require_project_access(user_id, request.project_id)
+    _require_case_access(user_id, request.case_id)
+    audit = AuditContext.from_request(http_request)
 
     async def events():
         try:
-            async for event in iter_answer_events(request, user_id):
+            async for event in iter_answer_events(request, user_id, audit):
                 yield json.dumps(event, ensure_ascii=False, default=str) + "\n"
         except HTTPException as exc:
             yield json.dumps(
@@ -132,4 +159,11 @@ async def answer_question_progress(
                 ensure_ascii=False,
             ) + "\n"
 
-    return StreamingResponse(events(), media_type="application/x-ndjson")
+    return StreamingResponse(
+        events(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )

@@ -29,6 +29,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
 from api.audit import AuditContext, record_event
+from api.document_indexing import schedule_index
 from api.auth.routes import current_user_id
 from api.config import get_settings
 from api.db import authenticated_database_connection
@@ -60,6 +61,15 @@ TABLES: dict[str, str] = {
 _USER_ID_ALIAS = {"legal_documents", "risk_analyses", "call_settings"}
 # İstemcinin değiştiremeyeceği sütunlar.
 _PROTECTED_UPDATE = {"id", "owner_id", "created_at"}
+# Çöp kutusu olan tablolar: çöpteki satır genel uçta görünmez ve değiştirilemez, `deleted_at`
+# istemciden yazılamaz, genel uçtan silme yapılamaz. Çöpe taşıma / geri alma / kalıcı silme özel
+# uçlardandır (api/office_trash.py): kalıcı silme sohbet cevaplarını da temizlemelidir.
+_SOFT_DELETE_COLUMN = {"case_documents": "deleted_at"}
+_TABLE_PROTECTED_COLUMNS = {
+    "case_documents": {"deleted_at"},
+    # Özet ve ön ek yalnız tetikleyiciyle yazılır; istemci özet ya da düz değer okuyamaz/yazamaz.
+    "uyap_ingest_tokens": {"token_hash", "token_prefix"},
+}
 _MAX_LIMIT = 1000
 _MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
@@ -204,12 +214,23 @@ def _shape(rows: list[dict[str, Any]], query: OfficeQuery) -> Any:
     return rows[0] if rows else None
 
 
+def _live_rows(where: sql.Composable, table: str) -> sql.Composable:
+    """Çöp kutusu olan tablolarda çöpteki satırları genel sorgudan çıkarır."""
+    column = _SOFT_DELETE_COLUMN.get(table)
+    if column is None:
+        return where
+    return sql.SQL("({}) AND {} IS NULL").format(where, sql.Identifier(column))
+
+
 def _prepare_values(
     values: dict[str, Any], table: str, columns: dict[str, str], user_id: UUID, *, insert: bool
 ) -> dict[str, Any]:
     prepared: dict[str, Any] = {}
+    protected = _TABLE_PROTECTED_COLUMNS.get(table, set())
     for key, raw in values.items():
         name = _column(key, table, columns)
+        if name in protected:
+            continue  # ör. `deleted_at`: istemci belgeyi çöpe taşıyamaz/çıkaramaz
         if not insert and name in _PROTECTED_UPDATE:
             continue
         prepared[name] = _value(columns[name], raw)
@@ -245,6 +266,7 @@ def _run(query: OfficeQuery, table: str, user_id: UUID, request: Request) -> Off
 
             if query.op == "select":
                 where, params = _where(query, table, columns)
+                where = _live_rows(where, table)
                 statement = sql.SQL("SELECT {} FROM {} WHERE {}").format(select, ident, where)
                 if query.order:
                     statement += sql.SQL(" ORDER BY ") + sql.SQL(", ").join(
@@ -320,6 +342,7 @@ def _run(query: OfficeQuery, table: str, user_id: UUID, request: Request) -> Off
                 if not prepared:
                     raise HTTPException(status_code=400, detail="Güncellenecek alan yok")
                 where, params = _where(query, table, columns)
+                where = _live_rows(where, table)
                 statement = sql.SQL("UPDATE {} SET {} WHERE {} RETURNING {}").format(
                     ident,
                     sql.SQL(", ").join(sql.SQL("{} = %s").format(sql.Identifier(n)) for n in prepared),
@@ -332,6 +355,11 @@ def _run(query: OfficeQuery, table: str, user_id: UUID, request: Request) -> Off
                 result = OfficeResult(data=_shape(_rows_out(rows, table), query), count=affected)
 
             else:  # delete
+                if table in _SOFT_DELETE_COLUMN:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Bu kayıt çöp kutusuna taşınarak silinir; kalıcı silme çöp kutusundan yapılır.",
+                    )
                 if not query.filters:
                     raise HTTPException(status_code=400, detail="Filtresiz toplu silme yapılamaz")
                 where, params = _where(query, table, columns)
@@ -465,6 +493,14 @@ def remove_files(
     return {"removed": removed}
 
 
+def _schedule_document_index(user_id: UUID, document_id: UUID, request: Request) -> None:
+    """Metni arka planda aranabilir yapar; hata yüklemeyi asla bozmaz (ask-time taraması yedektir)."""
+    try:
+        schedule_index(user_id, document_id, audit=AuditContext.from_request(request))
+    except Exception:  # noqa: BLE001
+        logger.warning("Belge indeksleme zamanlanamadı id=%s", document_id, exc_info=True)
+
+
 def _case_for_document(connection, case_id: UUID):
     # RLS applies; a foreign case is indistinguishable from a missing one.
     case = connection.execute(
@@ -513,6 +549,7 @@ async def upload_case_document(
                          context=AuditContext.from_request(request), entity_type="case_documents",
                          entity_id=document_id, metadata={"case_id": str(case_id), "size": len(data)})
             ready_to_commit = True
+        _schedule_document_index(user_id, document_id, request)
         return {"id": document_id, "case_id": case_id, "file_name": name}
     except Exception as exc:
         # A failed COMMIT acknowledgement can still mean the row was committed.
@@ -544,11 +581,12 @@ def link_case_document(
             case = _case_for_document(connection, case_id)
             document = connection.execute(
                 "SELECT id, case_id, client_id, storage_path FROM office_case_documents "
-                "WHERE id = %s FOR UPDATE", (document_id,)
+                "WHERE id = %s AND deleted_at IS NULL FOR UPDATE", (document_id,)
             ).fetchone()
             if not document:
                 raise HTTPException(status_code=404, detail="Belge bulunamadı veya erişim yetkiniz yok")
             if document["case_id"] == case_id:
+                _schedule_document_index(user_id, document_id, request)  # zaten bağlı: eksikse tamamla
                 return {"id": document_id, "case_id": case_id}
             if document["case_id"] is not None:
                 raise HTTPException(status_code=409, detail="Belge zaten başka bir davaya bağlı; taşınmadı")
@@ -563,10 +601,86 @@ def link_case_document(
             record_event(connection, action="office.case_document_link", actor_user_id=user_id,
                          context=AuditContext.from_request(request), entity_type="case_documents",
                          entity_id=document_id, metadata={"case_id": str(case_id)})
+        # Bağlanan belge arka planda aranabilir yapılır (yalnız ilk soruda yetişmesine bırakılmaz).
+        _schedule_document_index(user_id, document_id, request)
         return {"id": document_id, "case_id": case_id}
     except psycopg.Error as exc:
         logger.exception("Case document link failed id=%s", document_id)
         raise HTTPException(status_code=503, detail="Belge bağlantısı kaydedilemedi") from exc
+
+
+@router.get("/cases/{case_id}/documents/index")
+def case_document_index(
+    case_id: UUID,
+    user_id: Annotated[UUID, Depends(current_user_id)],
+    request: Request,
+) -> dict[str, Any]:
+    """Dava belgelerinin aranabilirlik durumu: hazır / işleniyor / okunamadı (nedeniyle)."""
+    try:
+        with authenticated_database_connection(str(user_id)) as connection:
+            _case_for_document(connection, case_id)
+            rows = connection.execute(
+                "SELECT od.id, od.file_name, d.status, d.processing_error, d.processed_at, "
+                "(d.metadata->>'ocr') = 'true' AS ocr, "
+                "(SELECT count(*) FROM document_chunks c WHERE c.document_id = d.id) AS chunk_count, "
+                "(SELECT count(*) FROM document_chunks c WHERE c.document_id = d.id "
+                "   AND c.embedding IS NOT NULL) AS embedded_count "
+                "FROM office_case_documents od "
+                "LEFT JOIN documents d ON d.office_case_document_id = od.id "
+                "WHERE od.case_id = %s AND od.deleted_at IS NULL ORDER BY od.created_at",
+                (case_id,),
+            ).fetchall()
+    except psycopg.Error as exc:
+        logger.exception("Case document index status failed case=%s", case_id)
+        raise HTTPException(status_code=503, detail="Belge durumları alınamadı") from exc
+    # Hiç işlenmemiş belgeler (genel tablo/eklenti yoluyla eklenmiş olabilir) durum sorgulanınca arka
+    # planda indekslenmeye başlar; aksi halde "Bekliyor" ilk soruya kadar öylece kalırdı.
+    for row in [r for r in rows if r["status"] is None][:10]:
+        _schedule_document_index(user_id, row["id"], request)
+    documents = [
+        {
+            "id": row["id"],
+            "file_name": row["file_name"],
+            # Satır yoksa belge henüz hiç işlenmemiştir.
+            "status": row["status"] or "pending",
+            "error": row["processing_error"],
+            "ocr": bool(row.get("ocr")),
+            "chunk_count": row["chunk_count"] or 0,
+            "semantic_ready": bool(row["chunk_count"]) and row["embedded_count"] == row["chunk_count"],
+            "processed_at": row["processed_at"],
+        }
+        for row in rows
+    ]
+    return {
+        "case_id": case_id,
+        "total": len(documents),
+        "ready": sum(1 for item in documents if item["status"] == "ready"),
+        "documents": documents,
+    }
+
+
+@router.post("/cases/{case_id}/documents/{document_id}/reindex", status_code=202)
+def reindex_case_document(
+    case_id: UUID,
+    document_id: UUID,
+    user_id: Annotated[UUID, Depends(current_user_id)],
+    request: Request,
+) -> dict[str, Any]:
+    """Belgeyi açıkça yeniden işletir (ör. başarısız olmuş ya da dosyası değişmiş belge)."""
+    try:
+        with authenticated_database_connection(str(user_id)) as connection:
+            _case_for_document(connection, case_id)
+            document = connection.execute(
+                "SELECT id FROM office_case_documents WHERE id = %s AND case_id = %s AND deleted_at IS NULL",
+                (document_id, case_id),
+            ).fetchone()
+    except psycopg.Error as exc:
+        logger.exception("Case document reindex lookup failed id=%s", document_id)
+        raise HTTPException(status_code=503, detail="Belge bulunamadı veya erişilemiyor") from exc
+    if not document:
+        raise HTTPException(status_code=404, detail="Belge bulunamadı veya erişim yetkiniz yok")
+    schedule_index(user_id, document_id, audit=AuditContext.from_request(request), force=True)
+    return {"id": document_id, "case_id": case_id, "status": "queued"}
 
 
 # Specific paths must be registered before the generic table route.

@@ -183,9 +183,8 @@ search_query AS (
 )
 """
 
-# Bedesten articles are only citation-eligible after both independent official
-# catalogue checks. This also protects older rows written as "ready" before
-# ingestion began enforcing verification state.
+# Bedesten maddeleri iki bağımsız katalog kontrolünden sonra atıf alabilir.
+# Tohum (bulk_seed/pending) kararlar da aranır; kullanıcı sorduğunda canlı doğrulanır.
 _VERIFIED_SOURCE_FILTER = """
 (
     (
@@ -193,8 +192,11 @@ _VERIFIED_SOURCE_FILTER = """
         AND (
             ls.source_type <> 'legislation'
             OR (
-                ls.metadata->>'verified_against_gazette' = 'true'
-                AND ls.metadata->>'verified_against_mbs' = 'true'
+                (
+                    ls.metadata->>'verified_against_gazette' = 'true'
+                    AND ls.metadata->>'verified_against_mbs' = 'true'
+                )
+                OR ls.metadata->>'verified_text_against_mbs' = 'true'
             )
         )
     )
@@ -270,6 +272,7 @@ FROM ranked
 JOIN legal_chunks chunk ON chunk.id = ranked.id
 JOIN legal_sources ls ON ls.id = chunk.legal_source_id
 {_DETAIL_JOINS}
+WHERE {_VERIFIED_SOURCE_FILTER}
 ORDER BY ranked.rank DESC, {_RECENCY_ORDER}
 LIMIT %(top_k)s
 """
@@ -370,6 +373,7 @@ FROM ranked
 JOIN legal_chunks chunk ON chunk.id = ranked.id
 JOIN legal_sources ls ON ls.id = chunk.legal_source_id
 {_DETAIL_JOINS}
+WHERE {_VERIFIED_SOURCE_FILTER}
 ORDER BY ranked.score DESC, {_RECENCY_ORDER}
 """
 
@@ -422,11 +426,24 @@ FROM ranked
 JOIN legal_chunks chunk ON chunk.id = ranked.id
 JOIN legal_sources ls ON ls.id = chunk.legal_source_id
 {_DETAIL_JOINS}
+WHERE {_VERIFIED_SOURCE_FILTER}
 ORDER BY ranked.score DESC, {_RECENCY_ORDER}
 """
 
 
-def _document_lexical_sql(search_ctes: str) -> str:
+# Belge aramasının kapsamı: bir proje ya da bir büro davası. Dava kapsamı, UYAP/büro belgelerinin
+# türetilmiş kayıtlarını `office_case_documents.case_id` üzerinden bulur; belge başka davaya
+# bağlanırsa kapsam kendiliğinden güncel kalır. RLS her iki durumda da yalnız erişilebilir
+# belgeleri döndürür.
+_DOCUMENT_SCOPE_PROJECT = "document.project_id = %(project_id)s"
+_DOCUMENT_SCOPE_CASE = (
+    "document.office_case_document_id IN "
+    "(SELECT office_doc.id FROM office_case_documents AS office_doc "
+    "WHERE office_doc.case_id = %(case_id)s AND office_doc.deleted_at IS NULL)"  # çöpteki belge aranmaz
+)
+
+
+def _document_lexical_sql(search_ctes: str, scope: str = _DOCUMENT_SCOPE_PROJECT) -> str:
     return f"""
 WITH {search_ctes}
 SELECT
@@ -459,7 +476,7 @@ JOIN documents AS document ON document.id = chunk.document_id
 CROSS JOIN search_query
 WHERE document.deleted_at IS NULL
   AND document.status = 'ready'
-  AND document.project_id = %(project_id)s
+  AND {scope}
   AND search_query.value IS NOT NULL
   AND chunk.search_vector @@ search_query.value
 ORDER BY rank DESC, document.created_at DESC
@@ -469,8 +486,11 @@ LIMIT %(top_k)s
 
 DOCUMENT_LEXICAL_RETRIEVAL_SQL = _document_lexical_sql(_SEARCH_QUERY_CTES)
 DOCUMENT_LEXICAL_BROAD_SQL = _document_lexical_sql(_BROAD_SEARCH_QUERY_CTES)
+DOCUMENT_CASE_LEXICAL_RETRIEVAL_SQL = _document_lexical_sql(_SEARCH_QUERY_CTES, _DOCUMENT_SCOPE_CASE)
+DOCUMENT_CASE_LEXICAL_BROAD_SQL = _document_lexical_sql(_BROAD_SEARCH_QUERY_CTES, _DOCUMENT_SCOPE_CASE)
 
-DOCUMENT_HYBRID_RETRIEVAL_SQL = f"""
+def _document_hybrid_sql(scope: str = _DOCUMENT_SCOPE_PROJECT) -> str:
+    return f"""
 WITH {_SEARCH_QUERY_CTES},
 lexical AS (
     SELECT chunk.id,
@@ -482,7 +502,7 @@ lexical AS (
     CROSS JOIN search_query
     WHERE document.deleted_at IS NULL
       AND document.status = 'ready'
-      AND document.project_id = %(project_id)s
+      AND {scope}
       AND search_query.value IS NOT NULL
       AND chunk.search_vector @@ search_query.value
     ORDER BY position
@@ -495,7 +515,7 @@ semantic AS (
     JOIN documents AS document ON document.id = chunk.document_id
     WHERE document.deleted_at IS NULL
       AND document.status = 'ready'
-      AND document.project_id = %(project_id)s
+      AND {scope}
       AND chunk.embedding IS NOT NULL
       AND chunk.embedding_model = %(embedding_model)s
     ORDER BY position
@@ -543,6 +563,10 @@ JOIN document_chunks AS chunk ON chunk.id = ranked.id
 JOIN documents AS document ON document.id = chunk.document_id
 ORDER BY ranked.score DESC, document.created_at DESC
 """
+
+
+DOCUMENT_HYBRID_RETRIEVAL_SQL = _document_hybrid_sql()
+DOCUMENT_CASE_HYBRID_RETRIEVAL_SQL = _document_hybrid_sql(_DOCUMENT_SCOPE_CASE)
 
 
 def question_law_numbers(question: str) -> tuple[str, ...]:
@@ -701,17 +725,17 @@ def merge_lexical_hits(
 _LEXICAL_HITS_CALL_RE = re.compile(
     r"legal_rag_current_lexical_hits\(((?:[^()]|%\(\w+\))*)\)"
 )
-_FULL_RETRIEVAL_TIMEOUT = "10s"
-_BOUNDED_RETRIEVAL_TIMEOUT = "15s"
-_BOUNDED_MAX_CANDIDATES = 60000
+# Tam sıralı sözcük araması soğuk diskte zaman aşımına uğrarsa katmanlı sürüme düşülür: resmî
+# katman yine tam puanlanır, doğrulanmamış toplu katmanda yalnız ilk _TIERED_SEED_CAP eşleşme
+# puanlanır (docs/legal-search-performance.md). Sonuç "partial" işaretlenir.
+_TIERED_RETRY_TIMEOUT = "8s"
+_TIERED_SEED_CAP = 3000
 
 
-def _bounded_variant(sql: str) -> str:
-    """Sözcük araması çağrısını, eşleşmelerin ilk N tanesini sıralayan sürümle değiştirir."""
+def _tiered_variant(sql: str, seed_cap: int = _TIERED_SEED_CAP) -> str:
+    """Tam sıralı sözcük araması çağrısını katmanlı sürümle değiştirir."""
     return _LEXICAL_HITS_CALL_RE.sub(
-        lambda match: (
-            f"legal_rag_current_lexical_hits_bounded({match.group(1)}, {_BOUNDED_MAX_CANDIDATES})"
-        ),
+        lambda match: f"legal_rag_current_lexical_hits_tiered({match.group(1)}, {int(seed_cap)})",
         sql,
     )
 
@@ -917,9 +941,19 @@ def retrieve_contexts(
             status = 'ok'
             return rows
         except psycopg.errors.QueryCanceled as exc:
-            errors.append(exc)
             info['partial'] = True
             status = 'timeout'
+            tiered = _tiered_variant(sql)
+            if tiered != sql:
+                # Soğuk disk: aynı sorgu katmanlı sürümle yeniden denenir; yalnız bu da düşerse hata sayılır.
+                try:
+                    rows = _execute_retrieval(connection, tiered, params, timeout=_TIERED_RETRY_TIMEOUT)
+                    completed += 1
+                    status = 'timeout_then_tiered'
+                    return rows
+                except psycopg.errors.QueryCanceled as retry_exc:
+                    exc = retry_exc
+            errors.append(exc)
             return []
         finally:
             info['branches'].append(dict(name=name, status=locals().get('status', 'error'),
@@ -1013,19 +1047,28 @@ def retrieve_document_contexts(
     connection: psycopg.Connection,
     *,
     question: str,
-    project_id: str,
+    project_id: str | None = None,
+    case_id: str | None = None,
     top_k: int,
     query_embedding: list[float] | None = None,
     embedding_model: str | None = None,
 ) -> list[RAGContext]:
+    """Kullanıcının belgelerinde arar; kapsam tam olarak bir proje YA DA bir büro davasıdır."""
+    if (project_id is None) == (case_id is None):
+        raise ValueError("Belge araması için project_id veya case_id'den tam biri verilmelidir")
+    by_case = case_id is not None
+    hybrid_sql = DOCUMENT_CASE_HYBRID_RETRIEVAL_SQL if by_case else DOCUMENT_HYBRID_RETRIEVAL_SQL
+    lexical_sql = DOCUMENT_CASE_LEXICAL_RETRIEVAL_SQL if by_case else DOCUMENT_LEXICAL_RETRIEVAL_SQL
+    broad_sql = DOCUMENT_CASE_LEXICAL_BROAD_SQL if by_case else DOCUMENT_LEXICAL_BROAD_SQL
+
     plan = plan_search(question)
     params = {
         "question": plan.text,
         "required_phrase": plan.phrase,
-        "project_id": project_id,
         "top_k": top_k,
         "candidate_limit": max(top_k * 4, 20),
     }
+    params["case_id" if by_case else "project_id"] = case_id if by_case else project_id
     if query_embedding is not None and embedding_model:
         params.update(
             {
@@ -1033,9 +1076,12 @@ def retrieve_document_contexts(
                 "embedding_model": embedding_model,
             }
         )
-        return _execute_retrieval(connection, DOCUMENT_HYBRID_RETRIEVAL_SQL, params)
-
-    contexts = _execute_retrieval(connection, DOCUMENT_LEXICAL_RETRIEVAL_SQL, params)
+        contexts = _execute_retrieval(connection, hybrid_sql, params)
+    else:
+        contexts = _execute_retrieval(connection, lexical_sql, params)
+    # Hibrit yolun sözcük kolu sıkı (VE) eşleşir: "ne yazıyor?" gibi dolgu sözcüklü bir soruda
+    # embedding'i henüz üretilmemiş parçalar hiç bulunamazdı. Kapsam kullanıcının kendi belgeleriyle
+    # sınırlı olduğundan geniş (VEYA) yedek ucuzdur; her iki yolda da uygulanır.
     if not lexical_hits_insufficient(question, contexts, top_k):
         return contexts
     broad_params = {
@@ -1043,5 +1089,5 @@ def retrieve_document_contexts(
         "top_k": max(top_k * 10, 40),
         "candidate_limit": max(top_k * 10, 40),
     }
-    broad = _execute_retrieval(connection, DOCUMENT_LEXICAL_BROAD_SQL, broad_params)
+    broad = _execute_retrieval(connection, broad_sql, broad_params)
     return merge_lexical_hits(question, contexts, broad, top_k)
