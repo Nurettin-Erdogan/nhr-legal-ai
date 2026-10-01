@@ -184,3 +184,24 @@ def test_multiple_pdfs_are_ambiguous_and_rejected():
     )
     with pytest.raises(MbsError, match="bağlantısı bulunamadı"):
         MbsClient(opener=opener, timeout_seconds=5).search_law("4857")
+
+
+def test_direct_official_pdf_record_is_accepted_without_detail_page():
+    # Cumhurbaşkanı Kararları: MBS ayrıntı sayfası yerine doğrudan resmî PDF'i gösterir.
+    payload = _search_payload(detail_url="https://www.mevzuat.gov.tr/MevzuatMetin/20.5.1002.pdf")
+    payload["data"][0]["mevzuatNo"] = "1002"
+    payload["data"][0]["mevzuatTur"] = 20
+    opener = _Opener([json.dumps(payload, ensure_ascii=False).encode()])  # tek istek: arama
+
+    document = MbsClient(opener=opener, timeout_seconds=5).search_law("1002")
+
+    assert document.pdf_url == "https://www.mevzuat.gov.tr/MevzuatMetin/20.5.1002.pdf"
+    assert document.doc_url is None
+    assert len(opener.requests) == 1
+
+
+def test_direct_document_link_on_foreign_host_is_rejected():
+    payload = _search_payload(detail_url="https://example.test/MevzuatMetin/20.5.1002.pdf")
+    opener = _Opener([json.dumps(payload, ensure_ascii=False).encode()])
+    with pytest.raises(MbsError, match="resmî olmayan"):
+        MbsClient(opener=opener, timeout_seconds=5).search_law("4857")

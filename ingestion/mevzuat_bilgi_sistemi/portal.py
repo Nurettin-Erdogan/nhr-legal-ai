@@ -43,8 +43,8 @@ class MbsDocument:
     official_gazette_date: date | None
     official_gazette_no: str | None
     detail_url: str
-    pdf_url: str
-    doc_url: str
+    pdf_url: str | None
+    doc_url: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +203,24 @@ class MbsClient:
             raise MbsError(f"{law_no} numaralı mevzuat için tekil MBS kaydı bulunamadı")
         item = exact[0]
         detail_url = _official_url(item.get("url"), base_url=self.base_url, expected_path="/mevzuat")
+        direct_path = urlparse(detail_url).path.casefold()
+        if direct_path.startswith("/mevzuatmetin/") and direct_path.endswith((".pdf", ".doc", ".docx")):
+            # Cumhurbaşkanı Kararları gibi türlerde MBS ayrıntı sayfası yerine doğrudan resmî belgeyi
+            # gösterir (ölçüldü: 2026-10-01, tür 20). Adres zaten /MevzuatMetin/ altında resmî bir
+            # belgedir; kimlik yine başlık + tarihle doğrulanır.
+            is_pdf = direct_path.endswith(".pdf")
+            return MbsDocument(
+                law_no=law_no.strip(),
+                law_name=normalize_text(html_to_text(str(item.get("mevAdi") or ""))),
+                legislation_type=int(item.get("mevzuatTur") or 0),
+                series=str(item.get("mevzuatTertip") or "").strip(),
+                acceptance_date=_parse_date(item.get("kabulTarih")),
+                official_gazette_date=_parse_date(item.get("resmiGazeteTarihi")),
+                official_gazette_no=str(item.get("resmiGazeteSayisi") or "").strip() or None,
+                detail_url=detail_url,
+                pdf_url=detail_url if is_pdf else None,
+                doc_url=None if is_pdf else detail_url,
+            )
         detail_html = self._request(detail_url).decode("utf-8", errors="replace")
         parser = _DocumentLinkParser()
         parser.feed(detail_html)
