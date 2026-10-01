@@ -6,6 +6,7 @@ import {
   FileSearch,
   Gavel,
   Camera,
+  Briefcase,
   Inbox,
   FolderOpen,
   Link2,
@@ -34,6 +35,7 @@ import {
 
 const navItems = [
   { to: "/dashboard", icon: LayoutDashboard, label: "Ana Sayfa" },
+  { to: "/dashboard/cases", icon: Briefcase, label: "Davalar" },
   { to: "/dashboard/automation", icon: Rocket, label: "Tek Tuşla Otomasyon" },
 
   { to: "/dashboard/applications", icon: Inbox, label: "Başvurular" },
