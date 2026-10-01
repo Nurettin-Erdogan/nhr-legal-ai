@@ -141,6 +141,55 @@ def _merge_child(conn: psycopg.Connection, table: str, row: dict[str, Any] | Non
         _insert(conn, table, row, columns)
 
 
+VERIFICATION_FLAGS = (
+    ("verified_against_gazette", "official_gazette_verification"),
+    ("verified_against_mbs", "mbs_verification"),
+)
+
+
+def verification_patch(local_metadata: dict[str, Any] | None,
+                       remote_metadata: dict[str, Any] | None) -> dict[str, Any]:
+    """Metadata keys that only ADD an official verification the local row lacks.
+
+    Monotonic by design: a verification is never revoked here, and operational
+    counters (attempt counts, retry stamps) are never copied between machines.
+    """
+    local = local_metadata or {}
+    remote = remote_metadata or {}
+    patch: dict[str, Any] = {}
+    for flag, detail in VERIFICATION_FLAGS:
+        if remote.get(flag) is True and local.get(flag) is not True:
+            patch[flag] = True
+            if detail in remote:
+                patch[detail] = remote[detail]
+    return patch
+
+
+def _upgrade_verification(conn: psycopg.Connection, local_id: str,
+                          source: dict[str, Any], *, dry_run: bool) -> bool:
+    """Carry Azure's mevzuat verification progress into the local row."""
+    row = conn.execute(
+        "SELECT metadata FROM legal_sources WHERE id=%s", (local_id,)
+    ).fetchone()
+    patch = verification_patch(row[0] if row else None, source.get("metadata"))
+    if not patch:
+        return False
+    if dry_run:
+        return True
+    merged = {**(row[0] or {}), **patch}
+    both = all(merged.get(flag) is True for flag, _ in VERIFICATION_FLAGS)
+    conn.execute(
+        """UPDATE legal_sources
+           SET metadata = %s,
+               ingest_status = CASE WHEN %s THEN 'ready' ELSE ingest_status END,
+               last_verified_at = CASE WHEN %s
+                   THEN COALESCE(%s, now()) ELSE last_verified_at END
+           WHERE id = %s""",
+        (Jsonb(merged), both, both, source.get("last_verified_at"), local_id),
+    )
+    return True
+
+
 def merge_record(conn: psycopg.Connection, payload: dict[str, Any],
                  *, dry_run: bool = False) -> str:
     """Import a source atomically; never overwrite a divergent local source."""
@@ -149,6 +198,10 @@ def merge_record(conn: psycopg.Connection, payload: dict[str, Any],
     if existing and existing["content_hash"] != source["content_hash"]:
         return "conflict"
     if dry_run:
+        if existing and source["source_type"] == "legislation" and _upgrade_verification(
+            conn, str(existing["id"]), source, dry_run=True
+        ):
+            return "verified"
         return "same" if existing else "new"
     local_id = str(existing["id"]) if existing else source["id"]
     if not existing:
@@ -189,6 +242,10 @@ def merge_record(conn: psycopg.Connection, payload: dict[str, Any],
         revision = dict(revision)
         revision["legal_source_id"] = local_id
         _insert(conn, "legal_source_revisions", revision, REVISION_COLUMNS)
+    if existing and source["source_type"] == "legislation" and _upgrade_verification(
+        conn, local_id, source, dry_run=False
+    ):
+        return "verified"
     return "same" if existing else "new"
 
 
@@ -260,7 +317,7 @@ def main(argv: list[str] | None = None) -> int:
               "-U nhr_app -d nhr_legal_ai -c " + shlex.quote(sql))
     command = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
                "-o", "ConnectTimeout=10", args.host, remote]
-    totals = {"new": 0, "same": 0, "conflict": 0, "deferred": 0, "failed": 0}
+    totals = {"new": 0, "same": 0, "verified": 0, "conflict": 0, "deferred": 0, "failed": 0}
     highest: datetime | None = None
     with psycopg.connect(db_url, autocommit=False) as conn:
         with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('SixHours', 'Daily')]
+    [ValidateSet('Hourly', 'SixHours', 'Daily')]
     [string]$Frequency = 'SixHours',
     [switch]$UpdateExisting
 )
@@ -25,7 +25,11 @@ if ($existing) {
 }
 
 $action = New-ScheduledTaskAction -Execute $python -Argument ('"' + $sync + '" --embed-limit 500') -WorkingDirectory $root
-if ($Frequency -eq 'SixHours') {
+if ($Frequency -eq 'Hourly') {
+    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5) `
+        -RepetitionInterval (New-TimeSpan -Hours 1) `
+        -RepetitionDuration (New-TimeSpan -Days 3650)
+} elseif ($Frequency -eq 'SixHours') {
     $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5) `
         -RepetitionInterval (New-TimeSpan -Hours 6) `
         -RepetitionDuration (New-TimeSpan -Days 3650)
