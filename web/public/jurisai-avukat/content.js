@@ -1,12 +1,35 @@
-/* Juris AI - UYAP Avukat Portalı içerik betiği
-   Evrak tablosunu bulur, her satıra "Juris AI'ya Aktar" düğmesi enjekte eder,
+/* NHR Hukuk - UYAP Avukat Portalı içerik betiği
+   Evrak tablosunu bulur, her satıra "NHR Hukuk'a Aktar" düğmesi enjekte eder,
    toplu aktarım için listenin üstüne bir araç çubuğu ekler.
-   Kullanıcının kendi UYAP oturumu kullanılır; şifre/e-imza asla okunmaz. */
+   Kullanıcının kendi UYAP oturumu kullanılır; şifre/e-imza asla okunmaz.
+
+   Otomatik aktarım (dosya açılınca evrakları kendiliğinden gönderme) yalnızca kullanıcı ayar
+   penceresinde açıkça açtıysa çalışır; varsayılan KAPALIDIR. Kapalıyken yalnızca düğmeye basılan
+   evrak gönderilir. */
 
 (() => {
+  let autoSync = false;
+  try {
+    // Ayar asenkron gelir; ilk tarama ondan önce bitmiş olabilir. Açıksa hemen yeniden taranır
+    // (aksi halde sayfa değişmedikçe otomatik aktarım hiç başlamazdı).
+    chrome.storage.sync.get(["autoSync"]).then((stored) => {
+      autoSync = stored.autoSync === true;
+      if (autoSync) refresh();
+    });
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === "sync" && changes.autoSync) {
+        autoSync = changes.autoSync.newValue === true;
+        if (autoSync) refresh();
+      }
+    });
+  } catch (_) {
+    /* ayar okunamazsa güvenli taraf: otomatik aktarım kapalı kalır */
+  }
+
   const DOC_RE =
     /\.(pdf|udf|docx?|tiff?|jpe?g|png|eyp)(\?|#|$)|indir|download|evrak|dokuman|doküman|belge|goster|dosyaIndir|udfGoster/i;
   const BTN_CLASS = "jurisai-send-btn";
+  const MAX_ROW_TEXT = 600; // bundan uzun metinli öğe tek bir evrak satırı değil, kapsayıcıdır
   const throttleGap = 1500; // portalın oturumu kapatmaması için istekler arası bekleme
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -147,7 +170,7 @@
     } catch (error) {
       if (button) {
         button.disabled = false;
-        button.textContent = "Juris AI'ya Aktar";
+        button.textContent = "NHR Hukuk'a Aktar";
       }
       toast(`Aktarılamadı: ${error.message}`, "error");
       return false;
@@ -155,22 +178,46 @@
   }
 
   /* ---------- Düğme enjeksiyonu ---------- */
+  const ROW_SELECTOR = "table tr, li, .list-group-item, .evrak-satir";
+
+  /** Satırdaki bağlantılardan indirileni seçer ("indir"/dosya uzantısı), yoksa ilkini. */
+  function primaryDocUrl(urls) {
+    return (
+      urls.find((u) => /indir|download|\.(pdf|udf|docx?|tiff?|jpe?g|png|eyp)(\?|#|$)/i.test(u)) ||
+      urls[0]
+    );
+  }
+
+  /** Sayfada bir dava/dosya bağlamı var mı (esas numarası)? Giriş ve ana sayfalarda düğme çıkmaz. */
+  function hasCaseContext() {
+    return !!esasNoFrom((document.body?.textContent || "").replace(/\s+/g, " ").slice(0, 40000));
+  }
+
   function injectRowButtons() {
-    const rows = [
-      ...document.querySelectorAll("table tr, .list-group-item, .evrak-satir, ul li, .card, .row"),
-    ];
+    if (!hasCaseContext()) return 0;
+    // Genel kapsayıcılar (.card, .row) bilerek yok: tüm bölümü tek "evrak" sanıp yanlış düğme koyuyordu.
+    const rows = [...document.querySelectorAll(ROW_SELECTOR)];
     let count = 0;
     for (const row of rows) {
       if (row.querySelector(`.${BTN_CLASS}`)) {
         count++;
         continue;
       }
-      const url = urlFromRow(row);
-      if (!url) continue;
+      if (row.closest("nav, header, footer, [role='navigation']")) continue;
+      if (textOf(row).length > MAX_ROW_TEXT) continue;
+      const found = collectDocUrls(row);
+      if (!found.length) continue;
+      // İç içe başka bir evrak satırı barındıran öğe bir kapsayıcıdır; belgelerin kendi
+      // satırları ayrıca ele alınır. (Tek satırda hem "Görüntüle" hem "İndir" olabilir.)
+      const hasNestedRow = [...row.querySelectorAll(ROW_SELECTOR)].some(
+        (inner) => inner !== row && collectDocUrls(inner).length > 0,
+      );
+      if (hasNestedRow) continue;
+      const url = primaryDocUrl(found);
       const button = document.createElement("button");
       button.type = "button";
       button.className = BTN_CLASS;
-      button.textContent = "Juris AI'ya Aktar";
+      button.textContent = "NHR Hukuk'a Aktar";
       button.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -190,7 +237,7 @@
 
     const label = document.createElement("span");
     label.className = "jurisai-brand";
-    label.textContent = "⚖️ Juris AI";
+    label.textContent = "⚖️ NHR Hukuk";
 
     const allBtn = document.createElement("button");
     allBtn.type = "button";
@@ -199,6 +246,14 @@
     allBtn.addEventListener("click", async () => {
       const buttons = [...document.querySelectorAll(`.${BTN_CLASS}:not(.jurisai-done)`)];
       if (!buttons.length) return toast("Aktarılacak evrak bulunamadı.", "info");
+      // Toplu aktarım açık onaysız başlamaz: müvekkil belgeleri kullanıcının hesabına gider.
+      if (
+        !window.confirm(
+          `Bu sayfadaki ${buttons.length} evrak NHR Hukuk hesabınıza aktarılacak. Devam edilsin mi?`,
+        )
+      ) {
+        return;
+      }
       allBtn.disabled = true;
       let ok = 0;
       for (let i = 0; i < buttons.length; i++) {
@@ -261,7 +316,7 @@
     const hint = document.createElement("div");
     hint.className = "jurisai-toolbar jurisai-hint";
     hint.textContent =
-      "⚖️ Juris AI: Bu sayfa dosya listesi, evraklar burada bulunmaz. Bir dosyayı açın (Dosya Görüntüle) ve Evraklar/Belgeler sekmesine geçin — aktarım düğmeleri orada görünür.";
+      "⚖️ NHR Hukuk: Bu sayfa dosya listesi, evraklar burada bulunmaz. Bir dosyayı açın (Dosya Görüntüle) ve Evraklar/Belgeler sekmesine geçin — aktarım düğmeleri orada görünür.";
     document.body.appendChild(hint);
   }
 
@@ -286,6 +341,7 @@
 
   const preparedDialogs = new WeakSet();
   function prepareOpenCaseDialogs() {
+    if (!autoSync) return; // otomatik aktarım kapalıyken pencereye dokunma, hiçbir şey gönderme
     const dialogs = [...document.querySelectorAll("[role='dialog'], .modal")];
     for (const dialog of dialogs) {
       const rect = dialog.getBoundingClientRect();
@@ -410,12 +466,13 @@
   let autoBusy = false;
 
   async function autoIngest(meta, docUrls) {
+    if (!autoSync) return;
     const key = `${meta.dosyaEsasNo}|${meta.mahkeme}|${docUrls.slice(0, 3).join(",")}`;
     if (autoSent.has(key) || autoBusy) return;
     autoSent.add(key);
     autoBusy = true;
     const label = meta.mahkeme || meta.dosyaEsasNo || "Dosya";
-    const bubble = liveToast("Dosya Juris AI'ya aktarılıyor…");
+    const bubble = liveToast("Dosya NHR Hukuk'a aktarılıyor…");
     try {
       const res = await chrome.runtime.sendMessage({
         type: "AUTO_INGEST_CASE",
@@ -423,7 +480,7 @@
       });
       if (res?.ok) {
         bubble.done(
-          `${label} dosyası Juris AI'ya başarıyla aktarıldı${res.files ? ` (${res.files} evrak)` : ""}`,
+          `${label} dosyası NHR Hukuk'a başarıyla aktarıldı${res.files ? ` (${res.files} evrak)` : ""}`,
           "success",
         );
       } else {
@@ -438,6 +495,7 @@
 
   /** Dosya detay ekranı açıldıktan sonra evrakları da yakalar. */
   function scheduleDetailSweep(baseMeta, scope = document) {
+    if (!autoSync) return;
     for (const delay of [900, 2500, 6000]) {
       setTimeout(async () => {
         try {
@@ -468,6 +526,7 @@
     "click",
     (event) => {
       try {
+        if (!autoSync) return; // yalnız açıkça açılmış otomatik aktarımda tıklamalar izlenir
         const target = event.target;
         if (!(target instanceof Element)) return;
         if (target.closest(`.${BTN_CLASS}, .jurisai-toolbar, .jurisai-toast`)) return;
@@ -493,6 +552,48 @@
     observer._timer = setTimeout(refresh, 600);
   });
   observer.observe(document.documentElement, { childList: true, subtree: true });
+
+  /* ---------- Sayfa tanısı ----------
+     Gerçek UYAP sayfası yapısı değiştiğinde seçicileri ayarlamak için YAPI özeti üretir. Hiçbir metin,
+     isim, numara ya da bağlantı değeri içermez: yalnız sayılar, rakamları maskelenmiş yol biçimleri ve
+     sorgu parametresi ADLARI. Popup'taki "Sayfa tanısını kopyala" düğmesi bunu çağırır. */
+  const mask = (value) => String(value).replace(/\d/g, "#").slice(0, 80);
+  function urlShape(raw) {
+    try {
+      const url = new URL(raw, location.href);
+      const keys = [...url.searchParams.keys()].slice(0, 8).join(",");
+      return `${url.hostname === location.hostname ? "" : "(dış) "}${mask(url.pathname)}${keys ? "?" + keys : ""}`;
+    } catch (_) {
+      return "(çözümlenemedi)";
+    }
+  }
+  function diagnose() {
+    const rows = [...document.querySelectorAll(ROW_SELECTOR)];
+    const withUrls = rows.filter((row) => collectDocUrls(row).length);
+    const shapes = new Map();
+    for (const row of withUrls.slice(0, 40)) {
+      for (const url of collectDocUrls(row).slice(0, 3)) {
+        const shape = urlShape(url);
+        shapes.set(shape, (shapes.get(shape) || 0) + 1);
+      }
+    }
+    return {
+      extensionVersion: chrome.runtime.getManifest().version,
+      frame: window === window.top ? "üst" : "iç",
+      host: location.hostname,
+      path: mask(location.pathname),
+      caseContext: hasCaseContext(),
+      tables: document.querySelectorAll("table").length,
+      candidateRows: rows.length,
+      rowsWithDocUrls: withUrls.length,
+      rowsTooLong: rows.filter((row) => textOf(row).length > MAX_ROW_TEXT).length,
+      buttonsInjected: document.querySelectorAll(`.${BTN_CLASS}`).length,
+      toolbar: !!document.querySelector(".jurisai-toolbar"),
+      docUrlShapes: [...shapes].map(([shape, count]) => ({ shape, count })).slice(0, 12),
+      autoSync,
+    };
+  }
+  window.__jurisaiDiagnose = diagnose;
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "JURISAI_TOAST") {

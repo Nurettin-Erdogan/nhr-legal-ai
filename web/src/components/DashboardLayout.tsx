@@ -65,7 +65,7 @@ export const DashboardLayout = ({
   const incompleteScreen = [
     "/dashboard/appointments", "/dashboard/execution", "/dashboard/leads",
     "/dashboard/modules", "/dashboard/payments", "/dashboard/reports", "/dashboard/staff",
-  ].includes(location.pathname) || /^\/dashboard\/cases\/.+/.test(location.pathname);
+  ].includes(location.pathname);
   const { profile, user, signOut } = useAuth();
   const navigate = useNavigate();
 

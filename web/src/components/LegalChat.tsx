@@ -27,51 +27,26 @@ import {
   listConversations,
   STAGE_LABELS,
   type ChatMessage,
-  type Citation,
   type ConversationSummary,
 } from "@/lib/ai-api";
-
-function CitationList({ citations }: { citations: Citation[] }) {
-  if (!citations.length) return null;
-  return (
-    <div className="mt-3 pt-3 border-t border-border space-y-1.5">
-      <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
-        Cevapta kullanılan atıflar
-      </p>
-      {citations.map((c) => (
-        <div key={c.marker} className="text-xs flex flex-wrap items-start gap-1.5">
-          <span className="font-mono text-muted-foreground">{c.marker}</span>
-          {c.source_url && /^https?:\/\//i.test(c.source_url) ? (
-            <a
-              href={c.source_url}
-              target="_blank"
-              rel="noreferrer"
-              className="underline underline-offset-2"
-            >
-              {c.reference}
-            </a>
-          ) : (
-            <span>{c.reference}</span>
-          )}
-          {c.verification !== "official" && (
-            <span className="rounded px-1.5 py-0.5 bg-amber-500/15 text-amber-700 dark:text-amber-400 text-[10px] font-medium">
-              doğrulanmadı
-            </span>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
+import { CitationList, DocumentScopeNotice } from "@/components/ChatCitations";
 
 export function LegalChat({
   title,
   examples,
   intro,
+  caseId,
+  compact = false,
+  onAnswered,
 }: {
   title: string;
   examples: string[];
   intro: string;
+  /** Büro davası: sorular o davaya bağlı belgelerde de aranır; cevap belge kapsamını gösterir. */
+  caseId?: string;
+  /** Sohbet listesi olmadan, bir sayfanın içine gömülü kullanım (dava sohbeti). */
+  compact?: boolean;
+  onAnswered?: () => void;
 }) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -91,8 +66,9 @@ export function LegalChat({
       .catch(() => setConversations([]));
 
   useEffect(() => {
-    refresh();
-  }, []);
+    // Dava sohbeti tek oturumluktur: genel sohbet geçmişi bir davaya bağlı değildir, listelenmez.
+    if (!compact) refresh();
+  }, [compact]);
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, loading]);
@@ -150,6 +126,7 @@ export function LegalChat({
     try {
       const result = await askAssistant(question, {
         conversationId: activeId,
+        caseId: caseId ?? null,
         onStage: (s) => setStage(STAGE_LABELS[s] ?? ""),
         onSearchSummary: setRequestSummary,
       });
@@ -163,11 +140,13 @@ export function LegalChat({
           grounded: result.grounded,
           unverifiedMarkers: result.unverified_markers,
           searchSummary: result.search_summary,
+          documentScope: result.document_scope ?? undefined,
         },
       ]);
       setRequestSummary(undefined);
       if (result.conversation_id) setActiveId(result.conversation_id);
-      refresh();
+      if (!compact) refresh();
+      onAnswered?.();
     } catch (e) {
       const error = e instanceof Error ? e.message : "Hata oluştu";
       setRequestError(error);
@@ -179,42 +158,50 @@ export function LegalChat({
   };
 
   return (
-    <div className="grid lg:grid-cols-[280px_1fr] gap-4 h-[calc(100vh-220px)]" aria-label={title}>
-      <div className="rounded-2xl bg-card border border-border p-3 flex flex-col">
-        <Button onClick={newChat} variant="elite" size="sm" className="mb-3">
-          <Plus className="h-4 w-4" /> Yeni Sohbet
-        </Button>
-        <ScrollArea className="flex-1">
-          <div className="space-y-1">
-            {conversations.map((c) => (
-              <div
-                key={c.id}
-                onClick={() => open(c.id)}
-                className={cn(
-                  "group flex items-center gap-2 px-2 py-2 rounded-md cursor-pointer hover:bg-muted text-sm",
-                  activeId === c.id && "bg-muted",
-                )}
-              >
-                <MessageSquare className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                <span className="truncate flex-1">{c.title ?? "Sohbet"}</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    remove(c.id);
-                  }}
-                  className="opacity-0 group-hover:opacity-100 transition"
-                  aria-label="Sohbeti sil"
+    <div
+      className={cn(
+        "grid gap-4",
+        compact ? "grid-cols-1 h-[600px]" : "lg:grid-cols-[280px_1fr] h-[calc(100vh-220px)]",
+      )}
+      aria-label={title}
+    >
+      {!compact && (
+        <div className="rounded-2xl bg-card border border-border p-3 flex flex-col">
+          <Button onClick={newChat} variant="elite" size="sm" className="mb-3">
+            <Plus className="h-4 w-4" /> Yeni Sohbet
+          </Button>
+          <ScrollArea className="flex-1">
+            <div className="space-y-1">
+              {conversations.map((c) => (
+                <div
+                  key={c.id}
+                  onClick={() => open(c.id)}
+                  className={cn(
+                    "group flex items-center gap-2 px-2 py-2 rounded-md cursor-pointer hover:bg-muted text-sm",
+                    activeId === c.id && "bg-muted",
+                  )}
                 >
-                  <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                </button>
-              </div>
-            ))}
-            {conversations.length === 0 && (
-              <p className="text-xs text-muted-foreground p-2">Henüz sohbet yok</p>
-            )}
-          </div>
-        </ScrollArea>
-      </div>
+                  <MessageSquare className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span className="truncate flex-1">{c.title ?? "Sohbet"}</span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      remove(c.id);
+                    }}
+                    className="opacity-0 group-hover:opacity-100 transition"
+                    aria-label="Sohbeti sil"
+                  >
+                    <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                  </button>
+                </div>
+              ))}
+              {conversations.length === 0 && (
+                <p className="text-xs text-muted-foreground p-2">Henüz sohbet yok</p>
+              )}
+            </div>
+          </ScrollArea>
+        </div>
+      )}
 
       <div className="rounded-2xl bg-card border border-border flex flex-col overflow-hidden">
         <div ref={scrollRef} className="flex-1 overflow-y-auto p-6">
@@ -281,12 +268,28 @@ export function LegalChat({
                       </p>
                     )}
                     {m.citations && <CitationList citations={m.citations} />}
-                    {m.role === "assistant" && m.searchSummary && <SearchSummary
-                      summary={m.searchSummary}
-                      citedCount={new Set((m.citations ?? []).map((c) => c.source_id ?? c.reference)).size}
-                    />}
-                    {m.role === "user" && <ResearchSources question={m.content}
-                      autoLoad={shouldAutoResearch(i, messages.length, loading, messages[i + 1]?.searchSummary)} />}
+                    {m.role === "assistant" && m.documentScope && (
+                      <DocumentScopeNotice scope={m.documentScope} />
+                    )}
+                    {m.role === "assistant" && m.searchSummary && (
+                      <SearchSummary
+                        summary={m.searchSummary}
+                        citedCount={
+                          new Set((m.citations ?? []).map((c) => c.source_id ?? c.reference)).size
+                        }
+                      />
+                    )}
+                    {m.role === "user" && (
+                      <ResearchSources
+                        question={m.content}
+                        autoLoad={shouldAutoResearch(
+                          i,
+                          messages.length,
+                          loading,
+                          messages[i + 1]?.searchSummary,
+                        )}
+                      />
+                    )}
                   </div>
                 </div>
               ))}
@@ -301,7 +304,11 @@ export function LegalChat({
                 </div>
               )}
               {requestSummary && <SearchSummary summary={requestSummary} />}
-              {requestError && <p role="alert" className="text-sm text-destructive">{requestError}</p>}
+              {requestError && (
+                <p role="alert" className="text-sm text-destructive">
+                  {requestError}
+                </p>
+              )}
             </div>
           )}
         </div>

@@ -14,8 +14,10 @@ function compile(file, deps = {}) {
   return module.exports;
 }
 const summaryModel = compile('../src/lib/search-summary.ts');
+const scopeModel = compile('../src/lib/document-scope.ts');
 const { askAssistant } = compile('../src/lib/ai-api.ts', {
   '@/lib/auth-api': { inMemoryAccessToken: () => '' }, './search-summary': summaryModel,
+  './document-scope': scopeModel,
 });
 const summary = { candidate_documents: 29, verified_documents: 12, selected_documents: 6,
   pending_documents: 17, unverified_excluded: 17, verification_attempted: 1,
@@ -32,6 +34,7 @@ function mockStream(t, text) {
   };
   t.mock.method(globalThis, 'fetch', async (_url, init) => {
     state.credentials = init.credentials;
+    state.body = init.body;
     return { ok: true, body: { getReader: () => reader } };
   });
   return state;
@@ -66,4 +69,21 @@ test('disconnection without done event is an error', async t => {
 test('legacy answer does not fabricate candidate counters', async t => {
   mockStream(t, JSON.stringify({ stage: 'done', result: { answer: 'Yanıt', citations: [] } }));
   assert.equal((await askAssistant('Örnek soru', {})).search_summary, undefined);
+});
+
+test('case-scoped question sends case_id and surfaces which documents could not be read', async t => {
+  const scope = { total: 3, ready: 1, pending: 1, ocr: 0, failed: [{ file_name: 'tarama.png', reason: 'OCR henüz desteklenmiyor' }] };
+  const state = mockStream(t, JSON.stringify({ stage: 'done', result: { answer: 'Yanıt', citations: [], document_scope: scope } }));
+  const result = await askAssistant('Örnek soru', { caseId: 'case-1' });
+  const body = JSON.parse(state.body);
+  assert.equal(body.case_id, 'case-1');
+  assert.equal(body.project_id, null);
+  assert.deepEqual(result.document_scope, scope);
+});
+
+test('question without a case sends no case scope and no document scope is invented', async t => {
+  const state = mockStream(t, JSON.stringify({ stage: 'done', result: { answer: 'Yanıt', citations: [] } }));
+  const result = await askAssistant('Örnek soru', {});
+  assert.equal(JSON.parse(state.body).case_id, null);
+  assert.equal(result.document_scope, undefined);
 });

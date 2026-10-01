@@ -46,7 +46,7 @@ const supabase = createClient(url, key, {
 
 async function main() {
   console.log(`Mevzuat ETL başlıyor: limit=${limit} offset=${offset} mode=${mode}`);
-const result = await searchDocuments({
+  const result = await searchDocuments({
     page: Math.floor(offset / limit) + 1,
     pageSize: limit,
     mevzuatTurList: ["KANUN"],
@@ -115,9 +115,7 @@ const result = await searchDocuments({
     await new Promise((r) => setTimeout(r, 400));
   }
 
-  const { count } = await supabase
-    .from("mevzuat")
-    .select("*", { count: "exact", head: true });
+  const { count } = await supabase.from("mevzuat").select("*", { count: "exact", head: true });
 
   console.log(`\nBitti. Eklendi: ${inserted}, Atlandı: ${skipped}, Hata: ${failed}`);
   console.log(`Veritabanındaki toplam mevzuat: ${count ?? 0}`);

@@ -94,8 +94,12 @@ export async function register(
 }
 
 export async function logout(): Promise<void> {
-  await request<void>("/api/auth/logout", { method: "POST" });
-  accessToken = "";
+  try {
+    await request<void>("/api/auth/logout", { method: "POST" });
+  } finally {
+    // Sunucu yanıt vermese bile bellekteki oturum anahtarı atılır.
+    accessToken = "";
+  }
 }
 
 export function inMemoryAccessToken(): string {

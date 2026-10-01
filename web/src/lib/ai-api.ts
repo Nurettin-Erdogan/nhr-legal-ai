@@ -1,4 +1,10 @@
 import { inMemoryAccessToken } from "@/lib/auth-api";
+import {
+  parseCaseDocumentIndex,
+  parseDocumentScope,
+  type CaseDocumentIndex,
+  type DocumentScope,
+} from "./document-scope";
 import { parseSearchSummary, type SearchSummaryData } from "./search-summary";
 
 const API_BASE_URL = (import.meta.env.VITE_API_URL ?? "http://localhost:8766").replace(/\/$/, "");
@@ -22,6 +28,8 @@ export interface ChatMessage {
   grounded?: boolean | null;
   unverifiedMarkers?: string[];
   searchSummary?: SearchSummaryData;
+  /** Dava kapsamlı cevapta: belgelerin ne kadarı cevaba katılabildi. */
+  documentScope?: DocumentScope;
 }
 
 export interface ConversationSummary {
@@ -39,6 +47,7 @@ export interface AnswerResult {
   message_id: string | null;
   citations: Citation[];
   search_summary?: SearchSummaryData;
+  document_scope?: DocumentScope | null;
 }
 
 export const STAGE_LABELS: Record<string, string> = {
@@ -108,12 +117,28 @@ export async function getConversation(id: string): Promise<ChatMessage[]> {
 export const deleteConversation = (id: string) =>
   api<void>(`/api/conversations/${id}`, { method: "DELETE" });
 
+/** Dava belgelerinin aranabilirlik durumu (hazır / okunamadı + neden / işlenmedi). */
+export async function getCaseDocumentIndex(caseId: string): Promise<CaseDocumentIndex> {
+  return parseCaseDocumentIndex(
+    await api<unknown>(`/api/office/cases/${encodeURIComponent(caseId)}/documents/index`),
+  );
+}
+
+/** Belgeyi açıkça yeniden işletir (ör. okunamayan ya da henüz işlenmeyen belge). */
+export const reindexCaseDocument = (caseId: string, documentId: string) =>
+  api<{ status: string }>(
+    `/api/office/cases/${encodeURIComponent(caseId)}/documents/${encodeURIComponent(documentId)}/reindex`,
+    { method: "POST" },
+  );
+
 /** NDJSON aşama akışını okur; "done" olayındaki sonucu döndürür. */
 export async function askAssistant(
   question: string,
   opts: {
     conversationId?: string | null;
     projectId?: string | null;
+    /** Büro davası: yalnız bu davaya bağlı belgeler de aranır. `projectId` ile birlikte verilmez. */
+    caseId?: string | null;
     onStage?: (stage: string) => void;
     onSearchSummary?: (summary: SearchSummaryData) => void;
   },
@@ -126,6 +151,7 @@ export async function askAssistant(
       question,
       conversation_id: opts.conversationId ?? null,
       project_id: opts.projectId ?? null,
+      case_id: opts.caseId ?? null,
     }),
   });
   if (!response.ok || !response.body) {
@@ -150,9 +176,12 @@ export async function askAssistant(
       if (summary) opts.onSearchSummary?.(summary);
     }
     if (event.stage === "done" && event.result) {
-      result = { ...event.result, search_summary: parseSearchSummary(event.result.search_summary) };
-    }
-    else if (event.stage !== "ping") opts.onStage?.(event.stage);
+      result = {
+        ...event.result,
+        search_summary: parseSearchSummary(event.result.search_summary),
+        document_scope: parseDocumentScope(event.result.document_scope),
+      };
+    } else if (event.stage !== "ping") opts.onStage?.(event.stage);
   };
   try {
     for (;;) {

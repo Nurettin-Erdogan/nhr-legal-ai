@@ -100,3 +100,22 @@ button:disabled {
   font-size: 11px;
   color: #6b7280;
 }
+
+label.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 12px 0 0;
+  font-weight: 500;
+}
+label.check input {
+  width: auto;
+  margin-top: 2px;
+}
+.hint.warn {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  color: #92400e;
+}

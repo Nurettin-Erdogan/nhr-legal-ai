@@ -32,16 +32,16 @@ bolt.new depoyu içine alıp çalıştırmayı dener.
 
 bolt.new içinde `.env.example` dosyasını `.env` olarak kopyala ve değerleri doldur:
 
-| Değişken | Nerede kullanılır |
-|---|---|
-| `VITE_SUPABASE_URL` | Tarayıcı tarafı veritabanı bağlantısı |
-| `VITE_SUPABASE_PUBLISHABLE_KEY` | Tarayıcı tarafı public anahtar |
-| `VITE_SUPABASE_PROJECT_ID` | Proje kimliği |
-| `SUPABASE_URL` | Sunucu tarafı bağlantı |
-| `SUPABASE_PUBLISHABLE_KEY` | Sunucu tarafı public anahtar |
-| `SUPABASE_SERVICE_ROLE_KEY` | Sunucu tarafı yetkili işlemler (yalnız sunucu!) |
-| `LOVABLE_API_KEY` | Yapay zekâ (Gemini) çağrıları |
-| `LOVABLE_CRON_SECRET` | Zamanlanmış mevzuat güncelleme ucu |
+| Değişken                        | Nerede kullanılır                               |
+| ------------------------------- | ----------------------------------------------- |
+| `VITE_SUPABASE_URL`             | Tarayıcı tarafı veritabanı bağlantısı           |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` | Tarayıcı tarafı public anahtar                  |
+| `VITE_SUPABASE_PROJECT_ID`      | Proje kimliği                                   |
+| `SUPABASE_URL`                  | Sunucu tarafı bağlantı                          |
+| `SUPABASE_PUBLISHABLE_KEY`      | Sunucu tarafı public anahtar                    |
+| `SUPABASE_SERVICE_ROLE_KEY`     | Sunucu tarafı yetkili işlemler (yalnız sunucu!) |
+| `LOVABLE_API_KEY`               | Yapay zekâ (Gemini) çağrıları                   |
+| `LOVABLE_CRON_SECRET`           | Zamanlanmış mevzuat güncelleme ucu              |
 
 Bu değerler senin kendi Supabase projenden gelir. Lovable Cloud'daki mevcut
 veritabanına bağlanmak istiyorsan aynı değerleri kullanabilirsin; sıfırdan

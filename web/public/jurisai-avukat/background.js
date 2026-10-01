@@ -1,12 +1,17 @@
-/* Juris AI - service worker (Manifest V3)
+/* NHR Hukuk - service worker (Manifest V3)
    Content script'ten gelen aktarım isteğini alır, belgeyi UYAP oturum çerezleriyle
-   indirir ve multipart/form-data olarak Juris AI API'sine POST eder. */
+   indirir ve multipart/form-data olarak NHR Hukuk API'sine POST eder.
+
+   Gizlilik varsayılanları: otomatik aktarım ve bilgisayara yerel kopya KAPALIDIR.
+   Biri yalnızca kullanıcı ayar penceresinde açıkça açarsa çalışır. */
 
 const DEFAULTS = {
   apiUrl: "http://localhost:8766/api/public/v1/documents/upload",
   apiKey: "",
   throttleMs: 1500,
   timeoutMs: 45000,
+  autoSync: false,
+  saveLocal: false,
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -68,8 +73,9 @@ async function fetchDocument(url, timeoutMs) {
   }
 }
 
-/** Belgeyi kullanıcının bilgisayarına indirir (Juris AI klasörüne). */
-async function saveLocally(blob, name, contentType) {
+/** Belgeyi kullanıcının bilgisayarına indirir (NHR Hukuk klasörüne). Yalnız `saveLocal` açıksa. */
+async function saveLocally(blob, name, contentType, enabled = false) {
+  if (!enabled) return false;
   try {
     const buffer = new Uint8Array(await blob.arrayBuffer());
     let binary = "";
@@ -80,7 +86,7 @@ async function saveLocally(blob, name, contentType) {
     const dataUrl = `data:${(contentType || "application/octet-stream").split(";")[0]};base64,${btoa(binary)}`;
     await chrome.downloads.download({
       url: dataUrl,
-      filename: `JurisAI-UYAP/${name.replace(/[\\/]+/g, "_")}`,
+      filename: `NHR-Hukuk-UYAP/${name.replace(/[\\/]+/g, "_")}`,
       saveAs: false,
       conflictAction: "uniquify",
     });
@@ -125,7 +131,7 @@ async function handleUpload(meta) {
       meta.url,
       Number(settings.timeoutMs) || DEFAULTS.timeoutMs,
     );
-    const saved = await saveLocally(blob, fileNameFor(meta, type), type);
+    const saved = await saveLocally(blob, fileNameFor(meta, type), type, settings.saveLocal === true);
     const out = await uploadDocument(settings, meta, blob, type);
     return { ok: true, duplicate: !!out.duplicate, id: out.id || null, saved };
   } catch (error) {
@@ -137,6 +143,8 @@ async function handleUpload(meta) {
 async function handleAutoIngest(payload) {
   try {
     const settings = await getSettings();
+    // Savunma katmanı: içerik betiği kapalıyken göndermese de, ayar kapalıysa burada da reddedilir.
+    if (settings.autoSync !== true) throw new Error("Otomatik aktarım kapalı");
     if (!settings.apiUrl) throw new Error("API adresi ayarlanmadı");
     if ((settings.apiKey || "").trim().length < 20) throw new Error("API anahtarı ayarlanmadı");
 
@@ -158,7 +166,7 @@ async function handleAutoIngest(payload) {
       try {
         await throttle(gap);
         const { blob, type } = await fetchDocument(url, timeoutMs);
-        await saveLocally(blob, fileNameFor({ ...meta, url }, type), type);
+        await saveLocally(blob, fileNameFor({ ...meta, url }, type), type, settings.saveLocal === true);
         await uploadDocument(
           settings,
           { ...meta, url, evrakId: `${meta.dosyaEsasNo}-${sent}` },

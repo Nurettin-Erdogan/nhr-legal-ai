@@ -3,6 +3,9 @@ import { useEffect, useRef, useState } from "react";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { CaseDetailView } from "@/components/CaseDetailView";
 import { CaseDocumentActions } from "@/components/CaseDocumentActions";
+import { CaseDocumentAsk } from "@/components/CaseDocumentAsk";
+import { DocumentTrash } from "@/components/DocumentTrash";
+import { trashDocument } from "@/lib/document-trash";
 import { Button } from "@/components/ui/button";
 import { useParams, Link } from "@/lib/router-compat";
 import { loadCaseDetail, type CaseDetailData } from "@/lib/case-detail";
@@ -16,6 +19,8 @@ const CaseDetail = () => {
   const [downloading, setDownloading] = useState<string>();
   const [downloadError, setDownloadError] = useState("");
   const [savedCase, setSavedCase] = useState<string>();
+  const [trashing, setTrashing] = useState<string>();
+  const [trashKey, setTrashKey] = useState(0);
   const generation = useRef(0);
   const current = result?.id === id ? result : undefined;
   const data = current?.data;
@@ -23,7 +28,9 @@ const CaseDetail = () => {
   useEffect(() => {
     let active = true;
     ++generation.current;
-    setResult(undefined);
+    // Aynı davanın yeniden yüklenmesinde (Yenile, çöpe taşıma, belge ekleme) önceki veri ekranda
+    // kalır: aksi halde görünüm yeniden kurulur ve açık sekme "Özet"e geri atardı.
+    setResult((previous) => (previous?.id === id ? previous : undefined));
     setDownloadError("");
     setDownloading(undefined);
     loadCaseDetail(id)
@@ -67,6 +74,22 @@ const CaseDetail = () => {
         setDownloadError(error instanceof Error ? error.message : "Dosya indirilemedi.");
     } finally {
       if (version === generation.current) setDownloading(undefined);
+    }
+  };
+
+  // Silme iki adımlıdır: belge önce çöp kutusuna taşınır (geri alınabilir, aranmaz).
+  const moveToTrash = async (documentId: string) => {
+    if (trashing) return;
+    setTrashing(documentId);
+    setDownloadError("");
+    try {
+      await trashDocument(documentId);
+      setRevision((n) => n + 1);
+      setTrashKey((n) => n + 1);
+    } catch (error) {
+      setDownloadError(error instanceof Error ? error.message : "Belge çöp kutusuna taşınamadı.");
+    } finally {
+      setTrashing(undefined);
     }
   };
 
@@ -122,6 +145,17 @@ const CaseDetail = () => {
             downloading={downloading}
             downloadError={downloadError}
             initialTab={savedCase === id ? "Evraklar" : "Özet"}
+            documentAsk={<CaseDocumentAsk key={id} caseId={id} />}
+            trashing={trashing}
+            onTrash={(documentId) => void moveToTrash(documentId)}
+            documentTrash={
+              <DocumentTrash
+                key={id}
+                caseId={id}
+                refreshKey={trashKey}
+                onChanged={() => setRevision((n) => n + 1)}
+              />
+            }
             documentActions={
               <CaseDocumentActions
                 key={id}

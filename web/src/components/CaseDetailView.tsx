@@ -6,7 +6,15 @@ import {
   type Section,
 } from "../lib/case-detail";
 
-const tabs = ["Özet", "Evraklar", "Notlar", "Görevler", "Takvim", "Aramalar"] as const;
+const tabs = [
+  "Özet",
+  "Evraklar",
+  "Belgelerle Sor",
+  "Notlar",
+  "Görevler",
+  "Takvim",
+  "Aramalar",
+] as const;
 type Tab = (typeof tabs)[number];
 const actionClass =
   "rounded-md border border-border px-3 py-2 text-sm hover:bg-secondary disabled:opacity-50";
@@ -44,6 +52,10 @@ export function CaseDetailView({
   downloading,
   downloadError,
   documentActions,
+  documentAsk,
+  documentTrash,
+  onTrash,
+  trashing,
   initialTab = "Özet",
 }: {
   data: CaseDetailData;
@@ -51,6 +63,13 @@ export function CaseDetailView({
   downloading?: string;
   downloadError?: string;
   documentActions?: ReactNode;
+  /** "Belgelerle Sor" sekmesinin içeriği (dava belgeleriyle sohbet). */
+  documentAsk?: ReactNode;
+  /** Evraklar sekmesinin altındaki çöp kutusu bölümü. */
+  documentTrash?: ReactNode;
+  /** Belgeyi çöp kutusuna taşır (geri alınabilir). */
+  onTrash?: (id: string) => void;
+  trashing?: string;
   initialTab?: Tab;
 }) {
   const [tab, setTab] = useState<Tab>(initialTab);
@@ -111,6 +130,12 @@ export function CaseDetailView({
           </p>
         </>
       )}
+      {tab === "Belgelerle Sor" &&
+        (documentAsk ?? (
+          <p className="text-sm text-muted-foreground">
+            Belgelerle sohbet bu görünümde kullanılamıyor.
+          </p>
+        ))}
       {tab === "Notlar" && (
         <p className="whitespace-pre-wrap break-words text-sm">
           {c.notes || "Bu dava için kayıtlı not bulunmuyor."}
@@ -137,17 +162,30 @@ export function CaseDetailView({
                     {d.doc_type || "Evrak"} · {displayCaseDate(d.created_at)}
                   </p>
                 </div>
-                <button
-                  type="button"
-                  className={actionClass}
-                  disabled={!!downloading}
-                  onClick={() => onDownload(d.id)}
-                >
-                  {downloading === d.id ? "İndiriliyor…" : "İndir"}
-                </button>
+                <div className="flex shrink-0 gap-2">
+                  <button
+                    type="button"
+                    className={actionClass}
+                    disabled={!!downloading}
+                    onClick={() => onDownload(d.id)}
+                  >
+                    {downloading === d.id ? "İndiriliyor…" : "İndir"}
+                  </button>
+                  {onTrash && (
+                    <button
+                      type="button"
+                      className={actionClass}
+                      disabled={!!trashing}
+                      onClick={() => onTrash(d.id)}
+                    >
+                      {trashing === d.id ? "Taşınıyor…" : "Çöpe taşı"}
+                    </button>
+                  )}
+                </div>
               </li>
             )}
           </Records>
+          {documentTrash}
         </>
       )}
       {tab === "Görevler" && (

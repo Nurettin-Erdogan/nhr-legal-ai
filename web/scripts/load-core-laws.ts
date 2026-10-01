@@ -91,15 +91,13 @@ async function main() {
       }
 
       const doc =
-        result.documents.find(
-          (d) => d.mevzuatTur?.name === "KANUN" && d.mevzuatAdi === lawName,
-        ) ??
+        result.documents.find((d) => d.mevzuatTur?.name === "KANUN" && d.mevzuatAdi === lawName) ??
         result.documents.find((d) => d.mevzuatTur?.name === "KANUN") ??
         result.documents[0];
 
       if (!doc.mevzuatId) continue;
 
-// Seri çekim: önce ağaç, sonra içerik (paralel değil).
+      // Seri çekim: önce ağaç, sonra içerik (paralel değil).
       const tree = await retry(() => getMaddeTree(doc.mevzuatId).catch(() => []));
       await sleep(2500);
       // Not: .catch ile hatayı yutmuyoruz; 429'da retry yeniden denesin.

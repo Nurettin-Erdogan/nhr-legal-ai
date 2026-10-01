@@ -1,11 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { DashboardLayout } from "@/components/DashboardLayout";
+import { DocumentTrash } from "@/components/DocumentTrash";
 import { FileUploadDialog } from "@/components/FileUploadDialog";
 import { UyapSyncDialog } from "@/components/UyapSyncDialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { supabase } from "@/integrations/supabase/client";
+import { restoreDocument, trashDocument } from "@/lib/document-trash";
 import { humanSize } from "@/lib/uyap";
 import { toast } from "sonner";
 import { Download, FileText, Loader2, RefreshCw, Search, Trash2, FolderSearch } from "lucide-react";
@@ -39,6 +41,7 @@ const Files = () => {
   const [runs, setRuns] = useState<SyncRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
+  const [trashKey, setTrashKey] = useState(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -79,16 +82,25 @@ const Files = () => {
     window.open(data.signedUrl, "_blank", "noopener");
   };
 
+  // Silme iki adımlıdır: önce çöp kutusuna taşınır (geri alınabilir, aranmaz); kalıcı silme çöp
+  // kutusundan yapılır. Dosya diskte kalır, yalnız kalıcı silmede kaldırılır.
   const remove = async (row: DocRow) => {
-    if (!confirm(`"${row.file_name}" silinsin mi?`)) return;
-    const { error } = await supabase.from("case_documents").delete().eq("id", row.id);
-    if (error) {
-      toast.error(error.message);
+    try {
+      await trashDocument(row.id);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Belge çöp kutusuna taşınamadı");
       return;
     }
-    await supabase.storage.from("case-files").remove([row.storage_path]);
-    toast.success("Belge silindi");
+    toast.success(`"${row.file_name}" çöp kutusuna taşındı`, {
+      action: {
+        label: "Geri al",
+        onClick: () => {
+          void restoreDocument(row.id).then(load, () => toast.error("Belge geri alınamadı"));
+        },
+      },
+    });
     setDocs((prev) => prev.filter((d) => d.id !== row.id));
+    setTrashKey((n) => n + 1);
   };
 
   const filtered = docs.filter((d) => {
@@ -212,7 +224,13 @@ const Files = () => {
                       <Button size="sm" variant="ghost" onClick={() => void download(d)}>
                         <Download className="h-4 w-4" />
                       </Button>
-                      <Button size="sm" variant="ghost" onClick={() => void remove(d)}>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        title="Çöp kutusuna taşı"
+                        aria-label="Çöp kutusuna taşı"
+                        onClick={() => void remove(d)}
+                      >
                         <Trash2 className="h-4 w-4 text-destructive" />
                       </Button>
                     </td>
@@ -223,6 +241,7 @@ const Files = () => {
           </div>
         )}
       </div>
+      <DocumentTrash refreshKey={trashKey} onChanged={() => void load()} />
     </DashboardLayout>
   );
 };

@@ -141,11 +141,14 @@ test("unlinked document search is paginated and escaped", async () => {
   assert.equal(result.rows.length, 25);
   assert.equal(result.hasMore, true);
 });
-test("document action UI clearly states storage-only behavior and requires a selected file", () => {
+test("document action UI states what is indexed, what is not, and requires a selected file", () => {
   const html = renderToStaticMarkup(
     createElement(CaseDocumentActions, { caseId, clientId: null, onSaved() {} }),
   );
-  assert.match(html, /RAG indeksleme yapmaz/);
+  assert.match(html, /arka planda aranabilir/);
+  assert.match(html, /OCR ile okunur/);
+  assert.doesNotMatch(html, /OCR yoktur/);
+  assert.doesNotMatch(html, /RAG indeksleme yapmaz/);
   assert.match(html, /Mevcut belgeyi bağla/);
   assert.match(html, /type="file"/);
   assert.match(html, /disabled=""/);

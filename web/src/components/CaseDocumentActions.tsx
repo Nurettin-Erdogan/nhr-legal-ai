@@ -27,6 +27,8 @@ export function CaseDocumentActions({
   const [list, setList] = useState<{ rows: UnlinkedDocument[]; hasMore: boolean }>();
   const [listError, setListError] = useState("");
   const [selected, setSelected] = useState("");
+  // Bir belge bağlanınca açık liste yeniden yüklenir (bağlanan belge listeden düşer, seçim sıfırlanır).
+  const [reload, setReload] = useState(0);
   const mounted = useRef(false);
   const locked = useRef(false);
   useEffect(() => {
@@ -51,7 +53,7 @@ export function CaseDocumentActions({
     return () => {
       active = false;
     };
-  }, [open, search, page]);
+  }, [open, search, page, reload]);
   async function run(action: () => Promise<unknown>) {
     if (locked.current) return;
     locked.current = true;
@@ -59,7 +61,11 @@ export function CaseDocumentActions({
     setError("");
     try {
       await action();
-      if (mounted.current) onSaved();
+      if (mounted.current) {
+        setReload((n) => n + 1);
+        setFile(null);
+        onSaved();
+      }
     } catch (e) {
       if (mounted.current) setError(e instanceof Error ? e.message : "Belge kaydedilemedi.");
     } finally {
@@ -70,7 +76,9 @@ export function CaseDocumentActions({
   return (
     <div className="mb-5 rounded-xl border border-border p-4 space-y-4">
       <p className="text-sm text-muted-foreground">
-        Belge bu davaya kaydedilir. Yükleme otomatik OCR, metin analizi veya RAG indeksleme yapmaz.
+        Belge bu davaya kaydedilir ve arka planda aranabilir hâle getirilir (PDF, DOCX, UDF, TXT).
+        Taranmış belgeler ve görüntüler OCR ile okunur; bu birkaç dakika sürebilir ve okuma hataları
+        olabilir. Durumu "Belgelerle Sor" sekmesinde görürsünüz.
       </p>
       <form
         className="flex flex-wrap items-end gap-3"
@@ -82,6 +90,7 @@ export function CaseDocumentActions({
         <label className="text-sm">
           Yeni evrak (en fazla 50 MB)
           <input
+            key={reload}
             aria-label="Yüklenecek evrak"
             type="file"
             disabled={busy}

@@ -3,26 +3,41 @@
   <head>
     <meta charset="utf-8" />
     <link rel="stylesheet" href="popup.css" />
-    <title>Juris AI Ayarları</title>
+    <title>NHR Hukuk Ayarları</title>
   </head>
   <body>
     <header>
       <div class="logo">⚖️</div>
       <div>
-        <h1>Juris AI</h1>
+        <h1>NHR Hukuk</h1>
         <p>UYAP Avukat Portalı aktarımı</p>
       </div>
     </header>
 
     <main>
       <label for="apiUrl">API adresi</label>
-      <input id="apiUrl" type="url" placeholder="JURISAI bağlantı adresi" />
+      <input id="apiUrl" type="url" placeholder="NHR Hukuk bağlantı adresi" />
 
       <label for="apiKey">API anahtarı</label>
-      <input id="apiKey" type="password" placeholder="Juris AI bağlantı anahtarı" />
+      <input id="apiKey" type="password" placeholder="NHR Hukuk bağlantı anahtarı" />
 
       <label for="throttleMs">İstekler arası bekleme (ms)</label>
       <input id="throttleMs" type="number" min="500" max="10000" step="100" value="1500" />
+
+      <label class="check">
+        <input id="saveLocal" type="checkbox" />
+        <span>Aktarılan belgeleri bilgisayarıma da kaydet</span>
+      </label>
+
+      <label class="check">
+        <input id="autoSync" type="checkbox" />
+        <span>Otomatik aktarım: dosya açıldığında evrakları kendiliğinden gönder</span>
+      </label>
+      <p class="hint warn">
+        Kapalıyken yalnız "NHR Hukuk'a Aktar" düğmesine bastığın evrak gönderilir. Açıkken, UYAP'ta
+        bir dosyayı görüntülediğinde dosyanın evrakları ve künyesi (mahkeme, esas no, taraf adı)
+        hesabına gönderilir. Müvekkil verisi içerir; yalnızca yetkili olduğun dosyalarda aç.
+      </p>
 
       <div class="row">
         <button id="save" class="primary">Kaydet</button>
@@ -30,11 +45,13 @@
       </div>
 
       <button id="rescan" class="ghost">Sayfayı yeniden tara</button>
+      <button id="diagnose" class="ghost">Sayfa tanısını kopyala</button>
       <p id="status" class="status"></p>
       <p class="hint">
-        UYAP'ta oturum açtıktan sonra evrak listesindeki "Juris AI'ya Aktar" düğmelerini kullan.
-        Şifre veya e-imza bilgisi hiçbir zaman okunmaz.
+        UYAP'ta oturum açtıktan sonra, bir dosyanın evrak listesindeki "NHR Hukuk'a Aktar"
+        düğmelerini kullan. Şifre veya e-imza bilgisi hiçbir zaman okunmaz.
       </p>
     </main>
+    <script src="popup.js"></script>
   </body>
 </html>

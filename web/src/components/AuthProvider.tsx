@@ -75,8 +75,13 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const signOut = async () => {
-    await logout();
-    applyUser(null);
+    try {
+      await logout();
+    } catch {
+      // Sunucuya ulaşılamasa da arayüzdeki oturum kapatılır; çerez sunucu dönünce silinir.
+    } finally {
+      applyUser(null);
+    }
   };
 
   const refreshProfile = async () => {

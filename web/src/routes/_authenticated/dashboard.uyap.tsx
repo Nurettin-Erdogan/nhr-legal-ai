@@ -57,19 +57,29 @@ const UyapConnect = () => {
     null,
   );
   const [opened, setOpened] = useState(false);
+  // Düz anahtar yalnız oluşturulduğu anda bu oturumda bellektedir; sunucuda yalnız özeti saklanır.
   const [token, setToken] = useState<string | null>(null);
+  const [activeToken, setActiveToken] = useState<{
+    prefix: string;
+    lastUsed: string | null;
+  } | null>(null);
   const [tokenBusy, setTokenBusy] = useState(false);
 
   useEffect(() => {
     if (!user) return;
     void supabase
       .from("uyap_ingest_tokens")
-      .select("token")
+      .select("token_prefix,last_used_at")
       .eq("owner_id", user.id)
       .eq("revoked", false)
       .order("created_at", { ascending: false })
       .limit(1)
-      .then(({ data }) => setToken(data?.[0]?.token ?? null));
+      .then(({ data }) => {
+        const row = data?.[0];
+        setActiveToken(
+          row ? { prefix: String(row.token_prefix ?? ""), lastUsed: row.last_used_at ?? null } : null,
+        );
+      });
   }, [user]);
 
   const createToken = useCallback(
@@ -89,6 +99,7 @@ const UyapConnect = () => {
           .insert({ owner_id: user.id, token: value, label: "Tarayıcı eklentisi" });
         if (error) throw error;
         setToken(value);
+        setActiveToken({ prefix: value.slice(0, 9), lastUsed: null });
         toast.success(rotate ? "Yeni anahtar oluşturuldu" : "Bağlantı anahtarı hazır");
       } catch {
         toast.error("Anahtar oluşturulamadı");
@@ -144,7 +155,7 @@ const UyapConnect = () => {
             .eq("id", run.id);
         }
         setResult(res);
-        toast.success(`${res.inserted} belge JurisAI'a aktarıldı`);
+        toast.success(`${res.inserted} belge NHR Hukuk'a aktarıldı`);
       } catch (e) {
         const message = e instanceof Error ? e.message : "Aktarım başarısız";
         if (run?.id) {
@@ -168,20 +179,20 @@ const UyapConnect = () => {
   return (
     <DashboardLayout
       title="UYAP'a Bağlan"
-      subtitle="UYAP'ta oturum aç, indirdiğin dosyalar otomatik olarak JurisAI'a işlenir."
+      subtitle="UYAP'ta kendi oturumunu aç; belgeleri NHR Hukuk hesabına sen onaylayarak aktar."
     >
-      {/* Otomatik akış: tarayıcı eklentisi */}
+      {/* Tarayıcı eklentisi */}
       <section className="mb-6 rounded-xl border bg-card p-5 space-y-4">
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="secondary">Önerilen</Badge>
           <Puzzle className="h-4 w-4 text-primary" />
-          <h2 className="font-semibold">Tarayıcı eklentisi ile otomatik aktarım</h2>
+          <h2 className="font-semibold">Tarayıcı eklentisi ile aktarım</h2>
         </div>
         <p className="text-sm text-muted-foreground leading-relaxed">
-          Apilex benzeri akış: JurisAI eklentisini Chrome'a kurarsın, UYAP'ta kendi oturumunu
-          açarsın ve sağ altta çıkan panelden "Belgeleri JurisAI'a aktar"a basarsın. Belgeler senin
-          oturumunla indirilip doğrudan JurisAI deponuza kaydedilir; şifre/e-imza hiçbir zaman
-          okunmaz veya sunucuya gönderilmez.
+          NHR Hukuk eklentisini Chrome'a kurarsın, UYAP'ta kendi oturumunu açarsın ve bir dosyanın
+          evrak listesinde "NHR Hukuk'a Aktar" düğmesine basarsın. Belgeler senin oturumunla
+          indirilip doğrudan NHR Hukuk hesabına kaydedilir; şifre/e-imza hiçbir zaman okunmaz veya
+          sunucuya gönderilmez. Varsayılan olarak yalnızca düğmeye bastığın evrak gönderilir.
         </p>
 
         <ol className="text-sm space-y-2 list-decimal pl-5 text-muted-foreground">
@@ -190,8 +201,18 @@ const UyapConnect = () => {
             "Geliştirici modu" → "Paketlenmemiş öğe yükle" ile klasörü seç.
           </li>
           <li>Eklenti simgesine tıkla, aşağıdaki bağlantı anahtarını yapıştır ve kaydet.</li>
-          <li>UYAP dosya/evrak sayfasını aç, sağ alttaki JurisAI panelinden aktarımı başlat.</li>
+          <li>
+            UYAP'ta bir dosyanın evrak listesini aç ve aktarmak istediğin evrakın düğmesine bas.
+          </li>
         </ol>
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs leading-relaxed text-muted-foreground">
+          <p className="font-semibold text-foreground mb-1">İsteğe bağlı: otomatik aktarım</p>
+          Eklenti ayarlarından "Otomatik aktarım"ı açarsan, UYAP'ta bir dosyayı görüntülediğinde
+          dosyanın evrakları ve künyesi (mahkeme, esas no, taraf adı) hesabına kendiliğinden
+          gönderilir. Müvekkil verisi içerdiğinden varsayılan olarak <strong>kapalıdır</strong>;
+          yalnızca yetkili olduğun dosyalarda ve müvekkilini bilgilendirdiysen aç. Aktarılan
+          belgeleri bilgisayarına da kaydetmek ayrı bir seçenektir ve yine kapalı gelir.
+        </div>
 
         <div className="grid gap-2 sm:grid-cols-2">
           <Button variant="default" onClick={() => void downloadExtension()}>
@@ -201,7 +222,7 @@ const UyapConnect = () => {
             <Download className="h-4 w-4 mr-2" /> Avukat Portalı eklentisi (.zip)
           </Button>
 
-          {token ? (
+          {activeToken ? (
             <Button variant="outline" onClick={() => void createToken(true)} disabled={tokenBusy}>
               <RefreshCw className="h-4 w-4 mr-2" /> Anahtarı yenile
             </Button>
@@ -227,6 +248,22 @@ const UyapConnect = () => {
             </Button>
           </div>
         )}
+        {activeToken && !token && (
+          <p className="text-xs text-muted-foreground" data-testid="uyap-token-hidden">
+            Etkin anahtar: <span className="font-mono">{activeToken.prefix}…</span>
+            {activeToken.lastUsed
+              ? ` · son kullanım ${new Date(activeToken.lastUsed).toLocaleString("tr-TR")}`
+              : " · henüz kullanılmadı"}
+            . Güvenlik için anahtar yalnız oluşturulurken gösterilir. Eklentideki anahtarı
+            kaybettiysen "Anahtarı yenile" ile yenisini oluştur.
+          </p>
+        )}
+        {token && (
+          <p className="text-xs font-medium text-amber-600">
+            Anahtarı şimdi kopyala ve eklentiye yapıştır: bu sayfa kapandığında bir daha
+            gösterilmeyecek.
+          </p>
+        )}
         <p className="text-[11px] text-muted-foreground">
           Anahtar hesabına özeldir, kimseyle paylaşma. Şüpheli durumda "Anahtarı yenile" ile eski
           anahtarı geçersiz kılabilirsin.
@@ -242,8 +279,8 @@ const UyapConnect = () => {
           </div>
           <p className="text-sm text-muted-foreground leading-relaxed">
             Girişi doğrudan resmî UYAP/e-Devlet sayfasında sen yaparsın (e-imza, mobil imza veya
-            e-Devlet şifresi). JurisAI bu bilgileri görmez, saklamaz ve iletmez. Portal yeni sekmede
-            açılır; dosya listesinden ilgili belgeleri veya dosya arşivini indirirsin.
+            e-Devlet şifresi). NHR Hukuk bu bilgileri görmez, saklamaz ve iletmez. Portal yeni
+            sekmede açılır; dosya listesinden ilgili belgeleri veya dosya arşivini indirirsin.
           </p>
           <div className="grid gap-2">
             {UYAP_PORTALS.map((p) => (
@@ -273,7 +310,7 @@ const UyapConnect = () => {
             </div>
             UYAP'ın açık bir API'si yoktur ve e-imza/e-Devlet kimlik bilgilerinin üçüncü bir
             uygulamada saklanması hem KVKK hem de portal kullanım şartlarına aykırıdır. Bu nedenle
-            oturum senin tarayıcında kalır; JurisAI yalnızca senin indirdiğin belgeleri işler.
+            oturum senin tarayıcında kalır; NHR Hukuk yalnızca senin indirdiğin belgeleri işler.
           </div>
         </section>
 
@@ -363,13 +400,13 @@ export const Route = createFileRoute("/_authenticated/dashboard/uyap")({
   component: UyapConnect,
   head: () => ({
     meta: [
-      { title: "UYAP'a Bağlan · JurisAI" },
+      { title: "UYAP'a Bağlan · NHR Hukuk" },
       {
         name: "description",
-        content: "UYAP oturumunu güvenle aç, indirdiğin dosyaları JurisAI'a otomatik aktar.",
+        content: "UYAP oturumunu güvenle aç, belgeleri onayınla NHR Hukuk'a aktar.",
       },
-      { property: "og:title", content: "UYAP'a Bağlan · JurisAI" },
-      { property: "og:description", content: "UYAP dosyalarını güvenli akışla JurisAI'a aktar." },
+      { property: "og:title", content: "UYAP'a Bağlan · NHR Hukuk" },
+      { property: "og:description", content: "UYAP dosyalarını güvenli akışla NHR Hukuk'a aktar." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
     ],
