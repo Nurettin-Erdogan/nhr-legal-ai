@@ -28,6 +28,25 @@
 
   const DOC_RE =
     /\.(pdf|udf|docx?|tiff?|jpe?g|png|eyp)(\?|#|$)|indir|download|evrak|dokuman|doküman|belge|goster|dosyaIndir|udfGoster/i;
+  /* Yalnız UYAP'ın kendi alan adındaki ve yardım/kılavuz olmayan bağlantılar evrak sayılır. Sayfalarda
+     e-Devlet kullanım kılavuzu gibi dış PDF'ler ve örnek belge bağlantıları durur; bunları evrak sanıp
+     dava evrakı diye göndermek gerçek UYAP'ta görülen hataydı (aynı dosya farklı adlarla defalarca gelmişti). */
+  const SITE_HOST_RE = /(^|\.)(uyap|adalet)\.gov\.tr$/i;
+  const NOT_EVRAK_PATH_RE =
+    /kilavuz|kılavuz|rehber|yardim|yardım|help|manual|ornek|örnek|sozlesme|sözleşme|nasil-?kullan|downloads\/portal|\/cdn\//i;
+  const CHROME_AREA = "nav, header, footer, aside, [role='navigation'], [role='contentinfo']";
+  function isEvrakUrl(url) {
+    try {
+      const parsed = new URL(url);
+      return (
+        SITE_HOST_RE.test(parsed.hostname) &&
+        !NOT_EVRAK_PATH_RE.test(decodeURIComponent(parsed.pathname)) &&
+        DOC_RE.test(url)
+      );
+    } catch (_) {
+      return false;
+    }
+  }
   const BTN_CLASS = "jurisai-send-btn";
   const MAX_ROW_TEXT = 600; // bundan uzun metinli öğe tek bir evrak satırı değil, kapsayıcıdır
   const throttleGap = 1500; // portalın oturumu kapatmaması için istekler arası bekleme
@@ -108,11 +127,11 @@
       const raw =
         el.getAttribute("href") || el.dataset?.url || el.dataset?.href || el.dataset?.link || "";
       const url = absolute(raw);
-      if (url && DOC_RE.test(url)) return url;
+      if (url && isEvrakUrl(url)) return url;
       const script = `${el.getAttribute("onclick") || ""} ${el.getAttribute("ng-click") || ""}`;
       const inline = (script.match(/['"]([^'"\s]{6,400})['"]/g) || [])
         .map((s) => absolute(s.slice(1, -1)))
-        .find((u) => u && DOC_RE.test(u));
+        .find((u) => u && isEvrakUrl(u));
       if (inline) return inline;
     }
     return "";
@@ -449,13 +468,14 @@
       ),
     ];
     for (const el of nodes) {
+      if (el.closest(CHROME_AREA)) continue; // menü, üst/alt bilgi ve yan paneldeki bağlantılar evrak değildir
       const raw = el.getAttribute("href") || el.dataset?.url || el.dataset?.href || "";
       const url = absolute(raw);
-      if (url && DOC_RE.test(url)) out.add(url);
+      if (url && isEvrakUrl(url)) out.add(url);
       const script = `${el.getAttribute("onclick") || ""} ${el.getAttribute("ng-click") || ""}`;
       for (const q of script.match(/['"]([^'"\s]{6,400})['"]/g) || []) {
         const u = absolute(q.slice(1, -1));
-        if (u && DOC_RE.test(u)) out.add(u);
+        if (u && isEvrakUrl(u)) out.add(u);
       }
       if (out.size >= 25) break;
     }
@@ -534,7 +554,7 @@
         const scopeText = textOf(row || target.closest("a, button") || target);
         if (!scopeText) return;
         const meta = caseMetaFrom(scopeText);
-        if (!meta.dosyaEsasNo && !meta.mahkeme) return;
+        if (!meta.dosyaEsasNo) return; // esas numarası olmayan metin bir dosya değildir
         const docUrls = row ? collectDocUrls(row) : [];
         if (docUrls.length) autoIngest(meta, docUrls);
         scheduleDetailSweep(meta);

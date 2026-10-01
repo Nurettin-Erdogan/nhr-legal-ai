@@ -36,7 +36,7 @@ async function throttle(gap) {
 
 function fileNameFor(meta, contentType) {
   let base = (meta.evrakAdi || "uyap-evrak").replace(/[\\/:*?"<>|]+/g, " ").trim() || "uyap-evrak";
-  if (/\.(pdf|udf|docx?|tiff?|jpe?g|png|eyp)$/i.test(base)) return base.slice(0, 160);
+  if (/\.(pdf|udf|docx?|tiff?|jpe?g|png|eyp|txt)$/i.test(base)) return base.slice(0, 160);
   const map = {
     "application/pdf": ".pdf",
     "application/zip": ".udf",
@@ -52,7 +52,28 @@ function fileNameFor(meta, contentType) {
 }
 
 /** Belgeyi kullanıcının UYAP oturumuyla indirir. */
+/* Savunma katmanı (içerik betiği zaten süzer): yalnız UYAP'ın kendi alan adından belge indirilir. */
+const SITE_HOST_RE = /(^|\.)(uyap|adalet)\.gov\.tr$/i;
+function assertUyapUrl(url) {
+  let host = "";
+  try {
+    host = new URL(url).hostname;
+  } catch (_) {
+    /* aşağıda reddedilir */
+  }
+  if (!SITE_HOST_RE.test(host)) throw new Error("UYAP dışı bir adresten belge indirilmez");
+}
+
+/* OTOMATİK aktarımda aynı içerik (SHA-256) bu oturumda bir kez gönderilir: sayfadaki sabit bir dosya
+   farklı adlarla defalarca gönderilmesin. Servis çalışanı yeniden başlarsa kayıt sıfırlanır. */
+const sentHashes = new Set();
+async function sha256Hex(blob) {
+  const digest = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 async function fetchDocument(url, timeoutMs) {
+  assertUyapUrl(url);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -131,6 +152,8 @@ async function handleUpload(meta) {
       meta.url,
       Number(settings.timeoutMs) || DEFAULTS.timeoutMs,
     );
+    // Elle (düğmeye basarak) gönderim her zaman yapılır: kullanıcı belgeyi sildikten sonra yeniden
+    // göndermek isteyebilir. İçerik özeti yinelenen denetimi yalnız otomatik aktarımda uygulanır.
     const saved = await saveLocally(blob, fileNameFor(meta, type), type, settings.saveLocal === true);
     const out = await uploadDocument(settings, meta, blob, type);
     return { ok: true, duplicate: !!out.duplicate, id: out.id || null, saved };
@@ -161,11 +184,17 @@ async function handleAutoIngest(payload) {
     const gap = Number(settings.throttleMs) || DEFAULTS.throttleMs;
 
     let sent = 0;
+    let duplicates = 0;
     const errors = [];
     for (const url of urls) {
       try {
         await throttle(gap);
         const { blob, type } = await fetchDocument(url, timeoutMs);
+        const digest = await sha256Hex(blob);
+        if (sentHashes.has(digest)) {
+          duplicates++; // aynı içerik bu oturumda zaten gönderildi
+          continue;
+        }
         await saveLocally(blob, fileNameFor({ ...meta, url }, type), type, settings.saveLocal === true);
         await uploadDocument(
           settings,
@@ -173,14 +202,17 @@ async function handleAutoIngest(payload) {
           blob,
           type,
         );
+        sentHashes.add(digest);
         sent++;
       } catch (error) {
         errors.push(error.message);
       }
     }
 
-    // Evrak indirilemediyse en azından dosya künyesini metin olarak aktar.
-    if (!sent) {
+    // Evrak indirilemediyse en azından dosya künyesini metin olarak aktar. Yalnız gerçek bir dosyaya
+    // (esas numarası belli) ve indirilmeye çalışılmış evraka bağlıysa: evrakı olmayan liste sayfasında ya
+    // da yinelenen evrak atlandığında künye gönderilmez (canlıda her tıklamada sahte künye gelmişti).
+    if (!sent && !duplicates && urls.length && payload.dosyaEsasNo) {
       const summary = [
         `Mahkeme/Birim: ${payload.mahkeme || "-"}`,
         `Dosya/Esas No: ${payload.dosyaEsasNo || "-"}`,

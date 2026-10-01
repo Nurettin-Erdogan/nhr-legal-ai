@@ -17,7 +17,7 @@ görünecek şekilde (RLS) yazılır. İndeksleme ve belgeden soru-cevap için b
 İndirilen zip'ler (`web/public/*.zip`) klasörlerle birebir aynı tutulmalıdır; eklenti değişince zip
 yeniden oluşturulur.
 
-## Gizlilik varsayılanları (Avukat Portalı eklentisi, v2.8.0)
+## Gizlilik varsayılanları (Avukat Portalı eklentisi, v2.8.1)
 
 - **Otomatik aktarım kapalıdır.** Açılırsa (ayar penceresinde, bilgilendirme onayıyla) UYAP'ta bir
   dosya görüntülenince evraklar ve künye (mahkeme, esas no, **taraf adı**) kendiliğinden gönderilir.
@@ -79,6 +79,23 @@ $env:NHR_BROWSER_TESTS = "1"
 Tarayıcı testleri eklentinin mantığını (yanlış düğme, onay, otomatik aktarım kapısı, ayar penceresi)
 doğrular. `NHR_EXTENSION_DIR` ile eski bir sürüm aynı testlerle sınanabilir; git'teki önceki sürümde
 10 testten 8'i başarısız olur.
+
+## Gerçek UYAP'ta ilk temasta bulunan hata (2026-10-01, v2.8.1 ile düzeltildi)
+
+Otomatik aktarım açıkken Vatandaş Portalı "Dosya Sorgulama" ekranında dava satırlarına tıklayınca eklenti
+sayfadaki **tüm** bağlantıları taradı. Sayfada duran herkese açık e-Devlet kılavuz PDF'i ve bir örnek UDF
+dava evrakı sanıldı ve dava satırının adıyla 22 kez gönderildi (içerik özeti: yalnız iki farklı dosya).
+Kişisel belge gitmedi, ama dava adları ve sahte kayıtlar geldi. Düzeltmeler:
+
+- Yalnız UYAP'ın kendi alan adındaki (`*.uyap.gov.tr`, `*.adalet.gov.tr`) bağlantılar evrak sayılır; kılavuz,
+  yardım, örnek ve sözleşme bağlantıları ile menü/üst-alt bilgi/yan panel alanları dışarıda kalır.
+- Arka plan betiği UYAP dışı adresten belge indirmez (savunma katmanı).
+- Otomatik aktarımda aynı içerik (SHA-256) oturumda bir kez gönderilir; elle gönderim engellenmez.
+- Dosya künyesi artık yalnız esas numarası belli ve indirilmeye çalışılmış evrakı olan dosyada gönderilir.
+- Regresyon testleri: gerçek ekranın benzeri sahte sayfa (`/vatandas/dosya-sorgulama`), eski sürümde başarısız.
+
+Yine de gerçek evrak listesi sayfasında seçicilerin tutup tutmadığı doğrulanmadı: "Sayfa tanısını kopyala"
+çıktısı bekleniyor. Sunucuda içerik özetiyle yinelenen denetimi henüz yok.
 
 ## Doğrulanmayanlar ve açık işler
 

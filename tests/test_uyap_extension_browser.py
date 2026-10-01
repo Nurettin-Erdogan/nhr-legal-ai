@@ -71,6 +71,21 @@ PAGES = {
     # Aynı sayfa ama metinde bir esas numarası geçiyor: .row yine evrak satırı sayılmamalı.
     "/main-numbered": """<html><body><div class="row"><p>Duyuru 2025/9 sayılı karar. Kılavuz:
       <a href="/files/kilavuz.pdf">tıklayınız!</a></p></div></body></html>""",
+    # Gerçek Vatandaş Portalı "Dosya Sorgulama" ekranı (canlıda görülen hata): davaların listesi, evrak yok.
+    # Sayfada yardım/kılavuz PDF'leri (yan panelde, içerikte ve alt bilgide) bulunur; bunlar evrak değildir.
+    "/vatandas/dosya-sorgulama": """<html><body>
+      <aside class="sidebar"><ul><li><a href="/main/jsp/vatandas/index.jsp?menuId=12573">Dosya Sorgulama</a></li>
+        <li><a href="/yardim/menu-kilavuz.pdf">Menü kılavuzu</a></li></ul></aside>
+      <h2>Dosya Sorgulama</h2>
+      <table id="liste"><tr><th>Taraf Rolü</th><th>Mahkeme Adı</th><th>Esas No</th><th>Dosya Görüntüle</th></tr>
+        <tr id="r1"><td>Katılan</td><td>Ankara 33. Ağır Ceza Mahkemesi</td><td>2024/124</td>
+            <td><button onclick="void(0)">Dosya Görüntüle</button></td></tr>
+        <tr id="r2"><td>Katılan</td><td>Ankara Bölge Adliye Mahkemesi 19. Ceza Dairesi</td><td>2024/2000</td>
+            <td><button onclick="void(0)">Dosya Görüntüle</button></td></tr></table>
+      <div class="duyuru"><a href="/yardim/ornek-dilekce.pdf">Örnek dilekçe</a>
+        <a href="/files/kullanim-kilavuzu.pdf">Kullanım kılavuzu</a>
+        <a href="https://cdn.e-devlet.gov.tr/downloads/portal/IkiAsamaliGirisIslemleri_Web_Kilavuz.pdf">Kılavuz</a></div>
+      <footer><a href="/dokumanlar/kullanim-sozlesmesi.pdf">Sözleşme</a></footer></body></html>""",
     # Gerçekçi evrak listesi.
     "/dosya/evraklar": f"<html><body><h2>{CASE_TITLE}</h2>{_EVRAK_ROWS}</body></html>",
     # Dosya penceresi: Evrak sekmesine basılınca liste AJAX ile gelir.
@@ -208,6 +223,7 @@ class _Lab:
             **overrides,
         }
         self.worker.evaluate("(settings) => chrome.storage.sync.set(settings)", settings)
+        self.worker.evaluate("() => sentHashes.clear()")  # testler birbirinin "gönderildi" kaydını görmesin
         _ApiHandler.uploads.clear()
 
     def downloads(self) -> list[str]:
@@ -468,3 +484,68 @@ def test_diagnose_button_explains_when_the_tab_is_not_a_uyap_page(lab):
     page.click("#diagnose")
     assert "UYAP sayfası değil" in _wait_status(page, "UYAP sayfası")
     page.close()
+
+
+def test_case_list_page_with_help_pdfs_uploads_nothing_even_with_auto_sync(lab):
+    """Canlıda görülen hata: dava satırına tıklanınca sayfadaki kılavuz PDF'leri o davanın evrakı diye
+    (dava satırının adıyla) defalarca gönderilmişti."""
+    lab.configure(autoSync=True)
+    page = lab.open("/vatandas/dosya-sorgulama")
+    # Dava satırlarında "Dosyayı aç" düğmesi olabilir; ama hiçbir satır EVRAK satırı sayılmamalı.
+    assert page.locator(".jurisai-send-btn:not(.jurisai-open-btn)").count() == 0
+    page.locator("#r1 td").first.click()
+    page.locator("#r2 td").nth(1).click()
+    page.wait_for_timeout(9000)  # tıklama sonrası 0,9 / 2,5 / 6 sn'lik taramalar bitsin
+    assert lab.uploads == [], [upload["file"]["name"] for upload in lab.uploads]
+    page.close()
+
+
+def test_diagnosis_on_the_case_list_page_finds_no_evrak_links(lab):
+    lab.configure()
+    page = lab.open("/vatandas/dosya-sorgulama")
+    report = lab.worker.evaluate(
+        """async () => {
+            const [tab] = await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' });
+            const frames = await chrome.scripting.executeScript({
+                target: { tabId: tab.id, allFrames: true },
+                func: () => (typeof window.__jurisaiDiagnose === 'function' ? window.__jurisaiDiagnose() : null),
+            });
+            return frames.map((frame) => frame.result).filter(Boolean)[0];
+        }"""
+    )
+    assert report["rowsWithDocUrls"] == 0  # kılavuz/yardım bağlantıları evrak sayılmaz
+    assert report["docUrlShapes"] == []
+    page.close()
+
+
+def test_automatic_sync_sends_the_same_content_only_once_per_session(lab):
+    lab.configure(autoSync=True)
+    ingest = (
+        "(name) => handleAutoIngest({ docUrls: ['https://avukat.uyap.gov.tr/evrak/indir?id=101'], "
+        "dosyaEsasNo: '2025/412', mahkeme: name })"
+    )
+    first = lab.worker.evaluate(ingest, "Dava A")
+    second = lab.worker.evaluate(ingest, "Dava B")  # aynı içerik başka bir ad/dava altında
+    assert first["ok"] and first["files"] == 1
+    assert second["ok"] and second["files"] == 0
+    # Yinelenen evrak atlandığında dosya künyesi (taraf adı dahil) de yeniden gönderilmez.
+    assert len(lab.uploads) == 1
+
+
+def test_a_manual_send_is_never_blocked_by_the_duplicate_memory(lab):
+    lab.configure(autoSync=False)
+    send = (
+        "() => handleUpload({ url: 'https://avukat.uyap.gov.tr/evrak/indir?id=101', "
+        "evrakAdi: 'A', dosyaEsasNo: '2025/412' })"
+    )
+    assert lab.worker.evaluate(send)["ok"] and lab.worker.evaluate(send)["ok"]
+    assert len(lab.uploads) == 2  # kullanıcı belgeyi sildikten sonra yeniden gönderebilir
+
+
+def test_documents_are_never_fetched_from_outside_uyap(lab):
+    lab.configure(autoSync=False)
+    result = lab.worker.evaluate(
+        "() => handleUpload({ url: 'https://cdn.e-devlet.gov.tr/downloads/portal/Kilavuz.pdf', evrakAdi: 'x' })"
+    )
+    assert result["ok"] is False and "UYAP dışı" in result["error"]
+    assert lab.uploads == []
