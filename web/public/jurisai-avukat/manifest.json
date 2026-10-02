@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "NHR Hukuk - UYAP Avukat Portalı Aktarımı",
-  "version": "2.9.0",
-  "description": "UYAP Avukat Portalı'ndaki evrakları tek tıkla NHR Hukuk hesabınıza aktarır (UDF/PDF destekli). Otomatik aktarım varsayılan olarak kapalıdır.",
+  "name": "JurisAI - UYAP Avukat Portalı Aktarımı",
+  "version": "2.9.1",
+  "description": "UYAP Avukat Portalı'ndaki evrakları tek tıkla JurisAI hesabınıza aktarır (UDF/PDF destekli). Otomatik aktarım varsayılan olarak kapalıdır.",
   "permissions": ["activeTab", "scripting", "downloads", "storage"],
   "host_permissions": [
     "*://*.adalet.gov.tr/*",
@@ -14,7 +14,7 @@
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "NHR Hukuk - UYAP Aktarımı",
+    "default_title": "JurisAI - UYAP Aktarımı",
     "default_icon": {
       "16": "images/icon-16.png",
       "48": "images/icon-48.png",

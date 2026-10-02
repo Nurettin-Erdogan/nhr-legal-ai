@@ -164,8 +164,9 @@ export const UyapSyncDialog = ({ onSynced }: Props) => {
       }}
     >
       <DialogTrigger asChild>
-        <Button size="sm" variant="outline">
-          <RefreshCw className="h-4 w-4 mr-1" /> UYAP Senkronizasyonu
+        <Button size="sm" variant="outline" aria-label="UYAP Senkronizasyonu">
+          <RefreshCw className="h-4 w-4 sm:mr-1" />{" "}
+          <span className="hidden sm:inline">UYAP Senkronizasyonu</span>
         </Button>
       </DialogTrigger>
       <DialogContent className="max-w-lg">

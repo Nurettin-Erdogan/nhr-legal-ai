@@ -1,6 +1,6 @@
-/* NHR Hukuk - service worker (Manifest V3)
+/* JurisAI - service worker (Manifest V3)
    Content script'ten gelen aktarım isteğini alır, belgeyi UYAP oturum çerezleriyle
-   indirir ve multipart/form-data olarak NHR Hukuk API'sine POST eder.
+   indirir ve multipart/form-data olarak JurisAI API'sine POST eder.
 
    Gizlilik varsayılanları: otomatik aktarım ve bilgisayara yerel kopya KAPALIDIR.
    Biri yalnızca kullanıcı ayar penceresinde açıkça açarsa çalışır. */
@@ -94,7 +94,7 @@ async function fetchDocument(url, timeoutMs) {
   }
 }
 
-/** Belgeyi kullanıcının bilgisayarına indirir (NHR Hukuk klasörüne). Yalnız `saveLocal` açıksa. */
+/** Belgeyi kullanıcının bilgisayarına indirir (JurisAI klasörüne). Yalnız `saveLocal` açıksa. */
 async function saveLocally(blob, name, contentType, enabled = false) {
   if (!enabled) return false;
   try {

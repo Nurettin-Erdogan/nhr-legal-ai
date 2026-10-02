@@ -123,7 +123,7 @@ export function CompetitorCompare() {
             JurisAI vs. Diğer Çözümler
           </h2>
           <p className="mt-4 text-muted-foreground">
-            Hukuk ofisleri JurisAI'a geçtiğinde ne kazanır? Manuel iş akışları, tablolar ve eski
+            Hukuk ofisleri JurisAI'ya geçtiğinde ne kazanır? Manuel iş akışları, tablolar ve eski
             yazılımlarla doğrudan karşılaştırma.
           </p>
         </div>

@@ -155,7 +155,7 @@ const UyapConnect = () => {
             .eq("id", run.id);
         }
         setResult(res);
-        toast.success(`${res.inserted} belge NHR Hukuk'a aktarıldı`);
+        toast.success(`${res.inserted} belge JurisAI'ya aktarıldı`);
       } catch (e) {
         const message = e instanceof Error ? e.message : "Aktarım başarısız";
         if (run?.id) {
@@ -179,7 +179,7 @@ const UyapConnect = () => {
   return (
     <DashboardLayout
       title="UYAP'a Bağlan"
-      subtitle="UYAP'ta kendi oturumunu aç; belgeleri NHR Hukuk hesabına sen onaylayarak aktar."
+      subtitle="UYAP'ta kendi oturumunu aç; belgeleri JurisAI hesabına sen onaylayarak aktar."
     >
       {/* Tarayıcı eklentisi */}
       <section className="mb-6 rounded-xl border bg-card p-5 space-y-4">
@@ -189,9 +189,9 @@ const UyapConnect = () => {
           <h2 className="font-semibold">Tarayıcı eklentisi ile aktarım</h2>
         </div>
         <p className="text-sm text-muted-foreground leading-relaxed">
-          NHR Hukuk eklentisini Chrome'a kurarsın, UYAP'ta kendi oturumunu açarsın ve bir dosyanın
-          evrak listesinde "NHR Hukuk'a Aktar" düğmesine basarsın. Belgeler senin oturumunla
-          indirilip doğrudan NHR Hukuk hesabına kaydedilir; şifre/e-imza hiçbir zaman okunmaz veya
+          JurisAI eklentisini Chrome'a kurarsın, UYAP'ta kendi oturumunu açarsın ve bir dosyanın
+          evrak listesinde "JurisAI'ya Aktar" düğmesine basarsın. Belgeler senin oturumunla
+          indirilip doğrudan JurisAI hesabına kaydedilir; şifre/e-imza hiçbir zaman okunmaz veya
           sunucuya gönderilmez. Varsayılan olarak yalnızca düğmeye bastığın evrak gönderilir.
         </p>
 
@@ -279,7 +279,7 @@ const UyapConnect = () => {
           </div>
           <p className="text-sm text-muted-foreground leading-relaxed">
             Girişi doğrudan resmî UYAP/e-Devlet sayfasında sen yaparsın (e-imza, mobil imza veya
-            e-Devlet şifresi). NHR Hukuk bu bilgileri görmez, saklamaz ve iletmez. Portal yeni
+            e-Devlet şifresi). JurisAI bu bilgileri görmez, saklamaz ve iletmez. Portal yeni
             sekmede açılır; dosya listesinden ilgili belgeleri veya dosya arşivini indirirsin.
           </p>
           <div className="grid gap-2">
@@ -310,7 +310,7 @@ const UyapConnect = () => {
             </div>
             UYAP'ın açık bir API'si yoktur ve e-imza/e-Devlet kimlik bilgilerinin üçüncü bir
             uygulamada saklanması hem KVKK hem de portal kullanım şartlarına aykırıdır. Bu nedenle
-            oturum senin tarayıcında kalır; NHR Hukuk yalnızca senin indirdiğin belgeleri işler.
+            oturum senin tarayıcında kalır; JurisAI yalnızca senin indirdiğin belgeleri işler.
           </div>
         </section>
 
@@ -400,13 +400,13 @@ export const Route = createFileRoute("/_authenticated/dashboard/uyap")({
   component: UyapConnect,
   head: () => ({
     meta: [
-      { title: "UYAP'a Bağlan · NHR Hukuk" },
+      { title: "UYAP'a Bağlan · JurisAI" },
       {
         name: "description",
-        content: "UYAP oturumunu güvenle aç, belgeleri onayınla NHR Hukuk'a aktar.",
+        content: "UYAP oturumunu güvenle aç, belgeleri onayınla JurisAI'ya aktar.",
       },
-      { property: "og:title", content: "UYAP'a Bağlan · NHR Hukuk" },
-      { property: "og:description", content: "UYAP dosyalarını güvenli akışla NHR Hukuk'a aktar." },
+      { property: "og:title", content: "UYAP'a Bağlan · JurisAI" },
+      { property: "og:description", content: "UYAP dosyalarını güvenli akışla JurisAI'ya aktar." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
     ],

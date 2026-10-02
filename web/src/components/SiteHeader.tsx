@@ -25,7 +25,8 @@ export const SiteHeader = () => {
               key={item.to}
               to={item.to}
               className={cn(
-                "rounded-full px-3.5 py-1.5 text-sm font-medium transition-colors",
+                // Dar ekranda yalnız tema ve giriş düğmesi sığar; menü bağlantıları alt bilgide de var.
+                "hidden whitespace-nowrap rounded-full px-3.5 py-1.5 text-sm font-medium transition-colors sm:inline-block",
                 location.pathname === item.to
                   ? "bg-secondary text-primary"
                   : "text-muted-foreground hover:text-foreground",
@@ -36,7 +37,7 @@ export const SiteHeader = () => {
           ))}
           <ThemeToggle />
           <Link to="/auth" className="ml-1">
-            <Button size="sm" className="rounded-full">
+            <Button size="sm" className="shrink-0 whitespace-nowrap rounded-full">
               Avukat Girişi
             </Button>
           </Link>

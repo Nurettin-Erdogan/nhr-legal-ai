@@ -1,4 +1,4 @@
-/* NHR Hukuk popup - ayarları chrome.storage.sync üzerinde tutar.
+/* JurisAI popup - ayarları chrome.storage.sync üzerinde tutar.
    Gizlilik: "otomatik aktarım" ve "yerel kopya" varsayılan olarak kapalıdır; otomatik aktarım
    yalnızca kullanıcı bilgilendirme metnini onaylayarak açabilir. */
 
@@ -16,7 +16,7 @@ const status = el("status");
 const AUTO_SYNC_CONSENT =
   "Otomatik aktarım açılsın mı?\n\n" +
   "UYAP'ta bir dosyayı görüntülediğinde, dosyanın evrakları ve künyesi (mahkeme, esas no, taraf adı) " +
-  "NHR Hukuk hesabına kendiliğinden gönderilecek. Bu veriler müvekkil bilgisi içerebilir.\n\n" +
+  "JurisAI hesabına kendiliğinden gönderilecek. Bu veriler müvekkil bilgisi içerebilir.\n\n" +
   "Yalnızca yetkili olduğun dosyalarda ve müvekkil bilgilendirmesini yaptıysan aç.";
 
 function say(message, kind = "") {
@@ -81,7 +81,7 @@ el("test").addEventListener("click", async () => {
   try {
     await chrome.storage.sync.set({ apiUrl, apiKey });
     const res = await chrome.runtime.sendMessage({ type: "JURISAI_TEST" });
-    if (res?.ok) say("NHR Hukuk bağlantısı hazır ✓", "ok");
+    if (res?.ok) say("JurisAI bağlantısı hazır ✓", "ok");
     else say(`Ulaşılamadı: ${res?.error || res?.status || "bilinmeyen"}`, "err");
   } catch (error) {
     say(`Ulaşılamadı: ${error.message}`, "err");

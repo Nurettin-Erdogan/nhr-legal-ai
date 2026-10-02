@@ -89,12 +89,10 @@ export const FileUploadDialog = ({ onUploaded }: Props) => {
     try {
       for (const file of files) {
         const path = storagePathFor(user.id, file.name);
-        const { error: upErr } = await supabase.storage
-          .from("case-files")
-          .upload(path, file, {
-            contentType: file.type || "application/octet-stream",
-            upsert: false,
-          });
+        const { error: upErr } = await supabase.storage.from("case-files").upload(path, file, {
+          contentType: file.type || "application/octet-stream",
+          upsert: false,
+        });
         if (upErr) {
           toast.error(`${file.name}: ${upErr.message}`);
           setDone((d) => d + 1);
@@ -141,8 +139,9 @@ export const FileUploadDialog = ({ onUploaded }: Props) => {
       }}
     >
       <DialogTrigger asChild>
-        <Button size="sm">
-          <Upload className="h-4 w-4 mr-1" /> Dosya Yükle
+        <Button size="sm" aria-label="Dosya Yükle">
+          <Upload className="h-4 w-4 sm:mr-1" />{" "}
+          <span className="hidden sm:inline">Dosya Yükle</span>
         </Button>
       </DialogTrigger>
       <DialogContent className="max-w-lg">

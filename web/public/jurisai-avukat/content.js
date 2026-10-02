@@ -1,5 +1,5 @@
-/* NHR Hukuk - UYAP Avukat Portalı içerik betiği
-   Evrak tablosunu bulur, her satıra "NHR Hukuk'a Aktar" düğmesi enjekte eder,
+/* JurisAI - UYAP Avukat Portalı içerik betiği
+   Evrak tablosunu bulur, her satıra "JurisAI'ya Aktar" düğmesi enjekte eder,
    toplu aktarım için listenin üstüne bir araç çubuğu ekler.
    Kullanıcının kendi UYAP oturumu kullanılır; şifre/e-imza asla okunmaz.
 
@@ -189,7 +189,7 @@
     } catch (error) {
       if (button) {
         button.disabled = false;
-        button.textContent = "NHR Hukuk'a Aktar";
+        button.textContent = "JurisAI'ya Aktar";
       }
       toast(`Aktarılamadı: ${error.message}`, "error");
       return false;
@@ -236,7 +236,7 @@
       const button = document.createElement("button");
       button.type = "button";
       button.className = BTN_CLASS;
-      button.textContent = "NHR Hukuk'a Aktar";
+      button.textContent = "JurisAI'ya Aktar";
       button.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -256,7 +256,7 @@
 
     const label = document.createElement("span");
     label.className = "jurisai-brand";
-    label.textContent = "⚖️ NHR Hukuk";
+    label.textContent = "⚖️ JurisAI";
 
     const allBtn = document.createElement("button");
     allBtn.type = "button";
@@ -268,7 +268,7 @@
       // Toplu aktarım açık onaysız başlamaz: müvekkil belgeleri kullanıcının hesabına gider.
       if (
         !window.confirm(
-          `Bu sayfadaki ${buttons.length} evrak NHR Hukuk hesabınıza aktarılacak. Devam edilsin mi?`,
+          `Bu sayfadaki ${buttons.length} evrak JurisAI hesabınıza aktarılacak. Devam edilsin mi?`,
         )
       ) {
         return;
@@ -335,7 +335,7 @@
     const hint = document.createElement("div");
     hint.className = "jurisai-toolbar jurisai-hint";
     hint.textContent =
-      "⚖️ NHR Hukuk: Bu sayfa dosya listesi, evraklar burada bulunmaz. Bir dosyayı açın (Dosya Görüntüle) ve Evraklar/Belgeler sekmesine geçin — aktarım düğmeleri orada görünür.";
+      "⚖️ JurisAI: Bu sayfa dosya listesi, evraklar burada bulunmaz. Bir dosyayı açın (Dosya Görüntüle) ve Evraklar/Belgeler sekmesine geçin — aktarım düğmeleri orada görünür.";
     document.body.appendChild(hint);
   }
 
@@ -492,7 +492,7 @@
     autoSent.add(key);
     autoBusy = true;
     const label = meta.mahkeme || meta.dosyaEsasNo || "Dosya";
-    const bubble = liveToast("Dosya NHR Hukuk'a aktarılıyor…");
+    const bubble = liveToast("Dosya JurisAI'ya aktarılıyor…");
     try {
       const res = await chrome.runtime.sendMessage({
         type: "AUTO_INGEST_CASE",
@@ -500,7 +500,7 @@
       });
       if (res?.ok) {
         bubble.done(
-          `${label} dosyası NHR Hukuk'a başarıyla aktarıldı${res.files ? ` (${res.files} evrak)` : ""}`,
+          `${label} dosyası JurisAI'ya başarıyla aktarıldı${res.files ? ` (${res.files} evrak)` : ""}`,
           "success",
         );
       } else {

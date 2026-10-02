@@ -759,7 +759,7 @@ const DocumentProcessing = () => {
                           disabled={!item.text || savingDoc}
                           onClick={() => saveToLibrary(item)}
                         >
-                          <Save className="mr-1 h-3.5 w-3.5" /> JurisAI'a Gönder
+                          <Save className="mr-1 h-3.5 w-3.5" /> JurisAI'ya Gönder
                         </Button>
                       </div>
                     </li>

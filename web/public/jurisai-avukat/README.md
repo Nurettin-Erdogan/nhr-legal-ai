@@ -1,4 +1,4 @@
-# NHR Hukuk - UYAP Avukat Portalı Aktarımı (Chrome, Manifest V3)
+# JurisAI - UYAP Avukat Portalı Aktarımı (Chrome, Manifest V3)
 
 ## Kurulum
 
@@ -15,7 +15,7 @@ Güncellemede zip'i aynı klasörün üzerine çıkarıp `chrome://extensions` i
 ## Kullanım
 
 - UYAP Avukat Portalı'nda oturum aç, bir dosyanın **Evraklar** listesini aç.
-- Her evrak satırında **NHR Hukuk'a Aktar** düğmesi görünür. Düğme yalnızca bir dosyanın (esas
+- Her evrak satırında **JurisAI'ya Aktar** düğmesi görünür. Düğme yalnızca bir dosyanın (esas
   numarası olan) evrak listesinde çıkar; giriş ve ana sayfalarda çıkmaz.
 - Sağ alttaki çubuktan **Bu sayfadaki tüm evrakları aktar** ile toplu aktarım yapılır; başlamadan
   önce onay sorulur.
