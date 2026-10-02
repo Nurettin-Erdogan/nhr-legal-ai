@@ -263,3 +263,35 @@ def test_folder_path_is_capped_and_optional(monkeypatch):
 
     assert len(stored[0]["overrides"]["uyap_path"]) == 400
     assert stored[1]["overrides"]["uyap_path"] is None
+
+
+def test_encrypted_uyap_evrak_ids_never_end_up_in_the_file_name(monkeypatch):
+    """Gerçek portalda evrak_id şifreli bir değerdir (tırnak, '/', '+'); dosya adına ham hâliyle girerse
+    Windows yazamaz ("Kayıt hatası"). Kararlı bir özet kullanılır; kısa/düz kimlik olduğu gibi kalır."""
+    client, stored = _client(monkeypatch)
+    weird = '"hfHeLsx0lKef/FTtsb+ab==\\x"'
+
+    for evrak_id, title in ((weird, "A.odt"), (weird, "A.odt"), (weird + "2", "A.odt"), ("123", "A.odt")):
+        response = client.post(
+            "/api/public/v1/documents/upload",
+            files={"file": (title, b"PK\x03\x04", "application/vnd.oasis.opendocument.text")},
+            data={"evrakId": evrak_id},
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+        assert response.status_code == 200
+
+    names = [item["file_name"] for item in stored]
+    assert all(set(name) <= set("abcdef0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._") for name in names)
+    assert not any(char in name for name in names for char in '"/\\+=*?<>|:')
+    assert names[0] == names[1]  # aynı kimlik, aynı ön ek (yinelenen denetimi çalışabilsin)
+    assert names[0] != names[2]  # farklı evrak, farklı ön ek
+    assert names[3] == "123-A.odt"  # düz kimlik olduğu gibi
+
+
+def test_evrak_id_prefix_rules():
+    assert office_public.evrak_id_prefix(None) == "" and office_public.evrak_id_prefix("  ") == ""
+    assert office_public.evrak_id_prefix("77") == "77"
+    assert office_public.evrak_id_prefix("a.b-c_9") == "a.b-c_9"
+    hashed = office_public.evrak_id_prefix('"x/y')
+    assert len(hashed) == 12 and hashed == office_public.evrak_id_prefix('"x/y')
+    assert office_public.evrak_id_prefix("k" * 80) != "k" * 80  # çok uzun kimlik de özetlenir

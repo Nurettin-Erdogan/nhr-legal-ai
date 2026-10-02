@@ -15,6 +15,7 @@ import binascii
 import hashlib
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
@@ -56,6 +57,21 @@ _CORS = {
 
 def _reply(body: dict[str, Any], status: int = 200) -> JSONResponse:
     return JSONResponse(body, status_code=status, headers=_CORS)
+
+
+_PLAIN_EVRAK_ID = re.compile(r"[A-Za-z0-9._-]{1,40}")
+
+
+def evrak_id_prefix(evrak_id: str | None) -> str:
+    """Dosya adının başına konan evrak ön eki. UYAP'ın gerçek `evrak_id`si şifreli bir değerdir (tırnak, `/`, `+`
+    gibi karakterler taşır; Windows bunları dosya adında kabul etmez ve kayıt "Kayıt hatası" ile düşerdi).
+    Düz (sayısal/kısa) kimlik olduğu gibi kullanılır; diğerleri kararlı bir özetle (SHA-256 ilk 12) değiştirilir."""
+    value = (evrak_id or "").strip()
+    if not value:
+        return ""
+    if _PLAIN_EVRAK_ID.fullmatch(value):
+        return value
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
 
 
 def token_digest(token: str) -> str:
@@ -353,7 +369,8 @@ async def upload_document(
     if len(data) > MAX_FILE_BYTES:
         return _reply({"error": "Dosya çok büyük"}, 413)
 
-    unique_name = f"{evrakId.strip()[:80]}-{file_name}" if evrakId and evrakId.strip() else file_name
+    prefix = evrak_id_prefix(evrakId)
+    unique_name = f"{prefix}-{file_name}" if prefix else file_name
     try:
         outcome, document_id = await run_in_threadpool(
             _store,
