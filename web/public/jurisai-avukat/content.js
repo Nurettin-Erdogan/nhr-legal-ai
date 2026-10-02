@@ -1106,6 +1106,41 @@
     document.body.append(button);
   }
 
+  /** Doğrudan indirme denemesi: ilk iki evrağı normal yoldan alır, ikincisini kurulan adresle karşılaştırır (hiçbir belge saklanmaz). */
+  async function probeDirect() {
+    const dialog = activeRoot();
+    if (!dialog) return { ok: false, error: "Açık bir dosya penceresi yok." };
+    if (pulling) return { ok: false, error: "Bir çekme zaten sürüyor." };
+    pulling = { stop: false };
+    try {
+      if (!(await ensurePreview(dialog))) return { ok: false, error: "Ön izleme düğmesi bulunamadı." };
+      await expandAll(dialog);
+      const items = collectEvraklar(dialog).filter((item) => !item.isEk).slice(0, 2);
+      if (items.length < 2) return { ok: false, error: "Deneme için en az iki evrak gerekir." };
+      await chrome.runtime.sendMessage({ type: "JURISAI_PROBE_BEGIN" });
+      for (const item of items) {
+        await chrome.runtime.sendMessage({ type: "JURISAI_PULL_ARM", evrakId: item.id });
+        realClick(item.span);
+        const captured = await waitUntil(
+          async () => (await chrome.runtime.sendMessage({ type: "JURISAI_PULL_STATUS" }))?.captured,
+          10000,
+        );
+        if (!captured) return { ok: false, error: "evrak adresi yakalanamadı (ön izleme açık mı?)" };
+        await sleep(700);
+        const kept = await chrome.runtime.sendMessage({ type: "JURISAI_PROBE_KEEP" });
+        if (!kept?.ok) return { ok: false, error: "adres saklanamadı" };
+        await sleep(1500);
+      }
+      const result = await chrome.runtime.sendMessage({ type: "JURISAI_PROBE_RUN", attrIds: items.map((item) => item.id) });
+      if (result?.ok) toast(`Deneme dosyası kaydedildi: İndirilenler\\${result.file.replace("/", "\\")}`, "success");
+      else toast(`Deneme başarısız: ${result?.error || "bilinmeyen hata"}`, "error");
+      return result;
+    } finally {
+      pulling = null;
+      chrome.runtime.sendMessage({ type: "JURISAI_PULL_END" }).catch(() => {});
+    }
+  }
+
   /** Dosya listesindeki satır düğmesi: dosyayı açar, Evrak sekmesine geçer ve evrak seçim penceresini gösterir. */
   async function openCaseAndChoose(openButton) {
     if (pulling) return toast("Bir çekme zaten sürüyor.", "info");
@@ -1255,8 +1290,14 @@
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     // Kayıt yalnız üst çerçevede tutulur; iç çerçeveler (ön izleme iframe'i vb.) "kayıt yok" yanıtıyla araya girmesin.
-    if (/^JURISAI_(RECORD_(START|STOP)|PULL_(DOSYA|STOP))$/.test(message?.type || "") && window !== window.top)
+    if (/^JURISAI_(RECORD_(START|STOP)|PULL_(DOSYA|STOP|PROBE))$/.test(message?.type || "") && window !== window.top)
       return false;
+    if (message?.type === "JURISAI_PULL_PROBE") {
+      probeDirect()
+        .then(sendResponse)
+        .catch((error) => sendResponse({ ok: false, error: error.message || "bilinmeyen hata" }));
+      return true;
+    }
     if (message?.type === "JURISAI_PULL_DOSYA") {
       pullDosya(message.mode === "disk" ? "disk" : "upload") // yalnız seçim penceresinde öne çıkan düğme
         .then(sendResponse)

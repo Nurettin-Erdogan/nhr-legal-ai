@@ -1275,3 +1275,29 @@ def test_reinjecting_the_content_script_is_safe_and_clears_dead_ui(lab):
     page.wait_for_selector(".jurisai-chooser", timeout=30000)
     page.click("#jurisai-pick-cancel")
     page.close()
+
+
+def test_direct_download_probe_measures_without_storing_or_leaking(lab):
+    """Yaprağa tıklamadan adres kurulabilir mi? Deneme ölçer, belge saklamaz/yüklemez, kimlik/ad sızdırmaz."""
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-agaci")
+    result = lab.worker.evaluate(
+        """async () => {
+            const tab = (await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' })).sort((a, b) => b.id - a.id)[0];
+            return chrome.tabs.sendMessage(tab.id, { type: 'JURISAI_PULL_PROBE' }, { frameId: 0 });
+        }"""
+    )
+
+    assert result["ok"], result
+    report = result["report"]
+    assert report["kind"] == "doğrudan indirme denemesi"
+    assert sorted(report["paramNames"]) == ["dosyaId", "evrakId", "mimeType", "yargiTuru"]
+    # Sahte portalda sorgu yalnız evrakId'ye bağlı: kurulan adres gerçek ikinci evrakla aynı baytları verir.
+    assert report["direct"]["sameBytesAsRealB"] is True and report["direct"]["status"] == 200
+    assert report["params"]["evrakId"]["equalsAttributeOfEvrakA"] is False  # ENC öneki: sahte portalda eşit değil
+    assert report["params"]["dosyaId"]["sameInBothEvraks"] is True
+    assert report["mimeTypeDiffersBetweenEvraks"] is False
+    assert lab.uploads == []  # hiçbir şey yüklenmedi
+    serialized = json.dumps(report, ensure_ascii=False)
+    assert "ENC101" not in serialized and "ENC102" not in serialized and "Kesinleşme" not in serialized
+    page.close()

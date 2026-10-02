@@ -179,6 +179,21 @@ async function runPull(mode) {
 }
 el("pull").addEventListener("click", () => runPull("upload"));
 el("pullDisk").addEventListener("click", () => runPull("disk"));
+el("probe").addEventListener("click", async () => {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    say("Deneme sürüyor (birkaç saniye)…", "ok");
+    const result = await chrome.tabs.sendMessage(tab.id, { type: "JURISAI_PULL_PROBE" }, { frameId: 0 });
+    say(
+      result?.ok
+        ? `Deneme tamam: ${result.report?.direct?.sameBytesAsRealB ? "doğrudan indirme İŞE YARIYOR" : "doğrudan indirme tutmadı"}. Dosya kaydedildi.`
+        : `Deneme başarısız: ${result?.error || "bilinmeyen hata"}`,
+      result?.ok ? "ok" : "err",
+    );
+  } catch (_) {
+    say("Bu sekme bir UYAP sayfası değil ya da sayfa yenilenmeli.", "err");
+  }
+});
 el("pullStop").addEventListener("click", async () => {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });

@@ -331,6 +331,13 @@ chrome.alarms.onAlarm.addListener((alarm) => {
    İçerik betiği kaydı başlatınca indirme ve yeni sekme olayları da toplanır (oturum belleğinde, servis
    çalışanı kapansa da kaybolmaz). Yalnız YOL BİÇİMLERİ ve uzantı/MIME türü saklanır; ad ve içerik yok. */
 const RECORD_KEY = "jurisaiRecording";
+const safeDecode = (value) => {
+  try {
+    return decodeURIComponent(String(value));
+  } catch (_) {
+    return String(value);
+  }
+};
 const maskDigits = (value) => String(value || "").replace(/\d+/g, "#");
 function shapeOf(raw) {
   if (!raw) return "";
@@ -589,8 +596,101 @@ async function handlePullFetch(meta, mode = "upload") {
   }
 }
 
+/* ---------- Doğrudan indirme denemesi ----------
+   Soru: yaprağa tıklamadan, belge adresini kendimiz kurup indirebilir miyiz? Bu deneme yalnız ölçer: ilk iki evrağı
+   normal yoldan (tıklayıp adresi yakalayarak) alır, ikincinin adresini birincinin şablonundan evrak_id değiştirerek kurar ve
+   ikisinin SHA-256'sını karşılaştırır. Hiçbir belge saklanmaz/yüklenmez; rapora yalnız mantıksal sonuçlar, uzunluklar, durum
+   kodları ve mimeType değerleri yazılır (kimlik/ad/içerik değeri yazılmaz). */
+let probe = null; // { urls: [], attrIds: [] }
+
+async function runDirectProbe(attrIds) {
+  const [urlA, urlB] = probe?.urls || [];
+  if (!urlA || !urlB) throw new Error("iki evrağın adresi yakalanamadı");
+  const a = new URL(urlA);
+  const b = new URL(urlB);
+  const sha = async (blob) => (blob ? await sha256Hex(blob) : "");
+  const get = async (url) => {
+    const res = await fetch(url, { credentials: "include" });
+    const blob = await res.blob();
+    return { status: res.status, type: (res.headers.get("content-type") || "").split(";")[0], size: blob.size, hash: await sha(blob) };
+  };
+  const params = {};
+  for (const [name, value] of a.searchParams) {
+    const other = b.searchParams.get(name);
+    params[name] = {
+      sameInBothEvraks: other === value,
+      length: value.length,
+      equalsAttributeOfEvrakA: value === attrIds[0],
+      equalsDecodedAttributeOfEvrakA: safeDecode(value) === safeDecode(attrIds[0]),
+      // Yalnız tür bildiren parametrelerin (mimeType, yargiTuru) değeri gösterilir; kimlik değerleri (evrakId, dosyaId) asla.
+      shortValue: ["mimeType", "yargiTuru"].includes(name) && value.length <= 16 ? value : undefined,
+    };
+  }
+  const realB = await get(urlB);
+  // Doğrudan kurulan adres: B'nin kimliğini A'nın şablonuna koy (evrakId'nin yaprak özniteliğine eşit olduğu varsayımı).
+  const built = new URL(urlA);
+  built.searchParams.set("evrakId", attrIds[1]);
+  const mimeA = a.searchParams.get("mimeType");
+  const mimeB = b.searchParams.get("mimeType");
+  const direct = await get(built.href).catch((error) => ({ error: error.message }));
+  // Evrak türü sorgusu (sayfanın kendi isteği): tek alan evrakId.
+  let typeQuery = {};
+  try {
+    const ajx = `${a.origin}/main/jsp/vatandas/dosya_evrak_turu_brd.ajx`;
+    const res = await fetch(ajx, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
+      body: `evrakId=${encodeURIComponent(attrIds[0])}`,
+    });
+    const text = (await res.text()).replace(/\d+/g, "#").slice(0, 120);
+    typeQuery = { status: res.status, contentType: (res.headers.get("content-type") || "").split(";")[0], textMasked: text };
+  } catch (error) {
+    typeQuery = { error: error.message };
+  }
+  return {
+    kind: "doğrudan indirme denemesi",
+    pathShape: shapeOf(urlA),
+    paramNames: [...a.searchParams.keys()],
+    params,
+    mimeTypeOfA: mimeA && mimeA.length <= 12 ? mimeA : "(uzun)",
+    mimeTypeOfB: mimeB && mimeB.length <= 12 ? mimeB : "(uzun)",
+    mimeTypeDiffersBetweenEvraks: mimeA !== mimeB,
+    realB: { status: realB.status, type: realB.type, size: realB.size },
+    direct: direct.error
+      ? { error: direct.error }
+      : {
+          status: direct.status,
+          type: direct.type,
+          size: direct.size,
+          sameBytesAsRealB: !!direct.hash && direct.hash === realB.hash,
+        },
+    typeQuery,
+  };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message?.type) {
+    case "JURISAI_PROBE_BEGIN":
+      probe = { urls: [] };
+      sendResponse({ ok: true });
+      return false;
+    case "JURISAI_PROBE_KEEP":
+      // Yakalanan gerçek adresi (yalnız bellekte) deneme için sakla; içerik betiğine geri verilmez.
+      if (pull && probe) probe.urls.push(pullTargetUrl());
+      sendResponse({ ok: !!(pull && probe && probe.urls[probe.urls.length - 1]) });
+      return false;
+    case "JURISAI_PROBE_RUN":
+      runDirectProbe(message.attrIds || [])
+        .then(async (report) => {
+          probe = null;
+          sendResponse({ ok: true, file: await saveReportFile("dogrudan-deneme", report), report });
+        })
+        .catch((error) => {
+          probe = null;
+          sendResponse({ ok: false, error: error.message || "bilinmeyen hata" });
+        });
+      return true;
     case "JURISAI_PULL_BEGIN":
       getSettings().then((settings) => {
         // Bilgisayara indirme JurisAI'ya bağlanmaz: anahtar/adres gerekmez.
