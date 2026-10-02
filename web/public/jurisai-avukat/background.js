@@ -369,6 +369,42 @@ async function saveReportFile(prefix, report) {
   return file;
 }
 
+/* ---------- Klasör yapısıyla bilgisayara indirme ----------
+   İndirilenler\JurisAI-UYAP\<esas no + mahkeme>\<UYAP klasörleri>\<evrak>. JurisAI'ya hiçbir şey göndermez. */
+const FS_BAD_CHARS = /[<>:"/\\|?*\u0000-\u001f]/g;
+function fsSegment(text, fallback = "Evrak") {
+  const cleaned = String(text || "")
+    .replace(FS_BAD_CHARS, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[. ]+$/g, "")
+    .slice(0, 80);
+  return cleaned || fallback;
+}
+function folderDownloadPath(meta, contentType) {
+  const dosya = fsSegment([meta.dosyaEsasNo, meta.birim].filter(Boolean).join(" "), "UYAP dosyasi");
+  const folders = String(meta.klasorYolu || "")
+    .split(" / ")
+    .filter(Boolean)
+    .map((part) => fsSegment(part, "Klasor"));
+  const name = fsSegment(fileNameFor({ ...meta, url: "" }, contentType), "evrak");
+  return ["JurisAI-UYAP", dosya, ...folders, name].join("/");
+}
+async function saveToFolder(blob, contentType, meta) {
+  const buffer = new Uint8Array(await blob.arrayBuffer());
+  let binary = "";
+  for (let i = 0; i < buffer.length; i += 0x8000) binary += String.fromCharCode(...buffer.subarray(i, i + 0x8000));
+  const mime = (contentType || "application/octet-stream").split(";")[0];
+  const filename = folderDownloadPath(meta, contentType);
+  await chrome.downloads.download({
+    url: `data:${mime};base64,${btoa(binary)}`,
+    filename,
+    saveAs: false,
+    conflictAction: "uniquify", // aynı adlı iki evrak "(1)" soneki alır
+  });
+  return filename;
+}
+
 /* ---------- Dosya penceresindeki evrakları çekme ----------
    İçerik betiği ağaçtaki yaprağa tıklar; UYAP'ın ön izleme isteğinin (view_document_*) adresi burada
    YAKALANIR (webRequest, yalnız gözlem) ve belge bu adresten kullanıcının kendi oturumuyla indirilip
@@ -405,7 +441,7 @@ function pullTargetUrl() {
   return derived.href;
 }
 
-async function handlePullFetch(meta) {
+async function handlePullFetch(meta, mode = "upload") {
   try {
     const settings = await getSettings();
     const target = pullTargetUrl();
@@ -413,8 +449,12 @@ async function handlePullFetch(meta) {
     const { blob, type } = await fetchDocument(target, Number(settings.timeoutMs) || DEFAULTS.timeoutMs);
     const digest = await sha256Hex(blob);
     if (pullRun?.hashes.has(digest)) return { ok: true, sameContent: true };
-    const out = await uploadDocument(settings, { ...meta, url: "" }, blob, type);
     pullRun?.hashes.add(digest);
+    if (mode === "disk") {
+      await saveToFolder(blob, type, meta);
+      return { ok: true, saved: true };
+    }
+    const out = await uploadDocument(settings, { ...meta, url: "" }, blob, type);
     return { ok: true, duplicate: !!out.duplicate };
   } catch (error) {
     return { ok: false, error: error.message || "bilinmeyen hata" };
@@ -425,9 +465,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message?.type) {
     case "JURISAI_PULL_BEGIN":
       getSettings().then((settings) => {
-        if (!settings.apiUrl) return sendResponse({ ok: false, error: "API adresi ayarlanmadı" });
-        if ((settings.apiKey || "").trim().length < 20)
-          return sendResponse({ ok: false, error: "Bağlantı anahtarı ayarlanmadı (eklenti penceresine yapıştır)" });
+        // Bilgisayara indirme JurisAI'ya bağlanmaz: anahtar/adres gerekmez.
+        if (message.mode !== "disk") {
+          if (!settings.apiUrl) return sendResponse({ ok: false, error: "API adresi ayarlanmadı" });
+          if ((settings.apiKey || "").trim().length < 20)
+            return sendResponse({ ok: false, error: "Bağlantı anahtarı ayarlanmadı (eklenti penceresine yapıştır)" });
+        }
         pullRun = { hashes: new Set() };
         sendResponse({ ok: true, gapMs: Math.max(1500, Number(settings.throttleMs) || DEFAULTS.throttleMs) });
       });
@@ -440,7 +483,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ captured: !!(pull?.url || pull?.viewerUrl), exact: !!pull?.url, seen: pull?.seen || [] });
       return false;
     case "JURISAI_PULL_FETCH":
-      handlePullFetch(message.meta || {}).then(sendResponse);
+      handlePullFetch(message.meta || {}, message.mode).then(sendResponse);
       return true;
     case "JURISAI_PULL_END":
       pull = null;

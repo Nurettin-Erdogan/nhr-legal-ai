@@ -135,6 +135,11 @@ Sunucu: ODT kabul edilir ve okunur (UDF gibi `content.xml`); `klasorYolu` alanı
 yazılır (migration 036), dava sayfasında evrakın altında "📁 yol" olarak görünür. Henüz klasör **ağacı** görünümü yok,
 yol metin olarak gösterilir.
 
+**Bilgisayara klasör olarak indirme (v2.12.0):** popup'taki "Bu dosyayı klasör olarak bilgisayarıma indir" aynı akışı JurisAI'ya
+bağlanmadan çalıştırır (bağlantı anahtarı gerekmez) ve evrakları `İndirilenler\JurisAI-UYAP\<esas no + mahkeme>\<UYAP klasörleri>\<evrak>`
+yoluna yazar; dosya sistemi için yasak karakterler ve `..` temizlenir, aynı adlı evrak "(1)" soneki alır. Gerçek portalda
+(2026-10-02) 4 evrak UYAP'tan alınıp JurisAI'ya klasör yoluyla yüklendi ve metinleri okundu; ek evraklar ("Ek 1") henüz alınmıyor.
+
 **Doğrulanmayanlar:** gerçek UYAP'ta uçtan uca çekme (yalnız ölçülen istek biçimi ve sahte portal testi var; UYAP'ın
 ek başlık/oturum denetimi yapıp yapmadığı denemeyle görülecek), PDF olarak gelen evrakların `mimeType` davranışı, ekler
 (`Ek 1`) için aynı adresin çalışıp çalışmadığı, bir dosyada 40'tan fazla evrak, UYAP'ın hızlı isteklere tepkisi.

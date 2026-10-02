@@ -922,3 +922,48 @@ def test_a_click_that_triggers_no_request_is_explained_in_the_error(lab):
     assert result["ok"] and result["sent"] == 0 and result["failed"] >= 1
     assert any("hiç istek yapmadı" in error for error in result["errors"]), result["errors"]
     page.close()
+
+
+_PULL_DISK = _PULL.replace("'JURISAI_PULL_DOSYA' }", "'JURISAI_PULL_DOSYA', mode: 'disk' }")
+
+
+def test_download_path_keeps_the_uyap_folder_structure_and_is_filesystem_safe(lab):
+    lab.configure()
+    path = lab.worker.evaluate(
+        """() => folderDownloadPath({
+            dosyaEsasNo: '2024/2000', birim: 'Ankara Bölge Adliye Mahkemesi 19. Ceza Dairesi',
+            klasorYolu: '2024/2000 (Ceza Dava Dosyası) / Gerekçeli Karar', evrakAdi: 'Gerekçeli Karar 30/06/2025',
+        }, 'application/vnd.oasis.opendocument.text')"""
+    )
+    assert path == (
+        "JurisAI-UYAP/2024 2000 Ankara Bölge Adliye Mahkemesi 19. Ceza Dairesi/"
+        "2024 2000 (Ceza Dava Dosyası)/Gerekçeli Karar/Gerekçeli Karar 30 06 2025.odt"
+    )
+    hostile = lab.worker.evaluate(
+        """() => folderDownloadPath({
+            dosyaEsasNo: '..', birim: '', klasorYolu: '../.. / a:b*c? / "x" ', evrakAdi: 'ad<>|."', }, 'application/pdf')"""
+    )
+    assert ".." not in hostile.replace("JurisAI-UYAP", "").split("/")  # dizin geçişi yok
+    assert not any(char in hostile for char in ['<', '>', ':', '"', '|', '?', '*', chr(92)])
+    assert hostile.startswith("JurisAI-UYAP/") and hostile.endswith(".pdf")
+
+
+def test_pulling_to_disk_needs_no_connection_key_and_sends_nothing_to_jurisai(lab):
+    """"UYAP'tan klasör olarak indir": JurisAI'ya bağlanmaz (anahtar boş olabilir), her evrak diske yazılır."""
+    lab.configure(throttleMs=500, apiKey="")
+    page = lab.open("/vatandas/dosya-agaci")
+    page.on("dialog", lambda dialog: dialog.accept())
+    before = lab.worker.evaluate(
+        "() => chrome.downloads.search({}).then((items) => items.filter((x) => x.mime === 'application/vnd.oasis.opendocument.text').length)"
+    )
+
+    result = lab.worker.evaluate(_PULL_DISK)
+
+    assert result["ok"] and result["sent"] == 4 and result["failed"] == 0, result
+    assert lab.uploads == []
+    page.wait_for_timeout(1500)
+    after = lab.worker.evaluate(
+        "() => chrome.downloads.search({}).then((items) => items.filter((x) => x.mime === 'application/vnd.oasis.opendocument.text').length)"
+    )
+    assert after - before == 4
+    page.close()

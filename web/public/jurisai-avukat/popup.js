@@ -160,23 +160,25 @@ el("recordStop").addEventListener("click", async () => {
 });
 
 // Açık dosya penceresindeki evrakları klasör yapısıyla çeker (onay ister, yavaş çalışır, durdurulabilir).
-el("pull").addEventListener("click", async () => {
+async function runPull(mode) {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab) return say("Sekme bulunamadı.", "err");
     say("Çekme başladı; UYAP sayfasındaki onay penceresini bekle…", "ok");
-    const result = await chrome.tabs.sendMessage(tab.id, { type: "JURISAI_PULL_DOSYA" }, { frameId: 0 });
+    const result = await chrome.tabs.sendMessage(tab.id, { type: "JURISAI_PULL_DOSYA", mode }, { frameId: 0 });
     if (!result?.ok) return say(result?.error || "Çekme başlatılamadı.", "err");
     say(
       result.cancelled
         ? "Çekme iptal edildi."
-        : `${result.sent} evrak aktarıldı${result.failed ? `, ${result.failed} hata: ${[...new Set(result.errors || [])].slice(0, 2).join(" | ")}` : ""}.`,
+        : `${result.sent} evrak ${mode === "disk" ? "kaydedildi" : "aktarıldı"}${result.failed ? `, ${result.failed} hata: ${[...new Set(result.errors || [])].slice(0, 2).join(" | ")}` : ""}.`,
       result.failed ? "err" : "ok",
     );
   } catch (_) {
     say("Bu sekme bir UYAP sayfası değil ya da sayfa yenilenmeli (F5).", "err");
   }
-});
+}
+el("pull").addEventListener("click", () => runPull("upload"));
+el("pullDisk").addEventListener("click", () => runPull("disk"));
 el("pullStop").addEventListener("click", async () => {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });

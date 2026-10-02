@@ -772,11 +772,12 @@
     return { esas: esasNoFrom(title), birim: (title.split(" - ")[1] || courtFrom(title) || "").trim().slice(0, 160) };
   }
 
-  async function pullDosya() {
+  async function pullDosya(mode = "upload") {
     if (pulling) return { ok: false, error: "Çekme zaten sürüyor" };
     const dialog = activeRoot();
     if (!dialog) return { ok: false, error: "Açık bir dosya penceresi yok: UYAP'ta dosyayı aç, Evrak sekmesine geç." };
-    const begin = await chrome.runtime.sendMessage({ type: "JURISAI_PULL_BEGIN" });
+    const toDisk = mode === "disk";
+    const begin = await chrome.runtime.sendMessage({ type: "JURISAI_PULL_BEGIN", mode });
     if (!begin?.ok) return { ok: false, error: begin?.error || "Ayarlar eksik" };
     pulling = { stop: false };
     const stats = { sent: 0, duplicates: 0, sameContent: 0, failed: 0, errors: [] };
@@ -791,8 +792,11 @@
       const confirmed = window.confirm(
         `${who.esas || "Bu dosya"}${who.birim ? ` (${who.birim})` : ""}: ${items.length} evrak bulundu` +
           `${items.length > todo.length ? `, ilk ${todo.length} tanesi çekilecek` : ""}.\n\n` +
-          "Evraklar klasör yapısıyla JurisAI hesabına aktarılacak. Müvekkil verisi içerebilir; yalnızca yetkili " +
-          "olduğun dosyalarda devam et.\n\nUYAP'a istekler yavaş gönderilir (her evrak için birkaç saniye). " +
+          (toDisk
+            ? "Evraklar UYAP'taki klasör yapısıyla bilgisayarındaki İndirilenler\\JurisAI-UYAP klasörüne kaydedilecek (JurisAI'ya gönderilmez). "
+            : "Evraklar klasör yapısıyla JurisAI hesabına aktarılacak. ") +
+          "Müvekkil verisi içerebilir; yalnızca yetkili olduğun dosyalarda devam et.\n\n" +
+          "UYAP'a istekler yavaş gönderilir (her evrak için birkaç saniye). " +
           'Durdurmak için eklenti penceresinde "Çekmeyi durdur"a bas.',
       );
       if (!confirmed) return { ok: true, cancelled: true, found: items.length };
@@ -822,6 +826,7 @@
         if (captured) {
           outcome = await chrome.runtime.sendMessage({
             type: "JURISAI_PULL_FETCH",
+            mode,
             meta: {
               evrakAdi: item.title,
               evrakId: item.id,
@@ -836,7 +841,7 @@
           consecutiveFailures = 0;
           if (outcome.sameContent) stats.sameContent += 1;
           else if (outcome.duplicate) stats.duplicates += 1;
-          else stats.sent += 1;
+          else stats.sent += 1; // aktarılan ya da (bilgisayara indirme kipinde) kaydedilen
         } else {
           stats.failed += 1;
           consecutiveFailures += 1;
@@ -847,7 +852,7 @@
       }
       const reasons = [...new Set(stats.errors)].slice(0, 2).join(" | ");
       const summary =
-        `${stats.sent} evrak aktarıldı` +
+        `${stats.sent} evrak ${toDisk ? "bilgisayara kaydedildi" : "aktarıldı"}` +
         (stats.duplicates ? `, ${stats.duplicates} zaten vardı` : "") +
         (stats.sameContent ? `, ${stats.sameContent} aynı içerik atlandı` : "") +
         (stats.failed ? `, ${stats.failed} hata${reasons ? ` (${reasons})` : ""}` : "") +
@@ -995,7 +1000,7 @@
     if (/^JURISAI_(RECORD_(START|STOP)|PULL_(DOSYA|STOP))$/.test(message?.type || "") && window !== window.top)
       return false;
     if (message?.type === "JURISAI_PULL_DOSYA") {
-      pullDosya()
+      pullDosya(message.mode === "disk" ? "disk" : "upload")
         .then(sendResponse)
         .catch((error) => sendResponse({ ok: false, error: error.message || "bilinmeyen hata" }));
       return true;
