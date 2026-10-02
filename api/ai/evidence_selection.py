@@ -38,7 +38,7 @@ def evidence_candidates(question, contexts, *, per_source_chars=1200, total_char
     candidates = []
     seen = set()
     for marker, context in enumerate(contexts, 1):
-        if primary and marker not in primary:
+        if primary and marker not in primary and context.source_type != 'document':
             continue
         used = 0
         sentences = sorted(_sentences(context.content, include_tail=False),
@@ -100,6 +100,12 @@ def preserve_statutory_scope(answer, contexts, question):
     selected = {int(i) for i in re.findall(r'\[K(\d+)\]', answer)}
     from api.ai.authority import primary_legislation_markers
     primary = primary_legislation_markers(question, contexts)
+    if primary and any(
+        1 <= i <= len(contexts) and contexts[i - 1].source_type == 'document' for i in selected
+    ):
+        # Seçim kullanıcının belgesine de dayanıyor: mevzuat maddesini yeniden kurmak belge
+        # cümlelerini atardı; seçilen kanıt olduğu gibi korunur (her cümle zaten atıflıdır).
+        return answer
     if primary:
         # Do not separate an article's rule from its following qualifications,
         # including anaphoric sentences such as "Bu kural ..." / "Ancak ...".

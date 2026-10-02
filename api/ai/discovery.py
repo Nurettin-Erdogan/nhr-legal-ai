@@ -17,7 +17,8 @@ def select_answer_contexts(contexts: list[RAGContext], limit: int, *, question: 
     eligible = verified_contexts(contexts)
     primary = primary_legislation_markers(question, eligible) if question else set()
     if primary:
-        eligible = [c for i, c in enumerate(eligible, 1) if i in primary]
+        # Kullanıcının kendi belgeleri mevzuat odağıyla elenmez: belge sorusunda asıl kanıt odur.
+        eligible = [c for i, c in enumerate(eligible, 1) if i in primary or c.source_type == 'document']
     unique, extra, seen = [], [], set()
     for context in eligible:
         if context.source_id in seen:

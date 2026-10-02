@@ -27,7 +27,9 @@ class Intent:
 
 def question_intent(question: str) -> Intent | None:
     q = normalize(question)
-    if 'kira' in q and any(t in q for t in ('tüfe', 'artış', 'zam', 'artır')):
+    # "zam" yalnız kelime başında ve "zaman" değilken kira artışıdır; "ne zaman ödenir",
+    # "zamanaşımı" gibi sorular kira artışı niyetine düşmemeli (ölçüldü: 2026-10-02).
+    if 'kira' in q and (any(t in q for t in ('tüfe', 'artış', 'artır')) or re.search(r'\bzam(?!an)', q)):
         return Intent('rent_increase', (('kira',), ('tüfe', 'tüketici fiyat', 'artış', 'artır')),
                       ('6098', '344'))
     if 'kıdem' in q and 'tazminat' in q:

@@ -568,6 +568,7 @@ async def _execute_answer_body(
         except HTTPException:
             raise
         except psycopg.Error as exc:
+            logger.exception("Hukuk kaynakları aranamadı")
             raise HTTPException(
                 status_code=503, detail="Hukuk kaynakları aranamadı"
             ) from exc

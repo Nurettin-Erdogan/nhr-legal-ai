@@ -29,4 +29,7 @@ def answer_uses_primary_basis(question, cited_contexts, available_contexts):
     if not markers:
         return True
     primary_ids = {available_contexts[i-1].chunk_id for i in markers}
-    return bool(cited_contexts) and all(c.chunk_id in primary_ids for c in cited_contexts)
+    # Kullanıcı belgesine atıf mevzuat dayanağının yerine geçmez ama onu da bozmaz.
+    return bool(cited_contexts) and all(
+        c.chunk_id in primary_ids or c.source_type == 'document' for c in cited_contexts
+    )
