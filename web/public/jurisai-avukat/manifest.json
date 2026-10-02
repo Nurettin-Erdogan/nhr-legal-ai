@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "JurisAI - UYAP Avukat Portalı Aktarımı",
-  "version": "2.15.2",
+  "version": "2.16.0",
   "description": "UYAP Avukat Portalı'ndaki evrakları tek tıkla JurisAI hesabınıza aktarır (UDF/PDF destekli). Otomatik aktarım varsayılan olarak kapalıdır.",
-  "permissions": ["activeTab", "scripting", "downloads", "storage", "webRequest"],
+  "permissions": ["activeTab", "scripting", "downloads", "storage", "webRequest", "alarms"],
   "host_permissions": [
     "*://*.adalet.gov.tr/*",
     "*://*.uyap.gov.tr/*",
-    "http://localhost:8766/*"
+    "http://localhost:8766/*",
+    "http://localhost:3000/*"
   ],
   "background": {
     "service_worker": "background.js"

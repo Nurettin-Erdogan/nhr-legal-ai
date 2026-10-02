@@ -189,4 +189,28 @@ el("pullStop").addEventListener("click", async () => {
   }
 });
 
+// Sürüm ve güncelleme durumu: eklenti kendini günceller; eski bir klasörden çalışıyorsa burada uyarılır.
+async function showUpdateState() {
+  const note = el("updateNote");
+  try {
+    const { updateState } = await chrome.storage.local.get("updateState");
+    const version = chrome.runtime.getManifest().version;
+    if (updateState?.stale) {
+      note.style.display = "block";
+      note.style.color = "#b91c1c";
+      note.textContent =
+        `Sürüm ${version}: yeni sürüm (${updateState.remote}) var ama bu eklenti eski bir klasörden çalışıyor. ` +
+        "Eklentiyi kaldırıp şu klasörden yükle: C:\\Users\\enure\\Desktop\\nhr-legal-ai\\web\\public\\jurisai-avukat. " +
+        "Sonra kendiliğinden güncel kalır.";
+    } else {
+      note.style.display = "block";
+      note.style.color = "#555";
+      note.textContent = `Sürüm ${version} · kendiliğinden güncellenir`;
+    }
+  } catch (_) {
+    /* sessiz */
+  }
+}
+showUpdateState();
+
 load();

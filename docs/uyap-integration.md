@@ -161,6 +161,19 @@ indirme adresi (Content-Disposition: attachment / image/tiff) denenir ve dosya a
 ek başlık/oturum denetimi yapıp yapmadığı denemeyle görülecek), PDF olarak gelen evrakların `mimeType` davranışı, ekler
 (`Ek 1`) için aynı adresin çalışıp çalışmadığı, çok büyük (yüzlerce evraklı) dosyalar, UYAP'ın hızlı isteklere tepkisi.
 
+## Eklentinin kendi kendine güncellenmesi (v2.16.0)
+
+Geliştirme kurulumunda ("Paketlenmemiş öğe yükle" ile **repodaki** `web/public/jurisai-avukat` klasörü) elle ↻ ya da F5 gerekmez:
+eklenti her 30 sn'de geliştirme sunucusunun yayınladığı `http://localhost:3000/jurisai-avukat/manifest.json` sürümüne bakar; daha yeniyse
+kendini yeniden yükler (`chrome.runtime.reload()`) ve açık UYAP sekmelerine yeni içerik betiğini yerleştirir (eski sürümün ölü düğme ve
+panelleri temizlenir). Çekme ya da kayıt sürerken beklenir. Karar `decideUpdate` saf işlevindedir (testli): `none | wait | reload | stale`.
+
+- Eklenti **repodan değil eski bir klasörden** (ör. indirilen zip'in çıkarıldığı yer) yüklüyse yeniden yükleme sürümü değiştirmez; bu durumda
+  açılır pencerede kırmızı "eski bir klasörden çalışıyor, şu klasörden yükle" uyarısı çıkar.
+- Test ortamında kapatmak için `chrome.storage.local.autoUpdate = false`.
+- Bu yalnızca geliştirme kurulumu içindir. Avukatlara dağıtımda otomatik güncelleme **Chrome Web Mağazası** yayınıyla (listelenmemiş de olabilir)
+  sağlanır; kendi barındırdığımız bir güncelleme adresi Chrome'da yalnız kurumsal politikayla kurulan eklentilerde çalışır.
+
 ## Doğrulanmayanlar ve açık işler
 
 - **Gerçek UYAP sayfa yapısı doğrulanmadı.** Test sayfaları gerçek UYAP'ın DOM'unu kanıtlamaz.

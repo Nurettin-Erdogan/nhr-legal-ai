@@ -252,6 +252,81 @@ async function handleAutoIngest(payload) {
   }
 }
 
+/* ---------- Kendi kendine güncelleme (geliştirme kurulumu) ----------
+   Eklenti repodaki klasörden ("Paketlenmemiş öğe yükle") yüklüyse, dosyalar değiştiğinde (sürüm yükseldiğinde) kendini
+   yeniden yükler ve açık UYAP sekmelerine yeni içerik betiğini yerleştirir: elle ↻ ya da F5 gerekmez.
+   Sürümü geliştirme sunucusunun yayınladığı manifest'ten okur. Çekme/kayıt sürerken beklenir. Eklenti repodan değil eski bir
+   klasörden yüklenmişse yeniden yükleme sürümü değiştirmez: bu durum açılır pencerede "eski klasörden çalışıyor" diye gösterilir. */
+const UPDATE_MANIFEST_URL = "http://localhost:3000/jurisai-avukat/manifest.json";
+const UPDATE_ALARM = "jurisai-update-check";
+
+function compareVersions(a, b) {
+  const left = String(a).split(".").map((part) => parseInt(part, 10) || 0);
+  const right = String(b).split(".").map((part) => parseInt(part, 10) || 0);
+  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
+    const diff = (left[i] || 0) - (right[i] || 0);
+    if (diff) return diff > 0 ? 1 : -1;
+  }
+  return 0;
+}
+/** Karar saf bir işlevdir (test edilebilir): 'none' | 'wait' | 'reload' | 'stale'. */
+function decideUpdate({ remote, current, tried, busy }) {
+  if (!remote || compareVersions(remote, current) <= 0) return "none";
+  if (busy) return "wait"; // çekme ya da kayıt sürüyor: yeniden yükleme bekler
+  if (tried === remote) return "stale"; // bu sürüm için zaten yeniden yüklendi ama sürüm değişmedi
+  return "reload";
+}
+async function checkForUpdate() {
+  try {
+    const { autoUpdate } = await chrome.storage.local.get("autoUpdate");
+    if (autoUpdate === false) return;
+    const response = await fetch(UPDATE_MANIFEST_URL, { cache: "no-store" });
+    if (!response.ok) return;
+    const remote = (await response.json()).version;
+    const current = chrome.runtime.getManifest().version;
+    const { updateTried } = await chrome.storage.local.get("updateTried");
+    const busy = !!pullRun || !!pull || !!(await recordingState());
+    const decision = decideUpdate({ remote, current, tried: updateTried, busy });
+    await chrome.storage.local.set({
+      updateState: { stale: decision === "stale", remote: decision === "none" ? "" : remote, current },
+    });
+    if (decision === "reload") {
+      await chrome.storage.local.set({ updateTried: remote });
+      chrome.runtime.reload();
+    }
+  } catch (_) {
+    /* geliştirme sunucusu kapalıysa sessizce geç */
+  }
+}
+/** Yeniden yüklemeden sonra açık UYAP sekmelerine yeni içerik betiği yerleştirilir (F5 gerekmesin). */
+async function reinjectIntoOpenTabs() {
+  try {
+    const tabs = await chrome.tabs.query({ url: ["*://*.uyap.gov.tr/*", "*://*.adalet.gov.tr/*"] });
+    for (const tab of tabs) {
+      try {
+        await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: ["content.js"] });
+        await chrome.scripting.insertCSS({ target: { tabId: tab.id, allFrames: true }, files: ["content.css"] });
+      } catch (_) {
+        /* bu sekmeye yerleştirilemedi (ör. yüklenmemiş): F5 ile gelir */
+      }
+    }
+  } catch (_) {
+    /* yoksay */
+  }
+}
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.alarms.create(UPDATE_ALARM, { periodInMinutes: 0.5 });
+  reinjectIntoOpenTabs();
+  checkForUpdate();
+});
+chrome.runtime.onStartup.addListener(() => {
+  chrome.alarms.create(UPDATE_ALARM, { periodInMinutes: 0.5 });
+  checkForUpdate();
+});
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === UPDATE_ALARM) checkForUpdate();
+});
+
 /* ---------- Tıklama kaydı (tanı) ----------
    İçerik betiği kaydı başlatınca indirme ve yeni sekme olayları da toplanır (oturum belleğinde, servis
    çalışanı kapansa da kaybolmaz). Yalnız YOL BİÇİMLERİ ve uzantı/MIME türü saklanır; ad ve içerik yok. */

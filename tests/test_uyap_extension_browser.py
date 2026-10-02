@@ -385,6 +385,7 @@ class _Lab:
         }
         self.worker.evaluate("(settings) => chrome.storage.sync.set(settings)", settings)
         self.worker.evaluate("() => sentHashes.clear()")  # testler birbirinin "gönderildi" kaydını görmesin
+        self.worker.evaluate("() => chrome.storage.local.set({ autoUpdate: false })")  # eklenti test sırasında kendini yeniden yüklemesin
         _ApiHandler.uploads.clear()
 
     def downloads(self) -> list[str]:
@@ -1219,4 +1220,58 @@ def test_a_count_mismatch_is_flagged(lab):
     assert "fark: Kesinleşme Şerhleri (UYAP 3, bulunan 2)" in text  # hangi klasörde fark olduğu yazılır
     page.click("#jurisai-pick-cancel")
     _finish_pull(lab)
+    page.close()
+
+
+def test_update_decision_reloads_only_when_newer_and_not_busy_and_detects_a_stale_install(lab):
+    lab.configure()
+    decide = "(args) => decideUpdate(args)"
+    run = lambda **kwargs: lab.worker.evaluate(decide, kwargs)  # noqa: E731
+    assert run(remote="2.16.1", current="2.16.0", tried="", busy=False) == "reload"
+    assert run(remote="2.16.0", current="2.16.0", tried="", busy=False) == "none"  # güncel
+    assert run(remote="2.15.9", current="2.16.0", tried="", busy=False) == "none"  # uzaktaki daha eski
+    assert run(remote="2.10.0", current="2.9.5", tried="", busy=False) == "reload"  # 2.10 > 2.9 (metin değil sayı karşılaştırması)
+    assert run(remote="", current="2.16.0", tried="", busy=False) == "none"
+    assert run(remote="2.16.1", current="2.16.0", tried="", busy=True) == "wait"  # çekme/kayıt sürerken yeniden yüklenmez
+    # Zaten bu sürüm için yeniden yüklendi ama sürüm değişmedi: eklenti güncel dosyalardan çalışmıyor.
+    assert run(remote="2.16.1", current="2.16.0", tried="2.16.1", busy=False) == "stale"
+
+
+def test_reinjecting_the_content_script_is_safe_and_clears_dead_ui(lab):
+    """Yeniden yüklemeden sonra betik açık sekmeye yeniden yerleştirilir: çift çalışmaz, ölü düğme/panel temizlenir."""
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-agaci")
+    assert page.locator(".jurisai-launcher").count() == 1
+    # Eski (ölü) sürümden kalmış gibi bir arayüz parçası
+    page.evaluate("() => { const dead = document.createElement('button'); dead.className = 'jurisai-launcher'; dead.id = 'olu'; document.body.append(dead); }")
+    assert page.locator(".jurisai-launcher").count() == 2
+
+    lab.worker.evaluate(
+        """async () => {
+            const tab = (await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' })).sort((a, b) => b.id - a.id)[0];
+            await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: ['content.js'] });
+        }"""
+    )
+    page.wait_for_timeout(1500)
+    # Aynı sürüm ikinci kez çalışmaz: sürüm koruması betiği atlar (ölü parçaya dokunmaz) — ama iki kez kurulum da olmaz.
+    assert page.locator(".jurisai-chooser, .jurisai-case-picker").count() == 0
+    assert page.locator(".jurisai-toolbar").count() <= 1
+
+    # Gerçek yeniden yüklemede sürüm değişkeni sıfırdır; yeni dünya temiz arayüz kurar. Bunu taklit et.
+    page.evaluate("() => { document.querySelectorAll('.jurisai-launcher').forEach((el) => el.remove()); }")
+    lab.worker.evaluate(
+        """async () => {
+            const tab = (await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' })).sort((a, b) => b.id - a.id)[0];
+            await chrome.scripting.executeScript({
+                target: { tabId: tab.id }, world: 'ISOLATED',
+                func: () => { delete window.__jurisaiLoadedVersion; },
+            });
+            await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: ['content.js'] });
+        }"""
+    )
+    page.wait_for_timeout(1500)
+    assert page.locator(".jurisai-launcher").count() == 1 and page.locator("#olu").count() == 0
+    page.click(".jurisai-launcher")  # yeni kurulan düğme çalışır: seçim penceresi gelir
+    page.wait_for_selector(".jurisai-chooser", timeout=30000)
+    page.click("#jurisai-pick-cancel")
     page.close()

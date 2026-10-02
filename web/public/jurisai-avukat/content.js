@@ -8,6 +8,16 @@
    evrak gönderilir. */
 
 (() => {
+  // Yeniden yükleme sonrası aynı sekmeye betik yeniden yerleştirilir: eski sürümün (ölü) arayüz parçaları kaldırılır,
+  // yoksa ölü bir düğmeye basılınca "Extension context invalidated" hatası çıkardı. Aynı sürüm iki kez çalışmaz.
+  const loadedVersion = chrome.runtime.getManifest().version;
+  if (window.__jurisaiLoadedVersion === loadedVersion) return;
+  window.__jurisaiLoadedVersion = loadedVersion;
+  for (const stale of document.querySelectorAll(
+    ".jurisai-launcher, .jurisai-toolbar, .jurisai-toasts, .jurisai-chooser, .jurisai-case-picker, .jurisai-send-btn",
+  )) {
+    stale.remove();
+  }
   let autoSync = false;
   try {
     // Ayar asenkron gelir; ilk tarama ondan önce bitmiş olabilir. Açıksa hemen yeniden taranır
