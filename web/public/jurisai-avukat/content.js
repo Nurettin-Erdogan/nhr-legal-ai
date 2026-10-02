@@ -721,17 +721,17 @@
   }
   /** Kapalı klasörleri (ve eki olan evrakları) açar. Yaprağın kendisine tıklanmaz: ön izleme isteği tetikler. */
   async function expandAll(dialog) {
+    const attempts = new Map();
     for (let pass = 0; pass < 20; pass += 1) {
-      const closed = [...dialog.querySelectorAll("li.expandable")];
+      const closed = [...dialog.querySelectorAll("li.expandable")].filter((li) => (attempts.get(li) || 0) < 3);
       if (!closed.length) return;
       for (const li of closed) {
-        const handle =
-          li.querySelector(":scope > div.hitarea") ||
-          (li.querySelector(":scope > span.folder") ? li.querySelector(":scope > span.folder") : null);
+        const handle = li.querySelector(":scope > div.hitarea") || li.querySelector(":scope > span.folder");
+        attempts.set(li, (attempts.get(li) || 0) + 1);
         handle?.click();
-        await sleep(120);
+        // Alt düğümler AJAX ile yüklenebilir: açılmasını (class değişimi) kısa süre bekle.
+        await waitUntil(() => !li.classList.contains("expandable"), 1500, 100);
       }
-      await sleep(250);
     }
   }
   /** Ağaçtaki evrakları klasör yoluyla listeler; "Son 20 Evrak" kısayolu ve yinelenen evrak kimlikleri elenir. */
@@ -754,7 +754,11 @@
       const existing = byId.get(id);
       if (!existing || (existing.inRecent && !inRecent)) byId.set(id, entry);
     }
-    return [...byId.values()];
+    const all = [...byId.values()];
+    // "Dosyaya Eklenen Son 20 Evrak", "Tüm Evraklar"daki evrakların kısayol kopyasıdır (gerçek portalda kopyalar
+    // farklı evrak_id taşıdığı için 4 evrak 8 görünmüştü): "Tüm Evraklar" varsa yalnız o kullanılır.
+    const full = all.filter((entry) => !entry.inRecent);
+    return full.length ? full : all;
   }
   function dosyaIdentity(dialog) {
     const title = textOf(dialog.querySelector("h1,h2,h3,h4,.modal-title"));
@@ -823,11 +827,12 @@
         }
         await sleep(begin.gapMs || 1500);
       }
+      const reasons = [...new Set(stats.errors)].slice(0, 2).join(" | ");
       const summary =
         `${stats.sent} evrak aktarıldı` +
         (stats.duplicates ? `, ${stats.duplicates} zaten vardı` : "") +
         (stats.sameContent ? `, ${stats.sameContent} aynı içerik atlandı` : "") +
-        (stats.failed ? `, ${stats.failed} hata` : "") +
+        (stats.failed ? `, ${stats.failed} hata${reasons ? ` (${reasons})` : ""}` : "") +
         (pulling.stop ? " (durduruldu)" : "");
       toast(summary, stats.failed ? "error" : "success");
       return { ok: true, ...stats, found: items.length, stopped: pulling.stop };

@@ -147,9 +147,9 @@ PAGES = {
         <button type="button" id="onizleme" onclick="onIzlemeDurumu(this)">Ön İzlemeyi Aktifleştir</button>
         <ul id="tree" class="treeview"><li class="collapsable"><span class="folder">Ankara Bölge Adliye Mahkemesi 19. Ceza Dairesi 2024/2000</span><ul>
           <li class="expandable"><div class="hitarea"></div><span class="folder">Dosyaya Eklenen Son 20 Evrak</span><ul style="display:none">
-            <li><span class="file" evrak_id="101">Kesinleşme Şerhleri 30/06/2025</span></li>
-            <li><span class="file" evrak_id="102">Kesinleşme Şerhleri 30/06/2025</span></li>
-            <li><span class="file" evrak_id="103">Gerekçeli Karar 30/06/2025</span></li></ul></li>
+            <li><span class="file" evrak_id="201">Kesinleşme Şerhleri 30/06/2025</span></li>
+            <li><span class="file" evrak_id="202">Kesinleşme Şerhleri 30/06/2025</span></li>
+            <li><span class="file" evrak_id="203">Gerekçeli Karar 30/06/2025</span></li></ul></li>
           <li class="collapsable"><span class="folder">Tüm Evraklar</span><ul>
             <li class="expandable"><div class="hitarea"></div><span class="folder">2024/2000 (Ceza Dava Dosyası)</span><ul style="display:none">
               <li class="expandable"><div class="hitarea"></div><span class="folder">Kesinleşme Şerhleri (2)</span><ul style="display:none">
@@ -825,7 +825,7 @@ def test_pulling_a_case_creates_one_upload_per_evrak_with_its_folder_path(lab):
     result = lab.worker.evaluate(_PULL)
 
     assert result["ok"] and result["sent"] == 4 and result["failed"] == 0, result
-    assert result["found"] == 4  # 101-104; "Son 20" kısayolundaki kopyalar sayılmaz
+    assert result["found"] == 4  # 101-104; "Son 20" kısayolundaki kopyalar (farklı kimlikli) hiç sayılmaz
     uploads = {upload["fields"]["evrakId"]: upload for upload in lab.uploads}
     assert sorted(uploads) == ["101", "102", "103", "104"]
     for upload in uploads.values():
@@ -888,5 +888,19 @@ def test_pulling_without_an_open_case_window_explains_what_to_do(lab):
         " return chrome.tabs.sendMessage(tab.id, { type: 'JURISAI_PULL_DOSYA' }, { frameId: 0 }); }"
     )
     assert result["ok"] is False and "Ön izleme" in result["error"]
+    assert lab.uploads == []
+    page.close()
+
+
+def test_pull_errors_are_reported_with_their_reason(lab):
+    """Önceki sürümde yalnız "8 hata" yazıyordu; neden görünmediği için gerçek portalda teşhis edilemedi."""
+    lab.configure(throttleMs=500, apiKey="jsai_" + "z" * 44)  # geçersiz anahtar: sunucu 401 döner
+    page = lab.open("/vatandas/dosya-agaci")
+    page.on("dialog", lambda dialog: dialog.accept())
+
+    result = lab.worker.evaluate(_PULL)
+
+    assert result["ok"] and result["sent"] == 0 and result["failed"] >= 1
+    assert any("anahtar" in error.lower() for error in result["errors"]), result["errors"]
     assert lab.uploads == []
     page.close()

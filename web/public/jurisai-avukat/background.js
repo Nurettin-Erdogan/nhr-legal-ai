@@ -138,6 +138,8 @@ async function uploadDocument(settings, meta, blob, contentType) {
     body: form,
   });
   const out = await res.json().catch(() => ({}));
+  if (res.status === 401)
+    throw new Error("JurisAI bağlantı anahtarı geçersiz: UYAP'a Bağlan sayfasında anahtarı yenile ve eklentiye yapıştır");
   if (!res.ok) throw new Error(out.error || `aktarım hatası (HTTP ${res.status})`);
   return out;
 }

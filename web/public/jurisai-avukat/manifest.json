@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "JurisAI - UYAP Avukat Portalı Aktarımı",
-  "version": "2.11.0",
+  "version": "2.11.1",
   "description": "UYAP Avukat Portalı'ndaki evrakları tek tıkla JurisAI hesabınıza aktarır (UDF/PDF destekli). Otomatik aktarım varsayılan olarak kapalıdır.",
   "permissions": ["activeTab", "scripting", "downloads", "storage", "webRequest"],
   "host_permissions": [

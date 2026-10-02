@@ -170,7 +170,7 @@ el("pull").addEventListener("click", async () => {
     say(
       result.cancelled
         ? "Çekme iptal edildi."
-        : `${result.sent} evrak aktarıldı${result.failed ? `, ${result.failed} hata` : ""}.`,
+        : `${result.sent} evrak aktarıldı${result.failed ? `, ${result.failed} hata: ${[...new Set(result.errors || [])].slice(0, 2).join(" | ")}` : ""}.`,
       result.failed ? "err" : "ok",
     );
   } catch (_) {
