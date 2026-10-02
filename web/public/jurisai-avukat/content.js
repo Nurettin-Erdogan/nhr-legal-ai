@@ -703,7 +703,6 @@
      ayarından bağımsızdır. Ağaç (jQuery treeview: li.expandable/collapsable, span.folder, span.file[evrak_id])
      açılır, her evrak yaprağına tıklanır, UYAP'ın ön izleme isteği arka planda yakalanıp belge indirilir. */
   let pulling = null;
-  const PULL_MAX_DOCS = 40;
   const folderName = (text) => text.replace(/\s*\(\d+\)\s*$/, "").replace(/\s+/g, " ").trim();
 
   async function waitUntil(check, timeoutMs, stepMs = 200) {
@@ -819,7 +818,7 @@
       const counter = make("div", "color:#333;font-weight:600;");
       const refresh = () => {
         const n = boxes.filter((entry) => entry.input.checked).length;
-        counter.textContent = `${n} / ${items.length} evrak seçili${n > PULL_MAX_DOCS ? ` (en fazla ${PULL_MAX_DOCS} çekilir)` : ""}`;
+        counter.textContent = `${n} / ${items.length} evrak seçili`;
         for (const button of [diskButton, uploadButton]) button.disabled = n === 0;
       };
       for (const [label, group] of groups) {
@@ -902,7 +901,7 @@
       if (!choice.action) return { ok: true, cancelled: true, found: items.length };
       const mode = choice.action;
       const toDisk = mode === "disk";
-      const todo = choice.selected.slice(0, PULL_MAX_DOCS);
+      const todo = choice.selected; // evrak sayısı sınırı yok: hız (evrak başına birkaç sn), "Çekmeyi durdur" ve ardışık hata sınırı korur
       // Anahtar/adres denetimi seçimden SONRA ve yalnız JurisAI'ya aktarırken yapılır (bilgisayara indirme anahtar istemez).
       const begin = await chrome.runtime.sendMessage({ type: "JURISAI_PULL_BEGIN", mode });
       if (!begin?.ok) return { ok: false, error: begin?.error || "Ayarlar eksik" };

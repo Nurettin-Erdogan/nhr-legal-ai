@@ -129,7 +129,8 @@ aktarım ayarından bağımsız): bağlantı anahtarı denetlenir → ön izleme
 açılır (yapraklara tıklanmaz) → evraklar klasör yoluyla listelenir, "Son 20" kopyaları `evrak_id` ile elenir →
 **onay penceresi** (evrak sayısı, dosya, müvekkil verisi uyarısı) → her evrak için yaprağa tıklanır, UYAP'ın `view_document_*`
 isteğinin adresi arka planda **yakalanır** (yalnız bellekte, kaydedilmez), belge bu adresten indirilip yüklenir, en az 1,5 sn
-aralıkla. En çok 40 evrak, ardışık 3 hatada durur, "Çekmeyi durdur" ile kesilir, aynı içerik bir çekmede bir kez gönderilir.
+aralıkla. **Evrak sayısı sınırı yoktur** (kullanıcı istediği kadar seçip çekebilir); korumalar hız (evrak başına birkaç sn), ardışık 3 hatada
+durma ve "Çekmeyi durdur"dur. Aynı içerik bir çekmede bir kez gönderilir.
 
 Sunucu: ODT kabul edilir ve okunur (UDF gibi `content.xml`); `klasorYolu` alanı `office_case_documents.uyap_path` sütununa
 yazılır (migration 036), dava sayfasında evrakın altında "📁 yol" olarak görünür. Henüz klasör **ağacı** görünümü yok,
@@ -149,7 +150,7 @@ yalnız JurisAI'ya aktarırken yapılır. Eklenti hiçbir zaman tüm dosyaları 
 
 **Doğrulanmayanlar:** gerçek UYAP'ta uçtan uca çekme (yalnız ölçülen istek biçimi ve sahte portal testi var; UYAP'ın
 ek başlık/oturum denetimi yapıp yapmadığı denemeyle görülecek), PDF olarak gelen evrakların `mimeType` davranışı, ekler
-(`Ek 1`) için aynı adresin çalışıp çalışmadığı, bir dosyada 40'tan fazla evrak, UYAP'ın hızlı isteklere tepkisi.
+(`Ek 1`) için aynı adresin çalışıp çalışmadığı, çok büyük (yüzlerce evraklı) dosyalar, UYAP'ın hızlı isteklere tepkisi.
 
 ## Doğrulanmayanlar ve açık işler
 

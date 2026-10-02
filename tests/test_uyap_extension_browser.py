@@ -1102,3 +1102,43 @@ def test_diagnosis_reports_the_launcher_and_swallowed_refresh_errors(lab):
     assert report["launcher"] is True and report["caseOpenTargets"] == 1
     assert report["refreshError"] == ""
     page.close()
+
+
+# --- Evrak sayısı sınırı yok -----------------------------------------------------------------------------------
+
+PAGES["/vatandas/dosya-buyuk"] = PAGES["/vatandas/dosya-agaci"].replace(
+    "</script></body></html>",
+    """
+        // 41 evrak daha (toplam 45): eskiden en çok 40 evrak çekiliyordu.
+        var folder = document.querySelectorAll('#tree ul ul ul')[1];
+        for (var n = 0; n < 41; n++) {
+          var li = document.createElement('li');
+          li.innerHTML = '<span class="file" evrak_id="9' + n + '">Ek evrak ' + n + ' 01/07/2025</span>';
+          folder.appendChild(li);
+        }
+      </script></body></html>""",
+)
+
+
+def test_there_is_no_cap_on_how_many_evidence_items_can_be_pulled(lab):
+    """Kullanıcı istediği kadar evrak çekebilmeli: 45 evrak da seçilir ve hepsi kuyruğa alınır."""
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-buyuk")
+    _start_pull(lab)
+    page.wait_for_selector(".jurisai-chooser", timeout=60000)
+    assert page.locator(".jurisai-pick-item").count() == 45
+    assert "45 / 45 evrak seçili" in page.inner_text(".jurisai-chooser")
+    assert "en fazla" not in page.inner_text(".jurisai-chooser")
+    page.click("#jurisai-pick-upload")
+    assert lab.wait_for_uploads(1, timeout=30)
+    lab.worker.evaluate(
+        """async () => {
+            const [tab] = await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' });
+            return chrome.tabs.sendMessage(tab.id, { type: 'JURISAI_PULL_STOP' }, { frameId: 0 });
+        }"""
+    )
+    result = _finish_pull(lab)
+
+    assert result["ok"] and result["found"] == 45 and result["chosen"] == 45, result  # kırpılmadı
+    assert result["stopped"] is True and 1 <= result["sent"] < 45  # "Çekmeyi durdur" hâlâ çalışır
+    page.close()
