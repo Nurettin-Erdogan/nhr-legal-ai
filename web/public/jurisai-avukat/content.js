@@ -734,6 +734,13 @@
       }
     }
   }
+  /** Gerçek bir fare tıklaması gibi: üzerine gelme, basma, bırakma, tıklama (UYAP üzerine-gelme sınıfını da kullanıyor). */
+  function realClick(element) {
+    element.scrollIntoView({ block: "center" });
+    for (const type of ["mouseover", "mousedown", "mouseup", "click"]) {
+      element.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, button: 0 }));
+    }
+  }
   /** Ağaçtaki evrakları klasör yoluyla listeler; "Son 20 Evrak" kısayolu ve yinelenen evrak kimlikleri elenir. */
   function collectEvraklar(dialog) {
     const byId = new Map();
@@ -795,12 +802,23 @@
         const item = todo[index];
         toast(`Evrak ${index + 1}/${todo.length} çekiliyor…`);
         await chrome.runtime.sendMessage({ type: "JURISAI_PULL_ARM", evrakId: item.id });
-        item.span.click();
-        const captured = await waitUntil(
-          async () => (await chrome.runtime.sendMessage({ type: "JURISAI_PULL_STATUS" }))?.captured,
-          10000,
-        );
-        let outcome = { ok: false, error: "evrak adresi yakalanamadı (ön izleme açık mı?)" };
+        realClick(item.span);
+        let status = {};
+        const captured = await waitUntil(async () => {
+          status = (await chrome.runtime.sendMessage({ type: "JURISAI_PULL_STATUS" })) || {};
+          return status.captured;
+        }, 10000);
+        // Yalnız önizleme sayfası (viewer.jsp) görüldüyse gerçek belge isteğinin düşmesi için kısa süre tanı.
+        if (captured && !status.exact) await sleep(600);
+        status = (await chrome.runtime.sendMessage({ type: "JURISAI_PULL_STATUS" })) || status;
+        let outcome = {
+          ok: false,
+          error: `evrak adresi yakalanamadı (${
+            status.seen?.length
+              ? `tıklamadan sonra sayfa şu istekleri yaptı: ${status.seen.join(", ")}`
+              : "tıklamadan sonra sayfa hiç istek yapmadı; ön izleme açık mı?"
+          })`,
+        };
         if (captured) {
           outcome = await chrome.runtime.sendMessage({
             type: "JURISAI_PULL_FETCH",

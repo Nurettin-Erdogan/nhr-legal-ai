@@ -376,27 +376,41 @@ async function saveReportFile(prefix, report) {
 let pull = null; // { tabId, expectedEvrakId, url }
 let pullRun = null; // { hashes: Set } — aynı içerik bir çekmede bir kez gönderilir
 
+const PULL_STATIC_RE = /\.(js|css|png|gif|jpe?g|svg|ico|woff2?|ttf|map)$/i;
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
     if (!pull || details.tabId !== pull.tabId) return;
     try {
       const url = new URL(details.url);
-      if (!/view_document/i.test(url.pathname)) return;
-      // Önceki yaprağın gecikmiş isteği bu yaprağa karışmasın.
-      if (pull.expectedEvrakId && url.searchParams.get("evrakId") !== pull.expectedEvrakId) return;
-      pull.url = details.url;
+      const name = url.pathname.split("/").pop() || "";
+      // Teşhis için: tıklamadan sonra sayfanın yaptığı isteklerin yalnız dosya adı (rakamlar maskeli).
+      if (pull.seen.length < 10 && name && !PULL_STATIC_RE.test(name)) pull.seen.push(name.replace(/\d+/g, "#"));
+      // Her yaprak öncesinde `pull` sıfırlanır; yaprağın evrak_id'si isteğin evrakId'siyle ESİT olmak zorunda
+      // değildir (gerçek portalda eşleşmeme olasılığı var), bu yüzden kimlik karşılaştırılmaz.
+      if (/view_document/i.test(url.pathname)) pull.url = details.url;
+      else if (/viewer\.jsp$/i.test(url.pathname) && !pull.viewerUrl) pull.viewerUrl = details.url;
     } catch (_) {
       /* çözümlenemeyen adres yoksayılır */
     }
   },
-  { urls: ["*://*.uyap.gov.tr/*view_document*"] },
+  { urls: ["*://*.uyap.gov.tr/*"] },
 );
+
+/** Gerçek belge isteği (view_document_*) yakalanamadıysa, ön izleme sayfasının (viewer.jsp) aynı sorgusundan türetilir. */
+function pullTargetUrl() {
+  if (pull?.url) return pull.url;
+  if (!pull?.viewerUrl) return "";
+  const derived = new URL(pull.viewerUrl);
+  derived.pathname = derived.pathname.replace(/viewer\.jsp$/i, "view_document_brd.uyap");
+  return derived.href;
+}
 
 async function handlePullFetch(meta) {
   try {
     const settings = await getSettings();
-    if (!pull?.url) throw new Error("UYAP evrak adresi yakalanamadı");
-    const { blob, type } = await fetchDocument(pull.url, Number(settings.timeoutMs) || DEFAULTS.timeoutMs);
+    const target = pullTargetUrl();
+    if (!target) throw new Error("UYAP evrak adresi yakalanamadı");
+    const { blob, type } = await fetchDocument(target, Number(settings.timeoutMs) || DEFAULTS.timeoutMs);
     const digest = await sha256Hex(blob);
     if (pullRun?.hashes.has(digest)) return { ok: true, sameContent: true };
     const out = await uploadDocument(settings, { ...meta, url: "" }, blob, type);
@@ -419,11 +433,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       });
       return true;
     case "JURISAI_PULL_ARM":
-      pull = { tabId: sender.tab?.id ?? null, expectedEvrakId: String(message.evrakId || ""), url: "" };
+      pull = { tabId: sender.tab?.id ?? null, url: "", viewerUrl: "", seen: [] };
       sendResponse({ ok: true });
       return false;
     case "JURISAI_PULL_STATUS":
-      sendResponse({ captured: !!pull?.url });
+      sendResponse({ captured: !!(pull?.url || pull?.viewerUrl), exact: !!pull?.url, seen: pull?.seen || [] });
       return false;
     case "JURISAI_PULL_FETCH":
       handlePullFetch(message.meta || {}).then(sendResponse);

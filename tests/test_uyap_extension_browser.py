@@ -181,7 +181,8 @@ PAGES = {
             toggle(target.closest('li'));
           } else if (target.classList.contains('file') && preview) {
             var frame = document.createElement('iframe');
-            frame.src = '/main/jsp/viewer.jsp?mimeType=odt&evrakId=' + target.getAttribute('evrak_id') + '&dosyaId=9&yargiTuru=Ceza';
+            // Gerçek portalda yaprağın evrak_id'si ile isteğin evrakId'sinin eşit olduğu varsayılamaz: isteğe ENC öneki eklenir.
+            frame.src = '/main/jsp/viewer.jsp?mimeType=odt&evrakId=ENC' + target.getAttribute('evrak_id') + '&dosyaId=9&yargiTuru=Ceza';
             document.getElementById('viewer').replaceChildren(frame);
           }
         });
@@ -234,7 +235,7 @@ class _UyapHandler(BaseHTTPRequestHandler):
             page = "<html><body><script>fetch('/main/jsp/view_document_brd.uyap' + location.search, {credentials: 'include'});</script></body></html>"
             return self._send(200, page.encode(), "text/html; charset=utf-8")
         if path == "/main/jsp/view_document_brd.uyap":
-            evrak_id = query.split("evrakId=")[-1].split("&")[0]
+            evrak_id = query.split("evrakId=")[-1].split("&")[0].removeprefix("ENC")
             data = _odt(f"Evrak {evrak_id} metni")
             self.send_response(200)
             self.send_header("Content-Type", "application/vnd.oasis.opendocument.text")
@@ -903,4 +904,21 @@ def test_pull_errors_are_reported_with_their_reason(lab):
     assert result["ok"] and result["sent"] == 0 and result["failed"] >= 1
     assert any("anahtar" in error.lower() for error in result["errors"]), result["errors"]
     assert lab.uploads == []
+    page.close()
+
+
+def test_a_click_that_triggers_no_request_is_explained_in_the_error(lab):
+    """Ön izleme açılmazsa (ya da UYAP tıklamaya yanıt vermezse) neden bildirimde yazar."""
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-agaci")
+    # Eklenti ön izlemeyi açar; sahte sayfada açıkken yapraklar istek yapar. Burada düğmeyi önce açıp ardından
+    # sayfanın tıklama işleyicisini kaldırarak "tıklama hiçbir şey yapmıyor" durumunu üretiriz.
+    page.evaluate("() => { window.preview = true; document.getElementById('onizleme').textContent = 'Ön İzlemeyi Kapat'; }")
+    page.evaluate("() => { document.addEventListener('click', (e) => e.stopImmediatePropagation(), true); }")
+    page.on("dialog", lambda dialog: dialog.accept())
+
+    result = lab.worker.evaluate(_PULL)
+
+    assert result["ok"] and result["sent"] == 0 and result["failed"] >= 1
+    assert any("hiç istek yapmadı" in error for error in result["errors"]), result["errors"]
     page.close()
