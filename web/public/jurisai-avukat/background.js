@@ -95,7 +95,10 @@ async function fetchDocument(url, timeoutMs) {
     if (/text\/html/i.test(type))
       throw new Error("belge yerine sayfa döndü (oturum kapanmış olabilir)");
     // Önizlenemeyen evrakta UYAP belge yerine kısa bir düz metin (mesaj) döndürür: belge olarak kaydedilmez.
-    if (/^text\//i.test(type) && blob.size < 1024) throw new Error("UYAP belge yerine kısa bir mesaj döndürdü");
+    if (/^text\//i.test(type) && blob.size < 1024) {
+      const said = (await blob.text()).replace(/\s+/g, " ").replace(/\d+/g, "#").trim().slice(0, 100);
+      throw new Error(`UYAP belge yerine şu mesajı döndürdü: "${said}"`);
+    }
     const disposition = res.headers.get("content-disposition") || "";
     const filename = (/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition) || [])[1] || "";
     return { blob, type, filename };
@@ -577,8 +580,15 @@ async function handlePullFetch(meta, mode = "upload") {
       fetched = await fetchDocument(target, timeout);
     } catch (error) {
       // Belge yerine metin/sayfa döndüyse (ör. "Tiff görüntülenemediğinden indiriliyor"), ayrı indirme adresi denenir.
-      if (!pull?.altUrl) throw error;
-      fetched = await fetchDocument(pull.altUrl, timeout);
+      if (pull?.altUrl) {
+        fetched = await fetchDocument(pull.altUrl, timeout);
+      } else if (/mesaj|HTTP (429|5\d\d)|zaman aşımı|abort/i.test(error.message || "")) {
+        // Geçici olabilir (yoğunluk, hazırlanıyor): bir kez bekleyip aynı adresi yeniden dene.
+        await sleep(8000);
+        fetched = await fetchDocument(target, timeout);
+      } else {
+        throw error;
+      }
     }
     const { blob, type, filename } = fetched;
     if (filename) meta = { ...meta, fileExt: (/\.([A-Za-z0-9]{2,5})$/.exec(filename) || [])[1] || "" };

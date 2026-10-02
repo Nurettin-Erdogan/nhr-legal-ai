@@ -255,6 +255,12 @@ class _UyapHandler(BaseHTTPRequestHandler):
             return self._send(200, page.encode(), "text/html; charset=utf-8")
         if path == "/main/jsp/view_document_brd.uyap":
             evrak_id = query.split("evrakId=")[-1].split("&")[0].removeprefix("ENC")
+            if evrak_id == "105":  # geçici: ilk istekte kısa mesaj, sonra belge
+                _UyapHandler.seen_105 = getattr(_UyapHandler, "seen_105", 0) + 1
+                if _UyapHandler.seen_105 == 1:
+                    return self._send(200, "Sistem şu an yoğun 12345, lütfen tekrar deneyin.".encode(), "text/plain; charset=utf-8")
+            if evrak_id == "106":  # kalıcı: hep kısa mesaj
+                return self._send(200, "Bu evrağı görüntüleme yetkiniz yok (kod 777).".encode(), "text/plain; charset=utf-8")
             if evrak_id == "104":  # TIFF: belge yerine kısa mesaj
                 message = "Bu evrak türü (Tiff) görüntülenemediğinden dolayı evrak indiriliyor.".encode()
                 return self._send(200, message, "text/plain; charset=utf-8")
@@ -1020,7 +1026,7 @@ def test_a_click_that_triggers_no_request_is_explained_in_the_error(lab):
     page = lab.open("/vatandas/dosya-agaci")
     page.evaluate("() => { window.preview = true; document.getElementById('onizleme').textContent = 'Ön İzlemeyi Kapat'; }")
     page.evaluate(
-        "() => { document.addEventListener('click', (e) => { if (!e.target.closest('.jurisai-chooser')) e.stopImmediatePropagation(); }, true); }"
+        "() => { document.addEventListener('click', (e) => { if (e.target.closest('span.file')) e.stopImmediatePropagation(); }, true); }"
     )
 
     result = _pull(lab, page, "upload")
@@ -1300,4 +1306,98 @@ def test_direct_download_probe_measures_without_storing_or_leaking(lab):
     assert lab.uploads == []  # hiçbir şey yüklenmedi
     serialized = json.dumps(report, ensure_ascii=False)
     assert "ENC101" not in serialized and "ENC102" not in serialized and "Kesinleşme" not in serialized
+    page.close()
+
+
+def _one_leaf_page(leaf_id: str) -> str:
+    """Ağaç sayfasındaki Kesinleşme Şerhleri klasörüne tek bir ek yaprak ekler."""
+    return PAGES["/vatandas/dosya-agaci"].replace(
+        '<li><span class="file" evrak_id="102">Kesinleşme Şerhleri 30/06/2025</span></li></ul></li>',
+        f'<li><span class="file" evrak_id="102">Kesinleşme Şerhleri 30/06/2025</span></li>'
+        f'<li><span class="file" evrak_id="{leaf_id}">Deneme evrakı {leaf_id}</span></li></ul></li>',
+    )
+
+
+PAGES["/vatandas/dosya-gecici"] = _one_leaf_page("105")
+PAGES["/vatandas/dosya-kalici"] = _one_leaf_page("106")
+
+
+def test_a_transient_short_message_is_retried_once_and_the_item_arrives(lab):
+    lab.configure(throttleMs=500)
+    _UyapHandler.seen_105 = 0
+    page = lab.open("/vatandas/dosya-gecici")
+    _start_pull(lab)
+    page.wait_for_selector(".jurisai-chooser", timeout=30000)
+    page.click("#jurisai-pick-upload")
+
+    result = _finish_pull(lab)
+
+    assert result["ok"] and result["failed"] == 0, result  # geçici mesaj yeniden denenince geçti
+    assert "105" in [upload["fields"]["evrakId"] for upload in lab.uploads]
+    page.close()
+
+
+def test_a_permanent_short_message_is_reported_with_its_text_and_the_run_continues(lab):
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-kalici")
+    _start_pull(lab)
+    page.wait_for_selector(".jurisai-chooser", timeout=30000)
+    page.click("#jurisai-pick-upload")
+
+    result = _finish_pull(lab)
+
+    assert result["ok"] and result["failed"] == 1 and result["sent"] >= 4, result  # diğer evraklar yine geldi
+    reason = result["errors"][0]
+    assert "yetkiniz yok" in reason and "kod #)" in reason and "777" not in reason  # UYAP'ın mesajı yazıldı, rakamlar maskeli
+    assert "106" not in [upload["fields"]["evrakId"] for upload in lab.uploads]
+    page.close()
+
+
+PAGES["/vatandas/dosya-tembel"] = PAGES["/vatandas/dosya-agaci"].replace(
+    "</script></body></html>",
+    """
+        (function () {
+          var original = toggle;
+          toggle = function (li) {
+            original(li);
+            var ul = li.querySelector(':scope > ul');
+            if (ul && !li.dataset.lazyDone && li.querySelector(':scope > .folder') && /Kesinleşme/.test(li.textContent.slice(0, 40))) {
+              li.dataset.lazyDone = '1';
+              var saved = ul.innerHTML;
+              ul.innerHTML = '';
+              setTimeout(function () { ul.innerHTML = saved; }, 1300);
+            }
+          };
+        })();
+      </script></body></html>""",
+)
+PAGES["/vatandas/dosya-kimliksiz"] = PAGES["/vatandas/dosya-agaci"].replace(
+    '<span class="file" evrak_id="102">Kesinleşme Şerhleri 30/06/2025</span>',
+    '<span class="file">KIMLIKSIZ</span>',
+)
+
+
+def test_the_tree_is_counted_only_after_lazy_loaded_nodes_have_arrived(lab):
+    """Canlıda aynı dosya 464, sonra 447 evrak çıktı: ağaç tam yüklenmeden sayılıyordu."""
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-tembel")
+    _start_pull(lab)
+    page.wait_for_selector(".jurisai-chooser", timeout=60000)
+    assert page.locator(".jurisai-pick-item").count() == 4  # geç gelen iki Kesinleşme Şerhi de sayıldı
+    assert "UYAP: 2, bulunan: 2" in page.inner_text(".jurisai-chooser")
+    page.click("#jurisai-pick-cancel")
+    _finish_pull(lab)
+    page.close()
+
+
+def test_items_without_an_evidence_id_are_counted_and_reported(lab):
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-kimliksiz")
+    _start_pull(lab)
+    page.wait_for_selector(".jurisai-chooser", timeout=30000)
+    text = page.inner_text(".jurisai-chooser")
+    assert "kimliksiz öğe: 1 (çekilemez)" in text
+    assert "⚠ UYAP: 2, bulunan: 1" in text  # UYAP 2 diyor, kimlikli yalnız 1 var
+    page.click("#jurisai-pick-cancel")
+    _finish_pull(lab)
     page.close()

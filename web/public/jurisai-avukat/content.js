@@ -741,10 +741,35 @@
     return true;
   }
   /** Kapalı klasörleri (ve eki olan evrakları) açar. Yaprağın kendisine tıklanmaz: ön izleme isteği tetikler. */
+  /** Ağaç boyutu (düğüm sayısı) art arda birkaç yoklamada değişmeyene dek bekler: alt düğümler AJAX ile geç gelir. */
+  async function waitForTreeToSettle(dialog, maxMs = 20000) {
+    const end = Date.now() + maxMs;
+    let last = -1;
+    let stable = 0;
+    while (Date.now() < end && stable < 4) {
+      const size = dialog.querySelectorAll("span.file, span.folder, li").length;
+      stable = size === last ? stable + 1 : 0;
+      last = size;
+      await sleep(500);
+    }
+  }
   async function expandAll(dialog) {
+    // Açma + durulma birkaç tur tekrarlanır: açılan düğümler yeni kapalı düğümler getirebilir. İlerleme yoksa (kapalı
+    // düğüm sayısı azalmıyorsa) ya da süre dolarsa vazgeçilir: açılamayan düğümler için sonsuza dek beklenmez.
+    const deadline = Date.now() + 90000;
+    let previous = Infinity;
+    for (let round = 0; round < 5 && Date.now() < deadline; round += 1) {
+      await expandPass(dialog);
+      await waitForTreeToSettle(dialog, 8000);
+      const remaining = dialog.querySelectorAll("li.expandable").length;
+      if (!remaining || remaining >= previous) return;
+      previous = remaining;
+    }
+  }
+  async function expandPass(dialog) {
     const attempts = new Map();
     for (let pass = 0; pass < 20; pass += 1) {
-      const closed = [...dialog.querySelectorAll("li.expandable")].filter((li) => (attempts.get(li) || 0) < 3);
+      const closed = [...dialog.querySelectorAll("li.expandable")].filter((li) => (attempts.get(li) || 0) < 5);
       if (!closed.length) return;
       for (const li of closed) {
         const handle = li.querySelector(":scope > div.hitarea") || li.querySelector(":scope > span.folder");
@@ -794,11 +819,14 @@
       const existing = byId.get(id);
       if (!existing || (existing.inRecent && !inRecent)) byId.set(id, entry);
     }
+    const withoutId = dialog.querySelectorAll("span.file:not([evrak_id])").length;
     const all = [...byId.values()];
     // "Dosyaya Eklenen Son 20 Evrak", "Tüm Evraklar"daki evrakların kısayol kopyasıdır (gerçek portalda kopyalar
     // farklı evrak_id taşıdığı için 4 evrak 8 görünmüştü): "Tüm Evraklar" varsa yalnız o kullanılır.
     const full = all.filter((entry) => !entry.inRecent);
-    return full.length ? full : all;
+    const result = full.length ? full : all;
+    result.withoutId = withoutId; // evrak_id'si olmayan öğeler çekilemez; sayısı seçim penceresinde gösterilir
+    return result;
   }
   function dosyaIdentity(dialog) {
     const title = textOf(dialog.querySelector("h1,h2,h3,h4,.modal-title"));
@@ -847,6 +875,7 @@
         "div",
         `font-size:12px;margin-top:6px;color:${declaredTotal === foundTotal ? "#166534" : "#b91c1c"};`,
         `UYAP klasör sayıları: ${declaredTotal} evrak · bulunan: ${foundTotal}${eks ? ` · ayrıca ${eks} ek` : ""}` +
+          (items.withoutId ? ` · kimliksiz öğe: ${items.withoutId} (çekilemez)` : "") +
           (declaredTotal === foundTotal ? " ✓ sayılar tutuyor" : " ⚠ sayılar tutmuyor") +
           // Hangi klasörlerde fark var (en çok 4): sayıyı doğrulamak/düzeltmek için.
           (declaredTotal === foundTotal
@@ -957,6 +986,8 @@
       if (!begin?.ok) return { ok: false, error: begin?.error || "Ayarlar eksik" };
 
       let consecutiveFailures = 0;
+      const baseGap = begin.gapMs || 1500;
+      let gap = baseGap; // hata görülürse iki katına çıkar (en çok 20 sn), başarıda yavaşça normale döner
       for (let index = 0; index < todo.length && !pulling.stop; index += 1) {
         const item = todo[index];
         toast(`Evrak ${index + 1}/${todo.length} çekiliyor…`);
@@ -994,6 +1025,7 @@
         }
         if (outcome?.ok) {
           consecutiveFailures = 0;
+          gap = Math.max(baseGap, Math.round(gap * 0.8));
           if (outcome.sameContent) stats.sameContent += 1;
           else if (outcome.duplicate) stats.duplicates += 1;
           else stats.sent += 1; // aktarılan ya da (bilgisayara indirme kipinde) kaydedilen
@@ -1001,9 +1033,10 @@
           stats.failed += 1;
           consecutiveFailures += 1;
           if (stats.errors.length < 5) stats.errors.push(outcome?.error || "bilinmeyen hata");
-          if (consecutiveFailures >= 3) break; // oturum kapanmış ya da portal yanıt vermiyor olabilir
+          gap = Math.min(20000, gap * 2); // UYAP bizi sınırlıyor olabilir: yavaşla
+          if (consecutiveFailures >= 5) break; // oturum kapanmış ya da portal yanıt vermiyor olabilir
         }
-        await sleep(begin.gapMs || 1500);
+        await sleep(gap);
       }
       const reasons = [...new Set(stats.errors)].slice(0, 2).join(" | ");
       const summary =
