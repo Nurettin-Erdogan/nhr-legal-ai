@@ -313,15 +313,11 @@
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "jurisai-send-btn jurisai-open-btn";
-      btn.textContent = "Dosyayı aç → evrakları aktar";
+      btn.textContent = "JurisAI: evrakları seç ve çek";
       btn.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
-        toast(
-          "Dosya açılıyor… Açılan ekranda Evraklar sekmesine geçin, düğmeler orada çıkacak.",
-          "info",
-        );
-        target.click();
+        openCaseAndChoose(target);
       });
       (row.lastElementChild || row).appendChild(btn);
       found++;
@@ -772,13 +768,111 @@
     return { esas: esasNoFrom(title), birim: (title.split(" - ")[1] || courtFrom(title) || "").trim().slice(0, 160) };
   }
 
-  async function pullDosya(mode = "upload") {
+  /** Çekmeden önce kullanıcı hangi evrakların çekileceğini ve ne yapılacağını seçer (metinler textContent ile, innerHTML yok). */
+  function chooseEvraklar(items, who, preferred) {
+    return new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      overlay.className = "jurisai-chooser";
+      overlay.setAttribute("role", "dialog");
+      overlay.style.cssText =
+        "position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.55);display:flex;align-items:center;" +
+        "justify-content:center;font:14px system-ui,sans-serif;";
+      const box = document.createElement("div");
+      box.style.cssText =
+        "background:#fff;color:#111;max-width:660px;width:92vw;max-height:86vh;display:flex;flex-direction:column;" +
+        "border-radius:10px;box-shadow:0 10px 40px rgba(0,0,0,.4);";
+      const make = (tag, css, content) => {
+        const el = document.createElement(tag);
+        if (css) el.style.cssText = css;
+        if (content !== undefined) el.textContent = content;
+        return el;
+      };
+      const head = make("div", "padding:16px 18px 8px;");
+      head.append(
+        make("div", "font-weight:700;font-size:16px;", "JurisAI: çekilecek evrakları seç"),
+        make("div", "color:#555;margin-top:4px;", `${who.esas || "Dosya"}${who.birim ? ` · ${who.birim}` : ""} · ${items.length} evrak`),
+      );
+      const list = make("div", "padding:0 18px;overflow:auto;flex:1;");
+      const boxes = [];
+      const groups = new Map();
+      for (const item of items) {
+        const key = item.folders.join(" / ") || "(klasörsüz)";
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(item);
+      }
+      const counter = make("div", "color:#333;font-weight:600;");
+      const refresh = () => {
+        const n = boxes.filter((entry) => entry.input.checked).length;
+        counter.textContent = `${n} / ${items.length} evrak seçili${n > PULL_MAX_DOCS ? ` (en fazla ${PULL_MAX_DOCS} çekilir)` : ""}`;
+        for (const button of [diskButton, uploadButton]) button.disabled = n === 0;
+      };
+      for (const [label, group] of groups) {
+        const heading = make("label", "display:flex;gap:8px;align-items:center;margin:12px 0 4px;font-weight:600;color:#1d4ed8;");
+        const groupInput = document.createElement("input");
+        groupInput.type = "checkbox";
+        groupInput.checked = true;
+        heading.append(groupInput, make("span", "", `📁 ${label}`));
+        list.append(heading);
+        const members = [];
+        for (const item of group) {
+          const row = make("label", "display:flex;gap:8px;align-items:center;margin:2px 0 2px 24px;");
+          const input = document.createElement("input");
+          input.type = "checkbox";
+          input.checked = true;
+          input.className = "jurisai-pick-item";
+          input.dataset.index = String(items.indexOf(item));
+          input.addEventListener("change", refresh);
+          row.append(input, make("span", "", item.isEk ? `↳ ${item.title}` : item.title));
+          list.append(row);
+          boxes.push({ input, item });
+          members.push(input);
+        }
+        groupInput.addEventListener("change", () => {
+          for (const input of members) input.checked = groupInput.checked;
+          refresh();
+        });
+      }
+      const note = make(
+        "div",
+        "padding:8px 18px;color:#92400e;background:#fffbeb;font-size:12px;",
+        "Müvekkil verisi içerebilir; yalnızca yetkili olduğun dosyalarda devam et. UYAP'a istekler yavaş gönderilir " +
+          "(her evrak için birkaç saniye); eklenti penceresinden durdurabilirsin.",
+      );
+      const buttons = make("div", "display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:12px 18px 16px;");
+      const style = (primary) =>
+        `padding:8px 12px;border-radius:8px;border:1px solid #2563eb;cursor:pointer;` +
+        (primary ? "background:#2563eb;color:#fff;" : "background:#fff;color:#2563eb;");
+      const diskButton = make("button", style(preferred === "disk"), "Seçilenleri bilgisayarıma indir");
+      diskButton.id = "jurisai-pick-disk";
+      const uploadButton = make("button", style(preferred !== "disk"), "Seçilenleri JurisAI'ya aktar");
+      uploadButton.id = "jurisai-pick-upload";
+      const cancelButton = make("button", style(false), "İptal");
+      cancelButton.id = "jurisai-pick-cancel";
+      const toggle = make("button", "padding:4px 8px;border:0;background:none;color:#2563eb;cursor:pointer;", "Tümünü seç / kaldır");
+      toggle.addEventListener("click", () => {
+        const all = boxes.every((entry) => entry.input.checked);
+        for (const entry of boxes) entry.input.checked = !all;
+        refresh();
+      });
+      const finish = (action) => {
+        overlay.remove();
+        resolve({ action, selected: boxes.filter((entry) => entry.input.checked).map((entry) => entry.item) });
+      };
+      diskButton.addEventListener("click", () => finish("disk"));
+      uploadButton.addEventListener("click", () => finish("upload"));
+      cancelButton.addEventListener("click", () => finish(null));
+      buttons.append(counter, toggle, make("span", "flex:1"), diskButton, uploadButton, cancelButton);
+      box.append(head, list, note, buttons);
+      overlay.append(box);
+      document.body.append(overlay);
+      refresh();
+    });
+  }
+
+  async function pullDosya(preferred = "upload") {
     if (pulling) return { ok: false, error: "Çekme zaten sürüyor" };
     const dialog = activeRoot();
     if (!dialog) return { ok: false, error: "Açık bir dosya penceresi yok: UYAP'ta dosyayı aç, Evrak sekmesine geç." };
-    const toDisk = mode === "disk";
-    const begin = await chrome.runtime.sendMessage({ type: "JURISAI_PULL_BEGIN", mode });
-    if (!begin?.ok) return { ok: false, error: begin?.error || "Ayarlar eksik" };
     pulling = { stop: false };
     const stats = { sent: 0, duplicates: 0, sameContent: 0, failed: 0, errors: [] };
     try {
@@ -787,19 +881,15 @@
       await expandAll(dialog);
       const items = collectEvraklar(dialog);
       if (!items.length) return { ok: false, error: "Ağaçta evrak bulunamadı. Evrak sekmesini aç ve tekrar dene." };
-      const todo = items.slice(0, PULL_MAX_DOCS);
       const who = dosyaIdentity(dialog);
-      const confirmed = window.confirm(
-        `${who.esas || "Bu dosya"}${who.birim ? ` (${who.birim})` : ""}: ${items.length} evrak bulundu` +
-          `${items.length > todo.length ? `, ilk ${todo.length} tanesi çekilecek` : ""}.\n\n` +
-          (toDisk
-            ? "Evraklar UYAP'taki klasör yapısıyla bilgisayarındaki İndirilenler\\JurisAI-UYAP klasörüne kaydedilecek (JurisAI'ya gönderilmez). "
-            : "Evraklar klasör yapısıyla JurisAI hesabına aktarılacak. ") +
-          "Müvekkil verisi içerebilir; yalnızca yetkili olduğun dosyalarda devam et.\n\n" +
-          "UYAP'a istekler yavaş gönderilir (her evrak için birkaç saniye). " +
-          'Durdurmak için eklenti penceresinde "Çekmeyi durdur"a bas.',
-      );
-      if (!confirmed) return { ok: true, cancelled: true, found: items.length };
+      const choice = await chooseEvraklar(items, who, preferred);
+      if (!choice.action) return { ok: true, cancelled: true, found: items.length };
+      const mode = choice.action;
+      const toDisk = mode === "disk";
+      const todo = choice.selected.slice(0, PULL_MAX_DOCS);
+      // Anahtar/adres denetimi seçimden SONRA ve yalnız JurisAI'ya aktarırken yapılır (bilgisayara indirme anahtar istemez).
+      const begin = await chrome.runtime.sendMessage({ type: "JURISAI_PULL_BEGIN", mode });
+      if (!begin?.ok) return { ok: false, error: begin?.error || "Ayarlar eksik" };
 
       let consecutiveFailures = 0;
       for (let index = 0; index < todo.length && !pulling.stop; index += 1) {
@@ -858,11 +948,28 @@
         (stats.failed ? `, ${stats.failed} hata${reasons ? ` (${reasons})` : ""}` : "") +
         (pulling.stop ? " (durduruldu)" : "");
       toast(summary, stats.failed ? "error" : "success");
-      return { ok: true, ...stats, found: items.length, stopped: pulling.stop };
+      return { ok: true, ...stats, found: items.length, chosen: todo.length, mode, stopped: pulling.stop };
     } finally {
       pulling = null;
       chrome.runtime.sendMessage({ type: "JURISAI_PULL_END" }).catch(() => {});
     }
+  }
+
+  /** Dosya listesindeki satır düğmesi: dosyayı açar, Evrak sekmesine geçer ve evrak seçim penceresini gösterir. */
+  async function openCaseAndChoose(openButton) {
+    if (pulling) return toast("Bir çekme zaten sürüyor.", "info");
+    toast("Dosya açılıyor…");
+    openButton.click();
+    if (!(await waitUntil(() => !!activeRoot(), 10000))) return toast("Dosya penceresi açılamadı.", "error");
+    await sleep(600);
+    const dialog = activeRoot();
+    openEvrakTab(dialog);
+    const hasTree = await waitUntil(() => !!dialog.querySelector("span.file[evrak_id], li.expandable"), 10000);
+    if (!hasTree) {
+      return toast("Bu ekranda evrak ağacı yok: evrak satırlarındaki \"JurisAI'ya aktar\" düğmelerini kullan.", "info");
+    }
+    const result = await pullDosya();
+    if (result && result.ok === false) toast(result.error, "error");
   }
 
   /* ---------- Tıklama kaydı ----------
@@ -1000,7 +1107,7 @@
     if (/^JURISAI_(RECORD_(START|STOP)|PULL_(DOSYA|STOP))$/.test(message?.type || "") && window !== window.top)
       return false;
     if (message?.type === "JURISAI_PULL_DOSYA") {
-      pullDosya(message.mode === "disk" ? "disk" : "upload")
+      pullDosya(message.mode === "disk" ? "disk" : "upload") // yalnız seçim penceresinde öne çıkan düğme
         .then(sendResponse)
         .catch((error) => sendResponse({ ok: false, error: error.message || "bilinmeyen hata" }));
       return true;

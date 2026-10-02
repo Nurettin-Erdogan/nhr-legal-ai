@@ -124,7 +124,7 @@ Yine de gerçek evrak listesi sayfasında seçicilerin tutup tutmadığı doğru
   içinden **`GET view_document_brd.uyap?mimeType&evrakId&dosyaId&yargiTuru`** → `200`, `application/vnd.oasis.opendocument.text`
   (**ODT**), `attachment`. Belge bu adresten kullanıcının kendi oturumuyla gelir.
 
-**Eklentideki akış** (popup → "Bu dosyanın evraklarını çek (klasör yapısıyla)"; yalnız düğmeye basılınca, otomatik
+**Eklentideki akış** (popup → "Bu dosyadan evrak seç → …"; yalnız düğmeye basılınca, otomatik
 aktarım ayarından bağımsız): bağlantı anahtarı denetlenir → ön izleme kapalıysa açılır (açıksa dokunulmaz) → klasörler
 açılır (yapraklara tıklanmaz) → evraklar klasör yoluyla listelenir, "Son 20" kopyaları `evrak_id` ile elenir →
 **onay penceresi** (evrak sayısı, dosya, müvekkil verisi uyarısı) → her evrak için yaprağa tıklanır, UYAP'ın `view_document_*`
@@ -139,6 +139,13 @@ yol metin olarak gösterilir.
 bağlanmadan çalıştırır (bağlantı anahtarı gerekmez) ve evrakları `İndirilenler\JurisAI-UYAP\<esas no + mahkeme>\<UYAP klasörleri>\<evrak>`
 yoluna yazar; dosya sistemi için yasak karakterler ve `..` temizlenir, aynı adlı evrak "(1)" soneki alır. Gerçek portalda
 (2026-10-02) 4 evrak UYAP'tan alınıp JurisAI'ya klasör yoluyla yüklendi ve metinleri okundu; ek evraklar ("Ek 1") henüz alınmıyor.
+
+**Evrak seçimi (v2.13.0):** çekme artık "hepsini çek" değildir, **kullanıcı seçer**. Dosya listesindeki her satırda
+"JurisAI: evrakları seç ve çek" düğmesi çıkar (ya da dosya penceresi açıkken eklenti penceresindeki düğmeler): dosya açılır,
+Evrak sekmesine geçilir, ağaç açılır ve **seçim penceresi** gelir: evraklar klasörlerine göre gruplanmış, onay kutulu
+(klasör kutusu içindekileri toplu işaretler, "Tümünü seç / kaldır"). Altta üç eylem: "Seçilenleri bilgisayarıma indir",
+"Seçilenleri JurisAI'ya aktar", "İptal". Yalnız işaretlenenler istenir; bağlantı anahtarı denetimi seçimden sonra ve
+yalnız JurisAI'ya aktarırken yapılır. Eklenti hiçbir zaman tüm dosyaları kendiliğinden çekmez.
 
 **Doğrulanmayanlar:** gerçek UYAP'ta uçtan uca çekme (yalnız ölçülen istek biçimi ve sahte portal testi var; UYAP'ın
 ek başlık/oturum denetimi yapıp yapmadığı denemeyle görülecek), PDF olarak gelen evrakların `mimeType` davranışı, ekler

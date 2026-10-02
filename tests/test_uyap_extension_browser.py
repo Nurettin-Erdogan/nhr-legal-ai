@@ -187,6 +187,8 @@ PAGES = {
           }
         });
       </script></body></html>""",
+    # Dosya listesi + gizli dosya penceresi (ağaçlı): satır düğmesi pencereyi açar.
+    "/vatandas/dosya-listesi": "@@LISTE@@",
     # Gerçekçi evrak listesi.
     "/dosya/evraklar": f"<html><body><h2>{CASE_TITLE}</h2>{_EVRAK_ROWS}</body></html>",
     # Dosya penceresi: Evrak sekmesine basılınca liste AJAX ile gelir.
@@ -203,6 +205,13 @@ PAGES = {
       </script></body></html>""",
 }
 
+
+PAGES["/vatandas/dosya-listesi"] = PAGES["/vatandas/dosya-agaci"].replace(
+    '<div role="dialog" class="modal in" style="display:block">',
+    '<table><tr><td>Katılan</td><td>Ankara Bölge Adliye Mahkemesi 19. Ceza Dairesi</td><td>2024/2000</td><td>'
+    "<button type=\"button\" onclick=\"document.getElementById('dlg').style.display='block'\">Dosya Görüntüle</button>"
+    '</td></tr></table><div id="dlg" role="dialog" class="modal in" style="display:none">',
+)
 
 class _UyapHandler(BaseHTTPRequestHandler):
     def log_message(self, *args):
@@ -808,125 +817,6 @@ def test_network_recording_sees_the_request_made_inside_the_preview_iframe_witho
     page.close()
 
 
-_PULL = (
-    "async () => {"
-    "  const [tab] = await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' });"
-    "  return chrome.tabs.sendMessage(tab.id, { type: 'JURISAI_PULL_DOSYA' }, { frameId: 0 });"
-    "}"
-)
-
-
-def test_pulling_a_case_creates_one_upload_per_evrak_with_its_folder_path(lab):
-    """Gerçek akış: ağaç açılır, ön izleme açılır, her yaprağa tıklanır, UYAP'ın ön izleme adresi yakalanıp belge
-    ODT olarak indirilir; 'Son 20 Evrak' kısayolu çift saymaz; klasör yolu ve evrak türü gönderilir."""
-    lab.configure(throttleMs=500)
-    page = lab.open("/vatandas/dosya-agaci")
-    page.on("dialog", lambda dialog: dialog.accept())
-
-    result = lab.worker.evaluate(_PULL)
-
-    assert result["ok"] and result["sent"] == 4 and result["failed"] == 0, result
-    assert result["found"] == 4  # 101-104; "Son 20" kısayolundaki kopyalar (farklı kimlikli) hiç sayılmaz
-    uploads = {upload["fields"]["evrakId"]: upload for upload in lab.uploads}
-    assert sorted(uploads) == ["101", "102", "103", "104"]
-    for upload in uploads.values():
-        assert upload["file"]["data"].startswith(b"PK") and upload["file"]["name"].endswith(".odt")
-        assert upload["fields"]["dosyaEsasNo"] == "2024/2000"
-        assert upload["fields"]["birim"] == "Ankara Bölge Adliye Mahkemesi 19. Ceza Dairesi"
-    assert uploads["101"]["fields"]["klasorYolu"] == "2024/2000 (Ceza Dava Dosyası) / Kesinleşme Şerhleri"
-    assert uploads["101"]["fields"]["evrakTuru"] == "Kesinleşme Şerhleri"
-    # Ek, bağlı olduğu evrakın altında durur.
-    assert uploads["104"]["fields"]["klasorYolu"] == (
-        "2024/2000 (Ceza Dava Dosyası) / Gerekçeli Karar / Gerekçeli Karar 30/06/2025"
-    )
-    # Aynı başlıklı iki evrak (101, 102) ayrı belge olarak gelir (içerikleri farklı).
-    assert uploads["101"]["file"]["data"] != uploads["102"]["file"]["data"]
-    page.close()
-
-
-def test_pulling_asks_for_confirmation_and_sends_nothing_when_declined(lab):
-    lab.configure(throttleMs=500)
-    page = lab.open("/vatandas/dosya-agaci")
-    page.on("dialog", lambda dialog: dialog.dismiss())
-
-    result = lab.worker.evaluate(_PULL)
-
-    assert result["ok"] and result["cancelled"] and result["found"] == 4
-    assert lab.uploads == []
-    page.close()
-
-
-def test_preview_that_is_already_on_is_not_switched_off(lab):
-    lab.configure(throttleMs=500)
-    page = lab.open("/vatandas/dosya-agaci")
-    page.click("#onizleme")  # kullanıcı ön izlemeyi zaten açmış
-    page.on("dialog", lambda dialog: dialog.accept())
-
-    result = lab.worker.evaluate(_PULL)
-
-    assert result["ok"] and result["sent"] == 4, result
-    assert page.inner_text("#onizleme") == "Ön İzlemeyi Kapat"  # eklenti düğmeye ikinci kez basmadı
-    page.close()
-
-
-def test_pulling_needs_the_connection_key_before_touching_the_portal(lab):
-    lab.configure(apiKey="")
-    page = lab.open("/vatandas/dosya-agaci")
-
-    result = lab.worker.evaluate(_PULL)
-
-    assert result["ok"] is False and "anahtar" in result["error"].lower()
-    assert lab.uploads == []
-    assert page.locator("iframe").count() == 0  # ağaç/önizleme'ye dokunulmadı
-    page.close()
-
-
-def test_pulling_without_an_open_case_window_explains_what_to_do(lab):
-    lab.configure()
-    page = lab.open("/vatandas/evrak-agaci-tikla")  # açık pencere var ama evrak ağacı/ön izleme düğmesi yok
-    result = lab.worker.evaluate(
-        "async () => { const [tab] = await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' });"
-        " return chrome.tabs.sendMessage(tab.id, { type: 'JURISAI_PULL_DOSYA' }, { frameId: 0 }); }"
-    )
-    assert result["ok"] is False and "Ön izleme" in result["error"]
-    assert lab.uploads == []
-    page.close()
-
-
-def test_pull_errors_are_reported_with_their_reason(lab):
-    """Önceki sürümde yalnız "8 hata" yazıyordu; neden görünmediği için gerçek portalda teşhis edilemedi."""
-    lab.configure(throttleMs=500, apiKey="jsai_" + "z" * 44)  # geçersiz anahtar: sunucu 401 döner
-    page = lab.open("/vatandas/dosya-agaci")
-    page.on("dialog", lambda dialog: dialog.accept())
-
-    result = lab.worker.evaluate(_PULL)
-
-    assert result["ok"] and result["sent"] == 0 and result["failed"] >= 1
-    assert any("anahtar" in error.lower() for error in result["errors"]), result["errors"]
-    assert lab.uploads == []
-    page.close()
-
-
-def test_a_click_that_triggers_no_request_is_explained_in_the_error(lab):
-    """Ön izleme açılmazsa (ya da UYAP tıklamaya yanıt vermezse) neden bildirimde yazar."""
-    lab.configure(throttleMs=500)
-    page = lab.open("/vatandas/dosya-agaci")
-    # Eklenti ön izlemeyi açar; sahte sayfada açıkken yapraklar istek yapar. Burada düğmeyi önce açıp ardından
-    # sayfanın tıklama işleyicisini kaldırarak "tıklama hiçbir şey yapmıyor" durumunu üretiriz.
-    page.evaluate("() => { window.preview = true; document.getElementById('onizleme').textContent = 'Ön İzlemeyi Kapat'; }")
-    page.evaluate("() => { document.addEventListener('click', (e) => e.stopImmediatePropagation(), true); }")
-    page.on("dialog", lambda dialog: dialog.accept())
-
-    result = lab.worker.evaluate(_PULL)
-
-    assert result["ok"] and result["sent"] == 0 and result["failed"] >= 1
-    assert any("hiç istek yapmadı" in error for error in result["errors"]), result["errors"]
-    page.close()
-
-
-_PULL_DISK = _PULL.replace("'JURISAI_PULL_DOSYA' }", "'JURISAI_PULL_DOSYA', mode: 'disk' }")
-
-
 def test_download_path_keeps_the_uyap_folder_structure_and_is_filesystem_safe(lab):
     lab.configure()
     path = lab.worker.evaluate(
@@ -948,22 +838,198 @@ def test_download_path_keeps_the_uyap_folder_structure_and_is_filesystem_safe(la
     assert hostile.startswith("JurisAI-UYAP/") and hostile.endswith(".pdf")
 
 
+
+
+# --- Evrak seçimi ve çekme (gerçek Vatandaş Portalı ağacı + seçim penceresi) --------------------------------
+
+
+def _start_pull(lab, mode: str = "upload") -> None:
+    """Çekmeyi başlatır ama beklemez: seçim penceresi çıkar, test onu kullanır, sonra _finish_pull sonucu alır."""
+    lab.worker.evaluate(
+        """async (mode) => {
+            const [tab] = await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' });
+            self.__pull = chrome.tabs.sendMessage(tab.id, { type: 'JURISAI_PULL_DOSYA', mode }, { frameId: 0 });
+        }""",
+        mode,
+    )
+
+
+def _finish_pull(lab) -> dict:
+    return lab.worker.evaluate("() => self.__pull")
+
+
+def _choose(page, action: str, uncheck: tuple[int, ...] = ()) -> None:
+    page.wait_for_selector(".jurisai-chooser", timeout=30000)
+    for index in uncheck:
+        page.locator(f'.jurisai-pick-item[data-index="{index}"]').uncheck()
+    page.click(f"#jurisai-pick-{action}")
+
+
+def _pull(lab, page, action: str = "upload", uncheck: tuple[int, ...] = ()) -> dict:
+    _start_pull(lab, action)
+    _choose(page, action, uncheck)
+    return _finish_pull(lab)
+
+
+def test_pulling_a_case_creates_one_upload_per_evrak_with_its_folder_path(lab):
+    """Gerçek akış: ağaç açılır, ön izleme açılır, kullanıcı seçer, her yaprağa tıklanır, UYAP'ın ön izleme adresi
+    yakalanıp belge ODT olarak indirilir; 'Son 20 Evrak' kısayolu (farklı kimlikli kopyalar) sayılmaz."""
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-agaci")
+
+    result = _pull(lab, page)
+
+    assert result["ok"] and result["sent"] == 4 and result["failed"] == 0, result
+    assert result["found"] == 4 and result["chosen"] == 4
+    uploads = {upload["fields"]["evrakId"]: upload for upload in lab.uploads}
+    assert sorted(uploads) == ["101", "102", "103", "104"]
+    for upload in uploads.values():
+        assert upload["file"]["data"].startswith(b"PK") and upload["file"]["name"].endswith(".odt")
+        assert upload["fields"]["dosyaEsasNo"] == "2024/2000"
+        assert upload["fields"]["birim"] == "Ankara Bölge Adliye Mahkemesi 19. Ceza Dairesi"
+    assert uploads["101"]["fields"]["klasorYolu"] == "2024/2000 (Ceza Dava Dosyası) / Kesinleşme Şerhleri"
+    assert uploads["101"]["fields"]["evrakTuru"] == "Kesinleşme Şerhleri"
+    assert uploads["104"]["fields"]["klasorYolu"] == (
+        "2024/2000 (Ceza Dava Dosyası) / Gerekçeli Karar / Gerekçeli Karar 30/06/2025"
+    )
+    assert uploads["101"]["file"]["data"] != uploads["102"]["file"]["data"]
+    page.close()
+
+
+def test_only_the_evraks_the_user_ticks_are_pulled(lab):
+    """"Biz hangisini seçersek o çekilir": işaretsiz bırakılan evrak hiç istenmez."""
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-agaci")
+    _start_pull(lab)
+    page.wait_for_selector(".jurisai-chooser", timeout=30000)
+    labels = page.locator(".jurisai-chooser label").all_inner_texts()
+    assert any("📁 2024/2000 (Ceza Dava Dosyası) / Kesinleşme Şerhleri" in label for label in labels)  # klasör başlıkları
+    assert page.locator(".jurisai-pick-item").count() == 4
+    assert "4 / 4 evrak seçili" in page.inner_text(".jurisai-chooser")
+
+    # Önce hepsini kaldır: eylem düğmeleri kapanır. Sonra yalnız 103'ü (Gerekçeli Karar) işaretle.
+    page.click("text=Tümünü seç / kaldır")
+    assert page.is_disabled("#jurisai-pick-upload") and page.is_disabled("#jurisai-pick-disk")
+    index_of_103 = page.evaluate(
+        "() => [...document.querySelectorAll('.jurisai-pick-item')].findIndex((input) => input.parentElement.textContent.includes('Gerekçeli Karar 30/06/2025'))"
+    )
+    page.locator(".jurisai-pick-item").nth(index_of_103).check()
+    assert "1 / 4 evrak seçili" in page.inner_text(".jurisai-chooser")
+    page.click("#jurisai-pick-upload")
+    result = _finish_pull(lab)
+
+    assert result["ok"] and result["sent"] == 1 and result["chosen"] == 1 and result["found"] == 4, result
+    assert [upload["fields"]["evrakId"] for upload in lab.uploads] == ["103"]
+    page.close()
+
+
+def test_cancelling_the_chooser_sends_nothing(lab):
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-agaci")
+    _start_pull(lab)
+    page.wait_for_selector(".jurisai-chooser", timeout=30000)
+    page.click("#jurisai-pick-cancel")
+    result = _finish_pull(lab)
+    assert result["ok"] and result["cancelled"] and result["found"] == 4
+    assert lab.uploads == []
+    page.close()
+
+
+def test_preview_that_is_already_on_is_not_switched_off(lab):
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-agaci")
+    page.click("#onizleme")  # kullanıcı ön izlemeyi zaten açmış
+
+    result = _pull(lab, page)
+
+    assert result["ok"] and result["sent"] == 4, result
+    assert page.inner_text("#onizleme") == "Ön İzlemeyi Kapat"  # eklenti düğmeye ikinci kez basmadı
+    page.close()
+
+
+def test_uploading_needs_the_connection_key_but_only_after_the_choice(lab):
+    lab.configure(apiKey="")
+    page = lab.open("/vatandas/dosya-agaci")
+
+    result = _pull(lab, page, "upload")
+
+    assert result["ok"] is False and "anahtar" in result["error"].lower()
+    assert lab.uploads == []
+    page.close()
+
+
+def test_pulling_without_an_open_case_window_explains_what_to_do(lab):
+    lab.configure()
+    page = lab.open("/vatandas/evrak-agaci-tikla")  # açık pencere var ama evrak ağacı/ön izleme düğmesi yok
+    result = lab.worker.evaluate(
+        "async () => { const [tab] = await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' });"
+        " return chrome.tabs.sendMessage(tab.id, { type: 'JURISAI_PULL_DOSYA' }, { frameId: 0 }); }"
+    )
+    assert result["ok"] is False and "Ön izleme" in result["error"]
+    assert lab.uploads == []
+    page.close()
+
+
+def test_pull_errors_are_reported_with_their_reason(lab):
+    """Önceki sürümde yalnız "8 hata" yazıyordu; neden görünmediği için gerçek portalda teşhis edilemedi."""
+    lab.configure(throttleMs=500, apiKey="jsai_" + "z" * 44)  # geçersiz anahtar: sunucu 401 döner
+
+    page = lab.open("/vatandas/dosya-agaci")
+    result = _pull(lab, page, "upload")
+
+    assert result["ok"] and result["sent"] == 0 and result["failed"] >= 1
+    assert any("anahtar" in error.lower() for error in result["errors"]), result["errors"]
+    assert lab.uploads == []
+    page.close()
+
+
+def test_a_click_that_triggers_no_request_is_explained_in_the_error(lab):
+    """Ön izleme açılmazsa (ya da UYAP tıklamaya yanıt vermezse) neden bildirimde yazar."""
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-agaci")
+    page.evaluate("() => { window.preview = true; document.getElementById('onizleme').textContent = 'Ön İzlemeyi Kapat'; }")
+    page.evaluate(
+        "() => { document.addEventListener('click', (e) => { if (!e.target.closest('.jurisai-chooser')) e.stopImmediatePropagation(); }, true); }"
+    )
+
+    result = _pull(lab, page, "upload")
+
+    assert result["ok"] and result["sent"] == 0 and result["failed"] >= 1
+    assert any("hiç istek yapmadı" in error for error in result["errors"]), result["errors"]
+    page.close()
+
+
 def test_pulling_to_disk_needs_no_connection_key_and_sends_nothing_to_jurisai(lab):
     """"UYAP'tan klasör olarak indir": JurisAI'ya bağlanmaz (anahtar boş olabilir), her evrak diske yazılır."""
     lab.configure(throttleMs=500, apiKey="")
     page = lab.open("/vatandas/dosya-agaci")
-    page.on("dialog", lambda dialog: dialog.accept())
-    before = lab.worker.evaluate(
-        "() => chrome.downloads.search({}).then((items) => items.filter((x) => x.mime === 'application/vnd.oasis.opendocument.text').length)"
+    count = (
+        "() => chrome.downloads.search({}).then((items) => "
+        "items.filter((x) => x.mime === 'application/vnd.oasis.opendocument.text').length)"
     )
+    before = lab.worker.evaluate(count)
 
-    result = lab.worker.evaluate(_PULL_DISK)
+    result = _pull(lab, page, "disk")
 
-    assert result["ok"] and result["sent"] == 4 and result["failed"] == 0, result
+    assert result["ok"] and result["sent"] == 4 and result["failed"] == 0 and result["mode"] == "disk", result
     assert lab.uploads == []
     page.wait_for_timeout(1500)
-    after = lab.worker.evaluate(
-        "() => chrome.downloads.search({}).then((items) => items.filter((x) => x.mime === 'application/vnd.oasis.opendocument.text').length)"
-    )
-    assert after - before == 4
+    assert lab.worker.evaluate(count) - before == 4
+    page.close()
+
+
+def test_the_case_list_row_button_opens_the_case_and_shows_the_chooser(lab):
+    """Dosya listesinde satırdaki düğme: dosyayı açar, evrak seçim penceresini getirir (eklenti penceresine gerek yok)."""
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-listesi")
+    assert page.locator(".jurisai-open-btn").count() == 1
+    assert "JurisAI: evrakları seç ve çek" in page.inner_text(".jurisai-open-btn")
+
+    page.click(".jurisai-open-btn")
+    page.wait_for_selector(".jurisai-chooser", timeout=30000)
+
+    assert page.locator(".jurisai-pick-item").count() == 4
+    assert "2024/2000" in page.inner_text(".jurisai-chooser")
+    page.click("#jurisai-pick-cancel")
+    assert lab.uploads == []
     page.close()
