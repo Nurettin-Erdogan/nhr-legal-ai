@@ -215,6 +215,51 @@ def register(
     return _issue_auth_response(response, row)
 
 
+# Kaba kuvvet koruması: aynı e-posta + aynı IP için ya da tek IP'den gelen başarısız girişler sayılır.
+# Sayım denetim kaydından yapılır (veritabanı tabanlı): sunucu yeniden başlasa veya birden çok
+# işçi çalışsa da geçerlidir. E-posta+IP çifti, bir saldırganın mağdurun hesabını kendi IP'sinden
+# kilitlemesini engeller; IP toplamı ise tek makineden çok e-posta denemesini sınırlar.
+LOGIN_WINDOW_MINUTES = 15
+LOGIN_MAX_FAILURES_PER_EMAIL_IP = 8
+LOGIN_MAX_FAILURES_PER_IP = 40
+
+_LOGIN_FAILURE_COUNTS = """
+SELECT
+  count(*) FILTER (
+    WHERE metadata->>'email_fingerprint' = %(fingerprint)s
+      AND ip_address IS NOT DISTINCT FROM %(ip)s::inet
+  ) AS email_ip_failures,
+  count(*) FILTER (WHERE ip_address IS NOT DISTINCT FROM %(ip)s::inet) AS ip_failures
+FROM activity_logs
+WHERE action = 'auth.login_failed'
+  AND created_at > now() - make_interval(mins => %(minutes)s)
+"""
+
+
+def login_retry_after_seconds(email_ip_failures: int, ip_failures: int) -> int | None:
+    """Sınır aşıldıysa istemcinin beklemesi gereken saniye, değilse None."""
+    if (
+        email_ip_failures >= LOGIN_MAX_FAILURES_PER_EMAIL_IP
+        or ip_failures >= LOGIN_MAX_FAILURES_PER_IP
+    ):
+        return LOGIN_WINDOW_MINUTES * 60
+    return None
+
+
+def _login_throttle(
+    connection: psycopg.Connection, email: str, ip_address: str | None
+) -> int | None:
+    row = connection.execute(
+        _LOGIN_FAILURE_COUNTS,
+        {
+            "fingerprint": email_fingerprint(email),
+            "ip": ip_address,
+            "minutes": LOGIN_WINDOW_MINUTES,
+        },
+    ).fetchone()
+    return login_retry_after_seconds(int(row["email_ip_failures"]), int(row["ip_failures"]))
+
+
 @router.post("/login", response_model=AuthResponse)
 def login(
     request: LoginRequest, response: Response, http_request: Request
@@ -225,6 +270,14 @@ def login(
     failure: str | None = None
     try:
         with admin_database_connection() as connection, connection.transaction():
+            retry_after = _login_throttle(connection, email, context.ip_address)
+            if retry_after is not None:
+                # Parola hiç denenmez: kilitli bir istemci doğru parolayı bile bu yolla sınayamaz.
+                raise HTTPException(
+                    status_code=429,
+                    detail="Çok fazla başarısız deneme. Lütfen biraz sonra tekrar deneyin.",
+                    headers={"Retry-After": str(retry_after)},
+                )
             row = connection.execute(
                 _USER_SELECT.format(field="email"), (email,)
             ).fetchone()
