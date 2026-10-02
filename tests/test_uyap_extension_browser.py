@@ -1401,3 +1401,29 @@ def test_items_without_an_evidence_id_are_counted_and_reported(lab):
     page.click("#jurisai-pick-cancel")
     _finish_pull(lab)
     page.close()
+
+
+# Aynı evrak iki klasörde: "Kopya (2)" klasöründe 102 (Kesinleşme Şerhleri'nde de var) ve yeni bir evrak (120) bulunur.
+PAGES["/vatandas/dosya-kopyali"] = PAGES["/vatandas/dosya-agaci"].replace(
+    '<li class="expandable"><div class="hitarea"></div><span class="folder">Gerekçeli Karar (1)',
+    '<li class="expandable"><div class="hitarea"></div><span class="folder">Kopya (2)</span><ul style="display:none">'
+    '<li><span class="file" evrak_id="102">Kesinleşme Şerhleri 30/06/2025</span></li>'
+    '<li><span class="file" evrak_id="120">Başka evrak 01/07/2025</span></li></ul></li>\n'
+    '              <li class="expandable"><div class="hitarea"></div><span class="folder">Gerekçeli Karar (1)',
+)
+
+
+def test_a_count_difference_caused_by_the_same_evrak_in_two_folders_is_explained(lab):
+    """Canlıda iki klasörde UYAP bir fazla diyordu: aynı evrak_id iki klasörde görünüyor, tek kez çekilir ve fark bununla açıklanır."""
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-kopyali")
+    _start_pull(lab)
+    page.wait_for_selector(".jurisai-chooser", timeout=30000)
+    text = page.inner_text(".jurisai-chooser")
+    assert page.locator(".jurisai-pick-item").count() == 5  # 101, 102, 103, 104 (ek), 120: 102 tek kez
+    assert "⚠ UYAP: 2, bulunan: 1" in text  # Kopya klasörü: 2 diyor, 102 başka klasörde sayıldı
+    assert "UYAP klasör sayıları: 5 evrak · bulunan: 4" in text
+    assert "fark 1 evrağın iki klasörde birden görünmesinden" in text and "sayılar tutmuyor" not in text
+    page.click("#jurisai-pick-cancel")
+    _finish_pull(lab)
+    page.close()

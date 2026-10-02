@@ -790,6 +790,7 @@
   /** Ağaçtaki evrakları klasör yoluyla listeler; "Son 20 Evrak" kısayolu ve yinelenen evrak kimlikleri elenir. */
   function collectEvraklar(dialog) {
     const byId = new Map();
+    let duplicates = 0; // aynı evrak_id'nin "Tüm Evraklar" altında birden çok klasörde görünmesi
     for (const span of dialog.querySelectorAll("span.file[evrak_id]")) {
       const id = span.getAttribute("evrak_id");
       if (!id) continue;
@@ -817,6 +818,7 @@
       const declared = isEk ? null : Number((/\((\d+)\)\s*$/.exec(nearest) || [])[1]) || null;
       const entry = { id, span, title: textOf(span), folders, typeName, inRecent, isEk, declared };
       const existing = byId.get(id);
+      if (existing && !existing.inRecent && !inRecent) duplicates += 1;
       if (!existing || (existing.inRecent && !inRecent)) byId.set(id, entry);
     }
     const withoutId = dialog.querySelectorAll("span.file:not([evrak_id])").length;
@@ -826,6 +828,7 @@
     const full = all.filter((entry) => !entry.inRecent);
     const result = full.length ? full : all;
     result.withoutId = withoutId; // evrak_id'si olmayan öğeler çekilemez; sayısı seçim penceresinde gösterilir
+    result.duplicates = duplicates;
     return result;
   }
   function dosyaIdentity(dialog) {
@@ -871,14 +874,21 @@
       const declaredTotal = countedGroups.reduce((sum, group) => sum + group[0].declared, 0);
       const foundTotal = countedGroups.reduce((sum, group) => sum + group.length, 0);
       const eks = items.filter((item) => item.isEk).length;
+      const copies = items.duplicates || 0;
+      const matches = declaredTotal === foundTotal;
+      const explained = !matches && declaredTotal === foundTotal + copies; // fark yalnız "aynı evrak iki klasörde" ise
       const verification = make(
         "div",
-        `font-size:12px;margin-top:6px;color:${declaredTotal === foundTotal ? "#166534" : "#b91c1c"};`,
+        `font-size:12px;margin-top:6px;color:${matches || explained ? "#166534" : "#b91c1c"};`,
         `UYAP klasör sayıları: ${declaredTotal} evrak · bulunan: ${foundTotal}${eks ? ` · ayrıca ${eks} ek` : ""}` +
           (items.withoutId ? ` · kimliksiz öğe: ${items.withoutId} (çekilemez)` : "") +
-          (declaredTotal === foundTotal ? " ✓ sayılar tutuyor" : " ⚠ sayılar tutmuyor") +
+          (matches
+            ? " ✓ sayılar tutuyor"
+            : explained
+              ? ` ✓ fark ${copies} evrağın iki klasörde birden görünmesinden (tek kez çekilir)`
+              : " ⚠ sayılar tutmuyor") +
           // Hangi klasörlerde fark var (en çok 4): sayıyı doğrulamak/düzeltmek için.
-          (declaredTotal === foundTotal
+          (matches || explained
             ? ""
             : ` — fark: ${countedGroups
                 .filter((group) => group[0].declared !== group.length)
