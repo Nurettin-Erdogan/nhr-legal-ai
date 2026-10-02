@@ -34,9 +34,10 @@ SECRET = "s" * 40
 class FakeConnection:
     """execute çağrılarını kaydeder; INSERT INTO activity_logs olaylarını ayrıca toplar."""
 
-    def __init__(self, handler=None, *, fail_audit=False):
+    def __init__(self, handler=None, *, fail_audit=False, login_failures=0):
         self.handler = handler or (lambda sql, params: None)
         self.fail_audit = fail_audit
+        self.login_failures = login_failures
         self.calls: list[tuple[str, object]] = []
         self.events: list[dict] = []
         self.savepoints = 0
@@ -52,6 +53,9 @@ class FakeConnection:
             event["metadata"] = event["metadata"].obj  # Jsonb sarmalayıcısı
             self.events.append(event)
             return _Result(None)
+        if "FROM activity_logs" in sql and "email_ip_failures" in sql:
+            # Giriş sınırlaması toplu bir sorgudur ve gerçekte her zaman tek satır döner.
+            return _Result({"email_ip_failures": self.login_failures, "ip_failures": self.login_failures})
         return _Result(self.handler(sql, params))
 
     @contextmanager
@@ -437,3 +441,23 @@ def test_logout_is_audited_only_for_a_signed_in_user(auth):
     assert len(auth.standalone) == 1
     assert auth.standalone[0]["action"] == "auth.logout"
     assert auth.standalone[0]["actor_user_id"] == USER_ID
+
+
+def test_throttled_login_never_tests_the_password_or_extends_the_lock(auth):
+    connection = FakeConnection(
+        lambda sql, params: _user_row() if "FROM users" in sql else None,
+        login_failures=auth_routes.LOGIN_MAX_FAILURES_PER_EMAIL_IP,
+    )
+    _use_admin_connection(auth.monkeypatch, connection)
+    tested: list[str] = []
+    auth.monkeypatch.setattr(
+        auth_routes, "verify_password", lambda password, hashed: tested.append(password) or True
+    )
+
+    response = auth.client.post("/api/auth/login", json={"email": "avukat@ornek.com", "password": "dogru-parola-123"})
+
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == str(auth_routes.LOGIN_WINDOW_MINUTES * 60)
+    assert tested == []  # kilitli istemci doğru parolayı bile sınayamaz
+    assert auth.standalone == [] and connection.events == []  # kilit kendini uzatmaz
+    assert not any("FROM users" in sql for sql, _ in connection.calls)  # kullanıcı bile aranmaz
