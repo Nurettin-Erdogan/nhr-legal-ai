@@ -208,6 +208,7 @@ PAGES = {
 
 PAGES["/vatandas/dosya-listesi"] = PAGES["/vatandas/dosya-agaci"].replace(
     '<div role="dialog" class="modal in" style="display:block">',
+    '<div class="page-sidebar"><ul><li><a href="/main/jsp/vatandas/index.jsp?menuId=1#evrak">Evrak Sorgulama</a></li></ul></div>'
     '<table><tr><td>Katılan</td><td>Ankara Bölge Adliye Mahkemesi 19. Ceza Dairesi</td><td>2024/2000</td><td>'
     "<button type=\"button\" onclick=\"document.getElementById('dlg').style.display='block'\">Dosya Görüntüle</button>"
     '</td></tr></table><div id="dlg" role="dialog" class="modal in" style="display:none">',
@@ -1032,4 +1033,72 @@ def test_the_case_list_row_button_opens_the_case_and_shows_the_chooser(lab):
     assert "2024/2000" in page.inner_text(".jurisai-chooser")
     page.click("#jurisai-pick-cancel")
     assert lab.uploads == []
+    page.close()
+
+
+def test_menu_links_with_evrak_in_them_never_get_evidence_buttons(lab):
+    """Gerçek portalda menü <nav>/<aside> değil sınıf adlarıyla kurulu ve "Evrak ..." bağlantıları var."""
+    lab.configure()
+    page = lab.open("/vatandas/dosya-listesi")
+    assert page.locator(".jurisai-send-btn:not(.jurisai-open-btn)").count() == 0
+    assert page.locator(".jurisai-toolbar:not(.jurisai-hint)").count() == 0
+    page.close()
+
+
+def test_launcher_is_always_present_and_lists_the_cases_to_choose_from(lab):
+    """Satır düğmeleri sayfa yapısına bağlı: köşedeki sabit düğme her UYAP sayfasında çalışır."""
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-listesi")
+    assert page.locator(".jurisai-launcher").count() == 1
+
+    page.click(".jurisai-launcher")
+    page.wait_for_selector(".jurisai-case-picker", timeout=10000)
+    picker = page.inner_text(".jurisai-case-picker")
+    assert "hangi dosyanın" in picker and "2024/2000" in picker and "Ankara Bölge Adliye Mahkemesi" in picker
+
+    page.click(".jurisai-case-picker button >> nth=0")  # listedeki ilk (tek) dosya
+    page.wait_for_selector(".jurisai-chooser", timeout=30000)
+    assert page.locator(".jurisai-pick-item").count() == 4
+    page.click("#jurisai-pick-cancel")
+    assert lab.uploads == []
+    page.close()
+
+
+def test_launcher_goes_straight_to_the_chooser_when_a_case_is_already_open(lab):
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-agaci")
+
+    page.click(".jurisai-launcher")
+    page.wait_for_selector(".jurisai-chooser", timeout=30000)
+
+    assert page.locator(".jurisai-pick-item").count() == 4
+    page.click("#jurisai-pick-cancel")
+    page.close()
+
+
+def test_launcher_explains_what_to_do_when_there_is_no_case_on_the_page(lab):
+    lab.configure()
+    page = lab.open("/main")
+    page.click(".jurisai-launcher")
+    page.wait_for_selector(".jurisai-toast", timeout=5000)
+    assert "Dosya Sorgulama" in page.inner_text(".jurisai-toasts")
+    assert page.locator(".jurisai-case-picker, .jurisai-chooser").count() == 0
+    page.close()
+
+
+def test_diagnosis_reports_the_launcher_and_swallowed_refresh_errors(lab):
+    lab.configure()
+    page = lab.open("/vatandas/dosya-listesi")
+    report = lab.worker.evaluate(
+        """async () => {
+            const [tab] = await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' });
+            const frames = await chrome.scripting.executeScript({
+                target: { tabId: tab.id, allFrames: true },
+                func: () => (typeof window.__jurisaiDiagnose === 'function' ? window.__jurisaiDiagnose() : null),
+            });
+            return frames.map((frame) => frame.result).filter(Boolean)[0];
+        }"""
+    )
+    assert report["launcher"] is True and report["caseOpenTargets"] == 1
+    assert report["refreshError"] == ""
     page.close()

@@ -34,7 +34,9 @@
   const SITE_HOST_RE = /(^|\.)(uyap|adalet)\.gov\.tr$/i;
   const NOT_EVRAK_PATH_RE =
     /kilavuz|kılavuz|rehber|yardim|yardım|help|manual|ornek|örnek|sozlesme|sözleşme|nasil-?kullan|downloads\/portal|\/cdn\//i;
-  const CHROME_AREA = "nav, header, footer, aside, [role='navigation'], [role='contentinfo']";
+  // Menü/kenar çubuğu (gerçek portalda <nav>/<aside> değil, sınıf adlarıyla): "Evrak Sorgulama" gibi menü bağlantıları evrak değildir.
+  const CHROME_AREA =
+    "nav, header, footer, aside, [role='navigation'], [role='contentinfo'], [class*='menu'], [class*='sidebar'], [class*='navbar']";
   function isEvrakUrl(url) {
     try {
       const parsed = new URL(url);
@@ -209,7 +211,11 @@
 
   /** Sayfada bir dava/dosya bağlamı var mı (esas numarası)? Giriş ve ana sayfalarda düğme çıkmaz. */
   function hasCaseContext() {
-    return !!esasNoFrom((document.body?.textContent || "").replace(/\s+/g, " ").slice(0, 40000));
+    // Görünen metin (innerText) önce: gerçek portalda gizli pencere/menü metni tablodan önce geldiği için ilk
+    // 40.000 karakter esas numarasını içermiyordu.
+    const visible = (document.body?.innerText || "").replace(/\s+/g, " ");
+    const all = (document.body?.textContent || "").replace(/\s+/g, " ");
+    return !!(esasNoFrom(visible.slice(0, 40000)) || esasNoFrom(all.slice(0, 40000)));
   }
 
   function injectRowButtons() {
@@ -380,19 +386,26 @@
     }
   }
 
+  let lastRefreshError = "";
   function refresh() {
-    try {
-      prepareOpenCaseDialogs();
-      const count = injectRowButtons();
-      if (count > 0) {
-        document.querySelector(".jurisai-hint")?.remove();
-        injectToolbar();
-      } else {
-        injectCaseListHelpers();
+    // Her adım ayrı korunur: biri patlarsa diğerleri (özellikle sabit düğme) yine çalışır. Hata tanıya yazılır.
+    const step = (fn) => {
+      try {
+        return fn();
+      } catch (error) {
+        lastRefreshError = `${error?.name || "Error"}: ${String(error?.message || error).slice(0, 120)}`;
+        return 0;
       }
-    } catch (_) {
-      /* portal DOM'u değişirse sessiz geç */
+    };
+    step(prepareOpenCaseDialogs);
+    const count = step(injectRowButtons);
+    if (count > 0) {
+      document.querySelector(".jurisai-hint")?.remove();
+      step(injectToolbar);
+    } else {
+      step(injectCaseListHelpers);
     }
+    step(injectLauncher);
   }
 
   /* ---------- Otomatik aktarım (tıklama dinleyicisi) ---------- */
@@ -659,6 +672,9 @@
       toolbar: !!document.querySelector(".jurisai-toolbar"),
       docUrlShapes: [...shapes].map(([shape, count]) => ({ shape, count })).slice(0, 12),
       scope: root ? "açık pencere" : "sayfa",
+      refreshError: lastRefreshError,
+      launcher: !!document.querySelector(".jurisai-launcher"),
+      caseOpenTargets: caseOpenTargets().length,
       // Düğme etiketleri arayüz metnidir (kişisel veri değil); evrak/kişi adı taşıyan bağlantılar dahil değil.
       buttonLabels: [
         ...new Set(
@@ -953,6 +969,92 @@
       pulling = null;
       chrome.runtime.sendMessage({ type: "JURISAI_PULL_END" }).catch(() => {});
     }
+  }
+
+  /* ---------- Sabit "JurisAI: evrak çek" düğmesi ----------
+     Satır düğmeleri sayfa yapısına bağlıdır (gerçek portalda eklenmediler). Bu düğme köşede her zaman durur:
+     dosya penceresi açıksa evrak seçim penceresini getirir; değilse listedeki "Dosya Görüntüle" düğmelerini sıralar,
+     kullanıcı hangi dosyayı açacağını seçer. Hiçbir şeyi kendiliğinden çekmez. */
+  function visibleElement(el) {
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+  function caseOpenTargets() {
+    return [...document.querySelectorAll("button, a, input[type='button']")].filter((el) => {
+      if (el.closest(".jurisai-launcher, .jurisai-case-picker, .jurisai-chooser")) return false;
+      const label = `${el.textContent || ""} ${el.value || ""}`.replace(/\s+/g, " ").trim();
+      return label.length < 40 && OPEN_RE.test(label) && visibleElement(el);
+    });
+  }
+  function showCasePicker(targets) {
+    document.querySelector(".jurisai-case-picker")?.remove();
+    const overlay = document.createElement("div");
+    overlay.className = "jurisai-case-picker";
+    overlay.setAttribute("role", "dialog");
+    overlay.style.cssText =
+      "position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.55);display:flex;align-items:center;" +
+      "justify-content:center;font:14px system-ui,sans-serif;";
+    const box = document.createElement("div");
+    box.style.cssText =
+      "background:#fff;color:#111;max-width:640px;width:92vw;max-height:84vh;overflow:auto;border-radius:10px;" +
+      "padding:16px 18px;box-shadow:0 10px 40px rgba(0,0,0,.4);";
+    const title = document.createElement("div");
+    title.style.cssText = "font-weight:700;font-size:16px;margin-bottom:10px;";
+    title.textContent = "JurisAI: hangi dosyanın evraklarını çekelim?";
+    box.append(title);
+    for (const target of targets) {
+      const row = target.closest("tr");
+      const cells = row ? [...row.querySelectorAll("td")].map((td) => textOf(td)).filter((t) => t && t.length < 90) : [];
+      const description = cells.filter((t) => !OPEN_RE.test(t)).slice(0, 4).join(" · ") || "Dosya";
+      const item = document.createElement("button");
+      item.type = "button";
+      item.style.cssText =
+        "display:block;width:100%;text-align:left;margin:6px 0;padding:10px 12px;border:1px solid #2563eb;" +
+        "background:#fff;color:#111;border-radius:8px;cursor:pointer;";
+      item.textContent = description;
+      item.addEventListener("click", () => {
+        overlay.remove();
+        openCaseAndChoose(target);
+      });
+      box.append(item);
+    }
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "İptal";
+    cancel.style.cssText = "margin-top:6px;padding:8px 12px;border:1px solid #888;background:#fff;border-radius:8px;cursor:pointer;";
+    cancel.addEventListener("click", () => overlay.remove());
+    box.append(cancel);
+    overlay.append(box);
+    document.body.append(overlay);
+  }
+  function injectLauncher() {
+    if (document.querySelector(".jurisai-launcher") || !document.body) return;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "jurisai-launcher";
+    button.textContent = "⚖️ JurisAI: evrak çek";
+    button.style.cssText =
+      "position:fixed;left:16px;bottom:16px;z-index:2147483000;padding:10px 14px;border:0;border-radius:999px;" +
+      "background:#2563eb;color:#fff;font:600 13px system-ui,sans-serif;box-shadow:0 4px 14px rgba(0,0,0,.35);cursor:pointer;";
+    button.addEventListener("click", () => {
+      if (pulling) return toast("Bir çekme zaten sürüyor.", "info");
+      const dialog = activeRoot();
+      if (dialog && (previewButton(dialog) || dialog.querySelector("span.file[evrak_id], li.expandable"))) {
+        pullDosya().then((result) => {
+          if (result && result.ok === false) toast(result.error, "error");
+        });
+        return;
+      }
+      const targets = caseOpenTargets();
+      if (!targets.length) {
+        return toast(
+          "Önce \"Dosya Sorgulama\" listesini aç ya da bir dosyayı aç (Dosya Görüntüle → Evrak sekmesi).",
+          "info",
+        );
+      }
+      showCasePicker(targets);
+    });
+    document.body.append(button);
   }
 
   /** Dosya listesindeki satır düğmesi: dosyayı açar, Evrak sekmesine geçer ve evrak seçim penceresini gösterir. */
