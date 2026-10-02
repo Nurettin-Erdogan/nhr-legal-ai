@@ -35,12 +35,17 @@ async function throttle(gap) {
 }
 
 function fileNameFor(meta, contentType) {
+  if (meta.fileExt && !/\.(pdf|udf|odt|docx?|tiff?|jpe?g|png|eyp|txt)$/i.test(meta.evrakAdi || "")) {
+    const clean = (meta.evrakAdi || "uyap-evrak").replace(/[\\/:*?"<>|]+/g, " ").trim() || "uyap-evrak";
+    return `${clean.slice(0, 140)}.${meta.fileExt.toLowerCase()}`;
+  }
   let base = (meta.evrakAdi || "uyap-evrak").replace(/[\\/:*?"<>|]+/g, " ").trim() || "uyap-evrak";
   if (/\.(pdf|udf|odt|docx?|tiff?|jpe?g|png|eyp|txt)$/i.test(base)) return base.slice(0, 160);
   const map = {
     "application/pdf": ".pdf",
     "application/zip": ".udf",
     "application/vnd.oasis.opendocument.text": ".odt",
+    "text/plain": ".txt",
     "image/jpeg": ".jpg",
     "image/png": ".png",
     "image/tiff": ".tif",
@@ -89,7 +94,11 @@ async function fetchDocument(url, timeoutMs) {
     if (!blob.size) throw new Error("boş belge");
     if (/text\/html/i.test(type))
       throw new Error("belge yerine sayfa döndü (oturum kapanmış olabilir)");
-    return { blob, type };
+    // Önizlenemeyen evrakta UYAP belge yerine kısa bir düz metin (mesaj) döndürür: belge olarak kaydedilmez.
+    if (/^text\//i.test(type) && blob.size < 1024) throw new Error("UYAP belge yerine kısa bir mesaj döndürdü");
+    const disposition = res.headers.get("content-disposition") || "";
+    const filename = (/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition) || [])[1] || "";
+    return { blob, type, filename };
   } finally {
     clearTimeout(timer);
   }
@@ -412,6 +421,29 @@ async function saveToFolder(blob, contentType, meta) {
 let pull = null; // { tabId, expectedEvrakId, url }
 let pullRun = null; // { hashes: Set } — aynı içerik bir çekmede bir kez gönderilir
 
+/* Ön izleme önizleyemediği evrak için (ör. TIFF) belge yerine kısa bir metin döndürür ve gerçek dosyayı AYRI bir
+   istekle (Content-Disposition: attachment) indirtir. O isteğin adresi de yakalanır; belge istendiğinde metin
+   gelirse bu adres denenir. */
+chrome.webRequest.onHeadersReceived.addListener(
+  (details) => {
+    if (!pull || details.tabId !== pull.tabId) return;
+    try {
+      const path = new URL(details.url).pathname;
+      if (/view_document|viewer\.jsp/i.test(path)) return;
+      const header = (name) =>
+        (details.responseHeaders || []).find((item) => item.name.toLowerCase() === name)?.value || "";
+      const type = header("content-type").toLowerCase();
+      if (/attachment/i.test(header("content-disposition")) || /^(image\/tiff|application\/octet-stream)/.test(type)) {
+        pull.altUrl = details.url;
+      }
+    } catch (_) {
+      /* yoksay */
+    }
+  },
+  { urls: ["*://*.uyap.gov.tr/*"] },
+  ["responseHeaders"],
+);
+
 const PULL_STATIC_RE = /\.(js|css|png|gif|jpe?g|svg|ico|woff2?|ttf|map)$/i;
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
@@ -421,10 +453,21 @@ chrome.webRequest.onBeforeRequest.addListener(
       const name = url.pathname.split("/").pop() || "";
       // Teşhis için: tıklamadan sonra sayfanın yaptığı isteklerin yalnız dosya adı (rakamlar maskeli).
       if (pull.seen.length < 10 && name && !PULL_STATIC_RE.test(name)) pull.seen.push(name.replace(/\d+/g, "#"));
-      // Her yaprak öncesinde `pull` sıfırlanır; yaprağın evrak_id'si isteğin evrakId'siyle ESİT olmak zorunda
-      // değildir (gerçek portalda eşleşmeme olasılığı var), bu yüzden kimlik karşılaştırılmaz.
-      if (/view_document/i.test(url.pathname)) pull.url = details.url;
-      else if (/viewer\.jsp$/i.test(url.pathname) && !pull.viewerUrl) pull.viewerUrl = details.url;
+      // Yaprağın `evrak_id` özniteliği isteğin `evrakId`siyle aynı olmak zorunda değildir (gerçek portalda şifreli ve
+      // farklı); bu yüzden eşleştirme ön izleme sayfasının (viewer.jsp) kendi `evrakId`siyle yapılır: bu yaprak için
+      // açılan ilk viewer.jsp'nin kimliği belirlenir, yalnız o kimlikle gelen belge istekleri bu yaprağa aittir. Önceki
+      // yaprağın GECİKMİŞ (ya da ikinci aşama) isteği başka bir kimlik taşıdığından yok sayılır.
+      if (/viewer\.jsp$/i.test(url.pathname)) {
+        if (!pull.viewerUrl) {
+          pull.viewerUrl = details.url;
+          pull.viewerEvrakId = url.searchParams.get("evrakId") || "";
+        }
+      } else if (/view_document/i.test(url.pathname)) {
+        const id = url.searchParams.get("evrakId") || "";
+        if (pull.viewerEvrakId && id && id !== pull.viewerEvrakId) return;
+        if (pull.viewerEvrakId) pull.url = details.url;
+        else pull.loose = details.url; // viewer.jsp henüz görülmedi: yalnız son çare (aşağıya bak)
+      }
     } catch (_) {
       /* çözümlenemeyen adres yoksayılır */
     }
@@ -435,7 +478,7 @@ chrome.webRequest.onBeforeRequest.addListener(
 /** Gerçek belge isteği (view_document_*) yakalanamadıysa, ön izleme sayfasının (viewer.jsp) aynı sorgusundan türetilir. */
 function pullTargetUrl() {
   if (pull?.url) return pull.url;
-  if (!pull?.viewerUrl) return "";
+  if (!pull?.viewerUrl) return pull?.loose || "";
   const derived = new URL(pull.viewerUrl);
   derived.pathname = derived.pathname.replace(/viewer\.jsp$/i, "view_document_brd.uyap");
   return derived.href;
@@ -446,7 +489,17 @@ async function handlePullFetch(meta, mode = "upload") {
     const settings = await getSettings();
     const target = pullTargetUrl();
     if (!target) throw new Error("UYAP evrak adresi yakalanamadı");
-    const { blob, type } = await fetchDocument(target, Number(settings.timeoutMs) || DEFAULTS.timeoutMs);
+    const timeout = Number(settings.timeoutMs) || DEFAULTS.timeoutMs;
+    let fetched;
+    try {
+      fetched = await fetchDocument(target, timeout);
+    } catch (error) {
+      // Belge yerine metin/sayfa döndüyse (ör. "Tiff görüntülenemediğinden indiriliyor"), ayrı indirme adresi denenir.
+      if (!pull?.altUrl) throw error;
+      fetched = await fetchDocument(pull.altUrl, timeout);
+    }
+    const { blob, type, filename } = fetched;
+    if (filename) meta = { ...meta, fileExt: (/\.([A-Za-z0-9]{2,5})$/.exec(filename) || [])[1] || "" };
     const digest = await sha256Hex(blob);
     if (pullRun?.hashes.has(digest)) return { ok: true, sameContent: true };
     pullRun?.hashes.add(digest);
@@ -476,11 +529,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       });
       return true;
     case "JURISAI_PULL_ARM":
-      pull = { tabId: sender.tab?.id ?? null, url: "", viewerUrl: "", seen: [] };
+      pull = { tabId: sender.tab?.id ?? null, url: "", viewerUrl: "", viewerEvrakId: "", loose: "", altUrl: "", seen: [], armedAt: Date.now() };
       sendResponse({ ok: true });
       return false;
     case "JURISAI_PULL_STATUS":
-      sendResponse({ captured: !!(pull?.url || pull?.viewerUrl), exact: !!pull?.url, seen: pull?.seen || [] });
+      sendResponse({
+        // viewer.jsp hiç gelmezse (başka evrak biçimi) gevşek adres yalnız 3 sn sonra kabul edilir: eski bir önizlemenin
+        // gecikmiş isteği hemen "yakalandı" sayılmasın.
+        captured: !!(pull?.url || pull?.viewerUrl || (pull?.loose && Date.now() - pull.armedAt > 3000)),
+        exact: !!pull?.url,
+        seen: pull?.seen || [],
+      });
       return false;
     case "JURISAI_PULL_FETCH":
       handlePullFetch(message.meta || {}, message.mode).then(sendResponse);

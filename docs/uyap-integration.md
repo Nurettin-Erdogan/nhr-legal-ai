@@ -148,6 +148,15 @@ Evrak sekmesine geçilir, ağaç açılır ve **seçim penceresi** gelir: evrakl
 "Seçilenleri JurisAI'ya aktar", "İptal". Yalnız işaretlenenler istenir; bağlantı anahtarı denetimi seçimden sonra ve
 yalnız JurisAI'ya aktarırken yapılır. Eklenti hiçbir zaman tüm dosyaları kendiliğinden çekmez.
 
+**Büyük dosyada bulunan hatalar (2026-10-02, v2.15.0):** 40 evraklı bir dosyada (28 aktarıldı, 12 "aynı içerik atlandı") şunlar görüldü ve
+düzeltildi: (1) önizleme ilk istekten ~2 sn sonra aynı belgeyi bir kez daha ister; bu gecikmiş istek sonraki yaprağın adresi sanılıyor,
+doğru evrak indirilmiyordu. Eşleştirme artık önizleme sayfasının (`viewer.jsp`) kendi `evrakId`siyle yapılır; yalnız o kimlikle gelen
+belge istekleri o yaprağa aittir. (2) Önizlenemeyen evrakta (TIFF) `view_document_brd.uyap` belge yerine kısa bir düz metin döndürür
+("Bu evrak türü (Tiff) görüntülenemediğinden dolayı evrak indiriliyor") ve gerçek dosyayı ayrı bir `attachment` isteğiyle indirtir (Chrome
+"birden çok dosya indirme" izni de bundan sorar; **Engelle** denebilir, eklenti dosyayı kendisi alır). Metin artık belge olarak kaydedilmez, ayrı
+indirme adresi (Content-Disposition: attachment / image/tiff) denenir ve dosya adı uzantısı oradan alınır. (3) Ek evrakın türü artık "Ek"
+(önceden bağlı olduğu evrakın başlığı yazılıyordu).
+
 **Doğrulanmayanlar:** gerçek UYAP'ta uçtan uca çekme (yalnız ölçülen istek biçimi ve sahte portal testi var; UYAP'ın
 ek başlık/oturum denetimi yapıp yapmadığı denemeyle görülecek), PDF olarak gelen evrakların `mimeType` davranışı, ekler
 (`Ek 1`) için aynı adresin çalışıp çalışmadığı, çok büyük (yüzlerce evraklı) dosyalar, UYAP'ın hızlı isteklere tepkisi.

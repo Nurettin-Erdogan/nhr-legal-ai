@@ -242,14 +242,35 @@ class _UyapHandler(BaseHTTPRequestHandler):
                 return self._send(200, _udf(f"Bilirkişi raporu {doc_id}"), "application/zip")
             return self._send(200, _pdf(doc_id), "application/pdf")
         if path == "/main/jsp/viewer.jsp":
-            page = "<html><body><script>fetch('/main/jsp/view_document_brd.uyap' + location.search, {credentials: 'include'});</script></body></html>"
+            # Gerçek portaldan öğrenilen davranışlar: (1) önizleme, ilk istekten ~2 sn sonra AYNI belgeyi bir kez daha ister
+            # (gecikmiş ikinci aşama; sonraki yaprağın yakalamasına karışmamalı); (2) önizlenemeyen evrakta (TIFF) belge yerine
+            # kısa bir mesaj döner ve gerçek dosya AYRI bir istekle (attachment) indirilir.
+            page = (
+                "<html><body><script>var q = location.search;"
+                "fetch('/main/jsp/view_document_brd.uyap' + q, {credentials: 'include'});"
+                "setTimeout(function () { fetch('/main/jsp/view_document_brd.uyap' + q, {credentials: 'include'}); }, 2200);"
+                "if (q.indexOf('ENC104') >= 0) fetch('/main/jsp/evrak_indir.uyap' + q, {credentials: 'include'});"
+                "</script></body></html>"
+            )
             return self._send(200, page.encode(), "text/html; charset=utf-8")
         if path == "/main/jsp/view_document_brd.uyap":
             evrak_id = query.split("evrakId=")[-1].split("&")[0].removeprefix("ENC")
+            if evrak_id == "104":  # TIFF: belge yerine kısa mesaj
+                message = "Bu evrak türü (Tiff) görüntülenemediğinden dolayı evrak indiriliyor.".encode()
+                return self._send(200, message, "text/plain; charset=utf-8")
             data = _odt(f"Evrak {evrak_id} metni")
             self.send_response(200)
             self.send_header("Content-Type", "application/vnd.oasis.opendocument.text")
             self.send_header("Content-Disposition", "attachment; filename=evrak.odt")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if path == "/main/jsp/evrak_indir.uyap":
+            data = b"II*\x00" + b"fake-tiff-104" * 20
+            self.send_response(200)
+            self.send_header("Content-Type", "image/tiff")
+            self.send_header("Content-Disposition", 'attachment; filename="evrak_104.tif"')
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -645,7 +666,7 @@ def test_diagnosis_on_the_case_list_page_finds_no_evrak_links(lab):
     page = lab.open("/vatandas/dosya-sorgulama")
     report = lab.worker.evaluate(
         """async () => {
-            const [tab] = await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' });
+            const tab = (await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' })).sort((a, b) => b.id - a.id)[0];
             const frames = await chrome.scripting.executeScript({
                 target: { tabId: tab.id, allFrames: true },
                 func: () => (typeof window.__jurisaiDiagnose === 'function' ? window.__jurisaiDiagnose() : null),
@@ -697,7 +718,7 @@ def test_diagnosis_describes_a_tree_based_evrak_list_without_leaking_its_content
     page = lab.open("/vatandas/evrak-agaci")
     report = lab.worker.evaluate(
         """async () => {
-            const [tab] = await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' });
+            const tab = (await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' })).sort((a, b) => b.id - a.id)[0];
             const frames = await chrome.scripting.executeScript({
                 target: { tabId: tab.id, allFrames: true },
                 func: () => (typeof window.__jurisaiDiagnose === 'function' ? window.__jurisaiDiagnose() : null),
@@ -732,7 +753,7 @@ def test_click_recording_captures_what_a_tree_leaf_does_without_leaking_content(
     page = lab.open("/vatandas/evrak-agaci-tikla")
     tab_id = lab.worker.evaluate(
         """async () => {
-            const [tab] = await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' });
+            const tab = (await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' })).sort((a, b) => b.id - a.id)[0];
             await chrome.tabs.sendMessage(tab.id, { type: 'JURISAI_RECORD_START', seconds: 30 });
             return tab.id;
         }"""
@@ -782,7 +803,7 @@ def test_network_recording_sees_the_request_made_inside_the_preview_iframe_witho
     page = lab.open("/vatandas/onizleme-post")
     tab_id = lab.worker.evaluate(
         """async () => {
-            const [tab] = await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' });
+            const tab = (await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' })).sort((a, b) => b.id - a.id)[0];
             await chrome.tabs.sendMessage(tab.id, { type: 'JURISAI_RECORD_START', seconds: 30 }, { frameId: 0 });
             return tab.id;
         }"""
@@ -848,7 +869,7 @@ def _start_pull(lab, mode: str = "upload") -> None:
     """Çekmeyi başlatır ama beklemez: seçim penceresi çıkar, test onu kullanır, sonra _finish_pull sonucu alır."""
     lab.worker.evaluate(
         """async (mode) => {
-            const [tab] = await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' });
+            const tab = (await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' })).sort((a, b) => b.id - a.id)[0];
             self.__pull = chrome.tabs.sendMessage(tab.id, { type: 'JURISAI_PULL_DOSYA', mode }, { frameId: 0 });
         }""",
         mode,
@@ -884,8 +905,11 @@ def test_pulling_a_case_creates_one_upload_per_evrak_with_its_folder_path(lab):
     assert result["found"] == 4 and result["chosen"] == 4
     uploads = {upload["fields"]["evrakId"]: upload for upload in lab.uploads}
     assert sorted(uploads) == ["101", "102", "103", "104"]
-    for upload in uploads.values():
-        assert upload["file"]["data"].startswith(b"PK") and upload["file"]["name"].endswith(".odt")
+    for evrak_id, upload in uploads.items():
+        if evrak_id == "104":  # TIFF: belge yerine mesaj geldi, ayrı indirme adresinden alındı
+            assert upload["file"]["data"].startswith(b"II*") and upload["file"]["name"].endswith(".tif")
+        else:
+            assert upload["file"]["data"].startswith(b"PK") and upload["file"]["name"].endswith(".odt")
         assert upload["fields"]["dosyaEsasNo"] == "2024/2000"
         assert upload["fields"]["birim"] == "Ankara Bölge Adliye Mahkemesi 19. Ceza Dairesi"
     assert uploads["101"]["fields"]["klasorYolu"] == "2024/2000 (Ceza Dava Dosyası) / Kesinleşme Şerhleri"
@@ -894,6 +918,11 @@ def test_pulling_a_case_creates_one_upload_per_evrak_with_its_folder_path(lab):
         "2024/2000 (Ceza Dava Dosyası) / Gerekçeli Karar / Gerekçeli Karar 30/06/2025"
     )
     assert uploads["101"]["file"]["data"] != uploads["102"]["file"]["data"]
+    # Ekin türü "Ek" (bağlı olduğu evrakın başlığı değil); diğerlerinde en yakın klasörün adı.
+    assert uploads["104"]["fields"]["evrakTuru"] == "Ek"
+    assert uploads["103"]["fields"]["evrakTuru"] == "Gerekçeli Karar"
+    # Hiçbir belge mesaj metni (text/plain) olarak kaydedilmedi; aynı içerik de atlanmadı.
+    assert result["sameContent"] == 0 and not any(u["file"]["data"].startswith(b"Bu evrak t") for u in lab.uploads)
     page.close()
 
 
@@ -963,7 +992,7 @@ def test_pulling_without_an_open_case_window_explains_what_to_do(lab):
     lab.configure()
     page = lab.open("/vatandas/evrak-agaci-tikla")  # açık pencere var ama evrak ağacı/ön izleme düğmesi yok
     result = lab.worker.evaluate(
-        "async () => { const [tab] = await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' });"
+        "async () => { const tab = (await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' })).sort((a, b) => b.id - a.id)[0];"
         " return chrome.tabs.sendMessage(tab.id, { type: 'JURISAI_PULL_DOSYA' }, { frameId: 0 }); }"
     )
     assert result["ok"] is False and "Ön izleme" in result["error"]
@@ -1006,7 +1035,7 @@ def test_pulling_to_disk_needs_no_connection_key_and_sends_nothing_to_jurisai(la
     page = lab.open("/vatandas/dosya-agaci")
     count = (
         "() => chrome.downloads.search({}).then((items) => "
-        "items.filter((x) => x.mime === 'application/vnd.oasis.opendocument.text').length)"
+        "items.filter((x) => x.mime === 'application/vnd.oasis.opendocument.text' || x.mime === 'image/tiff').length)"
     )
     before = lab.worker.evaluate(count)
 
@@ -1091,7 +1120,7 @@ def test_diagnosis_reports_the_launcher_and_swallowed_refresh_errors(lab):
     page = lab.open("/vatandas/dosya-listesi")
     report = lab.worker.evaluate(
         """async () => {
-            const [tab] = await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' });
+            const tab = (await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' })).sort((a, b) => b.id - a.id)[0];
             const frames = await chrome.scripting.executeScript({
                 target: { tabId: tab.id, allFrames: true },
                 func: () => (typeof window.__jurisaiDiagnose === 'function' ? window.__jurisaiDiagnose() : null),
@@ -1133,7 +1162,7 @@ def test_there_is_no_cap_on_how_many_evidence_items_can_be_pulled(lab):
     assert lab.wait_for_uploads(1, timeout=30)
     lab.worker.evaluate(
         """async () => {
-            const [tab] = await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' });
+            const tab = (await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' })).sort((a, b) => b.id - a.id)[0];
             return chrome.tabs.sendMessage(tab.id, { type: 'JURISAI_PULL_STOP' }, { frameId: 0 });
         }"""
     )
@@ -1141,4 +1170,18 @@ def test_there_is_no_cap_on_how_many_evidence_items_can_be_pulled(lab):
 
     assert result["ok"] and result["found"] == 45 and result["chosen"] == 45, result  # kırpılmadı
     assert result["stopped"] is True and 1 <= result["sent"] < 45  # "Çekmeyi durdur" hâlâ çalışır
+    page.close()
+
+
+def test_a_late_second_request_from_a_previous_preview_never_replaces_the_next_evrak(lab):
+    """Canlıda "12 aynı içerik atlandı": önceki önizlemenin gecikmiş isteği sonraki yaprağın adresi sanılıyor, doğru evrak
+    hiç indirilmiyordu. Eşleştirme artık önizleme sayfasının kendi evrakId'siyle yapılır."""
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-agaci")
+
+    result = _pull(lab, page)
+
+    assert result["ok"] and result["sent"] == 4 and result["sameContent"] == 0 and result["failed"] == 0, result
+    contents = {upload["fields"]["evrakId"]: upload["file"]["data"] for upload in lab.uploads}
+    assert len(set(contents.values())) == 4  # dört evrak, dört farklı içerik (hiçbiri bir öncekinin kopyası değil)
     page.close()

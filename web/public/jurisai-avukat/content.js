@@ -759,16 +759,25 @@
       const id = span.getAttribute("evrak_id");
       if (!id) continue;
       const chain = [];
+      const folderLabels = [];
       for (let li = span.closest("li")?.parentElement?.closest("li"); li; li = li.parentElement?.closest("li")) {
         const label = li.querySelector(":scope > span.folder, :scope > span.file");
-        if (label) chain.unshift(textOf(label));
+        if (label) {
+          chain.unshift(textOf(label));
+          if (label.classList.contains("folder")) folderLabels.unshift(textOf(label));
+        }
       }
       const inRecent = chain.some((label) => /^Dosyaya Eklenen Son/i.test(label));
       const folders = chain
         .slice(1) // ilk öğe dosyanın kendisi (mahkeme + esas no); klasör yolu onun altından başlar
         .filter((label) => !/^Tüm Evraklar$/i.test(label) && !/^Dosyaya Eklenen Son/i.test(label))
         .map(folderName);
-      const entry = { id, span, title: textOf(span), folders, inRecent, isEk: span.hasAttribute("ana_evrak_id") };
+      const isEk = span.hasAttribute("ana_evrak_id");
+      // Ekin türü "Ek"; diğerlerinde en yakın klasör adı (bağlı olduğu evrakın başlığı değil).
+      const typeName = isEk
+        ? "Ek"
+        : folderName(folderLabels.filter((l) => !/^Tüm Evraklar$/i.test(l) && !/^Dosyaya Eklenen Son/i.test(l)).pop() || "Evrak");
+      const entry = { id, span, title: textOf(span), folders, typeName, inRecent, isEk };
       const existing = byId.get(id);
       if (!existing || (existing.inRecent && !inRecent)) byId.set(id, entry);
     }
@@ -935,7 +944,7 @@
             meta: {
               evrakAdi: item.title,
               evrakId: item.id,
-              evrakTuru: item.folders[item.folders.length - 1] || "Evrak",
+              evrakTuru: item.typeName || "Evrak",
               dosyaEsasNo: who.esas,
               birim: who.birim,
               klasorYolu: item.folders.join(" / "),
