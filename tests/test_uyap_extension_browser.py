@@ -1216,6 +1216,7 @@ def test_a_count_mismatch_is_flagged(lab):
     text = page.inner_text(".jurisai-chooser")
     assert "⚠ UYAP: 3, bulunan: 2" in text
     assert "UYAP klasör sayıları: 4 evrak · bulunan: 3" in text and "sayılar tutmuyor" in text
+    assert "fark: Kesinleşme Şerhleri (UYAP 3, bulunan 2)" in text  # hangi klasörde fark olduğu yazılır
     page.click("#jurisai-pick-cancel")
     _finish_pull(lab)
     page.close()

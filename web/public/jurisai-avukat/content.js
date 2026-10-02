@@ -837,7 +837,15 @@
         "div",
         `font-size:12px;margin-top:6px;color:${declaredTotal === foundTotal ? "#166534" : "#b91c1c"};`,
         `UYAP klasör sayıları: ${declaredTotal} evrak · bulunan: ${foundTotal}${eks ? ` · ayrıca ${eks} ek` : ""}` +
-          (declaredTotal === foundTotal ? " ✓ sayılar tutuyor" : " ⚠ sayılar tutmuyor"),
+          (declaredTotal === foundTotal ? " ✓ sayılar tutuyor" : " ⚠ sayılar tutmuyor") +
+          // Hangi klasörlerde fark var (en çok 4): sayıyı doğrulamak/düzeltmek için.
+          (declaredTotal === foundTotal
+            ? ""
+            : ` — fark: ${countedGroups
+                .filter((group) => group[0].declared !== group.length)
+                .slice(0, 4)
+                .map((group) => `${group[0].folders[group[0].folders.length - 1]} (UYAP ${group[0].declared}, bulunan ${group.length})`)
+                .join("; ")}`),
       );
       head.append(verification);
       const refresh = () => {
