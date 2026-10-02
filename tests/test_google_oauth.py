@@ -125,7 +125,7 @@ def test_callback_issues_our_session_without_exposing_google_tokens(client, monk
     assert callback.headers["location"] == SETTINGS.web_callback_url
     assert routes.COOKIE_NAME in callback.cookies
     assert "google-sensitive-id-token" not in str(callback.headers)
-    assert routes.decode_access_token(callback.cookies[routes.COOKIE_NAME], secret=SECRET) == user_id
+    assert routes.decode_access_token_claims(callback.cookies[routes.COOKIE_NAME], secret=SECRET)[0] == user_id
 
 
 class _Cursor:

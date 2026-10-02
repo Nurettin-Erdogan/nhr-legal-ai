@@ -61,3 +61,19 @@ def scheduled_indexing(monkeypatch):
     # Kayıtçı iş bitirmediği için "işleniyor" işaretleri kalkmaz; testler birbirinin belgesini engellemesin.
     monkeypatch.setattr("api.document_indexing._inflight", set())
     return recorder.submitted
+
+
+@pytest.fixture(autouse=True)
+def session_revocation_disabled_by_default(request, monkeypatch):
+    """Gerçek jetonla çağrılan uç nokta testleri veritabanına gitmesin.
+
+    Oturum iptali (`users.sessions_valid_after`) tests/test_session_revocation.py içinde, kendi sahte
+    bağlantısıyla ve `real_sessions` işaretiyle gerçek koduyla sınanır.
+    """
+    from api.auth import routes
+
+    routes._sessions_valid_after_cache.clear()
+    if request.node.get_closest_marker("real_sessions") is None:
+        monkeypatch.setattr(routes, "_sessions_valid_after", lambda user_id: 0)
+    yield
+    routes._sessions_valid_after_cache.clear()

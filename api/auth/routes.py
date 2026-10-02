@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import logging
 import secrets
+from time import monotonic
 from typing import Annotated
 from urllib.parse import urlencode
 from uuid import UUID, uuid4
@@ -44,13 +46,14 @@ from api.auth.google_oauth import (
 from api.auth.security import (
     TokenError,
     create_access_token,
-    decode_access_token,
+    decode_access_token_claims,
     hash_password,
     verify_password,
 )
 from api.config import get_settings
 from api.db import admin_database_connection
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 bearer = HTTPBearer(auto_error=False)
 COOKIE_NAME = "nhr_access_token"
@@ -124,6 +127,47 @@ def _issue_auth_response(response: Response, row: dict) -> AuthResponse:
     )
 
 
+# Çıkışta oturum iptali. Jetonlar durumsuzdur; `users.sessions_valid_after`dan ÖNCE verilmiş jetonlar
+# geçersiz sayılır. Değer kısa süre bellekte tutulur ki her istek veritabanına gitmesin; çıkış yapan
+# işçi kendi önbelleğini hemen temizler, diğer işçilerde en fazla SESSION_CACHE_SECONDS gecikir.
+SESSION_CACHE_SECONDS = 5.0
+_SESSION_CACHE_LIMIT = 10_000
+_sessions_valid_after_cache: dict[UUID, tuple[int, float]] = {}
+
+
+def _sessions_valid_after(user_id: UUID) -> int:
+    cached = _sessions_valid_after_cache.get(user_id)
+    now = monotonic()
+    if cached is not None and now - cached[1] < SESSION_CACHE_SECONDS:
+        return cached[0]
+    with admin_database_connection() as connection:
+        row = connection.execute(
+            "SELECT sessions_valid_after FROM users WHERE id = %s", (user_id,)
+        ).fetchone()
+    stamp = row.get("sessions_valid_after") if row else None
+    value = int(stamp.timestamp()) if stamp else 0
+    if len(_sessions_valid_after_cache) >= _SESSION_CACHE_LIMIT:
+        _sessions_valid_after_cache.clear()
+    _sessions_valid_after_cache[user_id] = (value, now)
+    return value
+
+
+def resolve_session(token: str) -> UUID:
+    """Jetonu çözer ve çıkışla iptal edilmediğini doğrular. TokenError / psycopg.Error / RuntimeError atar."""
+    user_id, issued_at = decode_access_token_claims(token, secret=_auth_secret())
+    if issued_at < _sessions_valid_after(user_id):
+        raise TokenError("Oturum sonlandırıldı; yeniden giriş yapın")
+    return user_id
+
+
+def revoke_sessions(user_id: UUID) -> None:
+    _sessions_valid_after_cache.pop(user_id, None)
+    with admin_database_connection() as connection:
+        connection.execute(
+            "UPDATE users SET sessions_valid_after = now() WHERE id = %s", (user_id,)
+        )
+
+
 def current_user_id(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
     cookie_token: Annotated[str | None, Cookie(alias=COOKIE_NAME)] = None,
@@ -136,13 +180,17 @@ def current_user_id(
             headers={"WWW-Authenticate": "Bearer"},
         )
     try:
-        return decode_access_token(token, secret=_auth_secret())
+        return resolve_session(token)
     except TokenError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(exc),
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
+    except (psycopg.Error, RuntimeError) as exc:
+        # İptal durumu okunamıyorsa oturum doğrulanmış sayılmaz.
+        logger.exception("Oturum iptal durumu okunamadı")
+        raise HTTPException(status_code=503, detail="Oturum doğrulanamadı") from exc
 
 
 def optional_current_user_id(
@@ -154,8 +202,12 @@ def optional_current_user_id(
     if not token:
         return None
     try:
-        return decode_access_token(token, secret=_auth_secret())
+        return resolve_session(token)
     except TokenError:
+        return None
+    except (psycopg.Error, RuntimeError):
+        # İptal durumu bilinmiyorsa kimliksiz (anonim) davranılır, oturumlu değil.
+        logger.exception("Oturum iptal durumu okunamadı")
         return None
 
 
@@ -342,6 +394,12 @@ def logout(
             entity_type="user",
             entity_id=user_id,
         )
+    if user_id is not None:
+        try:
+            revoke_sessions(user_id)
+        except (psycopg.Error, RuntimeError):
+            # Çerez yine de silinir; iptal yazılamadıysa jeton süresi dolana kadar geçerli kalır.
+            logger.exception("Oturum iptali yazılamadı")
     # Enjekte edilen `Response` nesnesi döndürülmez: yeni FastAPI sürümlerinde durum kodu boş kalır ve
     # bağlantı kesilirdi (çıkış hiç çalışmazdı). 204'ü açıkça kendimiz kurarız.
     response = Response(status_code=204)

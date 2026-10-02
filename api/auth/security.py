@@ -37,9 +37,14 @@ def create_access_token(
     return token, expires_minutes * 60
 
 
-def decode_access_token(token: str, *, secret: str) -> UUID:
+def decode_access_token_claims(token: str, *, secret: str) -> tuple[UUID, int]:
+    """Kullanıcı kimliği ve jetonun verildiği an (`iat`, saniye)."""
     try:
         payload = jwt.decode(token, secret, algorithms=[ALGORITHM])
-        return UUID(payload["sub"])
+        return UUID(payload["sub"]), int(payload["iat"])
     except (InvalidTokenError, KeyError, TypeError, ValueError) as exc:
         raise TokenError("Geçersiz veya süresi dolmuş oturum") from exc
+
+
+def decode_access_token(token: str, *, secret: str) -> UUID:
+    return decode_access_token_claims(token, secret=secret)[0]
