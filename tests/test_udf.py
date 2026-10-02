@@ -112,3 +112,43 @@ def test_non_udf_bytes_with_udf_extension_are_rejected():
 def test_images_get_an_explicit_ocr_message_instead_of_a_silent_empty_document(name):
     with pytest.raises(DocumentProcessingError, match="OCR"):
         process_document(name, b"\x89PNG....")
+
+
+# --- ODT: UYAP ön izleme (view_document_brd.uyap) evrakı ODT olarak verir -------------------------------
+
+_ODT_CONTENT = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+    'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:body><office:text>'
+    "<text:p>KESİNLEŞME ŞERHİ</text:p>"
+    "<text:p>Ankara 33. Ağır Ceza Mahkemesi 2024/124 Esas sayılı dosyada karar 30.06.2025 tarihinde kesinleşmiştir.</text:p>"
+    "</office:text></office:body></office:document-content>"
+)
+
+
+def _odt(content: str = _ODT_CONTENT) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/vnd.oasis.opendocument.text")
+        archive.writestr("content.xml", content)
+    return buffer.getvalue()
+
+
+def test_odt_text_is_extracted_and_goes_through_the_document_pipeline():
+    result = process_document("kesinlesme-serhi.odt", _odt())
+
+    text = " ".join(chunk.content for chunk in result.chunks)
+    assert "KESİNLEŞME ŞERHİ" in text and "2024/124" in text
+    assert result.mime_type == "application/vnd.oasis.opendocument.text"
+
+
+def test_odt_sample_is_used_for_upload_metadata():
+    sample = extract_text_sample("kesinlesme-serhi.odt", _odt())
+
+    assert "Ağır Ceza Mahkemesi" in sample
+    assert parse_uyap_meta("kesinlesme-serhi.odt", sample)["uyap_file_no"] == "2024/124"
+
+
+def test_non_archive_bytes_with_odt_extension_are_rejected():
+    with pytest.raises(DocumentProcessingError):
+        process_document("sahte.odt", b"%PDF-1.4 bu bir odt degil")

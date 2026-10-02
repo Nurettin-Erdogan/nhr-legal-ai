@@ -158,6 +158,11 @@ export function CaseDetailView({
               <li key={d.id} className="py-3 flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-sm break-words">{d.file_name}</p>
+                  {d.uyap_path && (
+                    <p className="text-xs text-muted-foreground break-words" title="UYAP klasör yolu">
+                      📁 {d.uyap_path}
+                    </p>
+                  )}
                   <p className="text-xs text-muted-foreground">
                     {d.doc_type || "Evrak"} · {displayCaseDate(d.created_at)}
                   </p>

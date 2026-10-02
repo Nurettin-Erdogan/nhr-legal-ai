@@ -159,4 +159,32 @@ el("recordStop").addEventListener("click", async () => {
   }
 });
 
+// Açık dosya penceresindeki evrakları klasör yapısıyla çeker (onay ister, yavaş çalışır, durdurulabilir).
+el("pull").addEventListener("click", async () => {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab) return say("Sekme bulunamadı.", "err");
+    say("Çekme başladı; UYAP sayfasındaki onay penceresini bekle…", "ok");
+    const result = await chrome.tabs.sendMessage(tab.id, { type: "JURISAI_PULL_DOSYA" }, { frameId: 0 });
+    if (!result?.ok) return say(result?.error || "Çekme başlatılamadı.", "err");
+    say(
+      result.cancelled
+        ? "Çekme iptal edildi."
+        : `${result.sent} evrak aktarıldı${result.failed ? `, ${result.failed} hata` : ""}.`,
+      result.failed ? "err" : "ok",
+    );
+  } catch (_) {
+    say("Bu sekme bir UYAP sayfası değil ya da sayfa yenilenmeli (F5).", "err");
+  }
+});
+el("pullStop").addEventListener("click", async () => {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    await chrome.tabs.sendMessage(tab.id, { type: "JURISAI_PULL_STOP" }, { frameId: 0 });
+    say("Durdurma istendi; sürmekte olan evrak bitince duracak.", "ok");
+  } catch (_) {
+    say("Bu sekmede çalışan bir çekme yok.", "err");
+  }
+});
+
 load();

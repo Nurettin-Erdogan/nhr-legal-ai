@@ -36,15 +36,16 @@ async function throttle(gap) {
 
 function fileNameFor(meta, contentType) {
   let base = (meta.evrakAdi || "uyap-evrak").replace(/[\\/:*?"<>|]+/g, " ").trim() || "uyap-evrak";
-  if (/\.(pdf|udf|docx?|tiff?|jpe?g|png|eyp|txt)$/i.test(base)) return base.slice(0, 160);
+  if (/\.(pdf|udf|odt|docx?|tiff?|jpe?g|png|eyp|txt)$/i.test(base)) return base.slice(0, 160);
   const map = {
     "application/pdf": ".pdf",
     "application/zip": ".udf",
+    "application/vnd.oasis.opendocument.text": ".odt",
     "image/jpeg": ".jpg",
     "image/png": ".png",
     "image/tiff": ".tif",
   };
-  const fromUrl = /\.(pdf|udf|docx?|tiff?|jpe?g|png|eyp)(\?|#|$)/i.exec(meta.url || "");
+  const fromUrl = /\.(pdf|udf|odt|docx?|tiff?|jpe?g|png|eyp)(\?|#|$)/i.exec(meta.url || "");
   const ext = fromUrl
     ? `.${fromUrl[1].toLowerCase()}`
     : map[(contentType || "").split(";")[0]] || ".pdf";
@@ -128,6 +129,7 @@ async function uploadDocument(settings, meta, blob, contentType) {
   form.append("dosyaEsasNo", meta.dosyaEsasNo || "");
   form.append("birim", meta.birim || "");
   form.append("kaynakUrl", meta.url || "");
+  form.append("klasorYolu", meta.klasorYolu || "");
   form.append("source", "uyap-avukat-eklentisi");
 
   const res = await fetch(settings.apiUrl, {
@@ -364,6 +366,75 @@ async function saveReportFile(prefix, report) {
   });
   return file;
 }
+
+/* ---------- Dosya penceresindeki evrakları çekme ----------
+   İçerik betiği ağaçtaki yaprağa tıklar; UYAP'ın ön izleme isteğinin (view_document_*) adresi burada
+   YAKALANIR (webRequest, yalnız gözlem) ve belge bu adresten kullanıcının kendi oturumuyla indirilip
+   JurisAI'ya yüklenir. Adres bellekte tutulur; kaydedilmez, günlüğe yazılmaz, içerik betiğine verilmez. */
+let pull = null; // { tabId, expectedEvrakId, url }
+let pullRun = null; // { hashes: Set } — aynı içerik bir çekmede bir kez gönderilir
+
+chrome.webRequest.onBeforeRequest.addListener(
+  (details) => {
+    if (!pull || details.tabId !== pull.tabId) return;
+    try {
+      const url = new URL(details.url);
+      if (!/view_document/i.test(url.pathname)) return;
+      // Önceki yaprağın gecikmiş isteği bu yaprağa karışmasın.
+      if (pull.expectedEvrakId && url.searchParams.get("evrakId") !== pull.expectedEvrakId) return;
+      pull.url = details.url;
+    } catch (_) {
+      /* çözümlenemeyen adres yoksayılır */
+    }
+  },
+  { urls: ["*://*.uyap.gov.tr/*view_document*"] },
+);
+
+async function handlePullFetch(meta) {
+  try {
+    const settings = await getSettings();
+    if (!pull?.url) throw new Error("UYAP evrak adresi yakalanamadı");
+    const { blob, type } = await fetchDocument(pull.url, Number(settings.timeoutMs) || DEFAULTS.timeoutMs);
+    const digest = await sha256Hex(blob);
+    if (pullRun?.hashes.has(digest)) return { ok: true, sameContent: true };
+    const out = await uploadDocument(settings, { ...meta, url: "" }, blob, type);
+    pullRun?.hashes.add(digest);
+    return { ok: true, duplicate: !!out.duplicate };
+  } catch (error) {
+    return { ok: false, error: error.message || "bilinmeyen hata" };
+  }
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  switch (message?.type) {
+    case "JURISAI_PULL_BEGIN":
+      getSettings().then((settings) => {
+        if (!settings.apiUrl) return sendResponse({ ok: false, error: "API adresi ayarlanmadı" });
+        if ((settings.apiKey || "").trim().length < 20)
+          return sendResponse({ ok: false, error: "Bağlantı anahtarı ayarlanmadı (eklenti penceresine yapıştır)" });
+        pullRun = { hashes: new Set() };
+        sendResponse({ ok: true, gapMs: Math.max(1500, Number(settings.throttleMs) || DEFAULTS.throttleMs) });
+      });
+      return true;
+    case "JURISAI_PULL_ARM":
+      pull = { tabId: sender.tab?.id ?? null, expectedEvrakId: String(message.evrakId || ""), url: "" };
+      sendResponse({ ok: true });
+      return false;
+    case "JURISAI_PULL_STATUS":
+      sendResponse({ captured: !!pull?.url });
+      return false;
+    case "JURISAI_PULL_FETCH":
+      handlePullFetch(message.meta || {}).then(sendResponse);
+      return true;
+    case "JURISAI_PULL_END":
+      pull = null;
+      pullRun = null;
+      sendResponse({ ok: true });
+      return false;
+    default:
+      return false;
+  }
+});
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "JURISAI_RECORD_STARTED") {

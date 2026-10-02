@@ -44,6 +44,20 @@ def _pdf(tag: str) -> bytes:
     return f"%PDF-1.4\n% fixture {tag}\n%%EOF\n".encode()
 
 
+def _odt(text: str) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("mimetype", "application/vnd.oasis.opendocument.text")
+        archive.writestr(
+            "content.xml",
+            '<?xml version="1.0" encoding="UTF-8"?><office:document-content '
+            'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+            'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:body><office:text>'
+            f"<text:p>{text}</text:p></office:text></office:body></office:document-content>",
+        )
+    return buffer.getvalue()
+
+
 def _udf(text: str) -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
@@ -125,6 +139,53 @@ PAGES = {
       <script>
         document.getElementById('yaprak2').addEventListener('click', function () { document.getElementById('f').submit(); });
       </script></body></html>""",
+    # Gerçek Vatandaş Portalı dosya penceresi: jQuery-treeview benzeri klasör ağacı, ön izleme düğmesi, ön izleme
+    # iframe'i ve ODT yanıtı (view_document_brd.uyap). Ön izleme kapalıyken yaprağa tıklamak hiçbir şey yapmaz.
+    "/vatandas/dosya-agaci": """<html><body><h2>Dosya Sorgulama</h2>
+      <div role="dialog" class="modal in" style="display:block">
+        <h4 class="modal-title">2024/2000 - Ankara Bölge Adliye Mahkemesi 19. Ceza Dairesi - Ceza Dava Dosyası</h4>
+        <button type="button" id="onizleme" onclick="onIzlemeDurumu(this)">Ön İzlemeyi Aktifleştir</button>
+        <ul id="tree" class="treeview"><li class="collapsable"><span class="folder">Ankara Bölge Adliye Mahkemesi 19. Ceza Dairesi 2024/2000</span><ul>
+          <li class="expandable"><div class="hitarea"></div><span class="folder">Dosyaya Eklenen Son 20 Evrak</span><ul style="display:none">
+            <li><span class="file" evrak_id="101">Kesinleşme Şerhleri 30/06/2025</span></li>
+            <li><span class="file" evrak_id="102">Kesinleşme Şerhleri 30/06/2025</span></li>
+            <li><span class="file" evrak_id="103">Gerekçeli Karar 30/06/2025</span></li></ul></li>
+          <li class="collapsable"><span class="folder">Tüm Evraklar</span><ul>
+            <li class="expandable"><div class="hitarea"></div><span class="folder">2024/2000 (Ceza Dava Dosyası)</span><ul style="display:none">
+              <li class="expandable"><div class="hitarea"></div><span class="folder">Kesinleşme Şerhleri (2)</span><ul style="display:none">
+                <li><span class="file" evrak_id="101">Kesinleşme Şerhleri 30/06/2025</span></li>
+                <li><span class="file" evrak_id="102">Kesinleşme Şerhleri 30/06/2025</span></li></ul></li>
+              <li class="expandable"><div class="hitarea"></div><span class="folder">Gerekçeli Karar (1)</span><ul style="display:none">
+                <li class="expandable"><div class="hitarea"></div><span class="file" evrak_id="103">Gerekçeli Karar 30/06/2025</span><ul style="display:none">
+                  <li><span class="file" evrak_id="104" ana_evrak_id="103">Ek 1</span></li></ul></li></ul></li>
+            </ul></li></ul></li></ul></li></ul>
+        <div id="viewer"></div>
+      </div>
+      <script>
+        var preview = false;
+        function onIzlemeDurumu(button) {
+          preview = !preview;
+          button.textContent = preview ? 'Ön İzlemeyi Kapat' : 'Ön İzlemeyi Aktifleştir';
+        }
+        function toggle(li) {
+          var ul = li.querySelector(':scope > ul');
+          if (!ul) return;
+          var closed = li.classList.contains('expandable');
+          li.classList.toggle('expandable', !closed);
+          li.classList.toggle('collapsable', closed);
+          ul.style.display = closed ? 'block' : 'none';
+        }
+        document.addEventListener('click', function (event) {
+          var target = event.target;
+          if (target.classList.contains('hitarea') || target.classList.contains('folder')) {
+            toggle(target.closest('li'));
+          } else if (target.classList.contains('file') && preview) {
+            var frame = document.createElement('iframe');
+            frame.src = '/main/jsp/viewer.jsp?mimeType=odt&evrakId=' + target.getAttribute('evrak_id') + '&dosyaId=9&yargiTuru=Ceza';
+            document.getElementById('viewer').replaceChildren(frame);
+          }
+        });
+      </script></body></html>""",
     # Gerçekçi evrak listesi.
     "/dosya/evraklar": f"<html><body><h2>{CASE_TITLE}</h2>{_EVRAK_ROWS}</body></html>",
     # Dosya penceresi: Evrak sekmesine basılınca liste AJAX ile gelir.
@@ -169,6 +230,19 @@ class _UyapHandler(BaseHTTPRequestHandler):
             if "tip=udf" in query:
                 return self._send(200, _udf(f"Bilirkişi raporu {doc_id}"), "application/zip")
             return self._send(200, _pdf(doc_id), "application/pdf")
+        if path == "/main/jsp/viewer.jsp":
+            page = "<html><body><script>fetch('/main/jsp/view_document_brd.uyap' + location.search, {credentials: 'include'});</script></body></html>"
+            return self._send(200, page.encode(), "text/html; charset=utf-8")
+        if path == "/main/jsp/view_document_brd.uyap":
+            evrak_id = query.split("evrakId=")[-1].split("&")[0]
+            data = _odt(f"Evrak {evrak_id} metni")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.oasis.opendocument.text")
+            self.send_header("Content-Disposition", "attachment; filename=evrak.odt")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if path.startswith("/evrak/onizleme"):
             return self._send(200, _pdf(path), "application/pdf")
         if path.endswith(".pdf"):
@@ -729,5 +803,90 @@ def test_network_recording_sees_the_request_made_inside_the_preview_iframe_witho
     serialized = json.dumps(report, ensure_ascii=False)
     for leaked in ("TOPSECRET", "SIRRI-ONIZLEME-ADI", "Mehmet", "gizli-ad", "evrakId=77"):
         assert leaked not in serialized, leaked
+    assert lab.uploads == []
+    page.close()
+
+
+_PULL = (
+    "async () => {"
+    "  const [tab] = await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' });"
+    "  return chrome.tabs.sendMessage(tab.id, { type: 'JURISAI_PULL_DOSYA' }, { frameId: 0 });"
+    "}"
+)
+
+
+def test_pulling_a_case_creates_one_upload_per_evrak_with_its_folder_path(lab):
+    """Gerçek akış: ağaç açılır, ön izleme açılır, her yaprağa tıklanır, UYAP'ın ön izleme adresi yakalanıp belge
+    ODT olarak indirilir; 'Son 20 Evrak' kısayolu çift saymaz; klasör yolu ve evrak türü gönderilir."""
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-agaci")
+    page.on("dialog", lambda dialog: dialog.accept())
+
+    result = lab.worker.evaluate(_PULL)
+
+    assert result["ok"] and result["sent"] == 4 and result["failed"] == 0, result
+    assert result["found"] == 4  # 101-104; "Son 20" kısayolundaki kopyalar sayılmaz
+    uploads = {upload["fields"]["evrakId"]: upload for upload in lab.uploads}
+    assert sorted(uploads) == ["101", "102", "103", "104"]
+    for upload in uploads.values():
+        assert upload["file"]["data"].startswith(b"PK") and upload["file"]["name"].endswith(".odt")
+        assert upload["fields"]["dosyaEsasNo"] == "2024/2000"
+        assert upload["fields"]["birim"] == "Ankara Bölge Adliye Mahkemesi 19. Ceza Dairesi"
+    assert uploads["101"]["fields"]["klasorYolu"] == "2024/2000 (Ceza Dava Dosyası) / Kesinleşme Şerhleri"
+    assert uploads["101"]["fields"]["evrakTuru"] == "Kesinleşme Şerhleri"
+    # Ek, bağlı olduğu evrakın altında durur.
+    assert uploads["104"]["fields"]["klasorYolu"] == (
+        "2024/2000 (Ceza Dava Dosyası) / Gerekçeli Karar / Gerekçeli Karar 30/06/2025"
+    )
+    # Aynı başlıklı iki evrak (101, 102) ayrı belge olarak gelir (içerikleri farklı).
+    assert uploads["101"]["file"]["data"] != uploads["102"]["file"]["data"]
+    page.close()
+
+
+def test_pulling_asks_for_confirmation_and_sends_nothing_when_declined(lab):
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-agaci")
+    page.on("dialog", lambda dialog: dialog.dismiss())
+
+    result = lab.worker.evaluate(_PULL)
+
+    assert result["ok"] and result["cancelled"] and result["found"] == 4
+    assert lab.uploads == []
+    page.close()
+
+
+def test_preview_that_is_already_on_is_not_switched_off(lab):
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-agaci")
+    page.click("#onizleme")  # kullanıcı ön izlemeyi zaten açmış
+    page.on("dialog", lambda dialog: dialog.accept())
+
+    result = lab.worker.evaluate(_PULL)
+
+    assert result["ok"] and result["sent"] == 4, result
+    assert page.inner_text("#onizleme") == "Ön İzlemeyi Kapat"  # eklenti düğmeye ikinci kez basmadı
+    page.close()
+
+
+def test_pulling_needs_the_connection_key_before_touching_the_portal(lab):
+    lab.configure(apiKey="")
+    page = lab.open("/vatandas/dosya-agaci")
+
+    result = lab.worker.evaluate(_PULL)
+
+    assert result["ok"] is False and "anahtar" in result["error"].lower()
+    assert lab.uploads == []
+    assert page.locator("iframe").count() == 0  # ağaç/önizleme'ye dokunulmadı
+    page.close()
+
+
+def test_pulling_without_an_open_case_window_explains_what_to_do(lab):
+    lab.configure()
+    page = lab.open("/vatandas/evrak-agaci-tikla")  # açık pencere var ama evrak ağacı/ön izleme düğmesi yok
+    result = lab.worker.evaluate(
+        "async () => { const [tab] = await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' });"
+        " return chrome.tabs.sendMessage(tab.id, { type: 'JURISAI_PULL_DOSYA' }, { frameId: 0 }); }"
+    )
+    assert result["ok"] is False and "Ön izleme" in result["error"]
     assert lab.uploads == []
     page.close()

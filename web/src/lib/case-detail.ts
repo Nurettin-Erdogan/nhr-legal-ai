@@ -21,6 +21,8 @@ export interface CaseDocument {
   file_name: string;
   storage_path: string;
   doc_type: string | null;
+  /** UYAP ağacındaki klasör yolu ("<dosya> / <evrak türü> / …"); elle yüklenen belgede boş. */
+  uyap_path?: string | null;
   created_at: string;
 }
 export interface CaseTask {
@@ -97,7 +99,7 @@ export async function loadCaseDetail(id: string, client = db): Promise<CaseDetai
       : Promise.resolve({ data: null, error: null }),
     section<CaseDocument>(
       "case_documents",
-      "id,file_name,storage_path,doc_type,created_at",
+      "id,file_name,storage_path,doc_type,uyap_path,created_at",
       "created_at",
     ),
     section<CaseTask>("tasks", "id,title,status,due_date", "created_at"),

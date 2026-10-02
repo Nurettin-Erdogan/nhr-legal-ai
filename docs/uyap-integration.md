@@ -111,6 +111,34 @@ kaydedilmez (tarayıcı testiyle doğrulanır). Eklentiye yeni izin eklenmedi.
 Yine de gerçek evrak listesi sayfasında seçicilerin tutup tutmadığı doğrulanmadı: "Sayfa tanısını kopyala"
 çıktısı bekleniyor. Sunucuda içerik özetiyle yinelenen denetimi henüz yok.
 
+## Evrakları klasör yapısıyla çekme (v2.11.0)
+
+**Gerçek Vatandaş Portalı'nda ölçülen akış** (tıklama + tarayıcı düzeyi ağ kaydı, 2026-10-02):
+
+- Dosya penceresinin "Evrak" sekmesi bir **klasör ağacıdır** (jQuery treeview): `li.expandable/collapsable`,
+  klasör `span.folder`, evrak `span.file[evrak_id]` (eki olan evrakta çocuk yaprak `ana_evrak_id` taşır).
+  Yapı: dosya → "Dosyaya Eklenen Son 20 Evrak" (kısayol, aynı evraklar) ve "Tüm Evraklar → <esas no> (… Dava Dosyası)
+  → <evrak türü> (<adet>) → evrak → ek".
+- Yaprağa tıklamak **ön izleme açıkken** (`onIzlemeDurumu` düğmesi "Ön İzlemeyi Aktifleştir") şunları tetikler:
+  `POST dosya_evrak_turu_brd.ajx` (`evrakId`), ön izleme iframe'i `viewer.jsp?mimeType&evrakId&dosyaId&yargiTuru`, ve iframe
+  içinden **`GET view_document_brd.uyap?mimeType&evrakId&dosyaId&yargiTuru`** → `200`, `application/vnd.oasis.opendocument.text`
+  (**ODT**), `attachment`. Belge bu adresten kullanıcının kendi oturumuyla gelir.
+
+**Eklentideki akış** (popup → "Bu dosyanın evraklarını çek (klasör yapısıyla)"; yalnız düğmeye basılınca, otomatik
+aktarım ayarından bağımsız): bağlantı anahtarı denetlenir → ön izleme kapalıysa açılır (açıksa dokunulmaz) → klasörler
+açılır (yapraklara tıklanmaz) → evraklar klasör yoluyla listelenir, "Son 20" kopyaları `evrak_id` ile elenir →
+**onay penceresi** (evrak sayısı, dosya, müvekkil verisi uyarısı) → her evrak için yaprağa tıklanır, UYAP'ın `view_document_*`
+isteğinin adresi arka planda **yakalanır** (yalnız bellekte, kaydedilmez), belge bu adresten indirilip yüklenir, en az 1,5 sn
+aralıkla. En çok 40 evrak, ardışık 3 hatada durur, "Çekmeyi durdur" ile kesilir, aynı içerik bir çekmede bir kez gönderilir.
+
+Sunucu: ODT kabul edilir ve okunur (UDF gibi `content.xml`); `klasorYolu` alanı `office_case_documents.uyap_path` sütununa
+yazılır (migration 036), dava sayfasında evrakın altında "📁 yol" olarak görünür. Henüz klasör **ağacı** görünümü yok,
+yol metin olarak gösterilir.
+
+**Doğrulanmayanlar:** gerçek UYAP'ta uçtan uca çekme (yalnız ölçülen istek biçimi ve sahte portal testi var; UYAP'ın
+ek başlık/oturum denetimi yapıp yapmadığı denemeyle görülecek), PDF olarak gelen evrakların `mimeType` davranışı, ekler
+(`Ek 1`) için aynı adresin çalışıp çalışmadığı, bir dosyada 40'tan fazla evrak, UYAP'ın hızlı isteklere tepkisi.
+
 ## Doğrulanmayanlar ve açık işler
 
 - **Gerçek UYAP sayfa yapısı doğrulanmadı.** Test sayfaları gerçek UYAP'ın DOM'unu kanıtlamaz.

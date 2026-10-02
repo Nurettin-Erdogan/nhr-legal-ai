@@ -51,6 +51,7 @@ _SUPPORTED_TYPES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".txt": "text/plain",
     ".udf": "application/vnd.uyap.udf",
+    ".odt": "application/vnd.oasis.opendocument.text",
 }
 _IMAGE_TYPES = {
     ".tif": "image/tiff",
@@ -273,7 +274,7 @@ def process_document(file_name: str, data: bytes, *, ocr: str = "off") -> Proces
         raise ValueError(f"Geçersiz OCR kipi: {ocr}")
     extension = Path(file_name).suffix.lower()
     if extension not in _SUPPORTED_TYPES and extension not in _IMAGE_TYPES:
-        raise DocumentProcessingError("Yalnız PDF, DOCX, UDF, TXT ve görüntü belgeleri desteklenir.")
+        raise DocumentProcessingError("Yalnız PDF, DOCX, UDF, ODT, TXT ve görüntü belgeleri desteklenir.")
     if not data:
         raise DocumentProcessingError("Yüklenen dosya boş.")
 
@@ -288,9 +289,10 @@ def process_document(file_name: str, data: bytes, *, ocr: str = "off") -> Proces
         if not data.startswith(b"PK"):
             raise DocumentProcessingError("Dosya uzantısı DOCX olsa da içerik DOCX değil.")
         sections = _extract_docx(data)
-    elif extension == ".udf":
+    elif extension in (".udf", ".odt"):
         if not data.startswith(b"PK"):
-            raise DocumentProcessingError("Dosya uzantısı UDF olsa da içerik UDF değil.")
+            raise DocumentProcessingError(f"Dosya uzantısı {extension[1:].upper()} olsa da içerik {extension[1:].upper()} değil.")
+        # UDF ve ODT, metni content.xml içinde taşıyan zip arşividir (UYAP ön izleme evrakı ODT gelir).
         sections = _extract_udf(data)
     else:
         if b"\x00" in data[:4096]:

@@ -173,8 +173,8 @@ def _store(
         try:
             connection.execute(
                 "INSERT INTO office_case_documents (id, owner_id, file_name, storage_path, size_bytes, source, "
-                "mime_type, uyap_file_no, uyap_birim, doc_date, doc_type, content_excerpt) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "mime_type, uyap_file_no, uyap_birim, doc_date, doc_type, content_excerpt, uyap_path) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     document_id,
                     owner_id,
@@ -188,6 +188,7 @@ def _store(
                     meta["doc_date"],
                     overrides.get("doc_type") or meta["doc_type"],
                     excerpt[:4000] or None,
+                    overrides.get("uyap_path"),
                 ),
             )
             record_event(
@@ -339,6 +340,7 @@ async def upload_document(
 
     evrakAdi, evrakId, evrakTuru = field("evrakAdi"), field("evrakId"), field("evrakTuru")
     dosyaEsasNo, birim, source = field("dosyaEsasNo"), field("birim"), field("source")
+    klasorYolu = field("klasorYolu")  # UYAP ağacındaki klasör yolu: "<dosya> / <evrak türü> / <evrak>"
 
     file_name = safe_file_name((evrakAdi or file.filename or "uyap-evrak.pdf").strip()[:300])
     if not is_allowed_file(file_name):
@@ -364,6 +366,7 @@ async def upload_document(
                 "doc_type": (evrakTuru or "").strip()[:120] or None,
                 "uyap_file_no": (dosyaEsasNo or "").strip()[:60] or None,
                 "uyap_birim": (birim or "").strip()[:160] or None,
+                "uyap_path": " ".join((klasorYolu or "").split())[:400] or None,
             },
             dedupe_by_source=False,
             audit=AuditContext.from_request(request),

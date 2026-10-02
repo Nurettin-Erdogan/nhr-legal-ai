@@ -125,7 +125,7 @@ Get-Content -Raw .\database\migrations\007_ingestion_worker.sql |
 
 Bir migration başarıyla uygulanmış veritabanında aynı migration'ı tekrar çalıştırma. İleride migration runner eklendiğinde dosya sürümleri ayrıca takip edilmelidir.
 
-## Mevcut veritabanına sonradan eklenen migrationlar (021–033)
+## Mevcut veritabanına sonradan eklenen migrationlar (021–036)
 
 Yeni kurulum `database/init/` ile (Docker'ın dosya sırasıyla) bunların hepsini alır; CI de aynı sırayı
 kullanır. Mevcut bir veritabanında `database/migrations/` altındaki dosyalar numara sırasıyla `psql -f` ile
@@ -143,6 +143,7 @@ uygulanır. Her birinin `init/` karşılığı vardır (numara farklıdır; içe
 | 031 | Belge çöp kutusu (`office_case_documents.deleted_at`) |
 | 032 | Katmanlı sözcük araması + `idx_legal_chunks_search_vector_official` |
 | 033 | UYAP bağlantı anahtarı özetlenir (`token_hash`), düz değer silinir |
+| 036 | `office_case_documents.uyap_path`: UYAP klasör ağacı yolu (034-035 giriş sınırlaması/oturum iptali) |
 
 `CREATE INDEX CONCURRENTLY` içeren dosyalar (`023`, `025`, `032`) transaction dışında, tek başına `psql -f`
 ile çalıştırılmalıdır. Büyük korpusta 032'deki dizin ~10 dk sürer ve `lock_timeout` konmamalıdır

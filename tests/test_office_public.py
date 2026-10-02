@@ -221,3 +221,45 @@ def test_udf_text_is_read_from_content_xml():
 
     assert "Merhaba dilekçe" in extract_text_sample("belge.udf", buffer.getvalue())
     assert extract_text_sample("bozuk.udf", b"not a zip") == ""
+
+
+def test_upload_accepts_odt_and_keeps_the_uyap_folder_path(monkeypatch):
+    """Eklenti evrakı UYAP ağacındaki klasör yoluyla yollar; ODT (ön izleme biçimi) kabul edilir."""
+    client, stored = _client(monkeypatch)
+
+    response = client.post(
+        "/api/public/v1/documents/upload",
+        files={"file": ("Gerekceli Karar.odt", b"PK\x03\x04odt", "application/vnd.oasis.opendocument.text")},
+        data={
+            "evrakId": "123",
+            "evrakTuru": "Gerekçeli Karar",
+            "dosyaEsasNo": "2024/2000",
+            "klasorYolu": "2024/2000 (Ceza Dava Dosyası)  /  Gerekçeli Karar  /\n Ek 1",
+        },
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+
+    assert response.status_code == 200
+    assert stored[0]["file_name"] == "123-Gerekceli_Karar.odt"
+    overrides = stored[0]["overrides"]
+    assert overrides["uyap_path"] == "2024/2000 (Ceza Dava Dosyası) / Gerekçeli Karar / Ek 1"  # boşluklar sadeleşir
+    assert overrides["doc_type"] == "Gerekçeli Karar"
+
+
+def test_folder_path_is_capped_and_optional(monkeypatch):
+    client, stored = _client(monkeypatch)
+
+    client.post(
+        "/api/public/v1/documents/upload",
+        files={"file": ("a.pdf", b"%PDF-1.4", "application/pdf")},
+        data={"klasorYolu": "k" * 900},
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+    client.post(
+        "/api/public/v1/documents/upload",
+        files={"file": ("b.pdf", b"%PDF-1.4", "application/pdf")},
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+
+    assert len(stored[0]["overrides"]["uyap_path"]) == 400
+    assert stored[1]["overrides"]["uyap_path"] is None
