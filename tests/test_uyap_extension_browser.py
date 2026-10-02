@@ -1219,7 +1219,7 @@ def test_a_count_mismatch_is_flagged(lab):
     lab.configure(throttleMs=500)
     page = lab.open("/vatandas/dosya-sayi-tutmuyor")
     _start_pull(lab)
-    page.wait_for_selector(".jurisai-chooser", timeout=30000)
+    page.wait_for_selector(".jurisai-chooser", timeout=90000)
     text = page.inner_text(".jurisai-chooser")
     assert "⚠ UYAP: 3, bulunan: 2" in text
     assert "UYAP klasör sayıları: 4 evrak · bulunan: 3" in text and "sayılar tutmuyor" in text
@@ -1394,7 +1394,7 @@ def test_items_without_an_evidence_id_are_counted_and_reported(lab):
     lab.configure(throttleMs=500)
     page = lab.open("/vatandas/dosya-kimliksiz")
     _start_pull(lab)
-    page.wait_for_selector(".jurisai-chooser", timeout=30000)
+    page.wait_for_selector(".jurisai-chooser", timeout=90000)
     text = page.inner_text(".jurisai-chooser")
     assert "kimliksiz öğe: 1 (çekilemez)" in text
     assert "⚠ UYAP: 2, bulunan: 1" in text  # UYAP 2 diyor, kimlikli yalnız 1 var
@@ -1424,6 +1424,74 @@ def test_a_count_difference_caused_by_the_same_evrak_in_two_folders_is_explained
     assert "⚠ UYAP: 2, bulunan: 1" in text  # Kopya klasörü: 2 diyor, 102 başka klasörde sayıldı
     assert "UYAP klasör sayıları: 5 evrak · bulunan: 4" in text
     assert "fark 1 evrağın iki klasörde birden görünmesinden" in text and "sayılar tutmuyor" not in text
+    page.click("#jurisai-pick-cancel")
+    _finish_pull(lab)
+    page.close()
+
+
+# Klasör ilk açılışta eksik yükleniyor (Kesinleşme Şerhleri (2): 1 yaprak); kapatıp yeniden açınca tamamı geliyor.
+PAGES["/vatandas/dosya-yarim"] = PAGES["/vatandas/dosya-agaci"].replace(
+    "</script></body></html>",
+    """
+        (function () {
+          var original = toggle; var held = null; var opens = 0;
+          toggle = function (li) {
+            original(li);
+            var label = li.querySelector(':scope > .folder');
+            if (!label || label.textContent.indexOf('Kesinleşme Şerhleri (2)') !== 0) return;
+            if (!li.classList.contains('collapsable')) return;
+            opens += 1;
+            var ul = li.querySelector(':scope > ul');
+            if (opens === 1) { held = ul.lastElementChild; ul.removeChild(held); }
+            else if (held) { ul.appendChild(held); held = null; }
+          };
+        })();
+      </script></body></html>""",
+)
+# Klasör hiç yüklenmiyor: fark kalır ve açıkça gösterilir.
+PAGES["/vatandas/dosya-bos"] = PAGES["/vatandas/dosya-agaci"].replace(
+    "</script></body></html>",
+    """
+        (function () {
+          var original = toggle;
+          toggle = function (li) {
+            original(li);
+            var label = li.querySelector(':scope > .folder');
+            if (!label || label.textContent.indexOf('Kesinleşme Şerhleri (2)') !== 0) return;
+            if (li.classList.contains('collapsable')) li.querySelector(':scope > ul').innerHTML = '';
+          };
+        })();
+      </script></body></html>""",
+)
+
+
+def test_a_folder_that_loaded_only_partly_is_reopened_until_it_matches_uyaps_count(lab):
+    """Canlıda aynı dosya 463, sonra 456 evrak çıktı: eksik yüklenen klasör artık kapatılıp yeniden açılır."""
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-yarim")
+    _start_pull(lab)
+    page.wait_for_selector(".jurisai-chooser", timeout=90000)
+    text = page.inner_text(".jurisai-chooser")
+    assert "UYAP: 2, bulunan: 2" in text, text
+    assert "UYAP klasör sayıları: 3 evrak · bulunan: 3" in text and "sayılar tutuyor" in text
+    assert page.locator("#jurisai-pick-rescan").count() == 0  # fark yok: yeniden tara düğmesi çıkmaz
+    page.click("#jurisai-pick-cancel")
+    _finish_pull(lab)
+    page.close()
+
+
+def test_a_folder_that_never_loads_is_counted_flagged_and_can_be_rescanned(lab):
+    """Hiç evrak bulunamayan klasör UYAP toplamından düşmez; fark adıyla yazılır ve ağaç yeniden taranabilir."""
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-bos")
+    _start_pull(lab)
+    page.wait_for_selector(".jurisai-chooser", timeout=90000)
+    text = page.inner_text(".jurisai-chooser")
+    assert "UYAP klasör sayıları: 3 evrak · bulunan: 1" in text, text  # boş klasörün 2'si de UYAP toplamında
+    assert "fark: Kesinleşme Şerhleri (UYAP 2, bulunan 0)" in text
+    page.click("#jurisai-pick-rescan")
+    page.wait_for_selector(".jurisai-chooser", timeout=90000)  # yeniden tarandı, seçim penceresi yeniden açıldı
+    assert "fark: Kesinleşme Şerhleri (UYAP 2, bulunan 0)" in page.inner_text(".jurisai-chooser")
     page.click("#jurisai-pick-cancel")
     _finish_pull(lab)
     page.close()

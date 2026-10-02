@@ -758,11 +758,14 @@
     // düğüm sayısı azalmıyorsa) ya da süre dolarsa vazgeçilir: açılamayan düğümler için sonsuza dek beklenmez.
     const deadline = Date.now() + 90000;
     let previous = Infinity;
-    for (let round = 0; round < 5 && Date.now() < deadline; round += 1) {
+    let stalls = 0;
+    for (let round = 0; round < 8 && Date.now() < deadline; round += 1) {
       await expandPass(dialog);
       await waitForTreeToSettle(dialog, 8000);
       const remaining = dialog.querySelectorAll("li.expandable").length;
-      if (!remaining || remaining >= previous) return;
+      if (!remaining) return;
+      stalls = remaining >= previous ? stalls + 1 : 0; // yeni açılan düğümler yeni kapalılar getirebilir: tek duraksamada bırakma
+      if (stalls >= 2) return;
       previous = remaining;
     }
   }
@@ -778,6 +781,57 @@
         // Alt düğümler AJAX ile yüklenebilir: açılmasını (class değişimi) kısa süre bekle.
         await waitUntil(() => !li.classList.contains("expandable"), 1500, 100);
       }
+    }
+  }
+  const RECENT_RE = /^Dosyaya Eklenen Son/i;
+  /** UYAP'ın klasör adının yanına yazdığı sayı ("Kesinleşme Şerhleri (2)") ile klasörün doğrudan altındaki evrak sayısı. */
+  function folderStats(dialog) {
+    const stats = [];
+    for (const li of dialog.querySelectorAll("li")) {
+      const label = li.querySelector(":scope > span.folder");
+      if (!label) continue;
+      const declared = Number((/\((\d+)\)\s*$/.exec(textOf(label)) || [])[1]) || null;
+      if (!declared) continue;
+      let recent = false; // "Son 20 Evrak" kısayolu sayılmaz
+      for (let up = li.parentElement?.closest("li"); up && !recent; up = up.parentElement?.closest("li")) {
+        const upLabel = up.querySelector(":scope > span.folder, :scope > span.file");
+        recent = !!upLabel && RECENT_RE.test(textOf(upLabel));
+      }
+      if (recent) continue;
+      const leaves = li.querySelectorAll(":scope > ul > li > span.file[evrak_id]:not([ana_evrak_id])").length;
+      stats.push({ li, name: folderName(textOf(label)), declared, leaves });
+    }
+    return stats;
+  }
+  /**
+   * UYAP'ın yazdığından az evrak görünen klasörler için: önce biraz bekle (yavaş yükleniyor olabilir), sonra klasörü
+   * kapatıp yeniden aç (alt düğümleri yeniden yüklemeyi tetikler). Canlıda sayı her açılışta değişiyordu (463 → 456).
+   */
+  async function repairTree(dialog, onGaps) {
+    const deadline = Date.now() + 120000;
+    for (let round = 0; round < 4 && Date.now() < deadline; round += 1) {
+      const gaps = folderStats(dialog).filter((entry) => entry.leaves < entry.declared);
+      if (!gaps.length) return;
+      onGaps?.(gaps.length, round);
+      if (round === 0) {
+        await waitForTreeToSettle(dialog, 6000);
+        continue;
+      }
+      for (const gap of gaps) {
+        const handle = gap.li.querySelector(":scope > div.hitarea") || gap.li.querySelector(":scope > span.folder");
+        if (!handle) continue;
+        if (gap.li.classList.contains("collapsable")) {
+          handle.click(); // açıksa önce kapat
+          await sleep(300);
+        }
+        handle.click();
+        await waitUntil(
+          () => gap.li.querySelectorAll(":scope > ul > li > span.file[evrak_id]:not([ana_evrak_id])").length >= gap.declared,
+          1000 * round,
+          200,
+        );
+      }
+      await expandAll(dialog);
     }
   }
   /** Gerçek bir fare tıklaması gibi: üzerine gelme, basma, bırakma, tıklama (UYAP üzerine-gelme sınıfını da kullanıyor). */
@@ -829,6 +883,8 @@
     const result = full.length ? full : all;
     result.withoutId = withoutId; // evrak_id'si olmayan öğeler çekilemez; sayısı seçim penceresinde gösterilir
     result.duplicates = duplicates;
+    result.folderStats = folderStats(dialog);
+    result.unopened = [...dialog.querySelectorAll("li.expandable")].filter((li) => li.querySelector(":scope > ul")).length;
     return result;
   }
   function dosyaIdentity(dialog) {
@@ -871,7 +927,16 @@
       const counter = make("div", "color:#333;font-weight:600;");
       // Toplam doğrulama: UYAP'ın klasör sayıları (evraklar, ekler hariç) ile bulunanlar.
       const countedGroups = [...groups.values()].filter((group) => group[0].declared !== null);
-      const declaredTotal = countedGroups.reduce((sum, group) => sum + group[0].declared, 0);
+      const folderStats = items.folderStats || [];
+      // UYAP'ın sayısı ağaçtaki TÜM sayılı klasörlerden alınır: hiç evrak bulunamayan klasör de toplama girer.
+      const declaredTotal = folderStats.length
+        ? folderStats.reduce((sum, entry) => sum + entry.declared, 0)
+        : countedGroups.reduce((sum, group) => sum + group[0].declared, 0);
+      const gapList = folderStats.length
+        ? folderStats.filter((entry) => entry.leaves !== entry.declared).map((entry) => `${entry.name} (UYAP ${entry.declared}, bulunan ${entry.leaves})`)
+        : countedGroups
+            .filter((group) => group[0].declared !== group.length)
+            .map((group) => `${group[0].folders[group[0].folders.length - 1]} (UYAP ${group[0].declared}, bulunan ${group.length})`);
       const foundTotal = countedGroups.reduce((sum, group) => sum + group.length, 0);
       const eks = items.filter((item) => item.isEk).length;
       const copies = items.duplicates || 0;
@@ -882,6 +947,7 @@
         `font-size:12px;margin-top:6px;color:${matches || explained ? "#166534" : "#b91c1c"};`,
         `UYAP klasör sayıları: ${declaredTotal} evrak · bulunan: ${foundTotal}${eks ? ` · ayrıca ${eks} ek` : ""}` +
           (items.withoutId ? ` · kimliksiz öğe: ${items.withoutId} (çekilemez)` : "") +
+          (items.unopened ? ` · açılamayan klasör: ${items.unopened}` : "") +
           (matches
             ? " ✓ sayılar tutuyor"
             : explained
@@ -890,13 +956,17 @@
           // Hangi klasörlerde fark var (en çok 4): sayıyı doğrulamak/düzeltmek için.
           (matches || explained
             ? ""
-            : ` — fark: ${countedGroups
-                .filter((group) => group[0].declared !== group.length)
-                .slice(0, 4)
-                .map((group) => `${group[0].folders[group[0].folders.length - 1]} (UYAP ${group[0].declared}, bulunan ${group.length})`)
-                .join("; ")}`),
+            : ` — fark: ${gapList.slice(0, 4).join("; ")}${gapList.length > 4 ? ` (+${gapList.length - 4} klasör daha)` : ""}`),
       );
       head.append(verification);
+      const rescanButton = make(
+        "button",
+        "margin-top:6px;padding:4px 10px;border-radius:8px;border:1px solid #b91c1c;background:#fff;color:#b91c1c;cursor:pointer;font-size:12px;",
+        "⟳ Ağacı yeniden tara",
+      );
+      rescanButton.id = "jurisai-pick-rescan";
+      rescanButton.type = "button";
+      if (!matches && !explained) head.append(rescanButton);
       const refresh = () => {
         const n = boxes.filter((entry) => entry.input.checked).length;
         counter.textContent = `${n} / ${items.length} evrak seçili`;
@@ -965,6 +1035,7 @@
       diskButton.addEventListener("click", () => finish("disk"));
       uploadButton.addEventListener("click", () => finish("upload"));
       cancelButton.addEventListener("click", () => finish(null));
+      rescanButton.addEventListener("click", () => finish("rescan"));
       buttons.append(counter, toggle, make("span", "flex:1"), diskButton, uploadButton, cancelButton);
       box.append(head, list, note, buttons);
       overlay.append(box);
@@ -982,11 +1053,18 @@
     try {
       toast("Evrak ağacı açılıyor…");
       if (!(await ensurePreview(dialog))) return { ok: false, error: "Ön izleme düğmesi bulunamadı (Evrak sekmesinde misin?)" };
-      await expandAll(dialog);
-      const items = collectEvraklar(dialog);
-      if (!items.length) return { ok: false, error: "Ağaçta evrak bulunamadı. Evrak sekmesini aç ve tekrar dene." };
       const who = dosyaIdentity(dialog);
-      const choice = await chooseEvraklar(items, who, preferred);
+      let items;
+      let choice;
+      for (;;) {
+        await expandAll(dialog);
+        await repairTree(dialog, (gaps) => toast(`${gaps} klasörde evrak eksik görünüyor, yeniden yükleniyor…`));
+        items = collectEvraklar(dialog);
+        if (!items.length) return { ok: false, error: "Ağaçta evrak bulunamadı. Evrak sekmesini aç ve tekrar dene." };
+        choice = await chooseEvraklar(items, who, preferred);
+        if (choice.action !== "rescan") break;
+        toast("Ağaç yeniden taranıyor…");
+      }
       if (!choice.action) return { ok: true, cancelled: true, found: items.length };
       const mode = choice.action;
       const toDisk = mode === "disk";

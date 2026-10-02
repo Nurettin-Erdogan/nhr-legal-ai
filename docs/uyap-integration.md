@@ -174,6 +174,16 @@ panelleri temizlenir). Çekme ya da kayıt sürerken beklenir. Karar `decideUpda
 - Bu yalnızca geliştirme kurulumu içindir. Avukatlara dağıtımda otomatik güncelleme **Chrome Web Mağazası** yayınıyla (listelenmemiş de olabilir)
   sağlanır; kendi barındırdığımız bir güncelleme adresi Chrome'da yalnız kurumsal politikayla kurulan eklentilerde çalışır.
 
+## Ağaç eksik yüklenirse: onarım ve yeniden tarama (v2.19.0)
+
+Canlıda aynı dosya her açılışta farklı sayıda evrak veriyordu (463, sonra 456) ve eksik klasör değişiyordu: "aynı evrak iki klasörde"
+açıklaması bunu açıklayamazdı (o sabit olurdu), asıl neden ağacın eksik yüklenmesiydi. Düzeltmeler:
+
+- UYAP'ın sayısı artık ağaçtaki **tüm** sayılı klasörlerden hesaplanır (`folderStats`); hiç evrak bulunamayan klasör toplamdan düşmüyordu.
+- `repairTree`: bir klasörde UYAP'ın yazdığından az evrak varsa önce beklenir, sonra klasör kapatılıp yeniden açılır (en çok 3 tur).
+- `expandAll` tek duraksamada bırakmaz (iki ardışık duraksama).
+- Fark kalırsa seçim penceresi eksik klasörleri adıyla yazar ve **"⟳ Ağacı yeniden tara"** düğmesi çıkar.
+
 ## Doğrulanmayanlar ve açık işler
 
 - **Gerçek UYAP sayfa yapısı doğrulanmadı.** Test sayfaları gerçek UYAP'ın DOM'unu kanıtlamaz.
