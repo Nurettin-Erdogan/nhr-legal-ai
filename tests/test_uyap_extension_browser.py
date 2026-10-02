@@ -113,6 +113,18 @@ PAGES = {
           xhr.send();
         });
       </script></body></html>""",
+    # Ön izleme: yaprağa tıklayınca gizli form iframe'e POST edilir, evrak iframe'in İÇİNDE gelir
+    # (gerçek Vatandaş Portalı böyle: ana sayfadan görünmeyen, iframe içi istek).
+    "/vatandas/onizleme-post": """<html><body><h2>Dosya Sorgulama</h2>
+      <div role="dialog" class="modal in" style="display:block"><h4 class="modal-title">2024/2000 - Test</h4>
+        <span class="file" id="yaprak2" evrak_id="77">SIRRI-ONIZLEME-ADI Mehmet</span>
+        <form id="f" method="post" action="/evrak/onizleme-gonder" target="ifr" style="display:none">
+          <input type="hidden" name="evrakId" value="77"><input type="hidden" name="gizliDeger" value="TOPSECRET">
+        </form>
+        <iframe name="ifr" id="ifr"></iframe></div>
+      <script>
+        document.getElementById('yaprak2').addEventListener('click', function () { document.getElementById('f').submit(); });
+      </script></body></html>""",
     # Gerçekçi evrak listesi.
     "/dosya/evraklar": f"<html><body><h2>{CASE_TITLE}</h2>{_EVRAK_ROWS}</body></html>",
     # Dosya penceresi: Evrak sekmesine basılınca liste AJAX ile gelir.
@@ -133,6 +145,20 @@ PAGES = {
 class _UyapHandler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
+
+    def do_POST(self):  # noqa: N802
+        length = int(self.headers.get("Content-Length", 0))
+        self.rfile.read(length)
+        if self.path.startswith("/evrak/onizleme-gonder"):
+            data = _pdf("onizleme")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Disposition", "inline; filename=gizli-ad.pdf")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        self._send(404, b"yok", "text/plain")
 
     def do_GET(self):  # noqa: N802
         path, _, query = self.path.partition("?")
@@ -662,4 +688,46 @@ def test_diagnosis_is_also_saved_as_a_file(lab):
     assert saved.startswith("NHR-Hukuk-UYAP/tani-")
     page.wait_for_timeout(1000)
     assert {"reports": [{"ornek": True}]} in _saved_json_reports(lab)
+    page.close()
+
+
+def test_network_recording_sees_the_request_made_inside_the_preview_iframe_without_leaking_values(lab):
+    """Evrak iframe'in içinde gelir: ana sayfa kaydı bunu göremez, tarayıcı düzeyindeki ağ kaydı görür."""
+    lab.configure()
+    page = lab.open("/vatandas/onizleme-post")
+    tab_id = lab.worker.evaluate(
+        """async () => {
+            const [tab] = await chrome.tabs.query({ url: '*://*.uyap.gov.tr/vatandas/*' });
+            await chrome.tabs.sendMessage(tab.id, { type: 'JURISAI_RECORD_START', seconds: 30 }, { frameId: 0 });
+            return tab.id;
+        }"""
+    )
+    page.wait_for_timeout(600)
+    page.locator("#yaprak2").click()
+    page.wait_for_timeout(2000)
+    stopped = lab.worker.evaluate(
+        "(id) => chrome.tabs.sendMessage(id, { type: 'JURISAI_RECORD_STOP' }, { frameId: 0 })", tab_id
+    )
+    assert stopped["ok"], stopped
+    page.wait_for_timeout(1200)
+
+    # Aynı oturumda önceki testlerin kayıtları da var: bu testin kaydı ağ olayını içeren.
+    [report] = [
+        item
+        for item in _saved_json_reports(lab)
+        if any(e.get("url", "").endswith("/evrak/onizleme-gonder") for e in item.get("backgroundEvents", []))
+    ]
+    background = report["backgroundEvents"]
+    requests = [e for e in background if e["kind"] == "request" and e["url"].endswith("/evrak/onizleme-gonder")]
+    assert requests, background
+    request = requests[0]
+    assert request["method"] == "POST" and request["type"] == "sub_frame" and request["frameId"] != 0
+    assert sorted(request["bodyFields"]) == ["evrakId", "gizliDeger"]
+    responses = [e for e in background if e["kind"] == "response" and e["id"] == request["id"]]
+    assert responses and responses[0]["contentType"] == "application/pdf"
+    assert responses[0]["disposition"] == "inline" and responses[0]["status"] == 200
+    serialized = json.dumps(report, ensure_ascii=False)
+    for leaked in ("TOPSECRET", "SIRRI-ONIZLEME-ADI", "Mehmet", "gizli-ad", "evrakId=77"):
+        assert leaked not in serialized, leaked
+    assert lab.uploads == []
     page.close()

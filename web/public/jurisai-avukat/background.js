@@ -260,10 +260,70 @@ async function recordingState() {
   const stored = await chrome.storage.session.get(RECORD_KEY);
   return stored[RECORD_KEY] || null;
 }
-async function recordBackgroundEvent(state, event) {
-  if (state.events.length < 200) state.events.push({ t: Date.now() - state.startedAt, ...event });
-  await chrome.storage.session.set({ [RECORD_KEY]: state });
+async function recordBackgroundEvent(_state, event) {
+  queueRecord(event);
 }
+
+/* Olaylar tek bir sırada yazılır (webRequest çok sayıda olayı aynı anda üretir; okuma-yazma yarışı olay kaybettirir). */
+let recordQueue = Promise.resolve();
+function queueRecord(event) {
+  recordQueue = recordQueue
+    .then(async () => {
+      const state = await recordingState();
+      if (!state) return;
+      if (state.events.length < 500) state.events.push({ t: Date.now() - state.startedAt, ...event });
+      await chrome.storage.session.set({ [RECORD_KEY]: state });
+    })
+    .catch(() => {});
+}
+
+/* Tarayıcı düzeyinde ağ kaydı (yalnız gözlem, hiçbir isteği değiştirmez/engellemez): iframe içindeki
+   istekler dahil sekmenin istekleri. Saklananlar: yöntem, tür, çerçeve, YOL BİÇİMİ, form alan ADLARI,
+   durum kodu, içerik türü ve "attachment/inline". Değerler, adlar ve sorgu değerleri saklanmaz. */
+let recordingTabs = new Set();
+chrome.storage.session.get(RECORD_KEY).then((stored) => {
+  const state = stored[RECORD_KEY];
+  if (state?.tabId != null) recordingTabs = new Set([state.tabId, ...(state.openedTabs || [])]);
+});
+const NET_FILTER = { urls: ["*://*.uyap.gov.tr/*", "*://*.adalet.gov.tr/*", "*://*.e-devlet.gov.tr/*"] };
+const NET_STATIC_TYPES = new Set(["image", "stylesheet", "script", "font", "ping", "csp_report"]);
+chrome.webRequest.onBeforeRequest.addListener(
+  (details) => {
+    if (!recordingTabs.has(details.tabId) || NET_STATIC_TYPES.has(details.type)) return;
+    const body = details.requestBody;
+    queueRecord({
+      kind: "request",
+      id: details.requestId,
+      method: details.method,
+      type: details.type,
+      frameId: details.frameId,
+      parentFrameId: details.parentFrameId,
+      url: shapeOf(details.url),
+      bodyFields: body?.formData ? Object.keys(body.formData).slice(0, 12) : [],
+      bodyRawBytes: body?.raw ? body.raw.reduce((sum, part) => sum + (part.bytes?.byteLength || 0), 0) : 0,
+    });
+  },
+  NET_FILTER,
+  ["requestBody"],
+);
+chrome.webRequest.onHeadersReceived.addListener(
+  (details) => {
+    if (!recordingTabs.has(details.tabId) || NET_STATIC_TYPES.has(details.type)) return;
+    const header = (name) =>
+      (details.responseHeaders || []).find((item) => item.name.toLowerCase() === name)?.value || "";
+    queueRecord({
+      kind: "response",
+      id: details.requestId,
+      status: details.statusCode,
+      type: details.type,
+      contentType: header("content-type").split(";")[0].slice(0, 60),
+      disposition: (header("content-disposition").split(";")[0] || "").toLowerCase().slice(0, 20),
+      length: Number(header("content-length")) || 0,
+    });
+  },
+  NET_FILTER,
+  ["responseHeaders"],
+);
 chrome.downloads.onCreated.addListener(async (item) => {
   const state = await recordingState();
   if (!state || item.byExtensionId === chrome.runtime.id) return;
@@ -280,6 +340,8 @@ chrome.tabs.onCreated.addListener(async (tab) => {
   const state = await recordingState();
   if (!state || tab.openerTabId !== state.tabId) return;
   state.openedTabs = [...(state.openedTabs || []), tab.id];
+  recordingTabs.add(tab.id);
+  await chrome.storage.session.set({ [RECORD_KEY]: state });
   await recordBackgroundEvent(state, { kind: "new_tab", url: shapeOf(tab.pendingUrl || tab.url || "") });
 });
 chrome.tabs.onUpdated.addListener(async (tabId, change) => {
@@ -307,13 +369,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "JURISAI_RECORD_STARTED") {
     chrome.storage.session
       .set({ [RECORD_KEY]: { tabId: sender.tab?.id ?? null, startedAt: Date.now(), events: [], openedTabs: [] } })
-      .then(() => sendResponse({ ok: true }));
+      .then(() => {
+        recordingTabs = new Set(sender.tab?.id != null ? [sender.tab.id] : []);
+        sendResponse({ ok: true });
+      });
     return true;
   }
   if (message?.type === "JURISAI_RECORD_FINISHED") {
     (async () => {
       try {
+        await recordQueue; // bekleyen ağ olayları yazılsın
         const state = await recordingState();
+        recordingTabs = new Set();
         await chrome.storage.session.remove(RECORD_KEY);
         const report = { ...message.report, backgroundEvents: state?.events || [] };
         sendResponse({ ok: true, file: await saveReportFile("tani-kayit", report) });
