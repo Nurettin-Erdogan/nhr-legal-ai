@@ -777,7 +777,10 @@
       const typeName = isEk
         ? "Ek"
         : folderName(folderLabels.filter((l) => !/^Tüm Evraklar$/i.test(l) && !/^Dosyaya Eklenen Son/i.test(l)).pop() || "Evrak");
-      const entry = { id, span, title: textOf(span), folders, typeName, inRecent, isEk };
+      // UYAP klasör adının yanına kendi sayısını yazar ("Kesinleşme Şerhleri (2)"): bulduğumuz sayıyla karşılaştırmak için.
+      const nearest = folderLabels.filter((l) => !/^Tüm Evraklar$/i.test(l) && !/^Dosyaya Eklenen Son/i.test(l)).pop() || "";
+      const declared = isEk ? null : Number((/\((\d+)\)\s*$/.exec(nearest) || [])[1]) || null;
+      const entry = { id, span, title: textOf(span), folders, typeName, inRecent, isEk, declared };
       const existing = byId.get(id);
       if (!existing || (existing.inRecent && !inRecent)) byId.set(id, entry);
     }
@@ -825,6 +828,18 @@
         groups.get(key).push(item);
       }
       const counter = make("div", "color:#333;font-weight:600;");
+      // Toplam doğrulama: UYAP'ın klasör sayıları (evraklar, ekler hariç) ile bulunanlar.
+      const countedGroups = [...groups.values()].filter((group) => group[0].declared !== null);
+      const declaredTotal = countedGroups.reduce((sum, group) => sum + group[0].declared, 0);
+      const foundTotal = countedGroups.reduce((sum, group) => sum + group.length, 0);
+      const eks = items.filter((item) => item.isEk).length;
+      const verification = make(
+        "div",
+        `font-size:12px;margin-top:6px;color:${declaredTotal === foundTotal ? "#166534" : "#b91c1c"};`,
+        `UYAP klasör sayıları: ${declaredTotal} evrak · bulunan: ${foundTotal}${eks ? ` · ayrıca ${eks} ek` : ""}` +
+          (declaredTotal === foundTotal ? " ✓ sayılar tutuyor" : " ⚠ sayılar tutmuyor"),
+      );
+      head.append(verification);
       const refresh = () => {
         const n = boxes.filter((entry) => entry.input.checked).length;
         counter.textContent = `${n} / ${items.length} evrak seçili`;
@@ -835,7 +850,15 @@
         const groupInput = document.createElement("input");
         groupInput.type = "checkbox";
         groupInput.checked = true;
-        heading.append(groupInput, make("span", "", `📁 ${label}`));
+        const declared = group[0].declared;
+        const mismatch = declared !== null && declared !== group.length;
+        heading.append(
+          groupInput,
+          make("span", "", `📁 ${label}`),
+          ...(declared !== null
+            ? [make("span", `font-weight:400;font-size:12px;color:${mismatch ? "#b91c1c" : "#555"};`, `${mismatch ? "⚠ " : ""}UYAP: ${declared}, bulunan: ${group.length}`)]
+            : []),
+        );
         list.append(heading);
         const members = [];
         for (const item of group) {

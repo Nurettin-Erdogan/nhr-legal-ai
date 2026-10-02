@@ -1185,3 +1185,37 @@ def test_a_late_second_request_from_a_previous_preview_never_replaces_the_next_e
     contents = {upload["fields"]["evrakId"]: upload["file"]["data"] for upload in lab.uploads}
     assert len(set(contents.values())) == 4  # dört evrak, dört farklı içerik (hiçbiri bir öncekinin kopyası değil)
     page.close()
+
+
+PAGES["/vatandas/dosya-sayi-tutmuyor"] = PAGES["/vatandas/dosya-agaci"].replace(
+    "Kesinleşme Şerhleri (2)", "Kesinleşme Şerhleri (3)"  # UYAP 3 diyor, ağaçta yalnız 2 yaprak var
+)
+
+
+def test_chooser_compares_the_found_items_with_uyaps_own_folder_counts(lab):
+    """"Gerçekten o kadar evrak var mı?": UYAP klasör adının yanına kendi sayısını yazar; eklenti bulduğuyla karşılaştırır."""
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-agaci")
+    _start_pull(lab)
+    page.wait_for_selector(".jurisai-chooser", timeout=30000)
+    text = page.inner_text(".jurisai-chooser")
+    assert "UYAP: 2, bulunan: 2" in text  # Kesinleşme Şerhleri (2): 2 yaprak
+    assert "UYAP: 1, bulunan: 1" in text
+    assert "UYAP klasör sayıları: 3 evrak · bulunan: 3" in text and "sayılar tutuyor" in text
+    assert "ayrıca 1 ek" in text  # ek ayrıca sayılır
+    page.click("#jurisai-pick-cancel")
+    _finish_pull(lab)
+    page.close()
+
+
+def test_a_count_mismatch_is_flagged(lab):
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-sayi-tutmuyor")
+    _start_pull(lab)
+    page.wait_for_selector(".jurisai-chooser", timeout=30000)
+    text = page.inner_text(".jurisai-chooser")
+    assert "⚠ UYAP: 3, bulunan: 2" in text
+    assert "UYAP klasör sayıları: 4 evrak · bulunan: 3" in text and "sayılar tutmuyor" in text
+    page.click("#jurisai-pick-cancel")
+    _finish_pull(lab)
+    page.close()
