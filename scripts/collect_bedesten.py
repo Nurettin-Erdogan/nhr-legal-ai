@@ -164,7 +164,9 @@ class Collector:
             except BedestenRateLimited:
                 self._limited()
             except BedestenError as exc:
-                if attempt >= 2:
+                # Portal listede gösterip belgeyi vermeyen kayıt kalıcı olarak yoktur (ölçüldü:
+                # 2026-10-02, 2022-12). Yeniden denemek her kayıtta ~25 sn bekleyip kotayı boşa harcar.
+                if "bulunamadı" in str(exc) or "Record not found" in str(exc) or attempt >= 2:
                     raise
                 logger.warning("Bedesten hatası, yeniden denenecek: %s", exc)
                 time.sleep(5 * (attempt + 1))

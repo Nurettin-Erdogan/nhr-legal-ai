@@ -155,8 +155,12 @@ def _fetch_official_text(source: str, client, document_id: str) -> str:
                 return text
         except BedestenRateLimited:
             raise
-        except BedestenError:
-            pass
+        except BedestenError as exc:
+            if "bulunamadı" in str(exc) or "Record not found" in str(exc):
+                # Bedesten kaydı hiç vermiyor (ölçüldü: 2026-10-02, listede görünüp çekilemeyen
+                # "hayalet" kayıt). Portala düşmek bağlantı hatasında beş saat takılıp kaldı; kalıcı
+                # sayılır ("geçersiz" sözcüğü döngüde beklemesiz `unavailable` işaretletir).
+                raise ValueError(f"geçersiz kimlik: Bedesten kaydı yok ({document_id})") from exc
     html = client.fetch_document_html(document_id)
     if source == "danistay":
         from ingestion.danistay.scraper import extract_decision_text
