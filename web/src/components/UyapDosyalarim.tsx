@@ -92,11 +92,16 @@ export const UyapDosyalarim = () => {
 
       {extension && !extension.installed && (
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm leading-relaxed">
-          <p className="font-medium">JurisAI eklentisi bulunamadı.</p>
-          <p className="text-muted-foreground mt-1">
-            Aşağıdaki "Tarayıcı eklentisi" bölümünden eklentiyi kur (zaten kuruluysa en güncel sürüme geçmesi için UYAP sekmesini ve bu sayfayı
-            yenile).
-          </p>
+          <p className="font-medium">Bu sayfa JurisAI eklentisiyle konuşamıyor.</p>
+          <p className="text-muted-foreground mt-1">Eklenti kurulu değilse aşağıdaki "Tarayıcı eklentisi" bölümünden kur. Kuruluysa sırayla dene:</p>
+          <ol className="text-muted-foreground mt-1 list-decimal pl-5 space-y-0.5">
+            <li>
+              Eklenti simgesine tıkla: sürüm <strong>2.21</strong> veya üstü olmalı. Değilse{" "}
+              <span className="font-mono text-xs">chrome://extensions</span> → JurisAI → ↻ (yeniden yükle).
+            </li>
+            <li>Sonra bu sayfayı F5 ile yenile (eklenti, sayfa açıldıktan sonra güncellendiyse sayfaya ancak yenilenince bağlanır).</li>
+            <li>Hâlâ olmuyorsa eklentinin açık olduğundan emin ol; sayfa adresi <span className="font-mono text-xs">localhost:3000</span> olmalı.</li>
+          </ol>
           <Button size="sm" variant="outline" className="mt-2" onClick={() => void detect()}>
             <RefreshCw className="h-3.5 w-3.5 mr-2" /> Yeniden dene
           </Button>

@@ -5,8 +5,17 @@
    Gizlilik varsayılanları: otomatik aktarım ve bilgisayara yerel kopya KAPALIDIR.
    Biri yalnızca kullanıcı ayar penceresinde açıkça açarsa çalışır. */
 
-const DEFAULTS = {
+/* BUILD-CONFIG-BEGIN: mağaza paketi (scripts/build_store_extension.py) bu bloğu üretim değerleriyle değiştirir */
+const BUILD = {
+  store: false, // true: Chrome Web Mağazası paketi (kendi kendine güncelleme ve alarm yok, mağaza günceller)
   apiUrl: "http://localhost:8766/api/public/v1/documents/upload",
+  webOrigins: ["http://localhost:3000"],
+  updateManifestUrl: "http://localhost:3000/jurisai-avukat/manifest.json",
+};
+/* BUILD-CONFIG-END */
+
+const DEFAULTS = {
+  apiUrl: BUILD.apiUrl,
   apiKey: "",
   throttleMs: 1500,
   timeoutMs: 45000,
@@ -285,7 +294,7 @@ async function handleAutoIngest(payload) {
    yeniden yükler ve açık UYAP sekmelerine yeni içerik betiğini yerleştirir: elle ↻ ya da F5 gerekmez.
    Sürümü geliştirme sunucusunun yayınladığı manifest'ten okur. Çekme/kayıt sürerken beklenir. Eklenti repodan değil eski bir
    klasörden yüklenmişse yeniden yükleme sürümü değiştirmez: bu durum açılır pencerede "eski klasörden çalışıyor" diye gösterilir. */
-const UPDATE_MANIFEST_URL = "http://localhost:3000/jurisai-avukat/manifest.json";
+const UPDATE_MANIFEST_URL = BUILD.updateManifestUrl;
 const UPDATE_ALARM = "jurisai-update-check";
 
 function compareVersions(a, b) {
@@ -305,6 +314,7 @@ function decideUpdate({ remote, current, tried, busy }) {
   return "reload";
 }
 async function checkForUpdate() {
+  if (BUILD.store) return; // mağaza kurulumunu Chrome kendisi günceller
   try {
     const { autoUpdate } = await chrome.storage.local.get("autoUpdate");
     if (autoUpdate === false) return;
@@ -330,7 +340,7 @@ async function checkForUpdate() {
 /* ---------- JurisAI web uygulaması köprüsü ----------
    Komutlar yalnız JurisAI sayfasındaki köprü betiğinden (bridge.js) gelir; gönderenin kaynağı burada ayrıca denetlenir.
    JurisAI yayına alınınca gerçek alan adı hem burada hem manifest'teki bridge.js eşleşmesinde eklenmelidir. */
-const WEB_ORIGINS = ["http://localhost:3000"];
+const WEB_ORIGINS = BUILD.webOrigins;
 const UYAP_URLS = ["*://*.uyap.gov.tr/*", "*://*.adalet.gov.tr/*"];
 
 function fromJurisaiWeb(sender) {
@@ -411,17 +421,20 @@ async function reinjectIntoOpenTabs() {
   }
 }
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.alarms.create(UPDATE_ALARM, { periodInMinutes: 0.5 });
+  if (!BUILD.store) chrome.alarms.create(UPDATE_ALARM, { periodInMinutes: 0.5 });
   reinjectIntoOpenTabs();
   checkForUpdate();
 });
 chrome.runtime.onStartup.addListener(() => {
-  chrome.alarms.create(UPDATE_ALARM, { periodInMinutes: 0.5 });
+  if (!BUILD.store) chrome.alarms.create(UPDATE_ALARM, { periodInMinutes: 0.5 });
   checkForUpdate();
 });
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === UPDATE_ALARM) checkForUpdate();
-});
+// Mağaza paketinde "alarms" izni yoktur: dinleyici yalnız geliştirme kurulumunda eklenir.
+if (!BUILD.store) {
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === UPDATE_ALARM) checkForUpdate();
+  });
+}
 
 /* ---------- Tıklama kaydı (tanı) ----------
    İçerik betiği kaydı başlatınca indirme ve yeni sekme olayları da toplanır (oturum belleğinde, servis

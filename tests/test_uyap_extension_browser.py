@@ -1705,3 +1705,23 @@ def test_the_bridge_ignores_commands_that_are_not_on_its_list(lab):
     assert web.evaluate("() => window.ask('EVIL', {}, 800)") == {"timeout": True}
     assert web.evaluate("() => window.ask('PING')")["ok"]  # köprü çalışmaya devam eder
     web.close()
+
+
+def test_reinjecting_the_bridge_into_an_open_jurisai_tab_gives_exactly_one_reply(lab):
+    """Eklenti güncellenince açık JurisAI sekmesine köprü yeniden yerleştirilir; eski kopya susmalı, yanıt çift gelmemeli."""
+    lab.configure(throttleMs=500)
+    web = _jurisai_page(lab)
+    lab.worker.evaluate("() => reinjectIntoOpenTabs()")
+    web.wait_for_timeout(700)
+    replies = web.evaluate(
+        """() => new Promise((resolve) => {
+          let count = 0;
+          window.addEventListener('message', (event) => {
+            if (event.data && event.data.id === 'cift-yanit' && event.data.source === 'jurisai-extension') count += 1;
+          });
+          window.postMessage({ source: 'jurisai-web', id: 'cift-yanit', type: 'PING', payload: {} }, location.origin);
+          setTimeout(() => resolve(count), 1000);
+        })"""
+    )
+    assert replies == 1
+    web.close()
