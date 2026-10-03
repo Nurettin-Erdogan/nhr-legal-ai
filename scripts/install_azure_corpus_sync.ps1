@@ -8,6 +8,8 @@ $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $python = Join-Path $root '.venv\Scripts\python.exe'
 $sync = Join-Path $PSScriptRoot 'sync_azure_corpus.py'
+# Görev her turda pencere açmasın: conhost --headless konsolsuz çalıştırır (ssh alt süreci de dahil).
+$conhost = Join-Path $env:SystemRoot 'System32\conhost.exe'
 $taskName = 'NHR Legal AI Azure Corpus Sync'
 
 if (-not (Test-Path -LiteralPath $python)) { throw "Python bulunamadı: $python" }
@@ -18,13 +20,14 @@ if ($existing) {
         throw "Görev zaten var: $taskName. Güncellemek için -UpdateExisting kullanın."
     }
     if ($existing.Actions.Count -ne 1 -or
-        $existing.Actions[0].Execute -ne $python -or
+        ($existing.Actions[0].Execute -ne $python -and $existing.Actions[0].Execute -ne $conhost) -or
         -not $existing.Actions[0].Arguments.Contains($sync)) {
         throw 'Aynı adlı görevin eylemi farklı; güvenli güncelleme reddedildi.'
     }
 }
 
-$action = New-ScheduledTaskAction -Execute $python -Argument ('"' + $sync + '" --embed-limit 500') -WorkingDirectory $root
+$action = New-ScheduledTaskAction -Execute $conhost `
+    -Argument ('--headless "' + $python + '" "' + $sync + '" --embed-limit 500') -WorkingDirectory $root
 if ($Frequency -eq 'Hourly') {
     $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5) `
         -RepetitionInterval (New-TimeSpan -Hours 1) `
