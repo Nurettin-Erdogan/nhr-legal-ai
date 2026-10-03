@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/components/AuthProvider";
+import { UyapDosyalarim } from "@/components/UyapDosyalarim";
 import { supabase } from "@/integrations/supabase/client";
 import { expandDroppedFiles, importEntries } from "@/lib/uyap-import";
 import { humanSize } from "@/lib/uyap";
@@ -181,6 +182,8 @@ const UyapConnect = () => {
       title="UYAP'a Bağlan"
       subtitle="UYAP'ta kendi oturumunu aç; belgeleri JurisAI hesabına sen onaylayarak aktar."
     >
+      <UyapDosyalarim />
+
       {/* Tarayıcı eklentisi */}
       <section className="mb-6 rounded-xl border bg-card p-5 space-y-4">
         <div className="flex flex-wrap items-center gap-2">

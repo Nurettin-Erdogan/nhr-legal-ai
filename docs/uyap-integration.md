@@ -197,6 +197,31 @@ Hızlanma, çekilecek evrak sayısını azaltarak sağlanır:
 - **Süre ölçümü:** özet satırı evrak başına ortalama yakalama / indirme / yükleme / bekleme sürelerini yazar; ayar tahminle değil
   ölçümle yapılır. Sonuç nesnesinde `timing` ve `summary` alanları da vardır.
 
+## JurisAI içinden yönetim: "UYAP Dosyalarım" (v2.21.0, 1. aşama)
+
+Hedef: avukat UYAP'a girer, **dosya listesini, evrak seçimini ve çekme ilerlemesini JurisAI içinde** görür. Piyasadaki benzer ürünler
+(ör. LexPanel) de aynı yapıyı kullanır: web uygulaması komut verir, tarayıcı eklentisi köprü olur, oturum tarayıcıda kalır. UYAP şifresi,
+e-imza ya da çerezi JurisAI'ya hiç gelmez; JurisAI sayfası UYAP'a kendi başına erişemez (tarayıcı kaynak politikası), bu yüzden eklenti şarttır.
+
+**Köprü protokolü** (`web/public/jurisai-avukat/bridge.js` ↔ `web/src/lib/uyap-bridge.ts`):
+
+- Sayfa `window.postMessage({ source: "jurisai-web", id, type, payload })` yollar; eklenti aynı pencereye `{ source: "jurisai-extension", id, ... }`
+  döner. Yalnız beyaz listedeki komutlar iletilir: `PING`, `LIST_DOSYALAR`, `OPEN_DOSYA`.
+- `bridge.js` yalnız JurisAI sayfalarında (manifest `content_scripts`, şimdilik `http://localhost:3000`) yüklenir; arka plan betiği gönderenin
+  kaynağını ayrıca denetler (`WEB_ORIGINS`). **JurisAI yayına alınınca gerçek alan adı hem `WEB_ORIGINS`'e hem manifest'teki `bridge.js` eşleşmesine eklenmeli.**
+- Eklenti yeniden yüklenince (otomatik güncelleme) yetim kalan köprü kopyası `chrome.runtime.id` yokluğunda susar; açık JurisAI sekmelerine yenisi yerleştirilir.
+
+**Akış:** `LIST_DOSYALAR` → arka plan en son kullanılan UYAP sekmesinin üst çerçevesine `JURISAI_LIST_DOSYALAR` gönderir → içerik betiği dosya listesindeki
+"Dosya Görüntüle" satırlarını okur (hücre metinleri, esas no, birim, `Toplam N sayfadan M. sayfa`) → liste yalnız JurisAI sayfasında tutulur,
+sunucuya gönderilmez. `OPEN_DOSYA` satırı anahtarıyla yeniden bulur (liste değişmişse `stale`), dosyayı açar ve UYAP sekmesini öne getirir; evrak
+seçim penceresi şimdilik UYAP sekmesinde çıkar.
+
+Hata kodları: `no_uyap_tab` (UYAP sekmesi yok), `no_list` (sekmede dosya listesi yok), `no_content` (içerik betiği yok: F5), `stale`, `busy`, `timeout` (eklenti yok).
+
+**Gerçek UYAP'ta doğrulanmayanlar:** listenin hücre düzeni (esas no/birim tahmini metin desenlerine dayanır), çok sayfalı listede sayfa değiştirme
+(şimdi yalnız görünen sayfa okunur ve diğer sayfalar için uyarı gösterilir), Avukat Portalı'nın dosya listesi. Sonraki aşamalar: evrak ağacını ve seçimi
+JurisAI'da göstermek (2), çekmeyi ve ilerlemeyi JurisAI'da yürütmek, dosyaları esas no ile davaya otomatik bağlamak (3).
+
 ## Doğrulanmayanlar ve açık işler
 
 - **Gerçek UYAP sayfa yapısı doğrulanmadı.** Test sayfaları gerçek UYAP'ın DOM'unu kanıtlamaz.

@@ -327,7 +327,75 @@ async function checkForUpdate() {
   }
 }
 /** Yeniden yüklemeden sonra açık UYAP sekmelerine yeni içerik betiği yerleştirilir (F5 gerekmesin). */
+/* ---------- JurisAI web uygulaması köprüsü ----------
+   Komutlar yalnız JurisAI sayfasındaki köprü betiğinden (bridge.js) gelir; gönderenin kaynağı burada ayrıca denetlenir.
+   JurisAI yayına alınınca gerçek alan adı hem burada hem manifest'teki bridge.js eşleşmesinde eklenmelidir. */
+const WEB_ORIGINS = ["http://localhost:3000"];
+const UYAP_URLS = ["*://*.uyap.gov.tr/*", "*://*.adalet.gov.tr/*"];
+
+function fromJurisaiWeb(sender) {
+  try {
+    return WEB_ORIGINS.includes(new URL(sender?.url || sender?.tab?.url || "").origin);
+  } catch (_) {
+    return false;
+  }
+}
+
+/** UYAP sekmelerinden (en son kullanılan önce) ilkinin içerik betiğine komut gönderir; ilk başarılı yanıtı döndürür. */
+async function askUyapTab(message, { focus = false } = {}) {
+  const tabs = (await chrome.tabs.query({ url: UYAP_URLS })).sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
+  if (!tabs.length) return { ok: false, code: "no_uyap_tab", error: "Açık bir UYAP sekmesi yok: UYAP'ı aç ve giriş yap." };
+  let last = null;
+  for (const tab of tabs) {
+    const out = await chrome.tabs.sendMessage(tab.id, message, { frameId: 0 }).catch(() => null);
+    if (out?.ok) {
+      if (focus) {
+        await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
+        await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+      }
+      return out;
+    }
+    last = out || last;
+  }
+  return last || { ok: false, code: "no_content", error: "UYAP sekmesine ulaşılamadı: UYAP sayfasını yenile (F5)." };
+}
+
+async function handleBridge(type, payload) {
+  switch (type) {
+    case "BRIDGE_PING": {
+      const settings = await getSettings();
+      return { ok: true, version: chrome.runtime.getManifest().version, connected: (settings.apiKey || "").trim().length >= 20 };
+    }
+    case "BRIDGE_LIST_DOSYALAR":
+      return askUyapTab({ type: "JURISAI_LIST_DOSYALAR" });
+    case "BRIDGE_OPEN_DOSYA":
+      return askUyapTab({ type: "JURISAI_OPEN_DOSYA", key: String(payload?.key || "") }, { focus: true });
+    default:
+      return { ok: false, error: "Bilinmeyen komut" };
+  }
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!/^BRIDGE_/.test(message?.type || "")) return false;
+  if (!fromJurisaiWeb(sender)) {
+    sendResponse({ ok: false, error: "Bu kaynaktan komut kabul edilmez" });
+    return false;
+  }
+  handleBridge(message.type, message.payload || {})
+    .then(sendResponse)
+    .catch((error) => sendResponse({ ok: false, error: error?.message || "bilinmeyen hata" }));
+  return true;
+});
+
 async function reinjectIntoOpenTabs() {
+  try {
+    // JurisAI sekmeleri: eklenti güncellenince eski köprü yetim kalır, yenisi yerleştirilir.
+    for (const tab of await chrome.tabs.query({ url: WEB_ORIGINS.map((origin) => `${origin}/*`) })) {
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["bridge.js"] }).catch(() => {});
+    }
+  } catch (_) {
+    /* yoksay */
+  }
   try {
     const tabs = await chrome.tabs.query({ url: ["*://*.uyap.gov.tr/*", "*://*.adalet.gov.tr/*"] });
     for (const tab of tabs) {

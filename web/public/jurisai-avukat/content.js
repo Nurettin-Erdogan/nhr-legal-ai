@@ -1221,6 +1221,51 @@
       return label.length < 40 && OPEN_RE.test(label) && visibleElement(el);
     });
   }
+  /** Dosya listesindeki satırlar: JurisAI web uygulamasına gösterilmek üzere (kişisel veri JurisAI sunucusuna gitmez). */
+  function dosyaRows() {
+    const seen = new Map();
+    return caseOpenTargets().map((button) => {
+      const row = button.closest("tr");
+      const table = row?.closest("table");
+      const headers = table ? [...table.querySelectorAll("thead th, tr:first-child th")].map((th) => textOf(th)) : [];
+      const cells = row
+        ? [...row.querySelectorAll("td")]
+            .map((td) => textOf(td).replace(/\s+/g, " ").slice(0, 90))
+            .filter((text) => text && !OPEN_RE.test(text))
+            .slice(0, 8)
+        : [];
+      const esas = cells.find((text) => /^\d{4}\/\d+/.test(text)) || "";
+      const birim = cells.find((text) => /mahkeme|daire|müdürlü|savcılı|kurul|hakem/i.test(trLower(text))) || "";
+      const base = cells.join(" | ");
+      const count = (seen.get(base) || 0) + 1;
+      seen.set(base, count);
+      return { key: `${base}#${count}`, esas, birim, cells, headers: headers.slice(0, 8), button };
+    });
+  }
+  function listDosyalar() {
+    const rows = dosyaRows();
+    if (!rows.length) {
+      return {
+        ok: false,
+        code: "no_list",
+        error: "Bu UYAP sekmesinde dosya listesi görünmüyor: UYAP'ta Dosya Sorgulama (dosya listesi) sayfasını aç.",
+      };
+    }
+    const paging = /Toplam\s+(\d+)\s+sayfadan\s+(\d+)\.\s*sayfa/i.exec(document.body?.innerText || "");
+    return {
+      ok: true,
+      items: rows.map(({ button: _button, ...info }) => info),
+      pages: paging ? Number(paging[1]) : null,
+      page: paging ? Number(paging[2]) : null,
+    };
+  }
+  function openDosyaByKey(key) {
+    const row = dosyaRows().find((entry) => entry.key === key);
+    if (!row) return { ok: false, code: "stale", error: "UYAP'taki liste değişmiş: dosyaları yeniden listele." };
+    if (pulling) return { ok: false, code: "busy", error: "Bir çekme zaten sürüyor." };
+    openCaseAndChoose(row.button); // dosyayı açar, evrak seçim penceresini UYAP sekmesinde gösterir; beklenmez
+    return { ok: true };
+  }
   function showCasePicker(targets) {
     document.querySelector(".jurisai-case-picker")?.remove();
     const overlay = document.createElement("div");
@@ -1476,8 +1521,16 @@
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     // Kayıt yalnız üst çerçevede tutulur; iç çerçeveler (ön izleme iframe'i vb.) "kayıt yok" yanıtıyla araya girmesin.
-    if (/^JURISAI_(RECORD_(START|STOP)|PULL_(DOSYA|STOP|PROBE))$/.test(message?.type || "") && window !== window.top)
+    if (/^JURISAI_(RECORD_(START|STOP)|PULL_(DOSYA|STOP|PROBE)|LIST_DOSYALAR|OPEN_DOSYA)$/.test(message?.type || "") && window !== window.top)
       return false;
+    if (message?.type === "JURISAI_LIST_DOSYALAR") {
+      sendResponse(listDosyalar());
+      return true;
+    }
+    if (message?.type === "JURISAI_OPEN_DOSYA") {
+      sendResponse(openDosyaByKey(String(message.key || "")));
+      return true;
+    }
     if (message?.type === "JURISAI_PULL_PROBE") {
       probeDirect()
         .then(sendResponse)

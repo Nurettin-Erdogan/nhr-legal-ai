@@ -1612,3 +1612,96 @@ def test_an_opened_evrak_with_an_empty_attachment_list_is_reopened_until_the_att
     page.click("#jurisai-pick-cancel")
     _finish_pull(lab)
     page.close()
+
+
+# --- JurisAI web sayfası ↔ eklenti köprüsü (bridge.js) -----------------------------------------------------
+# Sahte JurisAI sayfası localhost:3000'de sunulur (eklentinin köprü betiği yalnız oraya yerleşir); sayfa gerçek uygulamanın
+# yaptığı gibi window.postMessage ile komut gönderir.
+JURISAI_PAGE = """<html><body><h1>JurisAI</h1><script>
+window.ask = (type, payload, wait) => new Promise((resolve) => {
+  const id = 'q' + Math.random();
+  const on = (event) => {
+    const d = event.data;
+    if (event.source === window && d && d.source === 'jurisai-extension' && d.id === id) { window.removeEventListener('message', on); resolve(d); }
+  };
+  window.addEventListener('message', on);
+  window.postMessage({ source: 'jurisai-web', id: id, type: type, payload: payload || {} }, location.origin);
+  setTimeout(() => { window.removeEventListener('message', on); resolve({ timeout: true }); }, wait || 8000);
+});
+</script></body></html>"""
+
+
+def _jurisai_page(lab):
+    page = lab.context.new_page()
+    page.route(
+        "http://localhost:3000/**",
+        lambda route: route.fulfill(status=200, content_type="text/html; charset=utf-8", body=JURISAI_PAGE),
+    )
+    page.goto("http://localhost:3000/dashboard/uyap")
+    page.wait_for_timeout(500)
+    return page
+
+
+def _close_uyap_tabs(lab):
+    for page in list(lab.context.pages):
+        if "uyap.gov.tr" in page.url:
+            page.close()
+
+
+def test_the_jurisai_page_can_ping_the_extension(lab):
+    lab.configure(throttleMs=500)
+    web = _jurisai_page(lab)
+    reply = web.evaluate("() => window.ask('PING')")
+    version = json.loads((EXTENSION_DIR / "manifest.json").read_text(encoding="utf-8"))["version"]
+    assert reply["ok"] and reply["version"] == version and reply["connected"] is True, reply
+    web.close()
+
+
+def test_the_jurisai_page_lists_the_dosyalar_of_the_open_uyap_tab(lab):
+    lab.configure(throttleMs=500)
+    uyap = lab.open("/vatandas/dosya-listesi")
+    web = _jurisai_page(lab)
+    reply = web.evaluate("() => window.ask('LIST_DOSYALAR')")
+    assert reply["ok"], reply
+    assert len(reply["items"]) == 1
+    item = reply["items"][0]
+    assert item["esas"] == "2024/2000" and "Ankara Bölge Adliye Mahkemesi 19. Ceza Dairesi" in item["birim"], item
+    assert item["key"] and "button" not in item  # satır düğmesi (DOM öğesi) sayfaya gitmez
+    web.close()
+    uyap.close()
+
+
+def test_the_bridge_says_what_is_missing_when_there_is_no_uyap_tab_or_no_list(lab):
+    lab.configure(throttleMs=500)
+    _close_uyap_tabs(lab)
+    web = _jurisai_page(lab)
+    assert web.evaluate("() => window.ask('LIST_DOSYALAR')")["code"] == "no_uyap_tab"
+    other = lab.open("/vatandas/onizleme-post")  # UYAP sekmesi var ama dosya listesi yok
+    reply = web.evaluate("() => window.ask('LIST_DOSYALAR')")
+    assert reply["ok"] is False and reply["code"] == "no_list", reply
+    other.close()
+    web.close()
+
+
+def test_the_jurisai_page_can_open_a_dosya_and_the_evrak_chooser_appears_in_the_uyap_tab(lab):
+    lab.configure(throttleMs=500)
+    uyap = lab.open("/vatandas/dosya-listesi")
+    web = _jurisai_page(lab)
+    key = web.evaluate("() => window.ask('LIST_DOSYALAR')")["items"][0]["key"]
+    reply = web.evaluate("(key) => window.ask('OPEN_DOSYA', { key })", key)
+    assert reply["ok"], reply
+    uyap.wait_for_selector(".jurisai-chooser", timeout=60000)
+    uyap.click("#jurisai-pick-cancel")
+    uyap.wait_for_timeout(500)
+    stale = web.evaluate("() => window.ask('OPEN_DOSYA', { key: 'olmayan#1' })")
+    assert stale["ok"] is False and stale["code"] == "stale", stale
+    web.close()
+    uyap.close()
+
+
+def test_the_bridge_ignores_commands_that_are_not_on_its_list(lab):
+    lab.configure(throttleMs=500)
+    web = _jurisai_page(lab)
+    assert web.evaluate("() => window.ask('EVIL', {}, 800)") == {"timeout": True}
+    assert web.evaluate("() => window.ask('PING')")["ok"]  # köprü çalışmaya devam eder
+    web.close()
