@@ -39,7 +39,7 @@ const REQUEST_TIMEOUT_MS = 20000;
 
 /** Eklentiye komut gönderir; yanıt gelmezse (eklenti yok ya da eski) `timeout` hatası döner. */
 export function bridgeRequest<T extends object = object>(
-  type: "PING" | "LIST_DOSYALAR" | "OPEN_DOSYA",
+  type: "PING" | "LIST_DOSYALAR" | "OPEN_DOSYA" | "SET_KEY",
   payload: Record<string, unknown> = {},
   timeoutMs = REQUEST_TIMEOUT_MS,
 ): Promise<BridgeReply<T>> {
@@ -108,6 +108,64 @@ export async function listUyapDosyalari(): Promise<
   return { ok: true, liste: parseDosyaListe(reply) };
 }
 
+/** Sayfanın oluşturduğu bağlantı anahtarını eklentiye yazar (elle yapıştırma gerekmez); eklenti yoksa `ok: false` döner. */
+export async function setExtensionKey(key: string): Promise<boolean> {
+  const reply = await bridgeRequest("SET_KEY", { key }, 2000);
+  if (reply.ok && typeof window !== "undefined") window.dispatchEvent(new Event(EXTENSION_CHANGED_EVENT));
+  return reply.ok;
+}
+
+/** Eklentinin durumu değişince (ör. anahtar yazıldı) yayımlanır; "UYAP Dosyalarım" bölümü durumu yeniler. */
+export const EXTENSION_CHANGED_EVENT = "jurisai-extension-changed";
+
 export function openUyapDosya(key: string) {
   return bridgeRequest("OPEN_DOSYA", { key });
+}
+
+export interface ListFailureHelp {
+  title: string;
+  steps: string[];
+  /** Kullanıcı UYAP'ta ilerleyince kendiliğinden düzelebilir: sayfa listeyi aralıklarla yeniden dener. */
+  waiting: boolean;
+}
+
+/** Dosya listesi okunamadığında kullanıcıya "şimdi ne yapmalı" rehberi (eklentinin hata kodlarına göre). */
+export function describeListFailure(code: string | undefined, message: string): ListFailureHelp {
+  switch (code) {
+    case "no_uyap_tab":
+      return {
+        title: "UYAP açık değil",
+        steps: [
+          "UYAP'ı yeni sekmede aç (aşağıdaki düğmeler) ve giriş yap.",
+          "Soldaki menüden Dosya Sorgulama'ya gir. Dosya listesi görününce burası kendiliğinden güncellenir.",
+        ],
+        waiting: true,
+      };
+    case "login_required":
+      return {
+        title: "UYAP'ta henüz giriş yapılmamış görünüyor",
+        steps: [
+          "UYAP sekmesinde e-Devlet (ya da e-imza) ile giriş yap.",
+          "Sonra Dosya Sorgulama'yı aç. Dosya listesi görününce burası kendiliğinden güncellenir.",
+        ],
+        waiting: true,
+      };
+    case "no_list":
+      return {
+        title: "UYAP açık ama dosya listesi görünmüyor",
+        steps: [
+          "UYAP'ta soldaki menüden Dosya Sorgulama'yı aç: dosya satırları ve \"Dosya Görüntüle\" düğmeleri görünmeli.",
+          "Liste görününce burası kendiliğinden güncellenir.",
+        ],
+        waiting: true,
+      };
+    case "no_content":
+      return {
+        title: "UYAP sekmesine ulaşılamadı",
+        steps: ["UYAP sekmesinde F5 yap (eklenti yeni güncellendiyse sayfaya ancak yenilenince bağlanır)."],
+        waiting: true,
+      };
+    default:
+      return { title: message || "Dosya listesi okunamadı", steps: [], waiting: false };
+  }
 }

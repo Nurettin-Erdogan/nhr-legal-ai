@@ -1725,3 +1725,26 @@ def test_reinjecting_the_bridge_into_an_open_jurisai_tab_gives_exactly_one_reply
     )
     assert replies == 1
     web.close()
+
+
+def test_the_jurisai_page_can_write_the_connection_key_into_the_extension(lab):
+    lab.configure(throttleMs=500, apiKey="")
+    web = _jurisai_page(lab)
+    assert web.evaluate("() => window.ask('PING')")["connected"] is False
+    key = "jsai_" + "a1b2c3d4" * 5
+    assert web.evaluate("(key) => window.ask('SET_KEY', { key })", key)["ok"] is True
+    stored = lab.worker.evaluate("() => chrome.storage.sync.get('apiKey')")
+    assert stored["apiKey"] == key
+    assert web.evaluate("() => window.ask('PING')")["connected"] is True
+    web.close()
+    lab.configure(throttleMs=500)  # testin anahtarını geri koy
+
+
+def test_the_extension_refuses_a_malformed_connection_key(lab):
+    lab.configure(throttleMs=500)
+    web = _jurisai_page(lab)
+    for bad in ("", "kisa", "jsai_kisa", "jsai_" + "x" * 20 + " ; DROP", "baska_" + "a" * 40, "jsai_" + "a" * 300):
+        reply = web.evaluate("(key) => window.ask('SET_KEY', { key })", bad)
+        assert reply["ok"] is False, bad
+    assert lab.worker.evaluate("() => chrome.storage.sync.get('apiKey')")["apiKey"] == TOKEN  # değişmedi
+    web.close()

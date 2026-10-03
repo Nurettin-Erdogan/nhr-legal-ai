@@ -3,6 +3,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
+  EXTENSION_CHANGED_EVENT,
+  describeListFailure,
   detectExtension,
   listUyapDosyalari,
   openUyapDosya,
@@ -12,7 +14,14 @@ import {
   type ExtensionStatus,
 } from "@/lib/uyap-bridge";
 import { toast } from "sonner";
-import { FolderOpen, Loader2, RefreshCw, ShieldCheck } from "lucide-react";
+import { ExternalLink, FolderOpen, Loader2, RefreshCw, ShieldCheck } from "lucide-react";
+
+const UYAP_PORTALS = [
+  { label: "UYAP Vatandaş Portalı'nı aç", url: "https://vatandas.uyap.gov.tr/" },
+  { label: "UYAP Avukat Portalı'nı aç", url: "https://avukatbeta.uyap.gov.tr/" },
+];
+const WAIT_INTERVAL_MS = 4000;
+const WAIT_MAX_TRIES = 45; // ~3 dakika
 
 /**
  * UYAP'taki dosyaları JurisAI içinde gösterir. Liste, tarayıcı eklentisi üzerinden senin açık UYAP oturumundan okunur ve
@@ -37,7 +46,12 @@ export const UyapDosyalarim = () => {
         void detect();
     };
     window.addEventListener("message", onReady);
-    return () => window.removeEventListener("message", onReady);
+    const onChanged = () => void detect();
+    window.addEventListener(EXTENSION_CHANGED_EVENT, onChanged);
+    return () => {
+      window.removeEventListener("message", onReady);
+      window.removeEventListener(EXTENSION_CHANGED_EVENT, onChanged);
+    };
   }, [detect]);
 
   const load = async () => {
@@ -64,6 +78,36 @@ export const UyapDosyalarim = () => {
     }
     toast.success("UYAP sekmesine geçildi: evrak seçim penceresi orada açılıyor.");
   };
+
+  const help = error ? describeListFailure(error.code, error.message) : null;
+  const [gaveUp, setGaveUp] = useState(false);
+
+  // UYAP'ta giriş yapılıp liste açılınca burası kendiliğinden dolsun: okuma-yalnız yoklama, en çok ~3 dakika.
+  useEffect(() => {
+    if (!help?.waiting) return;
+    setGaveUp(false);
+    let tries = 0;
+    let stopped = false;
+    const timer = setInterval(async () => {
+      tries += 1;
+      if (tries > WAIT_MAX_TRIES) {
+        clearInterval(timer);
+        if (!stopped) setGaveUp(true);
+        return;
+      }
+      const result = await listUyapDosyalari();
+      if (stopped) return;
+      if (result.ok) {
+        clearInterval(timer);
+        setError(null);
+        setListe(result.liste);
+      }
+    }, WAIT_INTERVAL_MS);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [help?.waiting, error?.code]);
 
   const shown = useMemo(() => {
     const needle = filter.trim().toLocaleLowerCase("tr");
@@ -122,15 +166,49 @@ export const UyapDosyalarim = () => {
           </div>
           {extension.connected === false && (
             <p className="text-xs text-amber-600">
-              Eklentide bağlantı anahtarı yok: listeyi görebilirsin ama evrak aktarmak için anahtarı eklentiye yapıştırman gerekir (aşağıda).
+              Eklentide bağlantı anahtarı yok: listeyi görebilirsin ama evrak aktarmak için aşağıdan "Anahtarı yenile" ya da "Bağlantı anahtarı oluştur"a
+              bas; anahtar eklentiye kendiliğinden girilir.
             </p>
           )}
         </>
       )}
 
-      {error && (
-        <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm">
-          {error.message}
+      {error && help && (
+        <div role="alert" className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm space-y-2">
+          <p className="font-medium">{help.title}</p>
+          {help.steps.length > 0 && (
+            <ol className="list-decimal pl-5 space-y-0.5 text-muted-foreground">
+              {help.steps.map((step) => (
+                <li key={step}>{step}</li>
+              ))}
+            </ol>
+          )}
+          {help.waiting && (
+            <>
+              <div className="flex flex-wrap gap-2 pt-1">
+                {UYAP_PORTALS.map((portal) => (
+                  <Button
+                    key={portal.url}
+                    size="sm"
+                    variant="outline"
+                    onClick={() => window.open(portal.url, "_blank", "noopener,noreferrer")}
+                  >
+                    {portal.label}
+                    <ExternalLink className="h-3.5 w-3.5 ml-2" />
+                  </Button>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                {gaveUp ? (
+                  "Beklemeyi bıraktım: UYAP hazır olunca \"Listeyi yenile\"ye bas."
+                ) : (
+                  <>
+                    <Loader2 className="h-3 w-3 animate-spin" /> Bekleniyor: UYAP'ta dosya listesini açınca burası kendiliğinden güncellenir.
+                  </>
+                )}
+              </p>
+            </>
+          )}
         </div>
       )}
 

@@ -112,3 +112,28 @@ test("opening a dosya sends its key to the extension", async () => {
   assert.equal(sent.type, "OPEN_DOSYA");
   assert.deepEqual(sent.payload, { key: "a#1" });
 });
+
+test("the connection key is written to the extension and a change event is published", async () => {
+  const events = [];
+  const fake = fakeWindow((message, deliver) => {
+    assert.equal(message.type, "SET_KEY");
+    deliver({ source: "jurisai-extension", id: message.id, ok: message.payload.key.startsWith("jsai_") });
+  });
+  fake.dispatchEvent = (event) => events.push(event.type);
+  assert.equal(await bridge.setExtensionKey("jsai_" + "a".repeat(40)), true);
+  assert.deepEqual(events, ["jurisai-extension-changed"]);
+  assert.equal(await bridge.setExtensionKey("bozuk"), false);
+  assert.deepEqual(events, ["jurisai-extension-changed"]); // başarısızlıkta olay yok
+});
+
+test("a failed list read tells the user what to do next, and only waits when UYAP can fix it", () => {
+  for (const code of ["no_uyap_tab", "login_required", "no_list", "no_content"]) {
+    const help = bridge.describeListFailure(code, "x");
+    assert.equal(help.waiting, true, code);
+    assert.ok(help.title && help.steps.length > 0, code);
+  }
+  assert.match(bridge.describeListFailure("login_required", "x").title, /giriş yapılmamış/);
+  assert.match(bridge.describeListFailure("no_list", "x").steps[0], /Dosya Sorgulama/);
+  const other = bridge.describeListFailure("timeout", "Eklenti yanıt vermedi.");
+  assert.deepEqual(other, { title: "Eklenti yanıt vermedi.", steps: [], waiting: false });
+});

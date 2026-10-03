@@ -376,6 +376,13 @@ async function handleBridge(type, payload) {
       const settings = await getSettings();
       return { ok: true, version: chrome.runtime.getManifest().version, connected: (settings.apiKey || "").trim().length >= 20 };
     }
+    case "BRIDGE_SET_KEY": {
+      // JurisAI sayfası yeni oluşturduğu bağlantı anahtarını eklentiye kendisi yazar: elle yapıştırma gerekmez.
+      const key = String(payload?.key || "").trim();
+      if (!/^jsai_[A-Za-z0-9]{20,200}$/.test(key)) return { ok: false, error: "Anahtar biçimi geçersiz" };
+      await chrome.storage.sync.set({ apiKey: key });
+      return { ok: true };
+    }
     case "BRIDGE_LIST_DOSYALAR":
       return askUyapTab({ type: "JURISAI_LIST_DOSYALAR" });
     case "BRIDGE_OPEN_DOSYA":

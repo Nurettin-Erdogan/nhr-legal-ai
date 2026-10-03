@@ -7,6 +7,7 @@ import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/components/AuthProvider";
 import { UyapDosyalarim } from "@/components/UyapDosyalarim";
+import { setExtensionKey } from "@/lib/uyap-bridge";
 import { supabase } from "@/integrations/supabase/client";
 import { expandDroppedFiles, importEntries } from "@/lib/uyap-import";
 import { humanSize } from "@/lib/uyap";
@@ -101,7 +102,15 @@ const UyapConnect = () => {
         if (error) throw error;
         setToken(value);
         setActiveToken({ prefix: value.slice(0, 9), lastUsed: null });
-        toast.success(rotate ? "Yeni anahtar oluşturuldu" : "Bağlantı anahtarı hazır");
+        // Eklenti bu sayfayla konuşabiliyorsa anahtar ona doğrudan yazılır: elle yapıştırmak gerekmez.
+        const written = await setExtensionKey(value);
+        toast.success(
+          written
+            ? "Anahtar oluşturuldu ve eklentiye otomatik girildi"
+            : rotate
+              ? "Yeni anahtar oluşturuldu"
+              : "Bağlantı anahtarı hazır",
+        );
       } catch {
         toast.error("Anahtar oluşturulamadı");
       } finally {

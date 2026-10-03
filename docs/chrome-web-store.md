@@ -66,7 +66,7 @@ Yeni sürüm yayınlamak: `manifest.json` sürümünü artır, paketi yeniden ü
 | `scripting` | Eklenti güncellendikten sonra açık UYAP/JurisAI sekmelerine yeni betiği yerleştirmek (sekmeyi yenileme gereği kalmaz). |
 | `downloads` | Kullanıcı "bilgisayarıma indir"i seçince evrakları klasör yapısıyla İndirilenler'e kaydetmek; tanı raporu. |
 | `activeTab` | Eklenti simgesine basılınca o sekmeye komut göndermek. |
-| `content_scripts: bridge.js` (JurisAI sayfası) | JurisAI sayfasının "UYAP Dosyalarım" bölümünün eklentiyle konuşması; yalnız beyaz listedeki 3 komut (`PING`, `LIST_DOSYALAR`, `OPEN_DOSYA`). |
+| `content_scripts: bridge.js` (JurisAI sayfası) | JurisAI sayfasının "UYAP Dosyalarım" bölümünün eklentiyle konuşması; yalnız beyaz listedeki 4 komut (`PING`, `LIST_DOSYALAR`, `OPEN_DOSYA`, `SET_KEY`: sayfanın yeni oluşturduğu bağlantı anahtarını eklentiye yazması, biçimi `jsai_…` doğrulanır). |
 
 ## 6. Veri kullanımı beyanları (Gizlilik uygulamaları sekmesi)
 

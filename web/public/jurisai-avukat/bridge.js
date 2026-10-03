@@ -4,7 +4,7 @@
    (betik orada yüklenmez); arka plan betiği de gönderenin JurisAI kaynağından geldiğini ayrıca denetler.
    Köprü UYAP şifresi, e-imza ya da oturum çerezi taşımaz: yalnız komut ve sonuç (dosya listesi gibi) geçer. */
 (() => {
-  const COMMANDS = new Set(["PING", "LIST_DOSYALAR", "OPEN_DOSYA"]);
+  const COMMANDS = new Set(["PING", "LIST_DOSYALAR", "OPEN_DOSYA", "SET_KEY"]);
 
   function onMessage(event) {
     // Eklenti yeniden yüklendiyse bu kopya yetim kalır (chrome.runtime.id yok): yeni kopya yanıt versin.

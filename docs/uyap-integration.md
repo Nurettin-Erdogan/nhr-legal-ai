@@ -206,7 +206,8 @@ e-imza ya da çerezi JurisAI'ya hiç gelmez; JurisAI sayfası UYAP'a kendi baş�
 **Köprü protokolü** (`web/public/jurisai-avukat/bridge.js` ↔ `web/src/lib/uyap-bridge.ts`):
 
 - Sayfa `window.postMessage({ source: "jurisai-web", id, type, payload })` yollar; eklenti aynı pencereye `{ source: "jurisai-extension", id, ... }`
-  döner. Yalnız beyaz listedeki komutlar iletilir: `PING`, `LIST_DOSYALAR`, `OPEN_DOSYA`.
+  döner. Yalnız beyaz listedeki komutlar iletilir: `PING`, `LIST_DOSYALAR`, `OPEN_DOSYA`, `SET_KEY` (JurisAI sayfası yeni oluşturduğu bağlantı
+  anahtarını eklentiye kendisi yazar, elle yapıştırma gerekmez; yalnız `jsai_` biçimli anahtar kabul edilir).
 - `bridge.js` yalnız JurisAI sayfalarında (manifest `content_scripts`, şimdilik `http://localhost:3000`) yüklenir; arka plan betiği gönderenin
   kaynağını ayrıca denetler (`WEB_ORIGINS`). **JurisAI yayına alınınca gerçek alan adı hem `WEB_ORIGINS`'e hem manifest'teki `bridge.js` eşleşmesine eklenmeli.**
 - Eklenti yeniden yüklenince (otomatik güncelleme) yetim kalan köprü kopyası `chrome.runtime.id` yokluğunda susar; açık JurisAI sekmelerine yenisi yerleştirilir.
