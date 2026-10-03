@@ -238,6 +238,7 @@ class IngestRequest(BaseModel):
 
 @router.options("/uyap-ingest")
 @router.options("/v1/documents/upload")
+@router.options("/v1/documents/known")
 def preflight() -> Response:
     return Response(status_code=204, headers=_CORS)
 
@@ -396,6 +397,86 @@ async def upload_document(
     _schedule_index(owner_id, document_id, AuditContext.from_request(request))
     return _reply({"ok": True, "id": str(document_id), "name": unique_name})
 
+
+
+# --- Daha önce aktarılmış evraklar ----------------------------------------------------------------
+# Eklenti, çekmeye başlamadan önce hangi evrakların bu kullanıcının hesabında zaten olduğunu sorar ve onlara hiç
+# tıklamaz (yarıda kalan çekmeyi sürdürmek ya da yeniden denemek çok hızlanır). Yalnız anahtar sahibinin kendi
+# (çöpte olmayan) belgeleri aranır: RLS'li bağlantı + anahtar doğrulaması.
+
+MAX_KNOWN_REQUEST_BYTES = 2 * 1024 * 1024
+MAX_KNOWN_IDS = 5000
+MAX_KNOWN_ID_LENGTH = 600
+MAX_KNOWN_ROWS = 50000
+
+
+class KnownRequest(BaseModel):
+    evrakIds: list[str] = Field(max_length=MAX_KNOWN_IDS)
+    dosyaEsasNo: str | None = Field(default=None, max_length=60)
+
+
+def known_evrak_ids(evrak_ids: list[str], stored_names: list[str]) -> list[str]:
+    """Saklı dosya adları `<evrak ön eki>-<ad>` biçimindedir: ön eki bu adlardan biriyle başlayan kimlikler "bilinir"."""
+    prefixes: set[str] = set()
+    for name in stored_names:
+        for index, char in enumerate(name):
+            if char == "-" and index:
+                prefixes.add(name[:index])
+    known: list[str] = []
+    for evrak_id in evrak_ids:
+        if not evrak_id or len(evrak_id) > MAX_KNOWN_ID_LENGTH:
+            continue
+        prefix = evrak_id_prefix(evrak_id)
+        if prefix and prefix in prefixes:
+            known.append(evrak_id)
+    return known
+
+
+def stored_names_on(connection: psycopg.Connection, esas_no: str | None) -> list[str]:
+    """Bağlantının (RLS: yalnız çağıranın) çöpte olmayan belgelerinin dosya adları; verilen esas no ile sınırlı."""
+    rows = connection.execute(
+        "SELECT file_name FROM office_case_documents WHERE uyap_file_no IS NOT DISTINCT FROM %s "
+        "AND deleted_at IS NULL LIMIT %s",
+        ((esas_no or "").strip()[:60] or None, MAX_KNOWN_ROWS),
+    ).fetchall()
+    return [row["file_name"] if isinstance(row, dict) else row[0] for row in rows]
+
+
+def _stored_names(owner_id: UUID, esas_no: str | None) -> list[str]:
+    with authenticated_database_connection(str(owner_id)) as connection:
+        return stored_names_on(connection, esas_no)
+
+
+@router.post("/v1/documents/known")
+async def known_documents(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    token = (authorization or "").removeprefix("Bearer ").removeprefix("bearer ").strip()
+    if not 20 <= len(token) <= 200:
+        return _reply({"error": "Bağlantı anahtarı eksik"}, 401)
+    try:
+        owner = await run_in_threadpool(_owner_for_token, token)
+    except psycopg.Error:
+        logger.exception("UYAP anahtarı doğrulanamadı")
+        return _reply({"error": "Servis şu an kullanılamıyor"}, 503)
+    if owner is None:
+        return _reply({"error": "Geçersiz bağlantı anahtarı"}, 401)
+    _, owner_id = owner
+
+    raw = await _read_limited_body(request, MAX_KNOWN_REQUEST_BYTES)
+    if raw is None:
+        return _reply({"error": "İstek çok büyük"}, 413)
+    try:
+        body = KnownRequest.model_validate_json(raw)
+    except ValidationError:
+        return _reply({"error": "Geçersiz istek"}, 422)
+    try:
+        names = await run_in_threadpool(_stored_names, owner_id, body.dosyaEsasNo)
+    except psycopg.Error:
+        logger.exception("Bilinen evraklar okunamadı")
+        return _reply({"error": "Servis şu an kullanılamıyor"}, 503)
+    return _reply({"ok": True, "known": known_evrak_ids(body.evrakIds, names)})
 
 
 # --- Siteden gelen başvuru formu (oturumsuz) ------------------------------------------------------

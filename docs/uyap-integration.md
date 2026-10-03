@@ -184,6 +184,19 @@ açıklaması bunu açıklayamazdı (o sabit olurdu), asıl neden ağacın eksik
 - `expandAll` tek duraksamada bırakmaz (iki ardışık duraksama).
 - Fark kalırsa seçim penceresi eksik klasörleri adıyla yazar ve **"⟳ Ağacı yeniden tara"** düğmesi çıkar.
 
+## Çekmeyi hızlandırma (v2.20.0)
+
+Evrak başına süre: tıklama + UYAP'ın istek yapmasını bekleme + indirme + yükleme + en az 1,5 sn bekleme. Portal IP başına hız
+sınırladığı için bekleme **kısaltılmaz** ve evraklar paralel çekilmez (40. evraktan sonra UYAP kısa mesajlar dönmeye başlamıştı).
+Hızlanma, çekilecek evrak sayısını azaltarak sağlanır:
+
+- **Yalnızca asıl evraklar** düğmesi (seçim penceresi): ekleri (Ek 1, Ek 2…) işaretlemeyi kaldırır. 2024/124'te 449 evrakın 353'ü ektir.
+- **Zaten aktarılanlara tıklanmaz.** JurisAI'ya aktarmadan önce eklenti `POST /api/public/v1/documents/known` ile (anahtara bağlı,
+  yalnız anahtar sahibinin çöpte olmayan belgeleri, aynı esas no) hangi `evrak_id`lerin hesapta olduğunu sorar; onları atlar. Uç nokta
+  eski sunucuda yoksa ya da hata verirse hepsi çekilir (yalnız hızlandırma). Çöpe atılan belge "var" sayılmaz, yeniden çekilir.
+- **Süre ölçümü:** özet satırı evrak başına ortalama yakalama / indirme / yükleme / bekleme sürelerini yazar; ayar tahminle değil
+  ölçümle yapılır. Sonuç nesnesinde `timing` ve `summary` alanları da vardır.
+
 ## Doğrulanmayanlar ve açık işler
 
 - **Gerçek UYAP sayfa yapısı doğrulanmadı.** Test sayfaları gerçek UYAP'ın DOM'unu kanıtlamaz.

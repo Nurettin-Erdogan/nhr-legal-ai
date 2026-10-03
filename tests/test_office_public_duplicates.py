@@ -5,7 +5,7 @@ from uuid import uuid4
 import psycopg
 import pytest
 
-from api.office_public import find_duplicate
+from api.office_public import find_duplicate, stored_names_on
 
 pytestmark = pytest.mark.skipif(not os.getenv("NHR_TEST_DATABASE_URL"), reason="Isolated test DB not configured")
 
@@ -73,3 +73,15 @@ def test_source_filter_and_owner_isolation(owner_db):
 
     connection.execute("SELECT set_config('app.user_id', %s, true)", (str(bob),))
     assert find_duplicate(connection, file_name="a.pdf", size_bytes=1, uyap_file_no="2024/1", source=None) is None
+
+
+def test_stored_names_are_scoped_to_the_owner_the_case_and_exclude_the_trash(owner_db):
+    connection, alice, bob = owner_db
+    _document(connection, alice, name="5-a.odt", size=1, file_no="2024/1")
+    _document(connection, alice, name="6-b.odt", size=1, file_no="2024/2")  # başka dosya
+    trashed = _document(connection, alice, name="7-c.odt", size=1, file_no="2024/1")
+    connection.execute("UPDATE office_case_documents SET deleted_at = now() WHERE id = %s", (trashed,))
+    _document(connection, bob, name="8-d.odt", size=1, file_no="2024/1")  # başka kullanıcı
+    _as(connection, alice)
+
+    assert stored_names_on(connection, "2024/1") == ["5-a.odt"]

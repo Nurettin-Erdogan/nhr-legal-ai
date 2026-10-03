@@ -130,6 +130,31 @@ async function saveLocally(blob, name, contentType, enabled = false) {
   }
 }
 
+/** Bu kullanıcının JurisAI hesabında zaten bulunan evrak kimlikleri (yalnız ek bir hızlandırma: hata olursa hepsi çekilir). */
+async function knownEvraks(ids, esas) {
+  try {
+    const settings = await getSettings();
+    const url = String(settings.apiUrl || "").replace(/\/upload\/?$/, "/known");
+    if (!/\/known$/.test(url) || (settings.apiKey || "").trim().length < 20) return { ok: false, known: [] };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20000);
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${settings.apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ evrakIds: ids.slice(0, 5000), dosyaEsasNo: esas || null }),
+        signal: controller.signal,
+      });
+      const out = await res.json().catch(() => ({}));
+      return res.ok && Array.isArray(out.known) ? { ok: true, known: out.known } : { ok: false, known: [] };
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (_) {
+    return { ok: false, known: [] };
+  }
+}
+
 /** Belgeyi Juris AI API'sine multipart/form-data ile yükler. */
 async function uploadDocument(settings, meta, blob, contentType) {
   const form = new FormData();
@@ -575,6 +600,8 @@ async function handlePullFetch(meta, mode = "upload") {
     const target = pullTargetUrl();
     if (!target) throw new Error("UYAP evrak adresi yakalanamadı");
     const timeout = Number(settings.timeoutMs) || DEFAULTS.timeoutMs;
+    const startedAt = Date.now();
+    let retried = false;
     let fetched;
     try {
       fetched = await fetchDocument(target, timeout);
@@ -584,23 +611,28 @@ async function handlePullFetch(meta, mode = "upload") {
         fetched = await fetchDocument(pull.altUrl, timeout);
       } else if (/mesaj|HTTP (429|5\d\d)|zaman aşımı|abort/i.test(error.message || "")) {
         // Geçici olabilir (yoğunluk, hazırlanıyor): bir kez bekleyip aynı adresi yeniden dene.
+        retried = true;
         await sleep(8000);
         fetched = await fetchDocument(target, timeout);
       } else {
         throw error;
       }
     }
+    const timing = { download: Date.now() - startedAt, upload: 0, retried };
     const { blob, type, filename } = fetched;
     if (filename) meta = { ...meta, fileExt: (/\.([A-Za-z0-9]{2,5})$/.exec(filename) || [])[1] || "" };
     const digest = await sha256Hex(blob);
-    if (pullRun?.hashes.has(digest)) return { ok: true, sameContent: true };
+    if (pullRun?.hashes.has(digest)) return { ok: true, sameContent: true, ms: timing };
     pullRun?.hashes.add(digest);
+    const savingFrom = Date.now();
     if (mode === "disk") {
       await saveToFolder(blob, type, meta);
-      return { ok: true, saved: true };
+      timing.upload = Date.now() - savingFrom;
+      return { ok: true, saved: true, ms: timing };
     }
     const out = await uploadDocument(settings, { ...meta, url: "" }, blob, type);
-    return { ok: true, duplicate: !!out.duplicate };
+    timing.upload = Date.now() - savingFrom;
+    return { ok: true, duplicate: !!out.duplicate, ms: timing };
   } catch (error) {
     return { ok: false, error: error.message || "bilinmeyen hata" };
   }
@@ -728,6 +760,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
     case "JURISAI_PULL_FETCH":
       handlePullFetch(message.meta || {}, message.mode).then(sendResponse);
+      return true;
+    case "JURISAI_PULL_KNOWN":
+      knownEvraks(message.ids || [], message.esas || "").then(sendResponse);
       return true;
     case "JURISAI_PULL_END":
       pull = null;

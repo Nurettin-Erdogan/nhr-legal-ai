@@ -297,6 +297,7 @@ class _UyapHandler(BaseHTTPRequestHandler):
 
 class _ApiHandler(BaseHTTPRequestHandler):
     uploads: list[dict] = []
+    known_ids: list[str] = []  # JurisAI'da "zaten var" sayılan evrak kimlikleri
 
     def log_message(self, *args):
         pass
@@ -316,6 +317,9 @@ class _ApiHandler(BaseHTTPRequestHandler):
         status, payload = 200, {"ok": True, "id": "fixture"}
         if self.headers.get("Authorization") != f"Bearer {TOKEN}":
             status, payload = 401, {"error": "Geçersiz bağlantı anahtarı"}
+        elif self.path.endswith("/documents/known"):
+            wanted = json.loads(body or b"{}").get("evrakIds", [])
+            payload = {"ok": True, "known": [i for i in wanted if i in type(self).known_ids]}
         else:
             message = message_from_bytes(
                 b"Content-Type: " + self.headers["Content-Type"].encode() + b"\r\n\r\n" + body
@@ -393,6 +397,7 @@ class _Lab:
         self.worker.evaluate("() => sentHashes.clear()")  # testler birbirinin "gönderildi" kaydını görmesin
         self.worker.evaluate("() => chrome.storage.local.set({ autoUpdate: false })")  # eklenti test sırasında kendini yeniden yüklemesin
         _ApiHandler.uploads.clear()
+        _ApiHandler.known_ids.clear()
 
     def downloads(self) -> list[str]:
         return self.worker.evaluate("() => chrome.downloads.search({}).then((r) => r.map((x) => x.filename))")
@@ -1518,4 +1523,55 @@ def test_a_difference_is_explained_when_no_folder_is_missing_even_if_attachments
     assert page.locator("#jurisai-pick-rescan").count() == 0
     page.click("#jurisai-pick-cancel")
     _finish_pull(lab)
+    page.close()
+
+
+def test_evraks_already_in_jurisai_are_not_clicked_or_downloaded_again(lab):
+    """Yarıda kalan çekmeyi sürdürmek: JurisAI'da olan evrak (101) hiç tıklanmaz, yalnız kalanlar çekilir."""
+    lab.configure(throttleMs=500)
+    _ApiHandler.known_ids.append("101")
+    page = lab.open("/vatandas/dosya-agaci")
+    _start_pull(lab)
+    page.wait_for_selector(".jurisai-chooser", timeout=30000)
+    page.click("#jurisai-pick-upload")
+
+    result = _finish_pull(lab)
+
+    assert result["ok"] and result["known"] == 1 and result["failed"] == 0, result
+    sent = sorted(upload["fields"]["evrakId"] for upload in lab.uploads)
+    assert "101" not in sent and len(sent) == 3, sent  # 4 evraktan 3'ü çekildi
+    assert result["chosen"] == 3
+    page.close()
+
+
+def test_main_evraks_only_button_unchecks_the_attachments(lab):
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-agaci")
+    _start_pull(lab)
+    page.wait_for_selector(".jurisai-chooser", timeout=30000)
+    assert "4 / 4 evrak seçili" in page.inner_text(".jurisai-chooser")
+    page.click("#jurisai-pick-main")
+    assert "3 / 4 evrak seçili" in page.inner_text(".jurisai-chooser")
+    page.click("#jurisai-pick-upload")
+
+    result = _finish_pull(lab)
+
+    assert result["ok"] and result["sent"] == 3 and result["chosen"] == 3, result
+    assert "104" not in [upload["fields"]["evrakId"] for upload in lab.uploads]  # 104 ek
+    page.close()
+
+
+def test_the_summary_reports_where_the_time_goes(lab):
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-agaci")
+    _start_pull(lab)
+    page.wait_for_selector(".jurisai-chooser", timeout=30000)
+    page.click("#jurisai-pick-upload")
+
+    result = _finish_pull(lab)
+
+    timing = result["timing"]
+    assert timing["items"] == 4 and timing["pause"] >= 1500, timing  # her evrak için en az 1,5 sn bekleme
+    assert timing["capture"] > 0 and timing["download"] >= 0 and timing["upload"] >= 0
+    assert "evrak başına ort.: yakalama" in result["summary"]
     page.close()

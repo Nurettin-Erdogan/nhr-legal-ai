@@ -1030,6 +1030,15 @@
         for (const entry of boxes) entry.input.checked = !all;
         refresh();
       });
+      const mainCount = items.filter((entry) => !entry.isEk).length;
+      const mainOnly = make("button", "padding:4px 8px;border:0;background:none;color:#2563eb;cursor:pointer;", `Yalnızca asıl evraklar (${mainCount})`);
+      mainOnly.id = "jurisai-pick-main";
+      mainOnly.type = "button";
+      mainOnly.title = "Ekleri (Ek 1, Ek 2…) işaretlemeyi kaldırır: çok daha hızlı biter, ekler sonra ayrıca çekilebilir";
+      mainOnly.addEventListener("click", () => {
+        for (const entry of boxes) entry.input.checked = !entry.item.isEk;
+        refresh();
+      });
       const finish = (action) => {
         overlay.remove();
         resolve({ action, selected: boxes.filter((entry) => entry.input.checked).map((entry) => entry.item) });
@@ -1038,7 +1047,7 @@
       uploadButton.addEventListener("click", () => finish("upload"));
       cancelButton.addEventListener("click", () => finish(null));
       rescanButton.addEventListener("click", () => finish("rescan"));
-      buttons.append(counter, toggle, make("span", "flex:1"), diskButton, uploadButton, cancelButton);
+      buttons.append(counter, toggle, ...(mainCount && mainCount < items.length ? [mainOnly] : []), make("span", "flex:1"), diskButton, uploadButton, cancelButton);
       box.append(head, list, note, buttons);
       overlay.append(box);
       document.body.append(overlay);
@@ -1051,7 +1060,8 @@
     const dialog = activeRoot();
     if (!dialog) return { ok: false, error: "Açık bir dosya penceresi yok: UYAP'ta dosyayı aç, Evrak sekmesine geç." };
     pulling = { stop: false };
-    const stats = { sent: 0, duplicates: 0, sameContent: 0, failed: 0, errors: [] };
+    const stats = { sent: 0, duplicates: 0, sameContent: 0, failed: 0, known: 0, errors: [] };
+    const spent = { clicks: 0, items: 0, capture: 0, download: 0, upload: 0, pause: 0 }; // ms; özet satırında ortalama gösterilir
     try {
       toast("Evrak ağacı açılıyor…");
       if (!(await ensurePreview(dialog))) return { ok: false, error: "Ön izleme düğmesi bulunamadı (Evrak sekmesinde misin?)" };
@@ -1070,11 +1080,23 @@
       if (!choice.action) return { ok: true, cancelled: true, found: items.length };
       const mode = choice.action;
       const toDisk = mode === "disk";
-      const todo = choice.selected; // evrak sayısı sınırı yok: hız (evrak başına birkaç sn), "Çekmeyi durdur" ve ardışık hata sınırı korur
+      let todo = choice.selected; // evrak sayısı sınırı yok: hız (evrak başına birkaç sn), "Çekmeyi durdur" ve ardışık hata sınırı korur
       // Anahtar/adres denetimi seçimden SONRA ve yalnız JurisAI'ya aktarırken yapılır (bilgisayara indirme anahtar istemez).
       const begin = await chrome.runtime.sendMessage({ type: "JURISAI_PULL_BEGIN", mode });
       if (!begin?.ok) return { ok: false, error: begin?.error || "Ayarlar eksik" };
 
+      if (!toDisk) {
+        // JurisAI'da zaten olan evraklara hiç tıklanmaz: yarıda kalan çekme sürdürülür, yeniden deneme hızlanır.
+        toast("Daha önce aktarılanlar kontrol ediliyor…");
+        const answer = await chrome.runtime
+          .sendMessage({ type: "JURISAI_PULL_KNOWN", ids: todo.map((item) => item.id), esas: who.esas })
+          .catch(() => null);
+        if (answer?.ok && answer.known.length) {
+          const have = new Set(answer.known);
+          stats.known = todo.filter((item) => have.has(item.id)).length;
+          todo = todo.filter((item) => !have.has(item.id));
+        }
+      }
       let consecutiveFailures = 0;
       const baseGap = begin.gapMs || 1500;
       let gap = baseGap; // hata görülürse iki katına çıkar (en çok 20 sn), başarıda yavaşça normale döner
@@ -1082,6 +1104,7 @@
         const item = todo[index];
         toast(`Evrak ${index + 1}/${todo.length} çekiliyor…`);
         await chrome.runtime.sendMessage({ type: "JURISAI_PULL_ARM", evrakId: item.id });
+        const clickedAt = Date.now();
         realClick(item.span);
         let status = {};
         const captured = await waitUntil(async () => {
@@ -1091,6 +1114,8 @@
         // Yalnız önizleme sayfası (viewer.jsp) görüldüyse gerçek belge isteğinin düşmesi için kısa süre tanı.
         if (captured && !status.exact) await sleep(600);
         status = (await chrome.runtime.sendMessage({ type: "JURISAI_PULL_STATUS" })) || status;
+        spent.capture += Date.now() - clickedAt;
+        spent.clicks += 1;
         let outcome = {
           ok: false,
           error: `evrak adresi yakalanamadı (${
@@ -1113,6 +1138,11 @@
             },
           });
         }
+        if (outcome?.ms) {
+          spent.items += 1;
+          spent.download += outcome.ms.download || 0;
+          spent.upload += outcome.ms.upload || 0;
+        }
         if (outcome?.ok) {
           consecutiveFailures = 0;
           gap = Math.max(baseGap, Math.round(gap * 0.8));
@@ -1126,17 +1156,32 @@
           gap = Math.min(20000, gap * 2); // UYAP bizi sınırlıyor olabilir: yavaşla
           if (consecutiveFailures >= 5) break; // oturum kapanmış ya da portal yanıt vermiyor olabilir
         }
+        spent.pause += gap;
         await sleep(gap);
       }
+      const timing = spent.items
+        ? {
+            items: spent.items,
+            capture: Math.round(spent.capture / Math.max(1, spent.clicks)),
+            download: Math.round(spent.download / spent.items),
+            upload: Math.round(spent.upload / spent.items),
+            pause: Math.round(spent.pause / Math.max(1, spent.clicks)),
+          }
+        : null;
       const reasons = [...new Set(stats.errors)].slice(0, 2).join(" | ");
       const summary =
         `${stats.sent} evrak ${toDisk ? "bilgisayara kaydedildi" : "aktarıldı"}` +
+        (stats.known ? `, ${stats.known} daha önce aktarılmıştı (tıklanmadı)` : "") +
         (stats.duplicates ? `, ${stats.duplicates} zaten vardı` : "") +
         (stats.sameContent ? `, ${stats.sameContent} aynı içerik atlandı` : "") +
         (stats.failed ? `, ${stats.failed} hata${reasons ? ` (${reasons})` : ""}` : "") +
-        (pulling.stop ? " (durduruldu)" : "");
+        (pulling.stop ? " (durduruldu)" : "") +
+        (timing
+          ? ` · evrak başına ort.: yakalama ${(timing.capture / 1000).toFixed(1)} sn, indirme ${(timing.download / 1000).toFixed(1)} sn, ` +
+            `${toDisk ? "kayıt" : "yükleme"} ${(timing.upload / 1000).toFixed(1)} sn, bekleme ${(timing.pause / 1000).toFixed(1)} sn`
+          : "");
       toast(summary, stats.failed ? "error" : "success");
-      return { ok: true, ...stats, found: items.length, chosen: todo.length, mode, stopped: pulling.stop };
+      return { ok: true, ...stats, found: items.length, chosen: todo.length, mode, stopped: pulling.stop, timing, summary };
     } finally {
       pulling = null;
       chrome.runtime.sendMessage({ type: "JURISAI_PULL_END" }).catch(() => {});

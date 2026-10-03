@@ -295,3 +295,45 @@ def test_evrak_id_prefix_rules():
     hashed = office_public.evrak_id_prefix('"x/y')
     assert len(hashed) == 12 and hashed == office_public.evrak_id_prefix('"x/y')
     assert office_public.evrak_id_prefix("k" * 80) != "k" * 80  # çok uzun kimlik de özetlenir
+
+
+def test_known_documents_lists_only_the_evraks_already_stored_for_the_token_owner(monkeypatch):
+    client, _ = _client(monkeypatch)
+    seen = []
+
+    def fake_names(owner_id, esas_no):
+        seen.append((owner_id, esas_no))
+        return ["101-Dilekce.odt", f"{office_public.evrak_id_prefix('A+/b==')}-Karar.odt", "bozuk-ad-yok.pdf"]
+
+    monkeypatch.setattr(office_public, "_stored_names", fake_names)
+
+    response = client.post(
+        "/api/public/v1/documents/known",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+        json={"evrakIds": ["101", "A+/b==", "999", "", "bozuk"], "dosyaEsasNo": "2024/124"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "known": ["101", "A+/b==", "bozuk"]}
+    assert seen == [(OWNER, "2024/124")]  # yalnız anahtar sahibinin belgeleri aranır
+    assert response.headers["access-control-allow-origin"] == "*"
+
+
+def test_known_documents_requires_a_valid_token_and_a_sane_body(monkeypatch):
+    client, _ = _client(monkeypatch)
+    monkeypatch.setattr(office_public, "_stored_names", lambda *args: [])
+
+    assert client.post("/api/public/v1/documents/known", json={"evrakIds": []}).status_code == 401
+    bad = client.post("/api/public/v1/documents/known", headers={"Authorization": "Bearer " + "x" * 32}, json={"evrakIds": []})
+    assert bad.status_code == 401
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    assert client.post("/api/public/v1/documents/known", headers=headers, content=b"not json").status_code == 422
+    too_many = {"evrakIds": [str(number) for number in range(office_public.MAX_KNOWN_IDS + 1)]}
+    assert client.post("/api/public/v1/documents/known", headers=headers, json=too_many).status_code == 422
+    monkeypatch.setattr(office_public, "MAX_KNOWN_REQUEST_BYTES", 50)
+    assert client.post("/api/public/v1/documents/known", headers=headers, json={"evrakIds": ["1" * 100]}).status_code == 413
+
+
+def test_known_evrak_ids_matches_prefixes_with_dashes_and_ignores_oversized_ids():
+    names = ["ENC-12-Dilekce.odt", "7-Ek 1.tif"]
+    assert office_public.known_evrak_ids(["ENC-12", "7", "8", "x" * 601], names) == ["ENC-12", "7"]
