@@ -62,15 +62,15 @@ ORDER BY
   -- türünde 495/15.635 zaten geçiyor) hiç sıra gelmiyordu. Tükenme (5+ deneme) artık tür
   -- önceliğinin de ÖNÜNE geçer: tükenmiş kayıt, türü ne olursa olsun taze adayların gerisine
   -- düşer; böylece kilitlenen tür diğerlerini sonsuza dek tıkayamaz.
-  CASE WHEN COALESCE((pending.metadata->>'verify_attempt_count')::int, 0) >= 5 THEN 1 ELSE 0 END,
-  -- Resmî Gazete ve MBS yalnız kanun, KHK ve Anayasa'yı doğrulayabiliyor; tebliğ/yönetmelik
-  -- (binlerce kanun numarası) sırayı tıkamasın diye bunlar en sona bırakılır.
-  CASE WHEN pending.legislation_type IN ('law', 'decree', 'constitution') THEN 0 ELSE 1 END,
   CASE
-    WHEN (pending.metadata->>'verified_against_gazette' = 'true')
-         <> (pending.metadata->>'verified_against_mbs' = 'true')
-    THEN 0 ELSE 1
+    WHEN COALESCE((pending.metadata->>'verify_attempt_count')::int, 0) >= 50 THEN 2
+    WHEN COALESCE((pending.metadata->>'verify_attempt_count')::int, 0) >= 5 THEN 1
+    ELSE 0
   END,
+  -- Yakın zamanda (20 dk) denenmiş kayıt, tür önceliğinden ÖNCE sona geçer. Eskiden bu ölçüt tür
+  -- önceliğinden sonra geliyordu: kurtarılamayan 74 kanun/kararname (366-650 başarısız deneme)
+  -- her turda en öne dönüyor, tebliğlere hiç sıra gelmiyordu (ölçüldü: 2026-10-03, 90 dakikada
+  -- tek tebliğ bile denenmedi). 50+ deneme en son kademedir: gerçekten çözülemeyenler sona gömülür.
   CASE
     WHEN (
       CASE
@@ -79,6 +79,14 @@ ORDER BY
       END
     ) > NOW() - INTERVAL '20 minutes'
     THEN 1 ELSE 0
+  END,
+  -- Resmî Gazete ve MBS yalnız kanun, KHK ve Anayasa'yı doğrulayabiliyor; tebliğ/yönetmelik
+  -- (binlerce kanun numarası) sırayı tıkamasın diye bunlar en sona bırakılır.
+  CASE WHEN pending.legislation_type IN ('law', 'decree', 'constitution') THEN 0 ELSE 1 END,
+  CASE
+    WHEN (pending.metadata->>'verified_against_gazette' = 'true')
+         <> (pending.metadata->>'verified_against_mbs' = 'true')
+    THEN 0 ELSE 1
   END,
   COALESCE(pending.metadata->>'verify_last_attempt_at', '') ASC,
   pending.legislation_type, pending.law_no
