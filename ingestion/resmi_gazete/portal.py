@@ -36,6 +36,73 @@ class ResmiGazeteError(RuntimeError):
     """Resmî Gazete yanıtı erişilemez veya sözleşmeye uymaz."""
 
 
+# Tebliğ ve yönetmeliklerin Resmî Gazete'de kanun/karar numarası yoktur; bunlar numarayla aranamaz.
+# Kimlik, gazetenin kendi arama dizininde yayın tarihine göre listelenen girdiler arasında başlığın
+# tam eşleşmesiyle doğrulanır. Parantez içi ekler ("(Tebliğ No: 2023/14)" / "(No: 2023/14)") iki
+# kaynakta farklı yazılabildiğinden temel anahtardan çıkarılır; aynı gün aynı başlıkla yayımlanan
+# kardeş tebliğleri (2023/13 ile 2023/14) ayırmak için eklerdeki tanımlayıcı belirteçler kullanılır.
+_TITLE_PAREN = re.compile(r"\([^()]*\)")
+_TITLE_NON_ALNUM = re.compile(r"[^0-9a-zçğıöşü]+")
+_TITLE_IDENT = re.compile(r"[0-9a-zçğıöşü]+(?:[/\-.][0-9a-zçğıöşü]+)+|\d+")
+TITLE_DAY_ENTRY_LIMIT = 1000
+_DAY_PAGE_SIZE = 100
+
+
+def title_base_key(title: str) -> str:
+    """Parantez ekleri atılmış, noktalama/boşluk/büyük-küçük harf farkı yutulmuş başlık anahtarı."""
+    return _TITLE_NON_ALNUM.sub("", tr_casefold(normalize_text(_TITLE_PAREN.sub(" ", title or ""))))
+
+
+def title_ident_tokens(title: str) -> tuple[str, ...]:
+    """Parantez içindeki numara/kod belirteçleri ("2023/14", "tgm-2011/01", "1")."""
+    folded = [tr_casefold(part) for part in _TITLE_PAREN.findall(normalize_text(title or ""))]
+    return tuple(sorted(token for part in folded for token in _TITLE_IDENT.findall(part)))
+
+
+def match_title_entries(
+    entries: list[Mapping[str, Any]],
+    *,
+    title: str,
+    publication_date: date,
+    issue_no: str | None,
+) -> Mapping[str, Any]:
+    """Tarih + başlıkla TEK bir girdi seçer; belirsiz veya çelişkili ise ResmiGazeteError atar."""
+    base = title_base_key(title)
+    if not base:
+        raise ResmiGazeteError("başlık boş; Resmî Gazete'de başlıkla aranamaz")
+    wanted_issue = _normalize_issue_no(issue_no)
+    unique: dict[tuple[Any, ...], Mapping[str, Any]] = {}
+    for entry in entries:
+        if parse_portal_date(entry.get("resmiGazeteTarihi")) != publication_date:
+            continue
+        if title_base_key(str(entry.get("konu") or "")) != base:
+            continue
+        unique[(entry.get("resmiGazeteSayisi"), entry.get("konu"), entry.get("url"))] = entry
+    candidates = list(unique.values())
+    if wanted_issue is not None:
+        same_issue = [c for c in candidates if _normalize_issue_no(c.get("resmiGazeteSayisi")) == wanted_issue]
+        if candidates and not same_issue:
+            raise ResmiGazeteError(
+                f"başlık + tarih eşleşti ama gazete sayısı çelişiyor (kayıt {wanted_issue}, "
+                f"gazete {_normalize_issue_no(candidates[0].get('resmiGazeteSayisi'))})"
+            )
+        candidates = same_issue
+    wanted_ident = title_ident_tokens(title)
+    if len(candidates) > 1 and wanted_ident:
+        candidates = [c for c in candidates if title_ident_tokens(str(c.get("konu") or "")) == wanted_ident]
+    if len(candidates) != 1:
+        raise ResmiGazeteError(
+            f"başlık + tarih ile tekil Resmî Gazete kaydı bulunamadı ({len(candidates)} aday)"
+        )
+    chosen = candidates[0]
+    found_ident = title_ident_tokens(str(chosen.get("konu") or ""))
+    if wanted_ident and found_ident and wanted_ident != found_ident:
+        raise ResmiGazeteError(
+            f"başlık eşleşti ama numara/kod çelişiyor (kayıt {wanted_ident}, gazete {found_ident})"
+        )
+    return chosen
+
+
 @dataclass(frozen=True, slots=True)
 class GazetteIssue:
     publication_date: date
@@ -326,6 +393,82 @@ class ResmiGazeteClient:
             title=str(item.get("konu") or "").strip(),
             raw_text=raw_text,
             text_available=text_available,
+        )
+
+    def _entries_for_day(self, day: date) -> list[Mapping[str, Any]]:
+        """Bir yayın gününün tüm girdileri (sayfa başına en çok 100; günde 235'e kadar girdi olabilir)."""
+        cache = self.__dict__.setdefault("_day_cache", {})
+        if day in cache:
+            return cache[day]
+        entries: list[Mapping[str, Any]] = []
+        start = 0
+        while start < TITLE_DAY_ENTRY_LIMIT:
+            parameters = {
+                "searchtype": "1",
+                "genelaranacakkelime": "",
+                "genelbaslangictarihi": day.isoformat(),
+                "genelbitistarihi": day.isoformat(),
+                "genelsayi": "",
+                "genelmevzuatsayisi": "",
+                "genelmukerrer": "",
+                "genelmevzuatturu": "",
+                "genelkurumkodu": "",
+            }
+            body = {"draw": 1, "start": start, "length": _DAY_PAGE_SIZE, "parameters": parameters}
+            raw = self._request(urljoin(self.base_url, FILTER_PATH), body=body)
+            try:
+                payload = json.loads(raw.decode("utf-8-sig"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ResmiGazeteError("Resmî Gazete arama ucu JSON olmayan yanıt döndürdü") from exc
+            if not isinstance(payload, Mapping) or not isinstance(payload.get("data"), list):
+                raise ResmiGazeteError("Resmî Gazete arama yanıtı beklenen sözleşmede değil")
+            page = [item for item in payload["data"] if isinstance(item, Mapping)]
+            entries.extend(page)
+            total = int(payload.get("recordsFiltered") or payload.get("recordsTotal") or 0)
+            start += len(page)
+            if not page or start >= total:
+                break
+        if len(cache) >= 256:
+            cache.clear()
+        cache[day] = entries
+        return entries
+
+    def verify_by_title(
+        self,
+        *,
+        publication_date: date | None,
+        issue_no: str | None,
+        title: str,
+    ) -> GazetteVerification:
+        """Numarasız türler (tebliğ, yönetmelik): yayın günü + başlığın tam eşleşmesiyle kimlik doğrulaması."""
+        if publication_date is None:
+            raise ResmiGazeteError("yayın tarihi yok; başlıkla doğrulanamaz")
+        self._request(self.base_url)  # public arama oturumunu/cookie'lerini kurar
+        item = match_title_entries(
+            self._entries_for_day(publication_date),
+            title=title,
+            publication_date=publication_date,
+            issue_no=issue_no,
+        )
+        observed_date = parse_portal_date(item.get("resmiGazeteTarihi"))
+        if observed_date is None:
+            raise ResmiGazeteError("Resmî Gazete arama sonucunda yayın tarihi eksik")
+        return GazetteVerification(
+            verified=True,
+            archive_url=_official_archive_url(item.get("url"), base_url=self.base_url),
+            requested_date=publication_date.isoformat(),
+            observed_date=observed_date.isoformat(),
+            requested_issue_no=_normalize_issue_no(issue_no),
+            observed_issue_no=_normalize_issue_no(item.get("resmiGazeteSayisi")),
+            law_no="",
+            law_no_present=False,
+            law_name_present=True,
+            text_confirmed=False,
+            verified_at=datetime.now(UTC).isoformat(),
+            detail=(
+                "Resmî Gazete arama dizininde başlık + yayın tarihi tekil eşleşti "
+                "(numarasız tür: tebliğ/yönetmelik; tam metin karşılaştırılmadı)"
+            ),
         )
 
     def verify_legislation(

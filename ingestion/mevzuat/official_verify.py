@@ -47,12 +47,9 @@ FROM (
       AND ls.deleted_at IS NULL
       AND (ls.metadata->>'verified_against_gazette' IS DISTINCT FROM 'true'
            OR ls.metadata->>'verified_against_mbs' IS DISTINCT FROM 'true')
-      -- 6 haneden uzun law_no'lu yönetmelikler MBS'nin iç referans kimliğidir, RG'nin
-      -- kanunKararNo dizininde hiç yer almaz (ölçüldü: 2026-09-28, 3 örnek doğrudan
-      -- sorgulandı, üçü de sıfır sonuç; bugüne kadar doğrulanmış 2.492 yönetmeliğin
-      -- TAMAMI ≤6 hane). Bunlar denenmeden atlanır; aksi halde her tur RG bütçesini
-      -- boşa harcar ve taze adayların önüne geçerler.
-      AND NOT (d.legislation_type = 'regulation' AND length(d.law_no) > 6)
+      -- Tebliğ ve yönetmeliklerin law_no değeri gazete numarası değil MBS iç kimliğidir; bunlar
+      -- Resmî Gazete'de yayın günü + başlıkla doğrulanır (bkz. official_verify._check_gazette),
+      -- bu yüzden artık sorgudan dışlanmaz.
     ORDER BY d.legislation_type, d.law_no,
              d.official_gazette_date, d.official_gazette_no,
              ls.fetched_at DESC
@@ -66,13 +63,6 @@ ORDER BY
   -- önceliğinin de ÖNÜNE geçer: tükenmiş kayıt, türü ne olursa olsun taze adayların gerisine
   -- düşer; böylece kilitlenen tür diğerlerini sonsuza dek tıkayamaz.
   CASE WHEN COALESCE((pending.metadata->>'verify_attempt_count')::int, 0) >= 5 THEN 1 ELSE 0 END,
-  -- Tebligin (communique) icin de benzer bir kimlik-alani sorunu var ama regulation kadar
-  -- kesin degil: 5+ haneli tebliğ numaralarinin RG'de aday bulma orani cok dusuk (olculdu:
-  -- 2026-09-28, rastgele 8 ornekten 7'si sifir sonuc; bugune kadar dogrulanan 4 tebligin
-  -- tamami 4 haneli). Yine de kucuk bir pay RG'de bulunabiliyor; bu yuzden sert bir WHERE
-  -- haric tutmasi yerine yumusak bir oncelik dususu: 4 haneli tebligler once denenir,
-  -- 5+ haneli tebligler ancak onlar tukenince veya sira kalmayinca denenir.
-  CASE WHEN pending.legislation_type = 'communique' AND length(pending.law_no) > 4 THEN 1 ELSE 0 END,
   -- Resmî Gazete ve MBS yalnız kanun, KHK ve Anayasa'yı doğrulayabiliyor; tebliğ/yönetmelik
   -- (binlerce kanun numarası) sırayı tıkamasın diye bunlar en sona bırakılır.
   CASE WHEN pending.legislation_type IN ('law', 'decree', 'constitution') THEN 0 ELSE 1 END,
@@ -116,6 +106,19 @@ WHERE d.legal_source_id = ls.id AND ls.is_current
 VerificationTriple = tuple[dict[str, Any], dict[str, Any], int]
 
 _GAZETTE_OK: dict[tuple[str, str | None, str | None], dict[str, Any]] = {}
+
+# Gazetede numarası olmayan türler: başlık + yayın günüyle doğrulanır (bkz. _check_gazette).
+TITLE_VERIFIED_TYPES = frozenset({"communique", "regulation"})
+
+
+def _number_search_plausible(law: dict[str, Any]) -> bool:
+    """law_no gerçekten gazete numarası olabilir mi? Uzun numaralar MBS'nin iç kimliğidir."""
+    law_no = str(law.get("law_no") or "")
+    if law.get("legislation_type") == "communique":
+        return len(law_no) <= 4
+    if law.get("legislation_type") == "regulation":
+        return len(law_no) <= 6
+    return True
 _MBS_OK: dict[str, dict[str, Any]] = {}
 
 
@@ -220,6 +223,30 @@ def _check_gazette(
     cached = _GAZETTE_OK.get(gazette_key)
     if cached:
         return cached.get("verified") is True, cached, 0
+    title_detail: str | None = None
+    if (
+        law.get("legislation_type") in TITLE_VERIFIED_TYPES
+        and law.get("law_name")
+        and law.get("official_gazette_date")
+    ):
+        # Tebliğ ve yönetmeliklerin gazetede kanun numarası yoktur; kimlik yayın günü + başlıkla
+        # doğrulanır (ölçüldü: 2026-10-03, 120 rastgele kayıttan tebliğlerin %91'i tekil eşleşti).
+        try:
+            result = gazette_client.verify_by_title(
+                publication_date=law.get("official_gazette_date"),
+                issue_no=law.get("official_gazette_no"),
+                title=law["law_name"],
+            ).to_json()
+            result["method"] = "title_date"
+            _GAZETTE_OK[gazette_key] = result
+            return True, result, 3
+        except ResmiGazeteError as exc:
+            if is_verification_cooldown_error(exc):
+                raise VerificationCooldown("gazette", str(exc)) from exc
+            title_detail = str(exc)
+        if not _number_search_plausible(law):
+            # Numara gazete numarası değil (MBS iç kimliği): numarayla aramak yalnız istek harcar.
+            return False, {"verified": False, "detail": f"başlıkla: {title_detail}"}, 3
     try:
         result = gazette_client.verify_legislation(
             publication_date=law.get("official_gazette_date"),
@@ -233,7 +260,8 @@ def _check_gazette(
     except ResmiGazeteError as exc:
         if is_verification_cooldown_error(exc):
             raise VerificationCooldown("gazette", str(exc)) from exc
-        return False, {"verified": False, "detail": str(exc)}, 3
+        detail = str(exc) if title_detail is None else f"{exc}; başlıkla: {title_detail}"
+        return False, {"verified": False, "detail": detail}, 3
 
 
 def _check_mbs(
