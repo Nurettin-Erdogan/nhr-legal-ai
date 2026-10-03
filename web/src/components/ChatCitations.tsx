@@ -1,4 +1,5 @@
 import { Info, ShieldAlert } from "lucide-react";
+import type { ConsultedSource } from "@/lib/consulted-sources";
 import {
   USER_DOCUMENT_NOTE,
   describeDocumentScope,
@@ -61,6 +62,49 @@ export function CitationList({ citations }: { citations: ChatCitation[] }) {
         </p>
       )}
     </div>
+  );
+}
+
+/**
+ * Cevapta alıntılanmayan ama incelenen doğrulanmış kaynaklar. Cevabın dayanağı değildir;
+ * kullanıcı ilgili kararları pasajlarıyla kendisi okuyabilsin diye gösterilir.
+ */
+export function ConsultedSourceList({ sources }: { sources: ConsultedSource[] }) {
+  if (!sources.length) return null;
+  return (
+    <details className="mt-3 pt-3 border-t border-border group">
+      <summary className="cursor-pointer text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
+        İncelenen diğer kaynaklar ({sources.length})
+      </summary>
+      <p className="mt-1.5 text-[11px] text-muted-foreground flex items-start gap-1">
+        <Info className="h-3 w-3 mt-0.5 shrink-0" /> Bunlar cevabın dayanağı değildir; cevap yalnız
+        yukarıdaki atıflara dayanır. İlgili olup olmadığını siz değerlendirin.
+      </p>
+      <ul className="mt-2 space-y-2">
+        {sources.map((source) => (
+          <li key={source.marker + source.reference} className="text-xs">
+            <div className="flex flex-wrap items-start gap-1.5">
+              {source.source_url ? (
+                <a
+                  href={source.source_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline underline-offset-2 font-medium"
+                >
+                  {source.reference}
+                </a>
+              ) : (
+                <span className="font-medium">{source.reference}</span>
+              )}
+              <CitationBadge verification={source.verification} />
+            </div>
+            {source.excerpt && (
+              <p className="mt-0.5 line-clamp-3 text-muted-foreground">{source.excerpt}</p>
+            )}
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }
 

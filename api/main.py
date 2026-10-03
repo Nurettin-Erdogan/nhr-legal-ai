@@ -68,12 +68,40 @@ async def _purge_trash_forever() -> None:
         await asyncio.sleep(_TRASH_PURGE_INTERVAL_SECONDS)
 
 
+_WARMUP_QUESTIONS = (
+    "kira sözleşmesi tahliye ihtiyaç",
+    "işçi kıdem tazminatı fesih",
+    "kasten yaralama ceza",
+)
+
+
+def _warm_retrieval_cache() -> None:
+    """Açılışta temsilî birkaç arama çalıştırır: veritabanı sayfaları önbelleğe girsin, ilk
+    kullanıcı sorusu soğuk önbellekte zaman aşımına düşmesin. Hiçbir hata açılışı etkilemez."""
+    try:
+        from api.ai.retrieval import retrieve_contexts
+        from api.db import database_connection
+
+        with database_connection() as connection:
+            for question in _WARMUP_QUESTIONS:
+                try:
+                    retrieve_contexts(
+                        connection, question=question, top_k=3,
+                        query_embedding=None, embedding_model=None,
+                    )
+                except Exception:  # noqa: BLE001 - ısınma denemesi; zaman aşımı beklenen olabilir
+                    logger.info("Arama ısınma sorgusu tamamlanamadı: %s", question)
+    except Exception:  # noqa: BLE001
+        logger.exception("Arama ısınması başlatılamadı")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     _warmup_local_model()
     purge_task = None
     if "pytest" not in sys.modules:
         threading.Thread(target=warm_slow_counts, name="corpus-stats-warmup", daemon=True).start()
+        threading.Thread(target=_warm_retrieval_cache, name="retrieval-warmup", daemon=True).start()
         purge_task = asyncio.create_task(_purge_trash_forever())
     yield
     if purge_task is not None:

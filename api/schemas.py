@@ -204,6 +204,9 @@ class AIAnswerResponse(BaseModel):
     provider: str
     model: str
     citations: list[AICitation]
+    # Modele verilen, doğrulanmış ama cevapta alıntılanmayan kaynaklar (en çok 8, kaynak başına bir pasaj).
+    # Cevabın dayanağı değildir; kullanıcının ilgili kararları kendisinin okuyabilmesi içindir.
+    consulted_sources: list[AICitation] = Field(default_factory=list)
     grounded: bool
     unverified_markers: list[str] = Field(default_factory=list)
     conversation_id: UUID | None = None

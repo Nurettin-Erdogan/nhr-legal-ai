@@ -5,6 +5,7 @@ import {
   type CaseDocumentIndex,
   type DocumentScope,
 } from "./document-scope";
+import type { ConsultedSource } from "./consulted-sources";
 import { parseSearchSummary, type SearchSummaryData } from "./search-summary";
 
 const API_BASE_URL = (import.meta.env.VITE_API_URL ?? "http://localhost:8766").replace(/\/$/, "");
@@ -25,6 +26,8 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   citations?: Citation[];
+  /** Cevapta alıntılanmayan ama incelenen doğrulanmış kaynaklar (canlı cevapta; geçmişte yok). */
+  consultedSources?: ConsultedSource[];
   grounded?: boolean | null;
   unverifiedMarkers?: string[];
   searchSummary?: SearchSummaryData;
@@ -46,6 +49,7 @@ export interface AnswerResult {
   conversation_id: string | null;
   message_id: string | null;
   citations: Citation[];
+  consulted_sources?: Citation[];
   search_summary?: SearchSummaryData;
   document_scope?: DocumentScope | null;
 }

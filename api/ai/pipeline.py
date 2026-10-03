@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Callable, Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
 from dataclasses import dataclass, field
 from time import monotonic
 from typing import Any
@@ -32,6 +32,7 @@ from api.embed_pause import pause_embeddings, resume_embeddings, unload_ollama_m
 from api.ai.history import record_exchange
 from api.document_indexing import case_document_coverage, sweep_unindexed
 from api.ai.live_verify import verify_third_party_contexts
+from api.ai.consulted_relevance import relevant_chunk_ids
 from api.ai.discovery import candidate_pool_size, select_answer_contexts, search_summary
 from api.ai.fast_statute import try_fast_statute
 from api.ai.trust import usable_as_evidence, verified_contexts
@@ -113,6 +114,42 @@ def as_citation(position: int, context: RAGContext) -> AICitation:
     )
 
 
+CONSULTED_SOURCE_LIMIT = 8
+
+
+def consulted_sources(
+    answer: VerifiedAnswer, contexts: Sequence[RAGContext], question: str = ""
+) -> list[AICitation]:
+    """Cevaba girmeyen ama incelenen doğrulanmış kaynaklar: kaynak başına bir pasaj, I1, I2, ...
+
+    Yalnız `usable_as_evidence` olanlar listelenir (resmî kaynak ya da kullanıcının kendi belgesi);
+    doğrulanmamış üçüncü taraf kayıtlar buraya hiçbir koşulda girmez.
+    """
+    if not answer.grounded or not answer.contexts:
+        # Cevap kaynaklardan çıkarılamadıysa aranan kaynaklar büyük olasılıkla soruyla ilgisizdir;
+        # onları "incelendi" diye göstermek yanıltıcı olur.
+        return []
+    cited_chunks = {context.chunk_id for context in answer.contexts}
+    seen_sources = {context.source_id for context in answer.contexts}
+    # Sözcük eşleşmesi alakasız kararları da getirir; havuzda az kararda geçen soru kelimelerine göre
+    # süzülür (bkz. consulted_relevance). Süzgeç yalnız gösterimi etkiler, cevabı değil.
+    keep = relevant_chunk_ids(question, contexts) if question else None
+    listed: list[AICitation] = []
+    for context in contexts:
+        if context.chunk_id in cited_chunks or context.source_id in seen_sources:
+            continue
+        if keep is not None and context.chunk_id not in keep:
+            continue
+        if not usable_as_evidence(context):
+            continue
+        seen_sources.add(context.source_id)
+        position = len(listed) + 1
+        listed.append(as_citation(position, context).model_copy(update={"marker": f"I{position}"}))
+        if len(listed) >= CONSULTED_SOURCE_LIMIT:
+            break
+    return listed
+
+
 def _queue_cited_third_party(answer: VerifiedAnswer) -> None:
     """Atıf yapılan doğrulanmamış kaynakları öncelikli doğrulama sırasına alır."""
     pending = [
@@ -132,6 +169,7 @@ def _response_from_verified(
     message_id: UUID | None,
     from_cache: bool,
     timings: PipelineTimings | None = None,
+    consulted: Sequence[RAGContext] = (),
 ) -> AIAnswerResponse:
     if any(not usable_as_evidence(context) for context in answer.contexts):
         raise HTTPException(503, "Kaynak doğrulaması tamamlanamadı; doğrulanmamış atıflar gösterilmiyor.")
@@ -147,6 +185,7 @@ def _response_from_verified(
             as_citation(position, context)
             for position, context in enumerate(answer.contexts, start=1)
         ],
+        consulted_sources=consulted_sources(answer, consulted, request.question),
         grounded=answer.grounded,
         unverified_markers=list(answer.unverified_markers),
         conversation_id=conversation_id,
@@ -421,6 +460,20 @@ def _retrieve(
         )
 
 
+async def _retrieve_with_warm_retry(request: AIAnswerRequest, **kwargs: Any) -> list[RAGContext]:
+    """Soğuk önbellekte tüm arama kolları zaman aşımına uğrayabilir (API/veritabanı yeni açıldığında
+    ya da uzun boşlukta ilk soru; ölçüldü: 2026-10-03). İlk deneme okuduğu sayfaları önbelleğe
+    bıraktığından yeniden deneme çoğunlukla geçer; ikinci başarısızlık gerçek hata sayılır."""
+    for attempt in (1, 2):
+        try:
+            return await asyncio.to_thread(_retrieve, request, **kwargs)
+        except psycopg.errors.QueryCanceled:
+            if attempt == 2:
+                raise
+            logger.warning("Arama zaman aşımına uğradı (soğuk önbellek olabilir); bir kez yeniden deneniyor")
+    raise AssertionError("unreachable")
+
+
 async def execute_answer(
     request: AIAnswerRequest,
     user_id: UUID | None,
@@ -555,8 +608,7 @@ async def _execute_answer_body(
         retrieval_diagnostics: dict = dict(fast_diagnostics) if fast_contexts else {}
         verification_diagnostics: dict = {}
         try:
-            contexts = fast_contexts or await asyncio.to_thread(
-                _retrieve,
+            contexts = fast_contexts or await _retrieve_with_warm_retry(
                 request,
                 user_id=user_id,
                 query_embedding=query_embedding,
@@ -677,6 +729,7 @@ async def _execute_answer_body(
                 message_id=message_id,
                 from_cache=True,
                 timings=timings,
+                consulted=verified_pool,
             )
             await emit("done", result=response.model_dump(mode="json"))
             return response, timings
@@ -795,6 +848,7 @@ async def _execute_answer_body(
         message_id=message_id,
         from_cache=False,
         timings=timings,
+        consulted=verified_pool,
     )
     if answer.grounded:
         answer_cache.put(cache_key, _payload_from_response(response))

@@ -29,7 +29,8 @@ import {
   type ChatMessage,
   type ConversationSummary,
 } from "@/lib/ai-api";
-import { CitationList, DocumentScopeNotice } from "@/components/ChatCitations";
+import { CitationList, ConsultedSourceList, DocumentScopeNotice } from "@/components/ChatCitations";
+import { parseConsultedSources } from "@/lib/consulted-sources";
 
 export function LegalChat({
   title,
@@ -137,6 +138,7 @@ export function LegalChat({
           role: "assistant",
           content: result.answer,
           citations: result.citations,
+          consultedSources: parseConsultedSources(result.consulted_sources),
           grounded: result.grounded,
           unverifiedMarkers: result.unverified_markers,
           searchSummary: result.search_summary,
@@ -268,6 +270,9 @@ export function LegalChat({
                       </p>
                     )}
                     {m.citations && <CitationList citations={m.citations} />}
+                    {m.role === "assistant" && m.consultedSources && (
+                      <ConsultedSourceList sources={m.consultedSources} />
+                    )}
                     {m.role === "assistant" && m.documentScope && (
                       <DocumentScopeNotice scope={m.documentScope} />
                     )}
