@@ -941,7 +941,9 @@
       const eks = items.filter((item) => item.isEk).length;
       const copies = items.duplicates || 0;
       const matches = declaredTotal === foundTotal;
-      const explained = !matches && declaredTotal === foundTotal + copies; // fark yalnız "aynı evrak iki klasörde" ise
+      // Fark açıklanmış sayılır: hiçbir klasörde eksik yok (her klasörün DOM'daki evrak sayısı UYAP'ınkine eşit), yani fark
+      // yalnız aynı evrakın birden çok klasörde görünmesinden. (Ek kopyaları da "copies"e girdiği için eşitlik aramak yanıltır.)
+      const explained = !matches && (declaredTotal === foundTotal + copies || (folderStats.length > 0 && gapList.length === 0));
       const verification = make(
         "div",
         `font-size:12px;margin-top:6px;color:${matches || explained ? "#166534" : "#b91c1c"};`,
@@ -951,7 +953,7 @@
           (matches
             ? " ✓ sayılar tutuyor"
             : explained
-              ? ` ✓ fark ${copies} evrağın iki klasörde birden görünmesinden (tek kez çekilir)`
+              ? ` ✓ fark ${declaredTotal - foundTotal} evrağın iki klasörde birden görünmesinden (tek kez çekilir)`
               : " ⚠ sayılar tutmuyor") +
           // Hangi klasörlerde fark var (en çok 4): sayıyı doğrulamak/düzeltmek için.
           (matches || explained

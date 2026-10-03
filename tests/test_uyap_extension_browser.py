@@ -1495,3 +1495,27 @@ def test_a_folder_that_never_loads_is_counted_flagged_and_can_be_rescanned(lab):
     page.click("#jurisai-pick-cancel")
     _finish_pull(lab)
     page.close()
+
+
+# Aynı evrak iki klasörde (102) ve aynı ek iki yerde (104): "copies" 2 olur ama eksik klasör yoktur, fark 1'dir.
+PAGES["/vatandas/dosya-kopyali-ek"] = PAGES["/vatandas/dosya-kopyali"].replace(
+    '<li><span class="file" evrak_id="120">Başka evrak 01/07/2025</span></li>',
+    '<li class="expandable"><div class="hitarea"></div><span class="file" evrak_id="120">Başka evrak 01/07/2025</span>'
+    '<ul style="display:none"><li><span class="file" evrak_id="104" ana_evrak_id="120">Ek 1</span></li></ul></li>',
+)
+
+
+def test_a_difference_is_explained_when_no_folder_is_missing_even_if_attachments_repeat(lab):
+    """Canlıda hiçbir klasör eksik değildi ama kopya sayısı tutmadığı için boş "fark:" ile kırmızı uyarı çıkıyordu."""
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-kopyali-ek")
+    _start_pull(lab)
+    page.wait_for_selector(".jurisai-chooser", timeout=90000)
+    text = page.inner_text(".jurisai-chooser")
+    assert "UYAP klasör sayıları: 5 evrak · bulunan: 4" in text, text
+    assert "✓ fark 1 evrağın iki klasörde birden görünmesinden" in text
+    assert "sayılar tutmuyor" not in text and "fark:" not in text
+    assert page.locator("#jurisai-pick-rescan").count() == 0
+    page.click("#jurisai-pick-cancel")
+    _finish_pull(lab)
+    page.close()
