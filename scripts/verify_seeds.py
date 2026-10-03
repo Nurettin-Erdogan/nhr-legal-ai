@@ -267,8 +267,8 @@ def main() -> int:
                     official = _fetch_official_text(args.source, client, document_id)
                     captcha_streak = 0
                     success_streak += 1
-                    if success_streak >= 20:
-                        cur_delay = max(args.min_delay, cur_delay * 0.95)
+                    if success_streak >= 10:
+                        cur_delay = max(args.min_delay, cur_delay * 0.97)
                         success_streak = 0
                 except Exception as exc:  # noqa: BLE001
                     message = str(exc)
@@ -286,7 +286,9 @@ def main() -> int:
                     if is_rate_limited(message):
                         totals["rate_limited"] += 1
                         success_streak = 0
-                        cur_delay = min(args.max_delay, cur_delay * 1.3)
+                        # collect_bedesten ile aynı ölçülmüş ayar: engel ~10 sn sürer, aralığı büyütmek
+                        # verimi düşürür; yalnız hafifçe artır (eskiden %30: aralık 7 sn'de takılıp kalıyordu).
+                        cur_delay = min(args.max_delay, cur_delay * 1.03)
                         print(f"hız sınırı (429); {args.cooldown:.0f} sn bekleniyor; yeni aralık {cur_delay:.1f} sn", flush=True)
                         time.sleep(args.cooldown)
                         break
