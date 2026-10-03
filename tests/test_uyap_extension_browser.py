@@ -1575,3 +1575,40 @@ def test_the_summary_reports_where_the_time_goes(lab):
     assert timing["capture"] > 0 and timing["download"] >= 0 and timing["upload"] >= 0
     assert "evrak başına ort.: yakalama" in result["summary"]
     page.close()
+
+
+# Evrak 103'ün ek listesi ilk açılışta boş geliyor (UYAP ek listesini yükleyemedi); kapatıp yeniden açınca ek (104) geliyor.
+PAGES["/vatandas/dosya-ek-bos"] = PAGES["/vatandas/dosya-agaci"].replace(
+    "</script></body></html>",
+    """
+        (function () {
+          var original = toggle; var held = null; var opens = 0;
+          toggle = function (li) {
+            original(li);
+            var label = li.querySelector(':scope > .file');
+            if (!label || label.getAttribute('evrak_id') !== '103') return;
+            if (!li.classList.contains('collapsable')) return;
+            opens += 1;
+            var ul = li.querySelector(':scope > ul');
+            if (opens === 1) { held = ul.innerHTML; ul.innerHTML = ''; }
+            else if (held) { ul.innerHTML = held; held = null; }
+          };
+        })();
+      </script></body></html>""",
+)
+
+
+def test_an_opened_evrak_with_an_empty_attachment_list_is_reopened_until_the_attachment_arrives(lab):
+    """Canlıda ek sayısı 367 → 350 diye azalıyordu: ek listesi yüklenemeyen evrak artık kapatılıp yeniden açılır."""
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-ek-bos")
+    _start_pull(lab)
+    page.wait_for_selector(".jurisai-chooser", timeout=90000)
+    text = page.inner_text(".jurisai-chooser")
+    assert page.locator(".jurisai-pick-item").count() == 4, text  # 101, 102, 103 ve eki 104
+    assert "ayrıca 1 ek" in text
+    assert "yüklenemeyen açık düğüm" not in text  # onarıldı
+    assert "4 benzersiz evrak/ek" in text
+    page.click("#jurisai-pick-cancel")
+    _finish_pull(lab)
+    page.close()

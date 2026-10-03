@@ -803,33 +803,41 @@
     }
     return stats;
   }
+  const leafCount = (li) => li.querySelectorAll(":scope > ul > li > span.file[evrak_id]:not([ana_evrak_id])").length;
+  /** Açık görünüp altında hiçbir şey olmayan düğümler: ek listesi ya da klasör içeriği yüklenememiş (UYAP'ın sayısı olmasa da eksiktir). */
+  const emptyOpenedNodes = (dialog) =>
+    [...dialog.querySelectorAll("li.collapsable")].filter((li) => li.querySelector(":scope > ul") && !li.querySelector(":scope > ul > li"));
   /**
-   * UYAP'ın yazdığından az evrak görünen klasörler için: önce biraz bekle (yavaş yükleniyor olabilir), sonra klasörü
-   * kapatıp yeniden aç (alt düğümleri yeniden yüklemeyi tetikler). Canlıda sayı her açılışta değişiyordu (463 → 456).
+   * Eksik yüklenen düğümler için: önce biraz bekle (yavaş yükleniyor olabilir), sonra düğümü kapatıp yeniden aç (alt düğümleri
+   * yeniden yüklemeyi tetikler). Eksik = UYAP'ın yazdığından az evrak görünen klasör ya da açık ama boş düğüm. Canlıda sayı her
+   * açılışta değişiyordu (463 → 456 → 449 → 445; ek sayısı 367 → 350): UYAP art arda isteklerde ek listelerini yüklemeyebiliyor.
    */
   async function repairTree(dialog, onGaps) {
     const deadline = Date.now() + 120000;
     for (let round = 0; round < 4 && Date.now() < deadline; round += 1) {
       const gaps = folderStats(dialog).filter((entry) => entry.leaves < entry.declared);
-      if (!gaps.length) return;
-      onGaps?.(gaps.length, round);
+      const gapNodes = new Set(gaps.map((entry) => entry.li));
+      const empty = emptyOpenedNodes(dialog).filter((li) => !gapNodes.has(li));
+      if (!gaps.length && !empty.length) return;
+      onGaps?.(gaps.length + empty.length, round);
       if (round === 0) {
         await waitForTreeToSettle(dialog, 6000);
         continue;
       }
-      for (const gap of gaps) {
-        const handle = gap.li.querySelector(":scope > div.hitarea") || gap.li.querySelector(":scope > span.folder");
+      const targets = [
+        ...gaps.map((entry) => ({ li: entry.li, done: () => leafCount(entry.li) >= entry.declared })),
+        ...empty.map((li) => ({ li, done: () => !!li.querySelector(":scope > ul > li") })),
+      ];
+      for (const target of targets) {
+        const handle = target.li.querySelector(":scope > div.hitarea") || target.li.querySelector(":scope > span.folder, :scope > span.file");
         if (!handle) continue;
-        if (gap.li.classList.contains("collapsable")) {
+        if (target.li.classList.contains("collapsable")) {
           handle.click(); // açıksa önce kapat
           await sleep(300);
         }
         handle.click();
-        await waitUntil(
-          () => gap.li.querySelectorAll(":scope > ul > li > span.file[evrak_id]:not([ana_evrak_id])").length >= gap.declared,
-          1000 * round,
-          200,
-        );
+        await waitUntil(target.done, 1000 * round, 200);
+        await sleep(250); // UYAP'ı art arda isteklerle boğma
       }
       await expandAll(dialog);
     }
@@ -885,6 +893,8 @@
     result.duplicates = duplicates;
     result.folderStats = folderStats(dialog);
     result.unopened = [...dialog.querySelectorAll("li.expandable")].filter((li) => li.querySelector(":scope > ul")).length;
+    result.domLeaves = dialog.querySelectorAll("span.file[evrak_id]").length;
+    result.emptyOpened = emptyOpenedNodes(dialog).length;
     return result;
   }
   function dosyaIdentity(dialog) {
@@ -961,6 +971,14 @@
             : ` — fark: ${gapList.slice(0, 4).join("; ")}${gapList.length > 4 ? ` (+${gapList.length - 4} klasör daha)` : ""}`),
       );
       head.append(verification);
+      head.append(
+        make(
+          "div",
+          "font-size:11px;color:#6b7280;margin-top:2px;",
+          `ağaç: ${items.domLeaves ?? "?"} yaprak, ${items.length} benzersiz evrak/ek` +
+            (items.emptyOpened ? ` · yüklenemeyen açık düğüm: ${items.emptyOpened}` : ""),
+        ),
+      );
       const rescanButton = make(
         "button",
         "margin-top:6px;padding:4px 10px;border-radius:8px;border:1px solid #b91c1c;background:#fff;color:#b91c1c;cursor:pointer;font-size:12px;",
