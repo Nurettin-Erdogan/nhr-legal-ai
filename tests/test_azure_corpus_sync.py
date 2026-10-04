@@ -195,3 +195,52 @@ def test_stale_lock_from_killed_run_is_taken_over():
         old = datetime.now().timestamp() - sync.LOCK_STALE_SECONDS - 60
         os.utime(lock, (old, old))
         assert sync._acquire_lock(lock) is True
+
+
+def _dead_pid() -> int:
+    import subprocess
+    import sys
+
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    return child.pid  # the process has exited; its id is free (not reused within this test)
+
+
+def test_pid_alive_sees_this_process_and_not_an_exited_one():
+    import os
+
+    assert sync._pid_alive(os.getpid()) is True
+    assert sync._pid_alive(_dead_pid()) is False
+    assert sync._pid_alive(0) is False and sync._pid_alive(-5) is False
+
+
+def test_lock_left_by_a_dead_process_is_taken_over_at_once():
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as folder:
+        lock = Path(folder) / "sync.lock"
+        lock.write_text(str(_dead_pid()))  # fresh file, so the age rule alone would block for 6 hours
+        assert sync._acquire_lock(lock) is True
+        assert lock.read_text() == str(__import__("os").getpid())
+
+
+def test_lock_held_by_a_live_process_still_blocks():
+    import os
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as folder:
+        lock = Path(folder) / "sync.lock"
+        lock.write_text(str(os.getpid()))  # this very process is alive
+        assert sync._acquire_lock(lock) is False
+
+
+def test_unreadable_lock_content_falls_back_to_the_age_rule():
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as folder:
+        lock = Path(folder) / "sync.lock"
+        lock.write_text("")  # empty and fresh: not provably dead, so it still blocks
+        assert sync._acquire_lock(lock) is False

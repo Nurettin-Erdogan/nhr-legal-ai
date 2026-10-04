@@ -372,8 +372,47 @@ LOCK_PATH = ROOT / "data" / "azure-corpus-sync.lock"
 LOCK_STALE_SECONDS = 6 * 3600
 
 
+def _pid_alive(pid: int) -> bool:
+    """Is a process with this id still running? Never signals it (os.kill(pid, 0) would
+    terminate the process on Windows)."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() == 5  # access denied: it exists, we just may not query it
+        try:
+            code = ctypes.c_ulong()
+            return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _lock_owner_is_dead(path: Path) -> bool:
+    try:
+        pid = int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return False  # unreadable or empty: fall back to the age rule
+    return not _pid_alive(pid)
+
+
 def _acquire_lock(path: Path = LOCK_PATH) -> bool:
-    """One sync at a time: the hourly task and a manual run must not write concurrently."""
+    """One sync at a time: the scheduled task and a manual run must not write concurrently.
+
+    A lock whose owner process is gone is stale at once. Before, a run killed with its
+    session left the lock behind and every later run skipped silently for six hours
+    (measured 2026-10-04: the dashboard stopped receiving Azure data for seven hours).
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     for _ in range(2):
         try:
@@ -383,7 +422,7 @@ def _acquire_lock(path: Path = LOCK_PATH) -> bool:
                 age = datetime.now().timestamp() - path.stat().st_mtime
             except FileNotFoundError:
                 continue
-            if age < LOCK_STALE_SECONDS:
+            if age < LOCK_STALE_SECONDS and not _lock_owner_is_dead(path):
                 return False
             path.unlink(missing_ok=True)  # left behind by a killed run
             continue
@@ -397,6 +436,11 @@ def main(argv: list[str] | None = None) -> int:
     if not _acquire_lock():
         logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
         LOG.warning("Another Azure corpus sync is running; skipping this run")
+        try:  # the scheduled task has no console: leave a trace a human can find
+            with (ROOT / "data" / "azure-corpus-sync.log").open("a", encoding="utf-8") as handle:
+                handle.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} WARNING lock held by a live sync; skipped\n")
+        except OSError:
+            pass
         return 0
     try:
         return _sync(argv)
