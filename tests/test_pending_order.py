@@ -93,3 +93,13 @@ def test_within_a_tier_law_types_still_come_first_and_fresh_candidates_before_ex
     fresh_law = _law(connection, "law", 32)
     order = _order(connection)
     assert order.index(fresh_law) < order.index(fresh_regulation) < order.index(exhausted_law)
+
+
+@requires_db
+def test_least_tried_goes_first_so_persistent_failures_cannot_starve_untouched_laws(connection):
+    # 300 kadar kalıcı başarısız tek-taraflı kayıt, hiç doğrulanmamış (5 denemede kalmış) kayıtların
+    # önünde kalıyordu; artık aynı kademede deneme sayısı küçük olan önce gelir.
+    stuck = [_law(connection, "regulation", n, attempts=35, mbs=True) for n in range(40, 43)]
+    untouched = [_law(connection, "communique", n, attempts=5) for n in range(50, 53)]
+    order = _order(connection)
+    assert max(order.index(u) for u in untouched) < min(order.index(x) for x in stuck)

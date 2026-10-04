@@ -83,6 +83,10 @@ ORDER BY
   -- Resmî Gazete ve MBS yalnız kanun, KHK ve Anayasa'yı doğrulayabiliyor; tebliğ/yönetmelik
   -- (binlerce kanun numarası) sırayı tıkamasın diye bunlar en sona bırakılır.
   CASE WHEN pending.legislation_type IN ('law', 'decree', 'constitution') THEN 0 ELSE 1 END,
+  -- Aynı kademede en az denenen önce (adil dönüş). "Bir tarafı doğrulanmış önce" kuralı bunun
+  -- ÖNÜNDEYKEN 300 kadar kalıcı başarısız kayıt (35+ deneme) 2.740 hiç doğrulanmamış tebliğin
+  -- önünde kalıyor ve onlara sıra gelmiyordu (ölçüldü: 2026-10-04, bir saatte yalnız bunlar denendi).
+  COALESCE((pending.metadata->>'verify_attempt_count')::int, 0),
   CASE
     WHEN (pending.metadata->>'verified_against_gazette' = 'true')
          <> (pending.metadata->>'verified_against_mbs' = 'true')
