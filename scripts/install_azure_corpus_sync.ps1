@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('Hourly', 'SixHours', 'Daily')]
+    [ValidateSet('TenMinutes', 'Hourly', 'SixHours', 'Daily')]
     [string]$Frequency = 'SixHours',
     [switch]$UpdateExisting
 )
@@ -28,7 +28,13 @@ if ($existing) {
 
 $action = New-ScheduledTaskAction -Execute $conhost `
     -Argument ('--headless "' + $python + '" "' + $sync + '" --embed-limit 500') -WorkingDirectory $root
-if ($Frequency -eq 'Hourly') {
+if ($Frequency -eq 'TenMinutes') {
+    # Panel PC'deki veritabanını okur; Azure verisi senkronla gelir. Tek tur ~1 dk sürer,
+    # MultipleInstances IgnoreNew ve betiğin kilit dosyası çakışan turları önler.
+    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+        -RepetitionInterval (New-TimeSpan -Minutes 10) `
+        -RepetitionDuration (New-TimeSpan -Days 3650)
+} elseif ($Frequency -eq 'Hourly') {
     $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5) `
         -RepetitionInterval (New-TimeSpan -Hours 1) `
         -RepetitionDuration (New-TimeSpan -Days 3650)
