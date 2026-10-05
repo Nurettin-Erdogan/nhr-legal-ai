@@ -122,9 +122,39 @@ def decision_from_bedesten(kind: str, item: BedestenItem, html: str) -> CourtDec
     )
 
 
+class KnownFile:
+    """Başka bir veritabanındaki (PC) kayıtların listesi: "YYYY-MM-DD<TAB>belge_id" satırları, .gz olabilir.
+
+    Azure'un veritabanında Yargıtay tohumları yok; onsuz toplayıcı portalın tamamını yeniden indirir.
+    Bu liste "bizde olan"ı (tohumlar dahil) bildirir, böylece yalnız eksik kararlar çekilir.
+    """
+
+    def __init__(self, path: str, first_year: int, last_year: int) -> None:
+        import gzip
+        self.ids: set[str] = set()
+        self.counts: dict[date, int] = {}
+        opener = gzip.open if path.endswith(".gz") else open
+        with opener(path, "rt", encoding="utf-8") as handle:
+            for line in handle:
+                day_text, _, doc_id = line.rstrip("\n").partition("\t")
+                if not doc_id or not (first_year <= int(day_text[:4]) <= last_year):
+                    continue
+                self.add(date.fromisoformat(day_text), doc_id)
+
+    def add(self, day: date, doc_id: str) -> None:
+        if doc_id not in self.ids:
+            self.ids.add(doc_id)
+            self.counts[day] = self.counts.get(day, 0) + 1
+
+    def day_counts(self, first: date, last: date) -> dict[date, int]:
+        return {d: n for d, n in self.counts.items() if first <= d <= last}
+
+
 class Collector:
-    def __init__(self, kind: str, client: BedestenClient, connection: psycopg.Connection) -> None:
+    def __init__(self, kind: str, client: BedestenClient, connection: psycopg.Connection,
+                 known: "KnownFile | None" = None) -> None:
         self.kind = kind
+        self.known = known
         self.client = client
         self.connection = connection
         self.prefix = f"{kind}:"
@@ -174,6 +204,8 @@ class Collector:
 
     # -- veritabanı --------------------------------------------------------------------------
     def db_day_counts(self, first: date, last: date) -> dict[date, int]:
+        if self.known:
+            return self.known.day_counts(first, last)
         rows = self.connection.execute(
             "SELECT d.decision_date, count(*) FROM court_decision_details d "
             "JOIN legal_sources ls ON ls.id = d.legal_source_id "
@@ -184,11 +216,16 @@ class Collector:
         return {row[0]: int(row[1]) for row in rows}
 
     def known_ids(self, ids: list[str]) -> set[str]:
+        if self.known:
+            from_file = {i for i in ids if i in self.known.ids}
+            ids = [i for i in ids if i not in from_file]
+        else:
+            from_file = set()
         rows = self.connection.execute(
             "SELECT external_id FROM legal_sources WHERE external_id = ANY(%s) AND is_current",
             ([self.prefix + i for i in ids],),
         ).fetchall()
-        return {row[0][len(self.prefix):] for row in rows}
+        return from_file | {row[0][len(self.prefix):] for row in rows}
 
     # -- iş akışı ----------------------------------------------------------------------------
     def total(self, first: date, last: date) -> int:
@@ -216,6 +253,8 @@ class Collector:
                 logger.warning("Karar alınamadı %s: %s", item.document_id, exc)
                 continue
             saved += 1
+            if self.known:
+                self.known.add(day, item.document_id)
             self.fetched += 1
             if self.fetched % 25 == 0:
                 self.report(day)
@@ -285,6 +324,7 @@ def main() -> None:
     parser.add_argument("--from-year", type=int, default=date.today().year, help="en yeni yıl")
     parser.add_argument("--to-year", type=int, default=2000, help="en eski yıl")
     parser.add_argument("--interval", type=float, default=4.5, help="başlangıç istek aralığı (sn); 4,4-6 sn arasında hafifçe ayarlanır")
+    parser.add_argument("--known-file", help="bizde olan kararların listesi (TSV: tarih, id; .gz olabilir); yalnız eksikleri çeker")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -303,7 +343,8 @@ def main() -> None:
     done_marker.unlink(missing_ok=True)  # yeni tur başladı: önceki bitiş işareti geçersiz
     with psycopg.connect(url, autocommit=True) as connection:
         connection.execute("SET statement_timeout = '120s'")
-        collector = Collector(args.source, BedestenClient(min_interval=args.interval), connection)
+        known = KnownFile(args.known_file, args.to_year, args.from_year) if args.known_file else None
+        collector = Collector(args.source, BedestenClient(min_interval=args.interval), connection, known)
         try:
             for year in range(args.from_year, args.to_year - 1, -1):
                 for month in range(12, 0, -1):

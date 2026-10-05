@@ -1,6 +1,6 @@
 #!/bin/bash
 # Azure bekcisi: collect_bedesten (yalniz yargitay), collect_emsal (<=2022), worker.verify_loop
-# Kanal paylasimi: Azure=Yargitay, PC=Danistay+Emsal(yeni aylar). Her makinenin kendi IP'si kendi
+# Kanal paylasimi (2026-10-05): PC Yargitay 2026-2016 ESKIKLERI, Azure 2015-2000 ESKIKLERI ceker (--known-file: PC'de olan kararlar atlanir). Emsal Azure <=2022.
 # Bedesten sirasini (reserve_slot) kullandigindan her kanal ~700/sa alir.
 # olduren surecleri 5 dk'da bir kontrol edip yeniden baslatir. PC'deki
 # overnight_watchdog.ps1 ile ayni amaca hizmet eder, Azure/Linux tarafi icin.
@@ -12,7 +12,7 @@ log "bekci basladi"
 while true; do
   if ! pgrep -f "collect_bedesten.py --source yargitay" > /dev/null; then
     log "bedesten-yargitay yoktu, baslatiliyor"
-    nohup .venv/bin/python -X utf8 -u scripts/collect_bedesten.py --source yargitay > data/logs/bedesten-yargitay.out.log 2> data/logs/bedesten-yargitay.err.log < /dev/null &
+    nohup .venv/bin/python -X utf8 -u scripts/collect_bedesten.py --source yargitay --known-file $HOME/yargitay-known.tsv.gz --from-year 2015 --to-year 2000 > data/logs/bedesten-yargitay.out.log 2> data/logs/bedesten-yargitay.err.log < /dev/null &
     disown
   fi
   if ! pgrep -f "collect_emsal.py" > /dev/null; then
