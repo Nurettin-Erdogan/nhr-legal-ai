@@ -10,9 +10,9 @@ mkdir -p data/logs
 log() { echo "$(date -Iseconds) $1" >> "$LOG"; }
 log "bekci basladi"
 while true; do
-  if ! pgrep -f "collect_bedesten.py --source yargitay" > /dev/null; then
-    log "bedesten-yargitay yoktu, baslatiliyor"
-    nohup .venv/bin/python -X utf8 -u scripts/collect_bedesten.py --source yargitay --known-file $HOME/yargitay-known.tsv.gz --from-year 2015 --to-year 2000 > data/logs/bedesten-yargitay.out.log 2> data/logs/bedesten-yargitay.err.log < /dev/null &
+  if ! pgrep -f "azure_bedesten_chain.sh" > /dev/null; then
+    log "bedesten zinciri (yargitay -> danistay) yoktu, baslatiliyor"
+    nohup bash scripts/azure_bedesten_chain.sh > /dev/null 2>&1 < /dev/null &
     disown
   fi
   if ! pgrep -f "collect_emsal.py" > /dev/null; then
