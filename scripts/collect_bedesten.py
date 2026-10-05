@@ -122,6 +122,15 @@ def decision_from_bedesten(kind: str, item: BedestenItem, html: str) -> CourtDec
     )
 
 
+class _ChamberModeNoisy(Exception):
+    """Birim sayıları kimlik düzeyindeki gerçeği yansıtmıyor (ör. seed'lerde farklı daire adı); gün taramasına dön."""
+
+
+# Birim aralığında fark görünüp hiç eksik karar bulunmayan (yalnız etiket gürültüsü olan) yaprak sayısı bunu aşarsa
+# ve o ayda hiç karar çekilmediyse birim modu bırakılır: gürültü her yaprakta bir liste isteği harcar.
+NOISY_LEAF_LIMIT = 6
+
+
 class KnownFile:
     """Başka bir veritabanındaki (PC) kayıtların listesi: "YYYY-MM-DD<TAB>belge_id<TAB>birim" satırları (birim yoksa boş), .gz olabilir.
 
@@ -164,6 +173,8 @@ class Collector:
         self.known = known
         self.by_chamber = by_chamber
         self._year_chambers: dict[int, set[str]] = {}
+        self._wasted_leaves = 0
+        self._month_fetched_base = 0
         self.client = client
         self.connection = connection
         self.prefix = f"{kind}:"
@@ -309,8 +320,13 @@ class Collector:
                     break
                 items.extend(result.items)
                 page += 1
+            failed_before = self.failed
             saved = self._fetch_missing(items, last)
             logger.info("%s %s..%s: portalda %d, bizde %d, çekilen %d", chamber, first, last, total, have, saved)
+            if saved == 0 and self.failed == failed_before:
+                self._wasted_leaves += 1
+                if self._wasted_leaves >= NOISY_LEAF_LIMIT and self.fetched == self._month_fetched_base:
+                    raise _ChamberModeNoisy
             return
         mid = date.fromordinal((first.toordinal() + last.toordinal()) // 2)
         left = self._call(self.client.search, self.kind, first, mid, page=1, page_size=1, chamber=chamber).total
@@ -322,6 +338,8 @@ class Collector:
         counts = self.db_chamber_counts(first_day, last_day)
         chambers = sorted(self.year_chambers(first_day.year) | {c for (c, _d) in counts if c})
         progress = self.state.setdefault("chamber_state", {}).setdefault(key, {"totals": {}, "done": []})
+        self._wasted_leaves = 0
+        self._month_fetched_base = self.fetched
         for chamber in chambers:
             if _stop_requested():
                 raise KeyboardInterrupt
@@ -335,12 +353,17 @@ class Collector:
                         key, sum(progress["totals"].values()), month_total)
             self.state["chamber_state"].pop(key, None)
             return False
-        for chamber in chambers:
-            if chamber in progress["done"]:
-                continue
-            self.scan_range(first_day, last_day, chamber, progress["totals"][chamber], counts)
-            progress["done"].append(chamber)
-            self._save_state()
+        try:
+            for chamber in chambers:
+                if chamber in progress["done"]:
+                    continue
+                self.scan_range(first_day, last_day, chamber, progress["totals"][chamber], counts)
+                progress["done"].append(chamber)
+                self._save_state()
+        except _ChamberModeNoisy:
+            logger.info("%s: birim sayıları etiket gürültüsü içeriyor; gün gün taranacak", key)
+            self.state["chamber_state"].pop(key, None)
+            return False
         self.state["chamber_state"].pop(key, None)
         return True
 

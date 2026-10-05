@@ -94,3 +94,32 @@ def test_chamber_scan_falls_back_when_a_chamber_is_unknown(tmp_path, monkeypatch
     collector.collect_month(2015, 10)
 
     assert saved == ["b"]  # bilinmeyen birimdeki karar gün taramasına düşüp yine bulundu
+
+
+def test_noisy_chamber_labels_fall_back_to_day_scan(tmp_path, monkeypatch):
+    """Seed'lerde kararlar başka daire adıyla kayıtlıysa birim sayıları tutmaz; ay gün gün taranıp eksik yine bulunur."""
+    monkeypatch.setattr(collect_bedesten, "STATE_DIR", tmp_path)
+    records = []
+    for day in range(1, 29):
+        for n in range(30):
+            records.append((f"x-{day}-{n}", "1. Hukuk Dairesi" if n % 2 else "2. Hukuk Dairesi", date(2015, 10, day)))
+    missing = {records[100][0]}
+    # Bizdeki kayıtların yarısı yanlış daire adıyla: portal toplamı ile bizim daire sayımız hiç tutmaz.
+    lines = []
+    for i, c, d in records:
+        if i in missing:
+            continue
+        label = "Genel Kurul" if hash(i) % 2 else c
+        lines.append(f"{d.isoformat()}\t{i}\t{label}\n")
+    known_path = tmp_path / "known.tsv"
+    known_path.write_text("".join(lines), encoding="utf-8")
+    saved: list[str] = []
+    monkeypatch.setattr(collect_bedesten, "decision_from_bedesten", lambda kind, item, html: item)
+    monkeypatch.setattr(collect_bedesten, "upsert_decision", lambda connection, item: saved.append(item.document_id))
+    collector = collect_bedesten.Collector(
+        "yargitay", _FakePortal(records), _FakeConnection(), KnownFile(str(known_path), 2015, 2015), by_chamber=True
+    )
+
+    collector.collect_month(2015, 10)
+
+    assert set(saved) == missing
