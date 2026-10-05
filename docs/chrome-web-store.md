@@ -63,10 +63,10 @@ Yeni sürüm yayınlamak: `manifest.json` sürümünü artır, paketi yeniden ü
 | `host: <API adresi>` | Seçilen evrakları kullanıcının JurisAI hesabına yüklemek. |
 | `storage` | JurisAI bağlantı anahtarı ve ayarlar (hız, otomatik aktarım açık/kapalı) saklanır. |
 | `webRequest` | UYAP'ın evrak önizlemesi için yaptığı belge isteğinin adresini (salt gözlem, engelleme/değiştirme yok) yakalamak; belge bu adresten indirilir. |
-| `scripting` | Eklenti güncellendikten sonra açık UYAP/JurisAI sekmelerine yeni betiği yerleştirmek (sekmeyi yenileme gereği kalmaz). |
+| `scripting` | Eklenti güncellendikten sonra açık UYAP/JurisAI sekmelerine yeni betiği yerleştirmek (sekmeyi yenileme gereği kalmaz); UYAP yan menüsünü açmak için UYAP'ın kendi `menuButtonClick(<sayı>)` işlevini çağırmak. |
 | `downloads` | Kullanıcı "bilgisayarıma indir"i seçince evrakları klasör yapısıyla İndirilenler'e kaydetmek; tanı raporu. |
 | `activeTab` | Eklenti simgesine basılınca o sekmeye komut göndermek. |
-| `content_scripts: bridge.js` (JurisAI sayfası) | JurisAI sayfasının "UYAP Dosyalarım" bölümünün eklentiyle konuşması; yalnız beyaz listedeki 4 komut (`PING`, `LIST_DOSYALAR`, `OPEN_DOSYA`, `SET_KEY`: sayfanın yeni oluşturduğu bağlantı anahtarını eklentiye yazması, biçimi `jsai_…` doğrulanır). |
+| `content_scripts: bridge.js` (JurisAI sayfası) | JurisAI sayfasının "UYAP Dosyalarım" bölümünün eklentiyle konuşması; yalnız beyaz listedeki 8 komut: `PING`, `LIST_DOSYALAR` (UYAP dosya listesi), `OPEN_DOSYA`, `TREE` (bir dosyanın evrak ağacı), `JOB_STATUS`, `PULL_IDS` (kullanıcının JurisAI'da seçtiği evrakları aktarma), `STOP_JOB`, `SET_KEY` (sayfanın yeni oluşturduğu bağlantı anahtarını eklentiye yazması, biçimi `jsai_…` doğrulanır). |
 
 ## 6. Veri kullanımı beyanları (Gizlilik uygulamaları sekmesi)
 

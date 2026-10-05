@@ -32,25 +32,33 @@ def test_more_than_two_informative_terms_and_law_numbers_survive():
     assert "nasıl" not in plan.text and "yapılır" not in plan.text
 
 
-def test_research_has_no_top_k_or_arbitrary_candidate_cap():
-    migration = Path('database/migrations/027_rag_research_page.sql').read_text(encoding='utf-8')
-    assert 'DISTINCT ON (ls.id)' in migration
-    assert 'count(*) OVER ()' in migration
-    assert 'SECURITY DEFINER' in migration
-    assert 'REVOKE ALL' in migration
-    assert 'public.legal_chunks' in migration and 'document_chunks' not in migration
-    assert 'candidate_limit' not in migration
-    assert migration == Path('database/init/028_rag_research_page.sql').read_text(encoding='utf-8')
-    assert 'legal_rag_research_page' in research.RESEARCH_SQL
-    assert "candidate_limit" not in research.RESEARCH_SQL
-    assert "bounded" not in research.RESEARCH_SQL
-    assert "ls.deleted_at IS NULL" in research.RESEARCH_SQL
-    assert "ls.is_current" in research.RESEARCH_SQL
-    assert "bulk_seed" in research.RESEARCH_SQL
-    # Text and subtype details must not be fetched for every counted match.
-    before_page = research.RESEARCH_SQL.split('SELECT \n    chunk.id')[0]
-    assert 'chunk.content' not in before_page
-    assert 'court_decision_details' not in before_page
+def test_research_caps_are_explicit_and_always_reported_as_partial():
+    """Sınırsız tarama yaygın konularda 90 sn'yi aşıyordu (504). Sınır olabilir, ama aşıldığında sonuç `partial` döner."""
+    complete = Path('database/migrations/027_rag_research_page.sql').read_text(encoding='utf-8')
+    assert complete == Path('database/init/028_rag_research_page.sql').read_text(encoding='utf-8')
+    bounded = Path('database/migrations/037_research_page_bounded.sql').read_text(encoding='utf-8')
+    assert bounded == Path('database/init/038_research_page_bounded.sql').read_text(encoding='utf-8')
+    for migration in (complete, bounded):
+        assert 'count(*) OVER ()' in migration
+        assert 'SECURITY DEFINER' in migration
+        assert 'REVOKE ALL' in migration
+        assert 'public.legal_chunks' in migration and 'document_chunks' not in migration
+    # Sınırlı fonksiyon: aday kümesi metin açılmadan seçilir, sınır aşımı `partial` olarak döner.
+    assert 'partial boolean' in bounded and 'DISTINCT ON (ranked.legal_source_id)' in bounded
+    assert 'chunk.search_vector @@ p_filter' in bounded and 'chunk.search_vector @@ p_query' in bounded
+    assert "ingestion_method = 'bulk_seed'" in bounded  # aynı uygunluk koşulu
+    assert 'legal_rag_research_page_bounded' in research.RESEARCH_SQL and 'page.partial' in research.RESEARCH_SQL
+    assert 'legal_rag_research_page(' in research.COMPLETE_RESEARCH_SQL  # 037 yoksa eski tam arama
+    for sql in (research.RESEARCH_SQL, research.COMPLETE_RESEARCH_SQL):
+        assert "ls.deleted_at IS NULL" in sql and "ls.is_current" in sql and "bulk_seed" in sql
+        # Text and subtype details must not be fetched for every counted match.
+        before_page = sql.split('SELECT \n    chunk.id')[0]
+        assert 'chunk.content' not in before_page
+        assert 'court_decision_details' not in before_page
+    # Her kademe bir öncekinden dar; ilk kademeden sonra toplu katman taranmaz (her zaman kısmi sayılır).
+    official = [attempt[0] for attempt in research.RESEARCH_ATTEMPTS]
+    assert official == sorted(official, reverse=True) and len(set(official)) == len(official)
+    assert all(attempt[1] == 0 for attempt in research.RESEARCH_ATTEMPTS[1:])
 
 
 @pytest.fixture
@@ -60,6 +68,7 @@ def pages(monkeypatch):
         context = court_decision_context(source_id=str(UUID(int=number + 100)))
         row = asdict(context)
         row["total"] = 25
+        row["partial"] = False
         row["verification"] = "third_party" if number % 2 else "official"
         rows.append(row)
     statements = []
@@ -93,6 +102,7 @@ def test_every_matching_source_is_reachable_without_two_source_limit(pages):
         page = response.json()
         assert page["total"] is None
         assert page['candidate_total'] == 25
+        assert page['partial'] is False
         assert all(row['verification'] == 'official' for row in page['results'])
         ids.extend(source["source_id"] for source in page["results"])
         if not page["has_more"]:
@@ -161,3 +171,68 @@ def test_phrase_is_not_silently_relaxed_to_unrelated_or_results(monkeypatch):
     assert len(calls) == 1
     assert calls[0]["required_phrase"] == "ortak velayet"
     assert calls[0]["candidate_limit"] >= 24
+
+
+def _scripted_connection(monkeypatch, script):
+    """Her araştırma sorgusunda sıradaki davranışı uygular: satır listesi döner ya da istisna atar."""
+    calls = []
+
+    class Connection:
+        def transaction(self):
+            return nullcontext()
+
+        def execute(self, sql, params=None):
+            if params is None:
+                calls.append((sql, None))
+                return type("Result", (), {"fetchall": lambda self: []})()
+            calls.append((sql, params))
+            step = script.pop(0)
+            if isinstance(step, Exception):
+                raise step
+            return type("Result", (), {"fetchall": lambda self: step})()
+
+    @contextmanager
+    def connection():
+        yield Connection()
+
+    monkeypatch.setattr(research, "database_connection", connection)
+    return calls
+
+
+def _row(number, partial):
+    row = asdict(court_decision_context(source_id=str(UUID(int=number + 500))))
+    row.update(total=40, partial=partial, verification="official")
+    return row
+
+
+def test_a_timeout_retries_with_a_narrower_scan_and_says_the_result_is_partial(monkeypatch):
+    calls = _scripted_connection(monkeypatch, [psycopg.errors.QueryCanceled("x"), psycopg.errors.QueryCanceled("y"), [_row(1, True)]])
+    response = research.research_sources(q="kıdem tazminatı şartları", limit=10, offset=0)
+    assert response["partial"] is True and response["candidate_total"] == 40
+    caps = [(params["max_official"], params["max_seed"]) for sql, params in calls if params]
+    assert caps == [(2000, 1000), (500, 0), (120, 0)]
+    timeouts = [sql for sql, params in calls if params is None and "statement_timeout" in sql]
+    assert timeouts == [f"SET LOCAL statement_timeout = '{attempt[2]}'" for attempt in research.RESEARCH_ATTEMPTS]
+
+
+def test_all_timeouts_end_in_504_never_in_an_empty_or_complete_looking_list(monkeypatch):
+    _scripted_connection(monkeypatch, [psycopg.errors.QueryCanceled(name) for name in "xyz"])
+    with pytest.raises(research.HTTPException) as error:
+        research.research_sources(q="kıdem tazminatı şartları", limit=10, offset=0)
+    assert error.value.status_code == 504
+
+
+def test_without_migration_037_the_complete_search_is_used(monkeypatch):
+    row = _row(2, False)
+    row.pop("partial")  # tam arama bu alanı döndürmez
+    calls = _scripted_connection(monkeypatch, [psycopg.errors.UndefinedFunction("x"), [row]])
+    response = research.research_sources(q="kıdem tazminatı şartları", limit=10, offset=0)
+    assert response["partial"] is False and response["candidate_total"] == 40
+    executed = [sql for sql, params in calls if params]
+    assert "legal_rag_research_page_bounded" in executed[0] and "legal_rag_research_page(" in executed[1]
+
+
+def test_an_empty_first_page_is_complete_and_zero(monkeypatch):
+    _scripted_connection(monkeypatch, [[]])
+    response = research.research_sources(q="kıdem tazminatı şartları", limit=10, offset=0)
+    assert response["partial"] is False and response["candidate_total"] == 0 and response["results"] == []

@@ -52,6 +52,14 @@ def question_intent(question: str) -> Intent | None:
     return None
 
 
+# Soru kalıbı ve kanun adı sözcükleri pasajın konusunu taşımaz: "4857 sayılı İş Kanunu madde 18 neyi düzenler?" sorusunda
+# "kanunu/düzenler/neyi" pasajda geçmediği için doğru madde "alakasız" sayılıp cevap "yeterli kaynak yok" oluyordu (ölçüldü: 2026-10-04).
+GENERIC_QUESTION_WORDS = frozenset((
+    'kanun', 'kanunu', 'kanunun', 'kanununun', 'madde', 'maddesi', 'maddesinde', 'sayılı', 'sayili', 'neyi', 'neler', 'nelerdir',
+    'nedir', 'düzenler', 'düzenlenir', 'düzenlenmiştir', 'düzenlemiştir', 'hangi', 'nasıl', 'hakkında', 'ilişkin',
+))
+
+
 def document_passage_relevant(question: str, text: str) -> bool:
     """Kullanıcı belgesi cümlesi için alaka: konu-niyeti (mevzuat) kapısı uygulanmaz.
 
@@ -68,7 +76,7 @@ def document_passage_relevant(question: str, text: str) -> bool:
         return bool(re.search(r'\b(?:tl|lira|harç|harcı|ücret)', value))
     from api.ai.search_plan import plan_search
     words = [w for w in plan_search(question).text.split() if len(w) >= 4
-             and not w.isdigit() and w not in ('kanun', 'madde', 'sayılı', 'sayili')]
+             and not w.isdigit() and w not in GENERIC_QUESTION_WORDS]
     if not words:
         return True
     stems = {w[:max(4, len(w) - 2)] for w in words}
@@ -93,7 +101,7 @@ def passage_relevant(question: str, text: str, *, source_type: str | None = None
     if intent is None:
         from api.ai.search_plan import plan_search
         words = [w for w in plan_search(question).text.split() if len(w) >= 4
-                 and not w.isdigit() and w not in ('kanun', 'madde', 'sayılı', 'sayili')]
+                 and not w.isdigit() and w not in GENERIC_QUESTION_WORDS]
         if words:
             stems = set(w[:max(4, len(w)-2)] for w in words)
             return sum(w in value for w in stems) >= min(2, len(stems))

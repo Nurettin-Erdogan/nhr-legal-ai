@@ -63,9 +63,9 @@ def main() -> int:
             failed |= not answer.grounded
             if args.include_research:
                 search_started = perf_counter()
-                _, candidates, _, candidate_total = load_candidate_page(question, 10, 0)
+                _, candidates, _, candidate_total, partial = load_candidate_page(question, 10, 0)
                 report['research'] = dict(seconds=round(perf_counter()-search_started, 3),
-                                          candidate_total=candidate_total,
+                                          candidate_total=candidate_total, partial=partial,
                                           verified_page_size=len(verified_contexts(candidates)),
                                           live_verification='not_run_readonly')
         except Exception as exc:

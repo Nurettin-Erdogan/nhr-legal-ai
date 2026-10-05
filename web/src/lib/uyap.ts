@@ -21,6 +21,12 @@ export const ALLOWED_EXTENSIONS = [
 
 export const MAX_FILE_BYTES = 50 * 1024 * 1024; // bucket limiti ile aynı
 export const MAX_ARCHIVE_ENTRIES = 200;
+export const MAX_ARCHIVE_BYTES = 50 * 1024 * 1024;
+export const MAX_ARCHIVE_EXPANDED_BYTES = 200 * 1024 * 1024;
+
+/** Elle içe aktarma ve eklenti aktarımı aynı UYAP kökenini taşır. */
+export const isUyapSource = (source: string | null | undefined) =>
+  source === "uyap" || source === "uyap-avukat-eklentisi";
 
 export const extOf = (name: string) => name.split(".").pop()?.toLowerCase() ?? "";
 
@@ -123,16 +129,26 @@ export interface ArchiveEntry {
 
 /** UYAP'tan indirilen ZIP/EYP arşivini tarayıcıda açar. */
 export async function readArchive(file: File): Promise<ArchiveEntry[]> {
+  if (file.size > MAX_ARCHIVE_BYTES) throw new Error("UYAP arşivi 50 MB sınırını aşıyor");
   const { unzipSync } = await import("fflate");
   const buf = new Uint8Array(await file.arrayBuffer());
-  const unzipped = unzipSync(buf);
+  let count = 0;
+  let expanded = 0;
+  const unzipped = unzipSync(buf, {
+    filter(info) {
+      count++;
+      expanded += info.originalSize;
+      if (count > MAX_ARCHIVE_ENTRIES || expanded > MAX_ARCHIVE_EXPANDED_BYTES || info.originalSize > MAX_FILE_BYTES)
+        throw new Error("UYAP arşivi güvenli açma sınırını aşıyor");
+      return !info.name.endsWith("/") && isAllowedFile(info.name);
+    },
+  });
   const entries: ArchiveEntry[] = [];
   for (const [name, data] of Object.entries(unzipped)) {
     if (name.endsWith("/") || !data.length) continue;
     if (!isAllowedFile(name)) continue;
     if (data.length > MAX_FILE_BYTES) continue;
     entries.push({ name, data });
-    if (entries.length >= MAX_ARCHIVE_ENTRIES) break;
   }
   return entries;
 }
@@ -146,7 +162,11 @@ export async function extractTextSample(name: string, bytes: Uint8Array): Promis
     }
     if (ext === "udf") {
       const { unzipSync, strFromU8 } = await import("fflate");
-      const inner = unzipSync(bytes);
+      const inner = unzipSync(bytes, {
+        filter(info) {
+          return info.name.toLowerCase().endsWith("content.xml") && info.originalSize <= 2 * 1024 * 1024;
+        },
+      });
       const key = Object.keys(inner).find((k) => k.toLowerCase().endsWith("content.xml"));
       if (!key) return "";
       return strFromU8(inner[key]!)

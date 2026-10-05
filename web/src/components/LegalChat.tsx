@@ -15,6 +15,7 @@ import {
   ShieldAlert,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
+import { CollapsibleAnswer } from "@/components/CollapsibleAnswer";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
 import { ResearchSources } from "@/components/ResearchSources";
@@ -208,7 +209,7 @@ export function LegalChat({
       <div className="rounded-2xl bg-card border border-border flex flex-col overflow-hidden">
         <div ref={scrollRef} className="flex-1 overflow-y-auto p-6">
           {messages.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-center max-w-lg mx-auto">
+            <div className="flex flex-col items-center justify-center min-h-full text-center max-w-lg mx-auto">
               <div className="h-16 w-16 rounded-2xl bg-gradient-gold flex items-center justify-center mb-4">
                 <Sparkles className="h-8 w-8 text-primary" />
               </div>
@@ -256,7 +257,9 @@ export function LegalChat({
                     )}
                   >
                     <div className="prose prose-sm dark:prose-invert max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                      <CollapsibleAnswer length={m.role === "assistant" ? m.content.length : 0}>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                      </CollapsibleAnswer>
                     </div>
                     {m.role === "assistant" && m.grounded === false && (
                       <p className="mt-2 text-xs flex items-center gap-1 text-amber-700 dark:text-amber-400">

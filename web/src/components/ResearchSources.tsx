@@ -11,6 +11,8 @@ interface Source {
 
 interface Page {
   verification_pending?: number;
+  /** Konu çok geniş: eşleşen kayıtların yalnız bir bölümü tarandı, liste eksik olabilir. */
+  partial?: boolean;
   total: number | null;
   search_text: string;
   required_phrase: string;
@@ -78,7 +80,7 @@ export function ResearchSources({ question, autoLoad = false }: { question: stri
   return (
     <section aria-label="Soruyla eşleşen korpus kaynakları" className="mt-3 rounded-xl border border-border bg-card text-foreground p-3 text-left">
       <h4 className="text-sm font-semibold">
-        Doğrulanmış araştırma kaynakları{page?.total != null ? ` · ${page.total.toLocaleString("tr-TR")} kaynak` : ""}
+        Doğrulanmış araştırma kaynakları{page?.total ? ` · ${page.total.toLocaleString("tr-TR")} kaynak` : ""}
       </h4>
       <p className="text-xs text-muted-foreground mt-1">
         İlgili kayıtlar resmî kaynakla doğrulandıktan sonra gösterilir. Bu liste cevapta kullanılan atıflardan bağımsızdır; iki kaynakla sınırlı değildir.
@@ -100,9 +102,18 @@ export function ResearchSources({ question, autoLoad = false }: { question: stri
       </div>
       {error && <p role="alert" className="text-xs text-destructive mt-2">{error}</p>}
       {!!page?.verification_pending && <p role="status" className="text-xs text-amber-700 dark:text-amber-400 mt-2">Bu sayfadaki {page.verification_pending} adayın resmî doğrulaması tamamlanamadı; bu kayıtlar gösterilmiyor.</p>}
+      {page?.partial && (
+        <p role="status" className="text-xs text-amber-700 dark:text-amber-400 mt-2" data-testid="research-partial">
+          Konu çok geniş: eşleşen kayıtların yalnız bir bölümü tarandı, liste eksik olabilir. Daha eksiksiz sonuç için aramayı daraltın
+          (kanun maddesi, daire ya da yıl ekleyin).
+        </p>
+      )}
       {busy && <p role="status" className="text-xs mt-2">Korpus kaynakları aranıyor…</p>}
       {!busy && !error && !page && <Button size="sm" variant="outline" className="mt-2" onClick={() => load(0)}>Bu sorunun kaynaklarını ara</Button>}
-      {!busy && !error && page?.total === 0 && <p className="text-xs mt-2">Bu arama koşullarıyla eşleşme bulunamadı; bu, korpusta hiç veri olmadığı anlamına gelmez.</p>}
+      {!busy && !error && page?.total === 0 && <p className="text-xs mt-2" data-testid="research-empty">
+          Soru cümlesindeki sözcüklerin hepsini birlikte içeren kayıt bulunamadı; bu, korpusta hiç veri olmadığı anlamına gelmez. Cevaptaki atıflar bu aramadan bağımsızdır.
+          Daha kısa bir konu ifadesiyle (ör. “kira artışı”) arayabilirsiniz.
+        </p>}
       {!busy && (error || page?.has_more) && (
         <Button size="sm" variant="outline" className="mt-2" onClick={() => load(page?.next_offset ?? 0)}>
           {error ? "Yeniden dene" : `Devamını getir (${sources.length} gösteriliyor)`}

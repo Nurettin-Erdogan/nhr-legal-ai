@@ -70,5 +70,19 @@ def test_extension_and_content_must_match():
     with pytest.raises(DocumentProcessingError, match="içerik PDF değil"):
         process_document("sahte.pdf", b"normal metin")
 
-    with pytest.raises(DocumentProcessingError, match="Yalnız PDF, DOCX, UDF, ODT, TXT ve görüntü"):
+    with pytest.raises(DocumentProcessingError, match="Yalnız PDF, DOCX, UDF, ODT, TXT, HTML ve görüntü"):
         process_document("zararli.exe", b"MZ")
+
+
+def test_html_receipt_is_indexed_as_text_without_script():
+    html = '<html><body><h1>VEKALET PULU MAKBUZU</h1><p>Makbuz No 123</p><script>SECRET_TOKEN</script></body></html>'
+    processed = process_document("makbuz.html", html.encode())
+    assert processed.mime_type == "text/html"
+    assert "VEKALET PULU MAKBUZU" in processed.chunks[0].content
+    assert "SECRET_TOKEN" not in processed.chunks[0].content
+
+
+def test_legacy_turkish_encoded_html_keeps_legal_text():
+    html = '<html><head><meta charset="windows-1254"></head><body><p>Vekâlet pulu makbuzu: İstanbul Çağlayan</p></body></html>'
+    processed = process_document("makbuz.html", html.encode("cp1254"))
+    assert "İstanbul Çağlayan" in processed.chunks[0].content

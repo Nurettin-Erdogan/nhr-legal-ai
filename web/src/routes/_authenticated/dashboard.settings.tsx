@@ -7,6 +7,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/components/AuthProvider";
 import { db } from "@/lib/db";
 import { beginGoogleLogin, googleAccountLinked, googleLoginAvailable } from "@/lib/auth-api";
+import { downloadMyData } from "@/lib/account-data";
 
 type CallPreferences = {
   greeting: string;
@@ -23,6 +24,43 @@ const defaults: CallPreferences = {
   voicemail_enabled: false,
   ai_summary_enabled: false,
 };
+
+function DataRights() {
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [failed, setFailed] = useState(false);
+  const run = async () => {
+    setBusy(true);
+    setMessage("");
+    setFailed(false);
+    try {
+      setMessage(await downloadMyData());
+    } catch (error) {
+      setFailed(true);
+      setMessage(error instanceof Error ? error.message : "Veriler indirilemedi.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="space-y-3 rounded-xl border border-border bg-card p-6" data-testid="data-rights">
+      <h2 className="text-xl font-semibold">Verilerim (KVKK)</h2>
+      <p>
+        Hesabınızdaki müvekkil, dava, görev, takvim, belge üst verileri, yapay zekâ çıktıları ve sohbet geçmişinizi JSON dosyası olarak indirebilirsiniz.
+        Parola ve bağlantı anahtarları güvenlik nedeniyle dahil edilmez; belge dosyalarının kendisi Dosyalar sayfasından tek tek indirilir.
+        Verileriniz yerel sunucumuzda tutulur, yapay zekâ modeli eğitiminde kullanılmaz.
+      </p>
+      <Button type="button" variant="outline" onClick={() => void run()} disabled={busy}>
+        {busy ? "Hazırlanıyor…" : "Verilerimi indir (JSON)"}
+      </Button>
+      {message && (
+        <p role={failed ? "alert" : "status"} className={failed ? "text-destructive" : "text-emerald-700"}>
+          {message}
+        </p>
+      )}
+    </section>
+  );
+}
 
 const Settings = () => {
   const { user } = useAuth();
@@ -218,6 +256,7 @@ const Settings = () => {
             </>
           )}
         </section>
+        <DataRights />
         <section className="space-y-3 rounded-xl border border-border bg-card p-6">
           <h2 className="text-xl font-semibold">Google hesabı</h2>
           {!userId || googleLoadedFor !== userId ? (

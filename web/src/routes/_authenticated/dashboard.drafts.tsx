@@ -22,7 +22,7 @@ import { toast } from "sonner";
 import { Sparkles, Loader2, Download, FileText, Save, FileSignature } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { jsPDF } from "jspdf";
+import { exportTextPdf } from "@/lib/pdf-export";
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from "docx";
 import { saveAs } from "file-saver";
 
@@ -105,27 +105,13 @@ const Drafts = () => {
     }
   };
 
-  const exportPDF = () => {
+  const exportPDF = async () => {
     if (!content) return;
-    const doc = new jsPDF({ unit: "pt", format: "a4" });
-    const margin = 50;
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const usable = pageWidth - margin * 2;
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(11);
-    const plain = content.replace(/[#*>`]/g, "").replace(/\n{3,}/g, "\n\n");
-    const lines = doc.splitTextToSize(plain, usable);
-    let y = margin;
-    const pageHeight = doc.internal.pageSize.getHeight();
-    lines.forEach((line: string) => {
-      if (y > pageHeight - margin) {
-        doc.addPage();
-        y = margin;
-      }
-      doc.text(line, margin, y);
-      y += 16;
-    });
-    doc.save(`${(title || "belge").replace(/\s+/g, "-")}.pdf`);
+    try {
+      await exportTextPdf(content, title || "belge");
+    } catch (e: any) {
+      toast.error(e?.message ?? "PDF oluşturulamadı");
+    }
   };
 
   const exportDOCX = async () => {

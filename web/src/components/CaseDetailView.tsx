@@ -10,6 +10,8 @@ const tabs = [
   "Özet",
   "Evraklar",
   "Belgelerle Sor",
+  "Belge Kıyasla",
+  "Dosya Özeti",
   "Notlar",
   "Görevler",
   "Takvim",
@@ -53,6 +55,8 @@ export function CaseDetailView({
   downloadError,
   documentActions,
   documentAsk,
+  documentCompare,
+  caseSummary,
   documentTrash,
   onTrash,
   trashing,
@@ -65,6 +69,10 @@ export function CaseDetailView({
   documentActions?: ReactNode;
   /** "Belgelerle Sor" sekmesinin içeriği (dava belgeleriyle sohbet). */
   documentAsk?: ReactNode;
+  /** "Belge Kıyasla" sekmesinin içeriği (iki belgenin metin farkı). */
+  documentCompare?: ReactNode;
+  /** "Dosya Özeti" sekmesinin içeriği (olgu tablosu ve belge özetleri). */
+  caseSummary?: ReactNode;
   /** Evraklar sekmesinin altındaki çöp kutusu bölümü. */
   documentTrash?: ReactNode;
   /** Belgeyi çöp kutusuna taşır (geri alınabilir). */
@@ -134,6 +142,18 @@ export function CaseDetailView({
         (documentAsk ?? (
           <p className="text-sm text-muted-foreground">
             Belgelerle sohbet bu görünümde kullanılamıyor.
+          </p>
+        ))}
+      {tab === "Belge Kıyasla" &&
+        (documentCompare ?? (
+          <p className="text-sm text-muted-foreground">
+            Belge karşılaştırma bu görünümde kullanılamıyor.
+          </p>
+        ))}
+      {tab === "Dosya Özeti" &&
+        (caseSummary ?? (
+          <p className="text-sm text-muted-foreground">
+            Dosya özeti bu görünümde kullanılamıyor.
           </p>
         ))}
       {tab === "Notlar" && (

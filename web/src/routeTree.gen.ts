@@ -12,6 +12,8 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/route'
 import { Route as AuthRouteImport } from './routes/auth'
+import { Route as GizlilikRouteImport } from './routes/gizlilik'
+import { Route as KullanimSartlariRouteImport } from './routes/kullanim-sartlari'
 import { Route as PricingRouteImport } from './routes/pricing'
 import { Route as SssRouteImport } from './routes/sss'
 import { Route as AuthCallbackRouteImport } from './routes/auth/callback'
@@ -63,6 +65,16 @@ const AuthenticatedRouteRoute = AuthenticatedRouteRouteImport.update({
 const AuthRoute = AuthRouteImport.update({
   id: '/auth',
   path: '/auth',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const GizlilikRoute = GizlilikRouteImport.update({
+  id: '/gizlilik',
+  path: '/gizlilik',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const KullanimSartlariRoute = KullanimSartlariRouteImport.update({
+  id: '/kullanim-sartlari',
+  path: '/kullanim-sartlari',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PricingRoute = PricingRouteImport.update({
@@ -294,6 +306,8 @@ const AuthenticatedDashboardProjectsIdRoute =
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/auth': typeof AuthRouteWithChildren
+  '/gizlilik': typeof GizlilikRoute
+  '/kullanim-sartlari': typeof KullanimSartlariRoute
   '/pricing': typeof PricingRoute
   '/sss': typeof SssRoute
   '/auth/callback': typeof AuthCallbackRoute
@@ -336,6 +350,8 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/auth': typeof AuthRouteWithChildren
+  '/gizlilik': typeof GizlilikRoute
+  '/kullanim-sartlari': typeof KullanimSartlariRoute
   '/pricing': typeof PricingRoute
   '/sss': typeof SssRoute
   '/auth/callback': typeof AuthCallbackRoute
@@ -380,6 +396,8 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/_authenticated': typeof AuthenticatedRouteRouteWithChildren
   '/auth': typeof AuthRouteWithChildren
+  '/gizlilik': typeof GizlilikRoute
+  '/kullanim-sartlari': typeof KullanimSartlariRoute
   '/pricing': typeof PricingRoute
   '/sss': typeof SssRoute
   '/auth/callback': typeof AuthCallbackRoute
@@ -424,6 +442,8 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/auth'
+    | '/gizlilik'
+    | '/kullanim-sartlari'
     | '/pricing'
     | '/sss'
     | '/auth/callback'
@@ -466,6 +486,8 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/auth'
+    | '/gizlilik'
+    | '/kullanim-sartlari'
     | '/pricing'
     | '/sss'
     | '/auth/callback'
@@ -509,6 +531,8 @@ export interface FileRouteTypes {
     | '/'
     | '/_authenticated'
     | '/auth'
+    | '/gizlilik'
+    | '/kullanim-sartlari'
     | '/pricing'
     | '/sss'
     | '/auth/callback'
@@ -553,6 +577,8 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthenticatedRouteRoute: typeof AuthenticatedRouteRouteWithChildren
   AuthRoute: typeof AuthRouteWithChildren
+  GizlilikRoute: typeof GizlilikRoute
+  KullanimSartlariRoute: typeof KullanimSartlariRoute
   PricingRoute: typeof PricingRoute
   SssRoute: typeof SssRoute
 }
@@ -578,6 +604,20 @@ declare module '@tanstack/react-router' {
       path: '/auth'
       fullPath: '/auth'
       preLoaderRoute: typeof AuthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/gizlilik': {
+      id: '/gizlilik'
+      path: '/gizlilik'
+      fullPath: '/gizlilik'
+      preLoaderRoute: typeof GizlilikRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/kullanim-sartlari': {
+      id: '/kullanim-sartlari'
+      path: '/kullanim-sartlari'
+      fullPath: '/kullanim-sartlari'
+      preLoaderRoute: typeof KullanimSartlariRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/pricing': {
@@ -952,6 +992,8 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthenticatedRouteRoute: AuthenticatedRouteRouteWithChildren,
   AuthRoute: AuthRouteWithChildren,
+  GizlilikRoute: GizlilikRoute,
+  KullanimSartlariRoute: KullanimSartlariRoute,
   PricingRoute: PricingRoute,
   SssRoute: SssRoute,
 }

@@ -40,6 +40,8 @@ export interface NavLinkProps extends LinkProps {
   className?: string;
   activeClassName?: string;
   end?: boolean;
+  /** TanStack Link'in etkin eşleşmesi: varsayılan önek (alt yollar da etkin); `exact` yalnız tam yolu etkin sayar (aria-current için). */
+  activeOptions?: { exact?: boolean };
 }
 
 export const NavLink = React.forwardRef<HTMLAnchorElement, NavLinkProps>(function NavLink(

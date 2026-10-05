@@ -12,6 +12,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { submitApplication } from "@/lib/office-api";
+import { PRIVACY_NOTICE_VERSION } from "@/lib/legal";
 import { toast } from "sonner";
 import { ArrowLeft, CheckCircle2, Loader2 } from "lucide-react";
 
@@ -38,6 +39,7 @@ export const BasvuruDialog = ({ open, onOpenChange, sohbetOzeti }: Props) => {
   const [step, setStep] = useState(1);
   const [saving, setSaving] = useState(false);
   const [done, setDone] = useState(false);
+  const [consent, setConsent] = useState(false);
   const [form, setForm] = useState({
     hukuk_alani: "",
     konu: "",
@@ -51,6 +53,7 @@ export const BasvuruDialog = ({ open, onOpenChange, sohbetOzeti }: Props) => {
   const reset = () => {
     setStep(1);
     setDone(false);
+    setConsent(false);
     setForm({ hukuk_alani: "", konu: "", ad_soyad: "", telefon: "", eposta: "" });
   };
 
@@ -63,6 +66,7 @@ export const BasvuruDialog = ({ open, onOpenChange, sohbetOzeti }: Props) => {
     if (!form.ad_soyad.trim()) return toast.error("Ad soyad gereklidir");
     if (!form.telefon.trim() && !form.eposta.trim())
       return toast.error("Telefon veya e-posta girin");
+    if (!consent) return toast.error("Aydınlatma metnini okuduğunuzu onaylayın");
     setSaving(true);
     let error: Error | null = null;
     try {
@@ -73,6 +77,8 @@ export const BasvuruDialog = ({ open, onOpenChange, sohbetOzeti }: Props) => {
         hukuk_alani: form.hukuk_alani || null,
         konu: form.konu.trim(),
         sohbet_ozeti: sohbetOzeti?.slice(0, 8000) || null,
+        aydinlatma_okundu: true,
+        aydinlatma_surum: PRIVACY_NOTICE_VERSION,
       });
     } catch (e) {
       error = e instanceof Error ? e : new Error("Gönderilemedi");
@@ -165,11 +171,20 @@ export const BasvuruDialog = ({ open, onOpenChange, sohbetOzeti }: Props) => {
                 onChange={(e) => set("eposta", e.target.value)}
               />
             </div>
+            <label className="flex items-start gap-2 text-xs leading-relaxed text-muted-foreground">
+              <input type="checkbox" className="mt-0.5" checked={consent} onChange={(event) => setConsent(event.target.checked)} data-testid="kvkk-consent" />
+              <span>
+                <a href="/gizlilik" target="_blank" rel="noreferrer" className="underline">
+                  KVKK aydınlatma metnini
+                </a>{" "}
+                okudum; bilgilerimin başvurumu değerlendirmek için işlenmesini anladım.
+              </span>
+            </label>
             <div className="flex gap-2">
               <Button variant="outline" className="rounded-full" onClick={() => setStep(1)}>
                 <ArrowLeft className="h-4 w-4" />
               </Button>
-              <Button className="flex-1 rounded-full" disabled={saving} onClick={submit}>
+              <Button className="flex-1 rounded-full" disabled={saving || !consent} onClick={submit}>
                 {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : "Başvuruyu Gönder"}
               </Button>
             </div>

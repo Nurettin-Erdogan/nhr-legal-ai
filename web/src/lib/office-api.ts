@@ -98,6 +98,9 @@ export const submitApplication = (input: {
   hukuk_alani: string | null;
   konu: string;
   sohbet_ozeti: string | null;
+  /** KVKK: aydınlatma metni okundu onayı ve gösterilen metnin sürümü (sunucu onaysız başvuru almaz). */
+  aydinlatma_okundu: boolean;
+  aydinlatma_surum: string;
 }) => post<{ ok: true }>("/api/public/basvuru", input, { auth: false });
 
 /** Kullanıcının kendi belge deposuna (kişisel çalışma alanı) metin belgesi kaydeder. */

@@ -4,6 +4,8 @@ import { DashboardLayout } from "@/components/DashboardLayout";
 import { CaseDetailView } from "@/components/CaseDetailView";
 import { CaseDocumentActions } from "@/components/CaseDocumentActions";
 import { CaseDocumentAsk } from "@/components/CaseDocumentAsk";
+import { CaseDocumentCompare } from "@/components/CaseDocumentCompare";
+import { CaseDocumentSummary } from "@/components/CaseDocumentSummary";
 import { DocumentTrash } from "@/components/DocumentTrash";
 import { trashDocument } from "@/lib/document-trash";
 import { Button } from "@/components/ui/button";
@@ -146,6 +148,8 @@ const CaseDetail = () => {
             downloadError={downloadError}
             initialTab={savedCase === id ? "Evraklar" : "Özet"}
             documentAsk={<CaseDocumentAsk key={id} caseId={id} />}
+            documentCompare={<CaseDocumentCompare key={id} caseId={id} />}
+            caseSummary={<CaseDocumentSummary key={id} caseId={id} />}
             trashing={trashing}
             onTrash={(documentId) => void moveToTrash(documentId)}
             documentTrash={

@@ -12,12 +12,15 @@ görünecek şekilde (RLS) yazılır. İndeksleme ve belgeden soru-cevap için b
 | --- | --- | --- |
 | `web/public/jurisai-avukat` | UYAP Avukat Portalı | `POST /api/public/v1/documents/upload` (Bearer anahtar) |
 | `web/public/uyap-dosya-cekici` | UYAP Vatandaş Portalı | `POST /api/public/uyap-ingest` (anahtar gövdede); yalnız ayar penceresindeki düğmelerle çalışır |
-| `web/public/uyap-extension` | Arayüzde sunulmuyor | `POST /api/public/uyap-ingest` |
+
+Eski `uyap-extension` yalnız inceleme amacıyla `docs/legacy-uyap-extension` altında tutulur;
+MAIN-world ağ yanıtı dinlediği için indirilebilir paket olarak sunulmaz. Bu sürüm daha önce
+kurulduysa Chrome'dan kaldırılmalı ve güncel JurisAI eklentisi yüklenmelidir.
 
 İndirilen zip'ler (`web/public/*.zip`) klasörlerle birebir aynı tutulmalıdır; eklenti değişince zip
 yeniden oluşturulur.
 
-## Gizlilik varsayılanları (Avukat Portalı eklentisi, v2.9.0)
+## Gizlilik varsayılanları (Avukat Portalı eklentisi)
 
 - **Otomatik aktarım kapalıdır.** Açılırsa (ayar penceresinde, bilgilendirme onayıyla) UYAP'ta bir
   dosya görüntülenince evraklar ve künye (mahkeme, esas no, **taraf adı**) kendiliğinden gönderilir.
@@ -25,6 +28,8 @@ yeniden oluşturulur.
   aktarım isteğini reddeder.
 - **Yerel kopya kapalıdır.** Açılırsa her belge `İndirilenler/NHR-Hukuk-UYAP` içine de kaydedilir.
 - **Toplu aktarım onay ister.**
+- **Bağlantı anahtarı değişikliği eklenti penceresinde onay ister.** Anahtar `chrome.storage.local`
+  içinde tutulur; Chrome eşitlemesine gönderilmez.
 - Düğmeler yalnız esas numarası olan bir dosya sayfasında, tek bir evrak satırında çıkar; giriş ve
   ana sayfalarda çıkmaz.
 
@@ -192,7 +197,7 @@ Hızlanma, çekilecek evrak sayısını azaltarak sağlanır:
 
 - **Yalnızca asıl evraklar** düğmesi (seçim penceresi): ekleri (Ek 1, Ek 2…) işaretlemeyi kaldırır. 2024/124'te 449 evrakın 353'ü ektir.
 - **Zaten aktarılanlara tıklanmaz.** JurisAI'ya aktarmadan önce eklenti `POST /api/public/v1/documents/known` ile (anahtara bağlı,
-  yalnız anahtar sahibinin çöpte olmayan belgeleri, aynı esas no) hangi `evrak_id`lerin hesapta olduğunu sorar; onları atlar. Uç nokta
+  yalnız anahtar sahibinin çöpte olmayan belgeleri, aynı esas no) hangi evrak kimliklerinin (kalıcı kimlik: Birim Evrak No / ana_evrak_id + başlık; şifreli `evrak_id` değil) hesapta olduğunu sorar; onları atlar. Uç nokta
   eski sunucuda yoksa ya da hata verirse hepsi çekilir (yalnız hızlandırma). Çöpe atılan belge "var" sayılmaz, yeniden çekilir.
 - **Süre ölçümü:** özet satırı evrak başına ortalama yakalama / indirme / yükleme / bekleme sürelerini yazar; ayar tahminle değil
   ölçümle yapılır. Sonuç nesnesinde `timing` ve `summary` alanları da vardır.
@@ -223,9 +228,128 @@ Hata kodları: `no_uyap_tab` (UYAP sekmesi yok), `no_list` (sekmede dosya listes
 (şimdi yalnız görünen sayfa okunur ve diğer sayfalar için uyarı gösterilir), Avukat Portalı'nın dosya listesi. Sonraki aşamalar: evrak ağacını ve seçimi
 JurisAI'da göstermek (2), çekmeyi ve ilerlemeyi JurisAI'da yürütmek, dosyaları esas no ile davaya otomatik bağlamak (3).
 
+## Gerçek Vatandaş Portalı'nda ölçülenler (2026-10-04, v2.26.0)
+
+Gerçek portalda eklenti kontrollü bir canlı pencerede çalıştırılıp ölçüldü (yalnız yapı ve sayılar; içerik okunmadı). Bulgular ve ürüne etkileri:
+
+- **Dosya listesi kendiliğinden gelmez.** "Dosya Sorgulama" sayfasında "Yargı Türü" (Ceza, Hukuk, İcra, Adli Tıp, İdari Yargı, Satış Memurluğu,
+  Arabuluculuk, Tazminat Komisyonu) seçilip "Dosya Sorgula"ya (`#btnQueryDoc`) basılır; sonuç DataTables tablosudur (`#dosya_listesi_table`, varsayılan
+  15 kayıt/sayfa, sayfa boyutu seçeneklerinde "Tümü" = `-1`). Eklenti **her yargı türünü sırayla sorgular**, sayfa boyutunu "Tümü" yapar (yoksa "Sonraki" ile
+  gezer) ve tüm dosyaları tek listede döndürür. Sorgunun bittiği, sonuç değişmese de doğru çalışsın diye ağ isteğinin tamamlanmasından (`PerformanceObserver`,
+  `vatandas_dosyalari_sorgula.ajx`) anlaşılır (100-400 ms). Örnek hesap: 8 tür, 21 dosya, 13 sn.
+- **Dosya Sorgulama sayfasında değilsek** yan menüden açılır: bağlantı `javascript:menuButtonClick("12573")`; yalıtılmış dünyadan tıklamak işlevi çalıştırmaz,
+  bu yüzden arka plan betiği işlevi sayfanın kendi dünyasında (`chrome.scripting`, `world: "MAIN"`, yalnız sayısal kimlik) çağırır. Sayfa yenilendiği için yanıt
+  `navigating` döner; JurisAI sayfası birkaç sn sonra yeniden dener.
+- **`evrak_id` her sayfa yüklemesinde yeniden şifrelenir** (66 karakter; ardışık üç yüklemede tüm kimlikler farklıydı). Eski yaklaşım (kimliğe göre say, kimliğe göre
+  "zaten aktarıldı" de) bu yüzden canlıda 445-467 arasında oynayan sayılar veriyor ve hiçbir zaman eşleşemiyordu. **Kalıcı kimlik:** evrak = balondaki
+  (`data-original-title`) **"Birim Evrak No"**; ek = üst evrakın düz **`ana_evrak_id`**'si + "Ek N" başlığı; ikisine de dosyanın birimi eklenir
+  (`ev:<no>@<birim>`, `ek:<ana>:<başlık>@<birim>`). Şifreli `evrak_id` yalnız bu bilgiler yoksa son çaredir. Sonuç: aynı dosya üç taze yüklemede hep aynı öğeleri verir;
+  UYAP'ın klasör sayıları toplamı ile bulunan evrak sayısı birebir tutar (örnek dosya: 98 = 98, 252 ek).
+- **Aynı ekler iki evrakın altında görünebilir** (örn. aynı 104 ek hem "Gelen Talimat İsteği Yazısı" hem "Talimat Gönderme Yazısı" altında, aynı `ana_evrak_id`).
+  Kalıcı kimlikle bir kez listelenir/çekilir. (İki konumdaki aynı başlıklı ekin baytlarının eşitliği canlıda ayrıca doğrulanamadı: önizleme belge isteği
+  iframe içinde ve indirme olarak geldiği için sayfadan ölçülemedi; çekme sırasında içerik özeti zaten aynı belgeyi yakalar.)
+- **"Son 20 Evrak"** kısayolundaki öğeler asıl ağaçtakilerle aynı Birim Evrak No'yu taşır; asıl ağaç varken yok sayılır.
+- **Modal kapanırken (≈300 ms) gelen "Dosya Görüntüle" tıklaması yutulur** (bootstrap). Bir dosyadan diğerine geçerken kapanıştan sonra beklenir, satır yeniden
+  bulunur ve açılmazsa yeniden denenir.
+- **UYAP boşta kalan oturumu kapatır** (~15-30 dk). Aktarım sürerken sayfa yeniden yüklenip oturum düşerse iş durumu kaybolur: JurisAI sayfası bunu "UYAP sayfası
+  yenilenmiş ya da oturum kapanmış olabilir" diye açıklar. Aynı hesapla başka yerden giriş de oturumu düşürebilir.
+- **Gizli sekmede zamanlayıcılar kısılır** (Chrome): UYAP sekmesi arka plandayken bekleme, arka plan betiği üzerinden (`JURISAI_SLEEP`) yapılır.
+
+## JurisAI içinden güvenilir aktarım (v2.26.1)
+
+- Önerilen indirme artık `jurisai-avukat.zip`: JurisAI web köprüsü bu eklentidedir.
+  Bağımsız dosya çekici ayrı ve alternatif olarak etiketlenir; aynı köprüye sahip olduğu varsayılmaz.
+- Dosya listesinde 2.000 kayıt kesintisi kaldırıldı. Arama tüm alınan liste üzerinde çalışır;
+  ekranda 50'şer kayıt gösterilir. Bu yerel sayfalama UYAP'ın tarama sayfalamasından ayrıdır.
+- Eklenti tüm tür/sayfaları tamamladığında `complete=true` verir. Tür sorgu hataları, yüklenmeyen
+  sonraki sayfa ve 80 sayfalık güvenlik sınırı açıkça raporlanır. Eski/sadece görünür satırları
+  okuyan eklenti yanıtı tam liste sayılmaz. Aynı anda listeleme ve ağaç/aktarım başlatılmaz.
+- Sayfa açma artık yalnız ilk sayfada dosya aramaz: "Tümü" seçeneği olmayan listede sonraki
+  sayfalardaki dosya da bulunur. Değişmeyen/yüklenmeyen sonraki sayfa eksik tarama sayılır.
+- Eksik evrak ağacı yeniden taranabilir. Kullanıcı eksik taramayı açıkça kabul etmeden aktarım
+  başlatılamaz. 20.000 öğelik ağaç ekranı güvenlik sınırı da sayım uyarısında gösterilir.
+  Tek aktarımda 5.000'den fazla seçim sessizce kesilmez: açık hata verilir, parçalı aktarım gerekir.
+- Durdurulan/hatalı aktarım yeşil başarı göstermez. "Yeniden tara ve kalanları seç" yeni bir
+  ağaç/mevcut-belge kontrolü yapar ve hesapta olanları varsayılan seçimden çıkarır; aktarım için
+  yeniden kullanıcı onayı gerekir. Bu kalıcı görev devam ettirme değildir: UYAP sekmesi/oturum
+  kapanırsa kullanıcı yeniden giriş yapar. Mevcut-belge sorgusu başarısızsa atlama garanti edilmez.
+- Şifre/çerez sunucuya aktarılmaz; dosya listesi tarayıcı belleğinde tutulur. Merkezî hukuk
+  korpusu bu akışın parçası değildir. Eklentiye yeni izin eklenmedi.
+
+Apilex'in kamuya açık [platform](https://www.apilex.ai/tr/platform) ve
+[eklenti açıklaması](https://chromewebstore.google.com/detail/apilex-ai-for-legal/eifhpjccnfcdaaeomidagonmkllcoogk)
+UYAP'tan tarayıcı eklentisiyle proje aktarımını doğrular. Kapalı uygulamasındaki düğmeler,
+kalıcı iş kuyruğu ve tekrar deneme davranışı doğrulanmış değildir; bu bölüm Apilex'in iç
+uygulamasının birebir kopyası veya onunla performans karşılaştırması değildir.
+
 ## Doğrulanmayanlar ve açık işler
 
-- **Gerçek UYAP sayfa yapısı doğrulanmadı.** Test sayfaları gerçek UYAP'ın DOM'unu kanıtlamaz.
+### Canlı kontrol ve sekme düzeltmesi (2026-10-04, v2.26.2)
+
+- Vatandaş Portalı hesabında 21 dosya listelendi (2 Ceza, 2 Hukuk, 17 İcra).
+  Seçilen dosyanın ağacında 4 asıl evrak ve 1 ek bulundu; klasör sayıları eşleşti.
+- Canlı testte evrak taramasında `busy` durumu görüldü. İncelemede `openEvrakTab`
+  işlevinin bağlantıdan önce onu saran `li` öğesini seçebildiği bulundu. Artık
+  yalnız tıklanabilir bağlantı/düğme/sekme hedeflenir. Test sayfası da olayı
+  gerçek Bootstrap davranışına uygun olarak yalnız bağlantıda dinler.
+- Sıkılaştırılan sekme testi eski kodda başarısız oldu; düzeltmeden sonra 5 ilgili
+  Chromium testi geçti (sekme açma, onay kapısı, ağaç, aktarım ve zaten olanı atlama).
+  Bu tek başına canlı aktarım kanıtı değildir: gerçek belge yükleme, içerik/
+  üst veri kontrolü ve yinelenen aktarım testi ayrıca tamamlanmalıdır.
+- Bu canlı kontrolün sonunda Chrome hâlâ 2.26.1 bildiriyordu ve tarama `busy`
+  hatasına dönüyordu. Gerçek evrak aktarımı tamamlanmadı; bu test için eklenen
+  belge yok. `busy` durumunun tek nedeni sekme seçimi diye kabul edilmedi.
+  2.26.2 kurulumu sonrası canlı tek-belge ve yinelenen aktarım testi tekrar gerekir.
+
+### Toplu çekimde belge yerine dönen yanıtlar (2026-10-05, v2.26.3)
+
+- Gerçek Vatandaş çekiminde (dosya 2020/1204, v2.26.2) 80 evraktan 6'sı hata verdi:
+  3'ü "kısa bir metin yanıtı", 2'si "belge yerine sayfa döndü (oturum kapanmış
+  olabilir)", 1'i görünmedi. Aynı çekimde 74 evrak geldiği için "oturum kapanmış"
+  yanıltıcıydı.
+- Hata nedeni UYAP'ın kendi mesajını yeniden taşır (rakamlar `#` ile maskeli, en çok
+  120 karakter). HTML yanıtta sayfa başlığı/metni eklenir; "oturum kapanmış olabilir"
+  yalnız metin oturum/giriş belirtisi taşıyorsa ya da boşsa yazılır.
+- Yeniden deneme artık hata metnindeki bir sözcüğe değil `retryable` bayrağına bağlı:
+  kısa metin ve HTML yanıtı, HTTP 429/5xx ve zaman aşımı bir kez 8 sn beklenip
+  yeniden denenir. Kapanmış oturumda en kötü ek bekleme, ardışık 5 hata sınırı
+  nedeniyle yaklaşık 40 sn'dir.
+- **Canlı doğrulanmadı:** bu değişiklik sahte UYAP sayfasında sınandı; 6 evrağın
+  gerçek nedeni (yetki, önizleme, oturum) yeni sürümle yeniden çekimde okunacak.
+
+### Güncelleme sonrası tamamlanan canlı tek-belge testi (2026-10-04)
+
+- 2.26.2 uygulama köprüsünde doğrulandı. Yeniden kurulumda eklenti anahtarı
+  kaybolmuştu; kullanıcı onayıyla aynı hesap için yenilenip eklentiye bağlandı.
+- Kalan `busy` sorunu uygulamanın geliştirme girişindeki React StrictMode'un
+  effect'i yeniden kurmasıyla ilişkilendirildi. Eşzamanlı aynı dosya/tür için
+  TREE başlatmaları artık tek yanıtı paylaşır; farklı dosyalar birleşmez ve
+  biten/başarısız istek sonraki yeniden taramayı engellemez. Regresyon testi
+  eski kodda iki istekle başarısız oldu, düzeltmede geçti.
+- Canlı akışta 21 dosya listelendi. Seçilen dosya için 4 asıl evrak + 1 ek
+  eksiksiz sayıldı. Yalnız onaylanan Dosya Gönderme evrakı aktarıldı.
+  9.430 bayt ODT ve 348 karakter metin örneği kaydedildi; metindeki esas
+  numarası, mahkeme ve tarih üst verilerle eşleşti. HTML hata sayfası değildi.
+- Yeniden taramada evrak `JurisAI'da var` olarak gösterildi ve varsayılan
+  seçimden çıktı. Bilinçli tekrar seçiminde 0 aktarım / 1 zaten var sonucu
+  görüldü. Sahibe/dosyaya kapsamlanmış salt okunur DB kontrolünde tek kayıt,
+  aynı belge kimliği ve aynı SHA-256 korundu.
+- Dosyalar ekranında eklentinin `uyap-avukat-eklentisi` kökeni yanlışlıkla
+  `Elle` diye gösteriliyordu. Kaydedilen köken değiştirilmeden UYAP rozetiyle
+  gösterilir; hem içe aktarma hem eklenti kökeni için regresyon testi eklendi.
+- Sonraki bağlantı incelemesinde kurulu 2.26.2 kopyasının dört ana dosyası
+  proje kopyasıyla SHA-256 üzerinden aynı bulundu. Sayfanın PING bekleme süresi
+  1,5 saniyeden 5 saniyeye çıkarıldı; hata kodu/metni artık gizlenmez ve yanıtsızlık
+  kurulumun yokluğu olarak sunulmaz. 1,8 saniyelik geç yanıt ile gerçek hata
+  metninin korunması izole testte doğrulandı. Bu düzeltmenin kullanıcının açık
+  Chrome oturumunda bağlantıyı giderdiği henüz canlı doğrulanmadı.
+- Bu bir **Vatandaş Portalı, tek evrak** canlı testidir: Avukat Portalı,
+  bütün dosya türleri, büyük dosyanın bütün ekleri ve toplu yükleme bu testle
+  doğrulanmış sayılmaz. Merkezî korpus ve mevcut belgeler değiştirilmedi;
+  yeni test evrakı kullanıcı hesabında bırakıldı. Anahtarlar/metin yayımlanmadı.
+
+- **Gerçek Avukat Portalı sayfa yapısı doğrulanmadı.** Yukarıdaki canlı Vatandaş
+  Portalı testi Avukat Portalı'nı kapsamaz; test sayfaları da onun DOM'unu kanıtlamaz.
   Gerçek bir Avukat Portalı hesabıyla (avukat bir kullanıcıyla) evrak listesi ve dosya penceresi
   ayrıca denenmelidir; bulunamayan satırlar için `content.js` içindeki `ROW_SELECTOR` ve `DOC_RE`
   gerçek sayfaya göre ayarlanır.

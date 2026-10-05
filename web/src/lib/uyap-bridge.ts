@@ -11,6 +11,13 @@ export interface BridgeDosya {
   key: string;
   esas: string;
   birim: string;
+  /** Dosyanın bulunduğu yargı türü ("Ceza", "Hukuk", "İcra"…): dosyayı açmak için o türün sorgusu gerekir. */
+  yargiTuru: string;
+  /** Taraf rolü, dosya türü, açılış tarihi ve durum (UYAP tablosundaki sütunlar). */
+  role: string;
+  tur: string;
+  acilis: string;
+  durum: string;
   cells: string[];
 }
 
@@ -23,23 +30,41 @@ export interface BridgeFailure {
 export type BridgeReply<T extends object = object> = ({ ok: true } & T) | BridgeFailure;
 
 export interface ExtensionStatus {
+  /** true yalnız bu sayfanın köprü yanıtını aldığını gösterir; false kurulumun yokluğunu kanıtlamaz. */
   installed: boolean;
   version?: string;
   /** Eklentide JurisAI bağlantı anahtarı girilmiş mi (aktarım için gerekir). */
   connected?: boolean;
+  error?: string;
+  code?: string;
 }
 
 export interface DosyaListe {
   items: BridgeDosya[];
+  /** Her yargı türünde bulunan dosya sayısı (sorgulanan türlerin tamamı, boş olanlar dahil). */
+  types: { label: string; count: number }[];
+  errors: string[];
+  /** Yalnız eklenti tüm tür/sayfaları tamamladığını bildirince true. */
+  complete: boolean;
   pages: number | null;
   page: number | null;
 }
 
 const REQUEST_TIMEOUT_MS = 20000;
 
+export type BridgeCommand =
+  | "PING"
+  | "LIST_DOSYALAR"
+  | "OPEN_DOSYA"
+  | "SET_KEY"
+  | "TREE"
+  | "JOB_STATUS"
+  | "PULL_IDS"
+  | "STOP_JOB";
+
 /** Eklentiye komut gönderir; yanıt gelmezse (eklenti yok ya da eski) `timeout` hatası döner. */
 export function bridgeRequest<T extends object = object>(
-  type: "PING" | "LIST_DOSYALAR" | "OPEN_DOSYA" | "SET_KEY",
+  type: BridgeCommand,
   payload: Record<string, unknown> = {},
   timeoutMs = REQUEST_TIMEOUT_MS,
 ): Promise<BridgeReply<T>> {
@@ -66,9 +91,18 @@ export function bridgeRequest<T extends object = object>(
   });
 }
 
-export async function detectExtension(timeoutMs = 1500): Promise<ExtensionStatus> {
-  const reply = await bridgeRequest<{ version?: unknown; connected?: unknown }>("PING", {}, timeoutMs);
-  if (!reply.ok) return { installed: false };
+// İlk mesaj servis çalışanını uyandırabilir; kısa süre sınırı çalışan eklentiyi yanlışlıkla reddeder.
+export async function detectExtension(timeoutMs = 5000): Promise<ExtensionStatus> {
+  const reply = await bridgeRequest<{ version?: unknown; connected?: unknown }>(
+    "PING",
+    {},
+    timeoutMs,
+  );
+  if (!reply.ok) return {
+    installed: false,
+    error: typeof reply.error === "string" ? reply.error.slice(0, 500) : "Eklenti yanıtı alınamadı.",
+    ...(typeof reply.code === "string" ? { code: reply.code.slice(0, 80) } : {}),
+  };
   return {
     installed: true,
     version: typeof reply.version === "string" ? reply.version : undefined,
@@ -76,23 +110,69 @@ export async function detectExtension(timeoutMs = 1500): Promise<ExtensionStatus
   };
 }
 
-const text = (value: unknown, max: number) => (typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, max) : "");
+const text = (value: unknown, max: number) =>
+  typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, max) : "";
 
 /** Eklentiden gelen dosya listesini savunmacı biçimde ayrıştırır: bozuk satırlar atılır, metinler kısaltılır. */
 export function parseDosyaListe(raw: unknown): DosyaListe {
   const source = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const rows = Array.isArray(source.items) ? source.items : [];
   const items: BridgeDosya[] = [];
-  for (const row of rows.slice(0, 2000)) {
-    if (!row || typeof row !== "object") continue;
+  const keys = new Set<string>();
+  let invalid = 0;
+  for (const row of rows) {
+    if (!row || typeof row !== "object") {
+      invalid += 1;
+      continue;
+    }
     const entry = row as Record<string, unknown>;
-    const key = text(entry.key, 400);
-    if (!key) continue;
-    const cells = Array.isArray(entry.cells) ? entry.cells.map((cell) => text(cell, 120)).filter(Boolean).slice(0, 8) : [];
-    items.push({ key, esas: text(entry.esas, 60), birim: text(entry.birim, 160), cells });
+    const key = text(entry.key, 600);
+    if (!key) {
+      invalid += 1;
+      continue;
+    }
+    if (keys.has(key)) continue;
+    keys.add(key);
+    const cells = Array.isArray(entry.cells)
+      ? entry.cells
+          .map((cell) => text(cell, 120))
+          .filter(Boolean)
+          .slice(0, 8)
+      : [];
+    items.push({
+      key,
+      esas: text(entry.esas, 60),
+      birim: text(entry.birim, 160),
+      yargiTuru: text(entry.yargiTuru, 80),
+      role: text(entry.role, 60),
+      tur: text(entry.tur, 80),
+      acilis: text(entry.acilis, 40),
+      durum: text(entry.durum, 80),
+      cells,
+    });
   }
-  const count = (value: unknown) => (typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null);
-  return { items, pages: count(source.pages), page: count(source.page) };
+  const types = (Array.isArray(source.types) ? source.types : [])
+    .map((entry) => (entry && typeof entry === "object" ? (entry as Record<string, unknown>) : {}))
+    .map((entry) => ({
+      label: text(entry.label, 80),
+      count: typeof entry.count === "number" && entry.count >= 0 ? Math.floor(entry.count) : 0,
+    }))
+    .filter((entry) => entry.label)
+    .slice(0, 40);
+  const count = (value: unknown) =>
+    typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
+  const errors = Array.isArray(source.errors)
+    ? source.errors.map((value) => text(value, 400)).filter(Boolean)
+    : [];
+  if (invalid) errors.push(`${invalid} dosya satırı okunamadı; liste eksik olabilir.`);
+  return {
+    items,
+    types,
+    errors,
+    complete: source.complete === true && errors.length === 0,
+    pages: count(source.pages),
+    page: count(source.page),
+  };
 }
 
 /** Listede gösterilecek ek bilgi: esas no ve birim dışında kalan hücreler. */
@@ -100,26 +180,35 @@ export function otherCells(item: BridgeDosya): string[] {
   return item.cells.filter((cell) => cell !== item.esas && cell !== item.birim);
 }
 
-export async function listUyapDosyalari(): Promise<
-  { ok: true; liste: DosyaListe } | BridgeFailure
-> {
-  const reply = await bridgeRequest("LIST_DOSYALAR");
+let listRequest: Promise<{ ok: true; liste: DosyaListe } | BridgeFailure> | null = null;
+export function listUyapDosyalari(): Promise<{ ok: true; liste: DosyaListe } | BridgeFailure> {
+  // Aynı sekmedeki otomatik yoklama ve elle yenileme UYAP formunu birlikte değiştirmesin.
+  if (listRequest) return listRequest;
+  listRequest = readUyapDosyalari().finally(() => {
+    listRequest = null;
+  });
+  return listRequest;
+}
+async function readUyapDosyalari(): Promise<{ ok: true; liste: DosyaListe } | BridgeFailure> {
+  // Eklenti her yargı türünü sırayla sorgular (türü başına ~1-2 sn): uzun zaman aşımı.
+  const reply = await bridgeRequest("LIST_DOSYALAR", {}, 120000);
   if (!reply.ok) return reply;
   return { ok: true, liste: parseDosyaListe(reply) };
 }
 
 /** Sayfanın oluşturduğu bağlantı anahtarını eklentiye yazar (elle yapıştırma gerekmez); eklenti yoksa `ok: false` döner. */
 export async function setExtensionKey(key: string): Promise<boolean> {
-  const reply = await bridgeRequest("SET_KEY", { key }, 2000);
-  if (reply.ok && typeof window !== "undefined") window.dispatchEvent(new Event(EXTENSION_CHANGED_EVENT));
+  const reply = await bridgeRequest("SET_KEY", { key }, 100000);
+  if (reply.ok && typeof window !== "undefined")
+    window.dispatchEvent(new Event(EXTENSION_CHANGED_EVENT));
   return reply.ok;
 }
 
 /** Eklentinin durumu değişince (ör. anahtar yazıldı) yayımlanır; "UYAP Dosyalarım" bölümü durumu yeniler. */
 export const EXTENSION_CHANGED_EVENT = "jurisai-extension-changed";
 
-export function openUyapDosya(key: string) {
-  return bridgeRequest("OPEN_DOSYA", { key });
+export function openUyapDosya(key: string, yargiTuru = "") {
+  return bridgeRequest("OPEN_DOSYA", { key, yargiTuru });
 }
 
 export interface ListFailureHelp {
@@ -159,13 +248,388 @@ export function describeListFailure(code: string | undefined, message: string): 
         ],
         waiting: true,
       };
+    case "navigating":
+      return {
+        title: "UYAP'ta Dosya Sorgulama sayfası açılıyor",
+        steps: [
+          "Eklenti UYAP'ın Sorgulama İşlemleri menüsünden Dosya Sorgulama'yı açıyor; liste birkaç saniye içinde burada görünür.",
+        ],
+        waiting: true,
+      };
+    case "query_failed":
+      return {
+        title: "UYAP dosya sorgusu yanıt vermedi",
+        steps: [
+          "UYAP yoğun olabilir ya da oturum kapanmış olabilir: UYAP sekmesine bak, gerekirse yeniden giriş yap, sonra listeyi yenile.",
+        ],
+        waiting: false,
+      };
     case "no_content":
       return {
         title: "UYAP sekmesine ulaşılamadı",
-        steps: ["UYAP sekmesinde F5 yap (eklenti yeni güncellendiyse sayfaya ancak yenilenince bağlanır)."],
+        steps: [
+          "UYAP sekmesinde F5 yap (eklenti yeni güncellendiyse sayfaya ancak yenilenince bağlanır).",
+        ],
         waiting: true,
       };
     default:
       return { title: message || "Dosya listesi okunamadı", steps: [], waiting: false };
   }
+}
+
+/* ---------- Evrak ağacı ve aktarım (iş tabanlı) ----------
+   Ağaç açma ve evrak çekme dakikalar sürebilir: sayfa işi başlatır, eklenti UYAP sekmesinde yürütür, sayfa durumu yoklar. */
+
+export interface TreeItem {
+  id: string;
+  title: string;
+  /** Klasör yolu (en üst klasörden en yakına). */
+  folders: string[];
+  typeName: string;
+  isEk: boolean;
+  /** UYAP'ın klasör adının yanına yazdığı sayı; ek ve sayısız klasörde null. */
+  declared: number | null;
+}
+
+export interface TreeCounts {
+  declaredTotal: number;
+  foundTotal: number;
+  eks: number;
+  matches: boolean;
+  /** Fark yalnız aynı evrakın birden çok klasörde görünmesinden: eksik yok. */
+  explained: boolean;
+  gapList: string[];
+  withoutId: number;
+  unopened: number;
+  emptyOpened: number;
+}
+
+export interface TreeResult {
+  who: { esas: string; birim: string };
+  items: TreeItem[];
+  counts: TreeCounts;
+  /** JurisAI hesabında zaten olan evrak kimlikleri. */
+  known: string[];
+  knownChecked: boolean;
+}
+
+export interface PullStats {
+  sent: number;
+  duplicates: number;
+  sameContent: number;
+  failed: number;
+  known: number;
+  errors: string[];
+}
+
+export interface JobInfo {
+  id: string;
+  kind: "tree" | "pull";
+  state: "running" | "done" | "error";
+  phase: string;
+  error?: string;
+  code?: string;
+  count?: number;
+}
+
+export interface RunInfo {
+  mode: "upload" | "disk";
+  chosen: number;
+  total: number;
+  done: number;
+  current: string;
+  phase?: string;
+  stats?: PullStats;
+  result?: { summary?: string; stopped?: boolean };
+}
+
+/** İşin sona ermesi, seçilen tüm belgelerin başarıyla aktarılması anlamına gelmez. */
+export function pullOutcome(run: RunInfo): "complete" | "partial" | "stopped" {
+  if (run.result?.stopped) return "stopped";
+  if (!run.stats || run.stats.failed > 0 || run.done < run.total) return "partial";
+  const accounted = run.stats.sent + run.stats.known + run.stats.duplicates + run.stats.sameContent;
+  return accounted >= run.total ? "complete" : "partial";
+}
+
+export interface JobStatus {
+  job: JobInfo;
+  run?: RunInfo;
+  tree?: TreeResult;
+}
+
+const num = (value: unknown, fallback = 0) =>
+  typeof value === "number" && Number.isFinite(value) ? value : fallback;
+const strings = (value: unknown, max: number, limit: number): string[] =>
+  Array.isArray(value)
+    ? value
+        .map((entry) => text(entry, max))
+        .filter(Boolean)
+        .slice(0, limit)
+    : [];
+
+/** Eklentiden gelen ağaç yanıtını savunmacı biçimde ayrıştırır (metinler UYAP sayfasından okunmuştur: güvenilmez). */
+export function parseTree(raw: unknown): TreeResult | null {
+  if (!raw || typeof raw !== "object") return null;
+  const source = raw as Record<string, unknown>;
+  const rows = Array.isArray(source.items) ? source.items : [];
+  const items: TreeItem[] = [];
+  const seen = new Set<string>();
+  for (const row of rows.slice(0, 20000)) {
+    if (!row || typeof row !== "object") continue;
+    const entry = row as Record<string, unknown>;
+    const id = typeof entry.id === "string" ? entry.id.slice(0, 600) : "";
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    items.push({
+      id,
+      title: text(entry.title, 200) || "Evrak",
+      folders: strings(entry.folders, 160, 12),
+      typeName: text(entry.typeName, 120),
+      isEk: entry.isEk === true,
+      declared: typeof entry.declared === "number" && entry.declared > 0 ? entry.declared : null,
+    });
+  }
+  const c = (source.counts && typeof source.counts === "object" ? source.counts : {}) as Record<
+    string,
+    unknown
+  >;
+  const truncated = rows.length > 20000;
+  const who = (source.who && typeof source.who === "object" ? source.who : {}) as Record<
+    string,
+    unknown
+  >;
+  return {
+    who: { esas: text(who.esas, 60), birim: text(who.birim, 160) },
+    items,
+    counts: {
+      declaredTotal: num(c.declaredTotal),
+      foundTotal: num(c.foundTotal),
+      eks: num(c.eks),
+      matches: !truncated && c.matches === true,
+      explained: !truncated && c.explained === true,
+      gapList: [
+        ...(truncated
+          ? ["Güvenlik sınırı: 20.000 evraktan sonrası bu seçim ekranına alınamadı."]
+          : []),
+        ...strings(c.gapList, 200, 12),
+      ],
+      withoutId: num(c.withoutId),
+      unopened: num(c.unopened),
+      emptyOpened: num(c.emptyOpened),
+    },
+    known: strings(source.known, 600, 20000),
+    knownChecked: source.knownChecked === true,
+  };
+}
+
+export interface TreeGroup {
+  label: string;
+  items: TreeItem[];
+  declared: number | null;
+}
+
+/** Evrakları klasör yoluna göre gruplar (seçim penceresindeki düzen); gruplar ilk görülme sırasındadır. */
+export function groupTreeItems(items: TreeItem[]): TreeGroup[] {
+  const groups = new Map<string, TreeGroup>();
+  for (const item of items) {
+    const label = item.folders.join(" / ") || "(klasörsüz)";
+    const group = groups.get(label) ?? { label, items: [], declared: item.declared };
+    group.items.push(item);
+    groups.set(label, group);
+  }
+  return [...groups.values()];
+}
+
+/** Aktarılacak varsayılan seçim: JurisAI'da zaten olanlar hariç hepsi (`onlyMain`: ekler de hariç). */
+export function defaultSelection(
+  items: TreeItem[],
+  known: string[],
+  onlyMain = false,
+): Set<string> {
+  const have = new Set(known);
+  return new Set(
+    items.filter((item) => !have.has(item.id) && !(onlyMain && item.isEk)).map((item) => item.id),
+  );
+}
+
+export function parseJobStatus(raw: unknown): JobStatus | null {
+  if (!raw || typeof raw !== "object") return null;
+  const source = raw as Record<string, unknown>;
+  const job =
+    source.job && typeof source.job === "object" ? (source.job as Record<string, unknown>) : null;
+  if (!job || typeof job.id !== "string") return null;
+  const state = job.state === "done" || job.state === "error" ? job.state : "running";
+  const status: JobStatus = {
+    job: {
+      id: job.id.slice(0, 64),
+      kind: job.kind === "pull" ? "pull" : "tree",
+      state,
+      phase: text(job.phase, 120),
+      error: typeof job.error === "string" ? text(job.error, 400) : undefined,
+      code: typeof job.code === "string" ? text(job.code, 40) : undefined,
+      count: typeof job.count === "number" ? job.count : undefined,
+    },
+  };
+  if (source.run && typeof source.run === "object") {
+    const run = source.run as Record<string, unknown>;
+    const stats =
+      run.stats && typeof run.stats === "object" ? (run.stats as Record<string, unknown>) : null;
+    const result =
+      run.result && typeof run.result === "object" ? (run.result as Record<string, unknown>) : null;
+    status.run = {
+      mode: run.mode === "disk" ? "disk" : "upload",
+      chosen: num(run.chosen),
+      total: num(run.total),
+      done: num(run.done),
+      current: text(run.current, 200),
+      phase: typeof run.phase === "string" ? text(run.phase, 120) : undefined,
+      stats: stats
+        ? {
+            sent: num(stats.sent),
+            duplicates: num(stats.duplicates),
+            sameContent: num(stats.sameContent),
+            failed: num(stats.failed),
+            known: num(stats.known),
+            errors: strings(stats.errors, 400, 5),
+          }
+        : undefined,
+      result: result
+        ? {
+            summary: typeof result.summary === "string" ? text(result.summary, 800) : undefined,
+            stopped: result.stopped === true,
+          }
+        : undefined,
+    };
+  }
+  if (source.tree) {
+    const tree = parseTree(source.tree);
+    if (tree) status.tree = tree;
+  }
+  return status;
+}
+
+const treeStarts = new Map<string, Promise<BridgeReply<{ jobId: string; tabId: number }>>>();
+
+export function startTreeJob(
+  key: string,
+  yargiTuru = "",
+): Promise<BridgeReply<{ jobId: string; tabId: number }>> {
+  // React StrictMode geliştirmede effect'i yeniden kurar. Aynı anda iki TREE
+  // yollamak ilk işi yetim bırakıp ikinci çağrıya busy döndürür; aynı dosyanın
+  // devam eden başlatma yanıtını paylaş, sonraki açık yeniden taramayı engelleme.
+  const identity = JSON.stringify([key, yargiTuru]);
+  const existing = treeStarts.get(identity);
+  if (existing) return existing;
+  const pending = requestTreeJob(key, yargiTuru).finally(() => treeStarts.delete(identity));
+  treeStarts.set(identity, pending);
+  return pending;
+}
+
+async function requestTreeJob(
+  key: string,
+  yargiTuru: string,
+): Promise<BridgeReply<{ jobId: string; tabId: number }>> {
+  const reply = await bridgeRequest<{ jobId?: unknown; tabId?: unknown }>(
+    "TREE",
+    { key, yargiTuru },
+    30000,
+  );
+  if (!reply.ok) return reply;
+  if (typeof reply.jobId !== "string" || typeof reply.tabId !== "number")
+    return {
+      ok: false,
+      error:
+        "Eklenti beklenmeyen bir yanıt verdi: eklentiyi yenile (sürüm 2.23 veya üstü gerekir).",
+    };
+  return { ok: true, jobId: reply.jobId, tabId: reply.tabId };
+}
+
+export async function fetchJobStatus(
+  tabId: number,
+  jobId: string,
+  withTree = false,
+): Promise<BridgeReply<{ status: JobStatus }>> {
+  const reply = await bridgeRequest("JOB_STATUS", { tabId, jobId, withTree }, 15000);
+  if (!reply.ok) return reply;
+  const status = parseJobStatus(reply);
+  return status
+    ? { ok: true, status }
+    : { ok: false, error: "Eklentiden geçersiz iş durumu geldi." };
+}
+
+export async function startPullJob(
+  tabId: number,
+  ids: string[],
+  mode: "upload" | "disk" = "upload",
+): Promise<BridgeReply<{ jobId: string; total: number; tabId: number }>> {
+  if (ids.length > 5000)
+    return {
+      ok: false,
+      code: "too_many",
+      error:
+        "Bir aktarımda en fazla 5.000 evrak seç. Kalanları sonraki aktarımda seçebilirsin; hiçbir seçim sessizce atılmaz.",
+    };
+  const reply = await bridgeRequest<{ jobId?: unknown; total?: unknown }>(
+    "PULL_IDS",
+    { tabId, ids, mode },
+    30000,
+  );
+  if (!reply.ok) return reply;
+  if (typeof reply.jobId !== "string")
+    return { ok: false, error: "Eklenti beklenmeyen bir yanıt verdi." };
+  return { ok: true, jobId: reply.jobId, total: num(reply.total, ids.length), tabId };
+}
+
+export const stopJob = (tabId: number, jobId: string) =>
+  bridgeRequest("STOP_JOB", { tabId, jobId }, 10000);
+
+export interface WaitOptions {
+  withTree?: boolean;
+  intervalMs?: number;
+  /** Üst üste bu kadar yoklama başarısız olursa vazgeçilir (UYAP sekmesi kapandı ya da eklenti yok). */
+  maxFailures?: number;
+  maxMs?: number;
+  signal?: AbortSignal;
+  onUpdate?: (status: JobStatus) => void;
+}
+
+/** İş bitene (done/error) kadar yoklar; her güncellemede `onUpdate` çağrılır. Bitince son durumu ya da hatayı döndürür. */
+export async function waitForJob(
+  tabId: number,
+  jobId: string,
+  options: WaitOptions = {},
+): Promise<{ ok: true; status: JobStatus } | BridgeFailure> {
+  const {
+    withTree = false,
+    intervalMs = 700,
+    maxFailures = 6,
+    maxMs = 6 * 60 * 60 * 1000,
+    signal,
+    onUpdate,
+  } = options;
+  const deadline = Date.now() + maxMs;
+  let failures = 0;
+  let last: BridgeFailure = { ok: false, error: "İş durumu okunamadı." };
+  while (Date.now() < deadline) {
+    if (signal?.aborted) return { ok: false, code: "aborted", error: "İptal edildi." };
+    const reply = await fetchJobStatus(tabId, jobId, withTree);
+    if (reply.ok) {
+      failures = 0;
+      onUpdate?.(reply.status);
+      if (reply.status.job.state !== "running") return { ok: true, status: reply.status };
+    } else {
+      last = reply;
+      failures += 1;
+      if (reply.code === "unknown_job")
+        return {
+          ok: false,
+          code: "unknown_job",
+          error:
+            "UYAP sayfası yenilenmiş ya da oturumun kapanmış olabilir (UYAP boşta kalan oturumu kapatır). UYAP sekmesine bak; gerekirse yeniden giriş yapıp işlemi yeniden başlat.",
+        };
+      if (failures >= maxFailures || reply.code === "no_uyap_tab") return reply;
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return { ...last, code: "timeout", error: "İş çok uzun sürdü." };
 }

@@ -88,6 +88,9 @@ class LegalSearchHit(BaseModel):
     revision: int
     excerpt: str
     rank: float
+    # "official": resmî kaynakla doğrulanmış; "third_party": üçüncü taraf toplu veri, doğrulanmadı (aranır ve atıf yapılır
+    # ama resmî diye sunulmaz); "unknown": durum okunamadı (resmî sayılmaz).
+    verification: str = "unknown"
 
 
 class LegalSearchResponse(BaseModel):

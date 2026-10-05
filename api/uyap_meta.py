@@ -16,7 +16,7 @@ from typing import TypedDict
 from api.udf import extract_udf_text
 
 ALLOWED_EXTENSIONS = frozenset(
-    {"pdf", "udf", "odt", "docx", "doc", "txt", "tif", "tiff", "jpg", "jpeg", "png", "xml", "eyp"}
+    {"pdf", "udf", "odt", "docx", "doc", "txt", "html", "tif", "tiff", "jpg", "jpeg", "png", "xml", "eyp"}
 )
 MAX_FILE_BYTES = 50 * 1024 * 1024
 
@@ -95,6 +95,10 @@ def extract_text_sample(name: str, data: bytes, limit: int = 20000) -> str:
     try:
         if ext in ("txt", "xml"):
             return data[:limit].decode("utf-8", errors="ignore")
+        if ext == "html":
+            from ingestion.text import decode_html_bytes, html_to_text
+
+            return html_to_text(decode_html_bytes(data[:limit * 4]))[:limit]
         if ext in ("udf", "odt"):  # ikisi de içinde content.xml olan zip (UYAP ön izleme evrakı ODT gelir)
             return extract_udf_text(data, limit)
         if ext == "pdf":

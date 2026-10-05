@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import zipfile
 from uuid import uuid4
@@ -194,6 +195,18 @@ def test_duplicate_upload_is_reported_not_repeated(monkeypatch):
     assert response.json() == {"ok": True, "duplicate": True, "id": str(existing)}
 
 
+def test_changed_evidence_is_not_silently_discarded_or_duplicated(monkeypatch):
+    client, _ = _client(monkeypatch, outcome=("changed", None))
+    response = client.post(
+        "/api/public/v1/documents/upload",
+        files={"file": ("evrak.odt", b"different content", "application/vnd.oasis.opendocument.text")},
+        data={"evrakId": "stable-1", "dosyaEsasNo": "2024/1"},
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+    assert response.status_code == 409
+    assert "içeriği değişmiş" in response.json()["error"]
+
+
 def test_meta_parsing_reads_file_no_date_court_and_type():
     meta = parse_uyap_meta(
         "gerekceli_karar.pdf", "İstanbul 3. Asliye Hukuk Mahkemesi 2024/123 Esas 15.03.2025 tarihli"
@@ -244,6 +257,21 @@ def test_upload_accepts_odt_and_keeps_the_uyap_folder_path(monkeypatch):
     overrides = stored[0]["overrides"]
     assert overrides["uyap_path"] == "2024/2000 (Ceza Dava Dosyası) / Gerekçeli Karar / Ek 1"  # boşluklar sadeleşir
     assert overrides["doc_type"] == "Gerekçeli Karar"
+
+
+def test_upload_accepts_html_receipt_and_extracts_text(monkeypatch):
+    client, stored = _client(monkeypatch)
+    html = '<html><head><meta charset="windows-1254"></head><body>VEKALET PULU MAKBUZU T.C. ADALET BAKANLIĞI Makbuz No 123</body></html>'.encode("cp1254")
+    response = client.post(
+        "/api/public/v1/documents/upload",
+        files={"file": ("Vekalet Pulu Makbuzu.html", html, "text/html")},
+        data={"evrakId": "receipt-1", "evrakTuru": "Makbuz", "dosyaEsasNo": "2024/55"},
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+    assert response.status_code == 200
+    assert stored[0]["file_name"].endswith(".html")
+    assert stored[0]["data"] == html
+    assert "BAKANLIĞI" in extract_text_sample(stored[0]["file_name"], stored[0]["data"])
 
 
 def test_folder_path_is_capped_and_optional(monkeypatch):
@@ -301,11 +329,11 @@ def test_known_documents_lists_only_the_evraks_already_stored_for_the_token_owne
     client, _ = _client(monkeypatch)
     seen = []
 
-    def fake_names(owner_id, esas_no):
+    def fake_keys(owner_id, esas_no):
         seen.append((owner_id, esas_no))
-        return ["101-Dilekce.odt", f"{office_public.evrak_id_prefix('A+/b==')}-Karar.odt", "bozuk-ad-yok.pdf"]
+        return ["101", office_public.evrak_id_prefix("A+/b==")]
 
-    monkeypatch.setattr(office_public, "_stored_names", fake_names)
+    monkeypatch.setattr(office_public, "_stored_keys", fake_keys)
 
     response = client.post(
         "/api/public/v1/documents/known",
@@ -314,14 +342,14 @@ def test_known_documents_lists_only_the_evraks_already_stored_for_the_token_owne
     )
 
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "known": ["101", "A+/b==", "bozuk"]}
+    assert response.json() == {"ok": True, "known": ["101", "A+/b=="]}
     assert seen == [(OWNER, "2024/124")]  # yalnız anahtar sahibinin belgeleri aranır
     assert response.headers["access-control-allow-origin"] == "*"
 
 
 def test_known_documents_requires_a_valid_token_and_a_sane_body(monkeypatch):
     client, _ = _client(monkeypatch)
-    monkeypatch.setattr(office_public, "_stored_names", lambda *args: [])
+    monkeypatch.setattr(office_public, "_stored_keys", lambda *args: [])
 
     assert client.post("/api/public/v1/documents/known", json={"evrakIds": []}).status_code == 401
     bad = client.post("/api/public/v1/documents/known", headers={"Authorization": "Bearer " + "x" * 32}, json={"evrakIds": []})
@@ -334,6 +362,64 @@ def test_known_documents_requires_a_valid_token_and_a_sane_body(monkeypatch):
     assert client.post("/api/public/v1/documents/known", headers=headers, json={"evrakIds": ["1" * 100]}).status_code == 413
 
 
-def test_known_evrak_ids_matches_prefixes_with_dashes_and_ignores_oversized_ids():
-    names = ["ENC-12-Dilekce.odt", "7-Ek 1.tif"]
-    assert office_public.known_evrak_ids(["ENC-12", "7", "8", "x" * 601], names) == ["ENC-12", "7"]
+def test_known_evrak_ids_uses_explicit_keys_and_ignores_oversized_ids():
+    keys = ["ENC-12", "7"]
+    assert office_public.known_evrak_ids(["ENC-12", "7", "8", "x" * 601], keys) == ["ENC-12", "7"]
+    assert office_public.known_evrak_ids(["bozuk"], ["bozuk-ad-yok.pdf"]) == []
+
+
+def test_same_named_same_sized_legacy_document_needs_matching_bytes(monkeypatch, tmp_path):
+    old_file = tmp_path / "old.pdf"
+    old_file.write_bytes(b"old!")
+    old_id = uuid4()
+
+    class Rows:
+        def fetchall(self):
+            return [{"id": old_id, "owner_id": OWNER, "storage_path": "legacy.pdf", "checksum_sha256": None}]
+
+    class Connection:
+        def execute(self, query, params):
+            assert "file_name = %s" in query and params[:2] == ["same.pdf", 4]
+            return Rows()
+
+    monkeypatch.setattr(office_public, "_storage_path", lambda *_: old_file)
+    args = {"file_name": "same.pdf", "size_bytes": 4, "uyap_file_no": "2024/1", "source": None}
+    assert office_public.find_duplicate(Connection(), **args, checksum_sha256=hashlib.sha256(b"new!").hexdigest()) is None
+    assert office_public.find_duplicate(Connection(), **args, checksum_sha256=hashlib.sha256(b"old!").hexdigest()) == old_id
+
+
+def test_same_uyap_evrak_with_repacked_odt_is_not_imported_twice(monkeypatch, tmp_path):
+    def odt(extra: str) -> bytes:
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, "w") as archive:
+            archive.writestr(
+                "content.xml",
+                '<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+                'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:body>'
+                '<office:text><text:p>Aynı hukuki metin</text:p></office:text></office:body></office:document-content>',
+            )
+            archive.writestr("meta.xml", extra)
+        return stream.getvalue()
+
+    old_data, new_data = odt("eski"), odt("yeni paket metadata")
+    stored_file = tmp_path / "old.odt"
+    stored_file.write_bytes(old_data)
+    old_id = uuid4()
+
+    class Rows:
+        def fetchall(self):
+            return [{"id": old_id, "owner_id": OWNER, "storage_path": "old.odt", "checksum_sha256": None}]
+
+    class Connection:
+        def execute(self, query, params):
+            assert "size_bytes = %s" not in query
+            return Rows()
+
+    monkeypatch.setattr(office_public, "_storage_path", lambda *_: stored_file)
+    assert len(old_data) != len(new_data)
+    assert office_public.find_duplicate(
+        Connection(), file_name="abc-Ek_1.odt", size_bytes=len(new_data),
+        uyap_file_no="2024/1", source="uyap-avukat-eklentisi",
+        evrak_key="abc", checksum_sha256=hashlib.sha256(new_data).hexdigest(),
+        content_text=" ".join(extract_text_sample("abc-Ek_1.odt", new_data).split()),
+    ) == old_id

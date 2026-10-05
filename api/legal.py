@@ -11,7 +11,9 @@ from uuid import UUID
 
 import psycopg
 from fastapi import APIRouter, HTTPException, Query
+from fastapi import Path as PathParam
 from psycopg.errors import QueryCanceled
+from starlette.concurrency import run_in_threadpool
 
 from api.ai.turkish_text import restore_turkish
 from api.db import database_connection
@@ -32,6 +34,16 @@ logger = logging.getLogger(__name__)
 
 _STATS_TTL_SECONDS = 4.0
 _stats_cache: tuple[float, CorpusStats] | None = None
+
+# `legal_sources` üzerindeki sayımlar 11M+ satırda tek tek 10-40 sn sürüyor (yalın count(*) ölçüldü: 35 sn): istek yolunda (8 sn sınır)
+# çalıştırılamaz. Üretimde istatistik diske yazılır, API yeniden başlayınca oradan okunur ve arka planda uzun süreyle tazelenir;
+# yoksa (hiç hesaplanmadıysa) uç 503 "hazırlanıyor" der ve hesap başlar. Önbellek yalnız bellekteyken her yeniden başlatma
+# ucu bozuyordu (korpus paneli ve "Karar Hukuku" kutusu boş kalıyordu).
+_STATS_FILE = Path(__file__).resolve().parents[1] / "data" / "cache" / "corpus_stats.json"
+_STATS_REFRESH_SECONDS = 600.0
+_STATS_REFRESH_TIMEOUT = "900s"
+_stats_lock = threading.Lock()
+_stats_refreshing = False
 
 # count(*) over the multi-million-row chunk and seed sets takes 6-15 s, far past
 # the 8 s budget of the interactive stats query. They refresh in the background
@@ -440,10 +452,73 @@ def corpus_stats() -> CorpusStats:
     return _with_live_chunks(_corpus_stats_cached())
 
 
+def _stats_in_background() -> bool:
+    """Üretimde sayımlar istek yolunda değil arka planda yenilenir; testler satır içi yolu kullanır."""
+    return "pytest" not in sys.modules
+
+
+def _read_stats_file() -> tuple[float, CorpusStats] | None:
+    try:
+        raw = json.loads(_STATS_FILE.read_text(encoding="utf-8"))
+        stats = CorpusStats.model_validate(raw["stats"])
+        age = max(0.0, time.time() - float(raw["saved_at"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return time.monotonic() - age, stats
+
+
+def _write_stats_file(stats: CorpusStats) -> None:
+    try:
+        _STATS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temporary = _STATS_FILE.with_suffix(".tmp")
+        payload = {"saved_at": time.time(), "stats": json.loads(stats.model_dump_json())}
+        temporary.write_text(json.dumps(payload), encoding="utf-8")
+        temporary.replace(_STATS_FILE)
+    except OSError:
+        logger.warning("Korpus istatistikleri diske yazılamadı", exc_info=True)
+
+
+def _refresh_stats_in_background() -> None:
+    global _stats_cache, _stats_refreshing
+    with _stats_lock:
+        if _stats_refreshing:
+            return
+        _stats_refreshing = True
+
+    def refresh() -> None:
+        global _stats_cache, _stats_refreshing
+        try:
+            stats = _load_corpus_stats(_STATS_REFRESH_TIMEOUT)
+            _stats_cache = (time.monotonic(), stats)
+            _write_stats_file(stats)
+        except (psycopg.Error, RuntimeError, OSError):
+            logger.exception("Korpus istatistikleri yenilenemedi")
+        finally:
+            with _stats_lock:
+                _stats_refreshing = False
+
+    threading.Thread(target=refresh, name="corpus-stats", daemon=True).start()
+
+
 def _corpus_stats_cached() -> CorpusStats:
     global _stats_cache
     now = time.monotonic()
     cached = _stats_cache
+    if _stats_in_background():
+        if cached is None:
+            cached = _read_stats_file()
+            if cached is not None:
+                _stats_cache = cached
+        if cached is None:
+            _refresh_stats_in_background()
+            raise HTTPException(
+                status_code=503,
+                detail="Korpus istatistikleri hazırlanıyor; birkaç dakika sonra yeniden deneyin",
+                headers={"Retry-After": "60"},
+            )
+        if now - cached[0] >= _STATS_REFRESH_SECONDS:
+            _refresh_stats_in_background()
+        return cached[1]
     if cached is not None and now - cached[0] < _STATS_TTL_SECONDS:
         return cached[1]
     try:
@@ -626,15 +701,23 @@ def warm_slow_counts() -> None:
         _slow_counts_snapshot()
     except psycopg.Error:
         logger.exception("Korpus sayımları ısıtılamadı")
+    if _stats_in_background():
+        # Kalıcı istatistik dosyası varsa bellek önbelleğine alınır; yoksa (ya da bayatsa) arka planda hesaplanır.
+        global _stats_cache
+        cached = _stats_cache or _read_stats_file()
+        if cached is not None:
+            _stats_cache = cached
+        if cached is None or time.monotonic() - cached[0] >= _STATS_REFRESH_SECONDS:
+            _refresh_stats_in_background()
 
 
-def _load_corpus_stats() -> CorpusStats:
+def _load_corpus_stats(timeout: str = "8s") -> CorpusStats:
     bedesten = (
         "ls.source_type = 'legislation'"
         " AND ls.ingestion_method = 'bedesten_public_json_http'"
     )
     with database_connection() as connection:
-        connection.execute("SET LOCAL statement_timeout = '8s'")
+        connection.execute(f"SET LOCAL statement_timeout = '{timeout}'")
         row = connection.execute(
             """
             SELECT
@@ -732,6 +815,26 @@ def _load_corpus_stats() -> CorpusStats:
     return _stats_from_row(payload)
 
 
+def _verification_labels(source_ids: list) -> dict:
+    """Sonuçların resmî mi üçüncü taraf mı olduğu (AI hattıyla aynı kural: `bulk_seed` + `pending` = üçüncü taraf).
+
+    Birincil anahtarla ≤50 satır: ucuz. Okunamazsa hata verilir; etiketsiz sonuç "resmî" diye sunulmaz.
+    """
+    if not source_ids:
+        return {}
+    try:
+        with database_connection() as connection:
+            connection.execute("SET LOCAL statement_timeout = '5s'")
+            rows = connection.execute(
+                "SELECT id, COALESCE(ingestion_method = 'bulk_seed' AND ingest_status = 'pending', false) AS third_party "
+                "FROM legal_sources WHERE id = ANY(%s)",
+                (source_ids,),
+            ).fetchall()
+    except psycopg.Error as exc:
+        raise _database_unavailable(exc) from exc
+    return {row["id"]: ("third_party" if row["third_party"] else "official") for row in rows}
+
+
 @router.get("/search", response_model=LegalSearchResponse)
 def search_legal_sources(
     q: str = Query(min_length=2, max_length=300),
@@ -820,6 +923,9 @@ def search_legal_sources(
     for result in results:
         result.pop("total", None)
         result.pop("partial", None)
+    labels = _verification_labels([result["id"] for result in results])
+    for result in results:
+        result["verification"] = labels.get(result["id"], "unknown")
     response = LegalSearchResponse(
         query=query,
         as_of=as_of,
@@ -833,6 +939,178 @@ def search_legal_sources(
         _search_cache.pop(next(iter(_search_cache)), None)
     _search_cache[cache_key] = (time.monotonic(), response)
     return response
+
+
+# --- Olay anlatımıyla arama: "olayı anlat, benzer kararı bul" --------------------------------------------------------
+# Sohbet hattının AYARLI hibrit getirmesini (api.ai.retrieval.retrieve_contexts) liste olarak sunar: hukuki ifade tanıma,
+# kanun/madde eşleme, tam korpus sözcük araması (resmî + doğrulanmamış toplu katman) ve gömme tabanlı en yakın komşu.
+# Yalnız gömme + basit sözcük örtüşmesi denendi ve zayıf kaldı ("kıdem tazminatı" sorusuna işyeri ruhsatı kanunu geliyordu:
+# gömme modeli Türkçe hukuk için güçlü değil ve gömme yalnız resmî katmanda var). Doğrulama etiketi bağlamdan gelir:
+# üçüncü taraf kayıtlar `third_party` olarak ayrı işaretlenir. Sorgu metni günlüğe YAZILMAZ: olay anlatımı müvekkil bilgisi içerebilir.
+_SEMANTIC_MAX_RESULTS = 60
+_SEMANTIC_RETRY_BELOW = 6  # kısmi getirme bu kadardan az kaynak verirse bir kez daha denenir
+_semantic_cache: dict[tuple, tuple[float, LegalSearchResponse]] = {}
+
+
+def _semantic_contexts(question: str, embedding: list[float] | None, model: str, top_k: int, info: dict) -> list:
+    from api.ai.retrieval import retrieve_contexts
+
+    # Soğuk önbellekte kollar zaman aşımına uğrayabilir: ilk deneme okuduğu sayfaları önbelleğe bırakır, ikinci deneme çoğunlukla geçer.
+    # Getirme bir kol düşse bile kalanıyla döner ("kıdem tazminatı" anlatımında yalnız kanun maddesi kalıyordu): kısmi ve az sonuçlu
+    # ilk deneme de bir kez yenilenir, iki denemeden çok sonuç vereni kullanılır.
+    best: list = []
+    for attempt in (1, 2):
+        attempt_info: dict = {}
+        try:
+            with database_connection() as connection:
+                contexts = retrieve_contexts(
+                    connection, question=question, top_k=top_k,
+                    query_embedding=embedding, embedding_model=model if embedding is not None else None,
+                    diagnostics=attempt_info,
+                )
+        except QueryCanceled:
+            if attempt == 2 and not best:
+                raise
+            continue
+        if len(contexts) > len(best):
+            best = contexts
+            info.clear()
+            info.update(attempt_info)
+        if not (attempt_info.get("partial") and len(contexts) < _SEMANTIC_RETRY_BELOW):
+            break
+    return best
+
+
+def _hit_from_context(context) -> dict:
+    return {
+        "id": context.source_id,
+        "source_type": context.source_type,
+        "title": context.title,
+        "source_url": context.source_url,
+        "authority": context.authority,
+        "court_name": context.court_name,
+        "chamber": context.chamber,
+        "docket_no": context.docket_no,
+        "decision_no": context.decision_no,
+        "decision_date": context.decision_date,
+        "legislation_type": None,
+        "law_name": context.law_name,
+        "law_no": context.law_no,
+        "article_no": context.article_no,
+        "article_title": context.article_title,
+        "official_gazette_date": None,
+        "version_date": context.version_date,
+        "effective_from": context.effective_from,
+        "effective_to": context.effective_to,
+        "source_version": context.source_version,
+        "revision": context.revision or 1,
+        "excerpt": (context.content or "")[:700],
+        "rank": float(context.rank),
+        "verification": "third_party" if context.verification == "third_party" else "official" if context.verification == "official" else "unknown",
+    }
+
+
+@router.get("/semantic", response_model=LegalSearchResponse)
+async def semantic_search_sources(
+    q: str = Query(min_length=10, max_length=1500),
+    limit: int = Query(default=10, ge=1, le=50),
+    offset: int = Query(default=0, ge=0),
+) -> LegalSearchResponse:
+    """Olayı doğal dille anlatan sorgu için benzer karar/mevzuat listesi (sohbet hattıyla aynı hibrit getirme)."""
+    from api.ai.pipeline import _embed_question
+    from api.config import get_settings
+
+    query = " ".join(restore_turkish(" ".join(q.split())).split())
+    cache_key = (query, limit, offset)
+    cached = _semantic_cache.get(cache_key)
+    if cached is not None and time.monotonic() - cached[0] < _SEARCH_CACHE_TTL_SECONDS:
+        return cached[1]
+    embedding = await _embed_question(query)  # None: gömme servisi yok, yalnız sözcük araması yapılır (sonuç "kısmi" işaretlenir)
+    top_k = min(_SEMANTIC_MAX_RESULTS, offset + limit + 10)
+    info: dict = {}
+    try:
+        contexts = await run_in_threadpool(_semantic_contexts, query, embedding, get_settings().embedding_model, top_k, info)
+    except QueryCanceled as exc:
+        raise HTTPException(status_code=504, detail="Arama zaman aşımına uğradı; olayı daha kısa ve belirgin anlatın") from exc
+    except psycopg.Error as exc:
+        raise _database_unavailable(exc) from exc
+    unique: dict = {}
+    for context in contexts:
+        unique.setdefault(context.source_id, context)
+    ordered = list(unique.values())
+    page = [_hit_from_context(context) for context in ordered[offset : offset + limit]]
+    response = LegalSearchResponse(
+        query=query,
+        total=len(ordered),
+        # Getirme en iyi ~60 kaynakla sınırlıdır: "toplam" bu havuzdaki kaynak sayısıdır, korpusun tamamı değil.
+        partial=True,
+        limit=limit,
+        offset=offset,
+        results=page,
+    )
+    if len(_semantic_cache) >= _SEARCH_CACHE_MAX_ENTRIES:
+        _semantic_cache.pop(next(iter(_semantic_cache)), None)
+    _semantic_cache[cache_key] = (time.monotonic(), response)
+    return response
+
+
+# --- Mevzuat gezgini: kanun listesi ve madde dizini (api.legislation_browse) ---------------------------------------------
+def _load_laws_cached():
+    from api import legislation_browse
+
+    def loader():
+        with database_connection() as connection:
+            connection.execute("SET TRANSACTION READ ONLY")
+            return legislation_browse.load_laws(connection)
+
+    return legislation_browse.cached_laws(loader)
+
+
+@router.get("/laws")
+async def list_laws(
+    q: str = Query(default="", max_length=200),
+    kind: str | None = Query(default=None, pattern="^(constitution|law|decree|regulation|communique|other)$"),
+    limit: int = Query(default=30, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> dict:
+    """Resmî doğrulanmış güncel mevzuat listesi; ad ya da numarayla aranır ("4857", "is kanunu", "4857 m. 18")."""
+    from api import legislation_browse
+
+    try:
+        laws = await run_in_threadpool(_load_laws_cached)
+    except psycopg.Error as exc:
+        raise _database_unavailable(exc) from exc
+    found = legislation_browse.search_laws(laws, q, kind)
+    reference = legislation_browse.parse_reference(q)
+    return {
+        "query": q,
+        "total": len(found),
+        "limit": limit,
+        "offset": offset,
+        "article_reference": {"law_no": reference[0], "article_no": reference[1]} if reference and found and found[0].law_no == reference[0] else None,
+        "results": [law.as_dict() for law in found[offset : offset + limit]],
+    }
+
+
+@router.get("/laws/{law_no}")
+async def law_articles(law_no: str = PathParam(pattern="^[0-9A-Za-z]{1,20}$")) -> dict:
+    """Bir mevzuatın madde dizini (madde no sırasıyla). Madde metni `/api/legal/sources/{id}` ile okunur."""
+    from api import legislation_browse
+
+    def load():
+        with database_connection() as connection:
+            connection.execute("SET TRANSACTION READ ONLY")
+            return legislation_browse.load_articles(connection, law_no)
+
+    try:
+        result = await run_in_threadpool(load)
+    except QueryCanceled as exc:
+        raise HTTPException(status_code=504, detail="Madde dizini zaman aşımına uğradı; yeniden deneyin") from exc
+    except psycopg.Error as exc:
+        raise _database_unavailable(exc) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Bu numarayla doğrulanmış mevzuat bulunamadı")
+    return result
 
 
 @router.get("/sources/{source_id}", response_model=LegalSourceDetail)

@@ -1,16 +1,19 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { DocumentTrash } from "@/components/DocumentTrash";
 import { FileUploadDialog } from "@/components/FileUploadDialog";
 import { UyapSyncDialog } from "@/components/UyapSyncDialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { supabase } from "@/integrations/supabase/client";
+import { inMemoryAccessToken } from "@/lib/auth-api";
 import { restoreDocument, trashDocument } from "@/lib/document-trash";
-import { humanSize } from "@/lib/uyap";
+import { linkCaseDocument } from "@/lib/case-documents";
+import { humanSize, isUyapSource } from "@/lib/uyap";
 import { toast } from "sonner";
-import { Download, FileText, Loader2, RefreshCw, Search, Trash2, FolderSearch } from "lucide-react";
+import { Download, FileText, Loader2, RefreshCw, Search, Trash2, FolderSearch, FolderPlus } from "lucide-react";
 
 interface DocRow {
   id: string;
@@ -20,6 +23,7 @@ interface DocRow {
   source: string;
   uyap_file_no: string | null;
   uyap_birim: string | null;
+  case_id: string | null;
   doc_type: string | null;
   doc_date: string | null;
   created_at: string;
@@ -36,23 +40,43 @@ interface SyncRow {
   created_at: string;
 }
 
+interface CaseChoice { id: string; title: string; esas_no: string | null; court: string | null }
+
 const Files = () => {
+  const pageSize = 50;
   const [docs, setDocs] = useState<DocRow[]>([]);
   const [runs, setRuns] = useState<SyncRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [page, setPage] = useState(0);
+  const [total, setTotal] = useState(0);
+  const [loadError, setLoadError] = useState("");
+  const requestId = useRef(0);
+  const [linkingDoc, setLinkingDoc] = useState<DocRow | null>(null);
+  const [cases, setCases] = useState<CaseChoice[]>([]);
+  const [chosenCaseId, setChosenCaseId] = useState("");
+  const [linkError, setLinkError] = useState("");
+  const [linkBusy, setLinkBusy] = useState(false);
   const [trashKey, setTrashKey] = useState(0);
 
   const load = useCallback(async () => {
+    const currentRequest = ++requestId.current;
     setLoading(true);
-    const [d, r] = await Promise.all([
-      supabase
-        .from("case_documents")
-        .select(
-          "id, file_name, storage_path, size_bytes, source, uyap_file_no, uyap_birim, doc_type, doc_date, created_at",
-        )
-        .order("created_at", { ascending: false })
-        .limit(200),
+    setLoadError("");
+    const query = new URLSearchParams({ q: searchTerm, offset: String(page * pageSize), limit: String(pageSize) });
+    const base = (import.meta.env.VITE_API_URL ?? "http://localhost:8766").replace(/\/$/, "");
+    const [documents, r] = await Promise.all([
+      fetch(`${base}/api/office/case-documents/search?${query}`, {
+        credentials: "include",
+        headers: inMemoryAccessToken() ? { Authorization: `Bearer ${inMemoryAccessToken()}` } : {},
+      }).then(async (response) => {
+        if (!response.ok) {
+          const body = await response.json().catch(() => null);
+          throw new Error(body?.detail ?? `Belge listesi yüklenemedi (${response.status})`);
+        }
+        return response.json() as Promise<{ rows: DocRow[]; total: number }>;
+      }).catch((error) => ({ error: error instanceof Error ? error.message : "Belge listesi yüklenemedi" })),
       supabase
         .from("uyap_sync_runs")
         .select(
@@ -61,11 +85,28 @@ const Files = () => {
         .order("created_at", { ascending: false })
         .limit(5),
     ]);
-    if (d.error) toast.error(d.error.message);
-    setDocs((d.data ?? []) as DocRow[]);
+    if (currentRequest !== requestId.current) return;
+    if ("error" in documents) {
+      setLoadError(documents.error);
+      setDocs([]);
+      setTotal(0);
+    } else if (!Array.isArray(documents.rows) || !Number.isFinite(documents.total)) {
+      setLoadError("Belge listesi beklenmeyen biçimde döndü");
+      setDocs([]);
+      setTotal(0);
+    } else {
+      setDocs(documents.rows);
+      setTotal(documents.total);
+    }
+    if (r.error) toast.error(r.error.message);
     setRuns((r.data ?? []) as SyncRow[]);
     setLoading(false);
-  }, []);
+  }, [page, searchTerm]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearchTerm(q.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [q]);
 
   useEffect(() => {
     void load();
@@ -100,16 +141,39 @@ const Files = () => {
       },
     });
     setDocs((prev) => prev.filter((d) => d.id !== row.id));
+    setTotal((count) => Math.max(0, count - 1));
     setTrashKey((n) => n + 1);
+    if (docs.length === 1 && page > 0) setPage((current) => current - 1);
+    else void load();
   };
 
-  const filtered = docs.filter((d) => {
-    const s = q.trim().toLowerCase();
-    if (!s) return true;
-    return [d.file_name, d.uyap_file_no, d.uyap_birim, d.doc_type]
-      .filter(Boolean)
-      .some((v) => v!.toLowerCase().includes(s));
-  });
+  const openCaseLink = async (row: DocRow) => {
+    setLinkingDoc(row);
+    setChosenCaseId("");
+    setLinkError("");
+    const result = await supabase.from("cases")
+      .select("id,title,esas_no,court")
+      .order("created_at", { ascending: false })
+      .limit(1000);
+    if (result.error) setLinkError(result.error.message);
+    else setCases((result.data ?? []) as CaseChoice[]);
+  };
+
+  const saveCaseLink = async () => {
+    if (!linkingDoc || !chosenCaseId) return;
+    setLinkBusy(true);
+    setLinkError("");
+    try {
+      await linkCaseDocument(chosenCaseId, linkingDoc.id);
+      toast.success("Belge davaya bağlandı");
+      setLinkingDoc(null);
+      void load();
+    } catch (error) {
+      setLinkError(error instanceof Error ? error.message : "Belge bağlanamadı");
+    } finally {
+      setLinkBusy(false);
+    }
+  };
 
   return (
     <DashboardLayout
@@ -154,8 +218,8 @@ const Files = () => {
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
         <input
           value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Belge adı, dosya no veya birim ara..."
+          onChange={(e) => { setQ(e.target.value); setPage(0); }}
+          placeholder="Tüm belgelerde ad, dosya no, birim veya tür ara..."
           className="w-full h-11 pl-10 pr-4 rounded-lg bg-card border border-border focus:border-primary/50 outline-none text-sm transition"
         />
       </div>
@@ -165,10 +229,12 @@ const Files = () => {
           <div className="p-10 flex justify-center text-muted-foreground">
             <Loader2 className="h-5 w-5 animate-spin" />
           </div>
-        ) : filtered.length === 0 ? (
+        ) : loadError ? (
+          <div className="p-10 text-sm text-destructive" role="alert">{loadError}</div>
+        ) : docs.length === 0 ? (
           <div className="p-12 text-center text-sm text-muted-foreground">
             <FolderSearch className="h-8 w-8 mx-auto mb-3 opacity-40" />
-            Henüz belge yok. Dosya yükleyin veya UYAP arşivinizi senkronize edin.
+            {searchTerm ? "Aramanızla eşleşen belge yok." : "Henüz belge yok. Dosya yükleyin veya UYAP arşivinizi senkronize edin."}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -183,7 +249,7 @@ const Files = () => {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((d) => (
+            {docs.map((d) => (
                   <tr
                     key={d.id}
                     className="border-t border-border hover:bg-secondary/30 transition"
@@ -214,13 +280,18 @@ const Files = () => {
                     </td>
                     <td className="px-6 py-4">
                       <Badge
-                        variant={d.source === "uyap" ? "default" : "outline"}
+                          variant={isUyapSource(d.source) ? "default" : "outline"}
                         className="text-[10px]"
                       >
-                        {d.source === "uyap" ? "UYAP" : "Elle"}
+                          {isUyapSource(d.source) ? "UYAP" : "Elle"}
                       </Badge>
                     </td>
                     <td className="px-6 py-4 text-right whitespace-nowrap">
+                      {!d.case_id && (
+                        <Button size="sm" variant="ghost" title="Davaya bağla" aria-label="Davaya bağla" onClick={() => void openCaseLink(d)}>
+                          <FolderPlus className="h-4 w-4" />
+                        </Button>
+                      )}
                       <Button size="sm" variant="ghost" onClick={() => void download(d)}>
                         <Download className="h-4 w-4" />
                       </Button>
@@ -241,7 +312,36 @@ const Files = () => {
           </div>
         )}
       </div>
+      {!loadError && !loading && total > 0 && (
+        <div className="mt-3 flex items-center justify-between text-sm text-muted-foreground">
+          <span>{total} belgeden {page * pageSize + 1}–{page * pageSize + docs.length} gösteriliyor</span>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>Önceki</Button>
+            <Button size="sm" variant="outline" disabled={(page + 1) * pageSize >= total} onClick={() => setPage((p) => p + 1)}>Sonraki</Button>
+          </div>
+        </div>
+      )}
       <DocumentTrash refreshKey={trashKey} onChanged={() => void load()} />
+      <Dialog open={!!linkingDoc} onOpenChange={(open) => { if (!open) setLinkingDoc(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Belgeyi davaya bağla</DialogTitle>
+            <DialogDescription>Dosya numarası tek başına güvenilir eşleşme değildir. Doğru davayı ve mahkemeyi sen seç; bundan sonra belge dava kapsamlı AI aramasında kullanılabilir.</DialogDescription>
+          </DialogHeader>
+          {linkingDoc && <p className="text-sm break-all">{linkingDoc.file_name}</p>}
+          <select value={chosenCaseId} onChange={(event) => setChosenCaseId(event.target.value)} className="w-full rounded-md border bg-background p-2 text-sm" aria-label="Dava seç">
+            <option value="">Dava seç...</option>
+            {cases.map((item) => <option key={item.id} value={item.id}>{item.esas_no ?? "-"} · {item.court ?? "-"} · {item.title}</option>)}
+          </select>
+          {cases.length === 0 && !linkError && <p className="text-sm text-muted-foreground">Henüz kayıtlı dava yok. Önce <a className="underline" href="/dashboard/cases">Davalar</a> sayfasında dava oluştur.</p>}
+          {cases.length === 1000 && <p className="text-sm text-amber-600">İlk 1000 dava gösteriliyor; aradığın dava yoksa dava sayfasından belgeyi bağla.</p>}
+          {linkError && <p role="alert" className="text-sm text-destructive">{linkError}</p>}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLinkingDoc(null)}>Vazgeç</Button>
+            <Button disabled={!chosenCaseId || linkBusy} onClick={() => void saveCaseLink()}>{linkBusy ? "Bağlanıyor..." : "Davaya bağla"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </DashboardLayout>
   );
 };

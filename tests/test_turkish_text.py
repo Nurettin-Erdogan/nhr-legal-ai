@@ -120,7 +120,7 @@ def test_research_page_searches_restored_text_and_echoes_the_typed_query(monkeyp
 
     def load(q, limit, offset):
         seen.append(q)
-        return SimpleNamespace(text=q, phrase=None), [], False, 0
+        return SimpleNamespace(text=q, phrase=None), [], False, 0, False
 
     monkeypatch.setattr(research, "load_candidate_page", load)
     monkeypatch.setattr(research, "verify_third_party_contexts", lambda candidates: candidates)

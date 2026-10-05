@@ -9,10 +9,11 @@ import { useAuth } from "@/components/AuthProvider";
 import { UyapDosyalarim } from "@/components/UyapDosyalarim";
 import { setExtensionKey } from "@/lib/uyap-bridge";
 import { supabase } from "@/integrations/supabase/client";
-import { expandDroppedFiles, importEntries } from "@/lib/uyap-import";
+import { expandDroppedFiles, importEntries, type ImportResult } from "@/lib/uyap-import";
 import { humanSize } from "@/lib/uyap";
 import { toast } from "sonner";
 import {
+  AlertTriangle,
   CheckCircle2,
   ExternalLink,
   Loader2,
@@ -34,7 +35,7 @@ const UYAP_PORTALS = [
 const newToken = () =>
   `jsai_${crypto.randomUUID().replace(/-/g, "")}${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
 
-const downloadExtension = async (file = "uyap-dosya-cekici.zip") => {
+const downloadExtension = async (file = "jurisai-avukat.zip") => {
   try {
     const response = await fetch(`/${file}`);
     if (!response.ok) throw new Error(String(response.status));
@@ -55,7 +56,7 @@ const UyapConnect = () => {
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [result, setResult] = useState<{ found: number; inserted: number; skipped: number } | null>(
+  const [result, setResult] = useState<ImportResult | null>(
     null,
   );
   const [opened, setOpened] = useState(false);
@@ -79,7 +80,9 @@ const UyapConnect = () => {
       .then(({ data }) => {
         const row = data?.[0];
         setActiveToken(
-          row ? { prefix: String(row.token_prefix ?? ""), lastUsed: row.last_used_at ?? null } : null,
+          row
+            ? { prefix: String(row.token_prefix ?? ""), lastUsed: row.last_used_at ?? null }
+            : null,
         );
       });
   }, [user]);
@@ -102,11 +105,11 @@ const UyapConnect = () => {
         if (error) throw error;
         setToken(value);
         setActiveToken({ prefix: value.slice(0, 9), lastUsed: null });
-        // Eklenti bu sayfayla konuşabiliyorsa anahtar ona doğrudan yazılır: elle yapıştırmak gerekmez.
+        // Eklentinin kendi onay penceresinde kullanıcı izin verirse anahtar yazılır.
         const written = await setExtensionKey(value);
         toast.success(
           written
-            ? "Anahtar oluşturuldu ve eklentiye otomatik girildi"
+            ? "Anahtar oluşturuldu ve onayınla eklentiye girildi"
             : rotate
               ? "Yeni anahtar oluşturuldu"
               : "Bağlantı anahtarı hazır",
@@ -156,16 +159,18 @@ const UyapConnect = () => {
           await supabase
             .from("uyap_sync_runs")
             .update({
-              status: "completed",
+              status: res.failed ? "partial" : "completed",
               found_count: res.found,
               inserted_count: res.inserted,
               skipped_count: res.skipped,
+              error_message: res.errors.join(" | ") || null,
               duration_ms: Date.now() - startedAt,
             })
             .eq("id", run.id);
         }
         setResult(res);
-        toast.success(`${res.inserted} belge JurisAI'ya aktarıldı`);
+        if (res.failed) toast.warning(`${res.inserted} belge aktarıldı, ${res.failed} belge aktarılmadı`);
+        else toast.success(`${res.inserted} belge JurisAI'ya aktarıldı`);
       } catch (e) {
         const message = e instanceof Error ? e.message : "Aktarım başarısız";
         if (run?.id) {
@@ -201,10 +206,11 @@ const UyapConnect = () => {
           <h2 className="font-semibold">Tarayıcı eklentisi ile aktarım</h2>
         </div>
         <p className="text-sm text-muted-foreground leading-relaxed">
-          JurisAI eklentisini Chrome'a kurarsın, UYAP'ta kendi oturumunu açarsın ve bir dosyanın
-          evrak listesinde "JurisAI'ya Aktar" düğmesine basarsın. Belgeler senin oturumunla
-          indirilip doğrudan JurisAI hesabına kaydedilir; şifre/e-imza hiçbir zaman okunmaz veya
-          sunucuya gönderilmez. Varsayılan olarak yalnızca düğmeye bastığın evrak gönderilir.
+          JurisAI eklentisini Chrome'a kurarsın ve UYAP'ta kendi oturumunu açarsın. Yukarıdaki "UYAP
+          Dosyalarım" bölümünden dosyaları listeleyip evrakları seçerek aktarımı JurisAI içinden
+          yönetirsin. Belgeler senin oturumunla indirilip doğrudan JurisAI hesabına kaydedilir;
+          şifre/e-imza hiçbir zaman okunmaz veya sunucuya gönderilmez. Varsayılan olarak yalnızca
+          düğmeye bastığın evrak gönderilir.
         </p>
 
         <ol className="text-sm space-y-2 list-decimal pl-5 text-muted-foreground">
@@ -212,9 +218,13 @@ const UyapConnect = () => {
             Eklentiyi indir ve <span className="font-mono text-xs">chrome://extensions</span> →
             "Geliştirici modu" → "Paketlenmemiş öğe yükle" ile klasörü seç.
           </li>
-          <li>Eklenti simgesine tıkla, aşağıdaki bağlantı anahtarını yapıştır ve kaydet.</li>
           <li>
-            UYAP'ta bir dosyanın evrak listesini aç ve aktarmak istediğin evrakın düğmesine bas.
+            Aşağıdan bağlantı anahtarı oluştur; bağlı eklentiye otomatik girilir. Bağlanamazsa
+            anahtarı eklentiye kendin yapıştır.
+          </li>
+          <li>
+            UYAP'a giriş yaptıktan sonra JurisAI'da "Dosyalarımı listele" → "Evrakları seç" →
+            "Seçilenleri JurisAI'ya aktar" akışını kullan.
           </li>
         </ol>
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs leading-relaxed text-muted-foreground">
@@ -227,13 +237,6 @@ const UyapConnect = () => {
         </div>
 
         <div className="grid gap-2 sm:grid-cols-2">
-          <Button variant="default" onClick={() => void downloadExtension()}>
-            <Download className="h-4 w-4 mr-2" /> Eklentiyi indir (.zip)
-          </Button>
-          <Button variant="secondary" onClick={() => void downloadExtension("jurisai-avukat.zip")}>
-            <Download className="h-4 w-4 mr-2" /> Avukat Portalı eklentisi (.zip)
-          </Button>
-
           {activeToken ? (
             <Button variant="outline" onClick={() => void createToken(true)} disabled={tokenBusy}>
               <RefreshCw className="h-4 w-4 mr-2" /> Anahtarı yenile
@@ -244,6 +247,9 @@ const UyapConnect = () => {
               Bağlantı anahtarı oluştur
             </Button>
           )}
+          <Button variant="default" onClick={() => void downloadExtension()}>
+            <Download className="h-4 w-4 mr-2" /> JurisAI bağlantı eklentisini indir (.zip)
+          </Button>
         </div>
 
         {token && (
@@ -272,8 +278,8 @@ const UyapConnect = () => {
         )}
         {token && (
           <p className="text-xs font-medium text-amber-600">
-            Anahtarı şimdi kopyala ve eklentiye yapıştır: bu sayfa kapandığında bir daha
-            gösterilmeyecek.
+            Bağlı eklentiye anahtar otomatik girilir. Otomatik bağlantı başarısızsa şimdi kopyalayıp
+            yapıştır; bu sayfa kapandığında bir daha gösterilmeyecek.
           </p>
         )}
         <p className="text-[11px] text-muted-foreground">
@@ -291,8 +297,8 @@ const UyapConnect = () => {
           </div>
           <p className="text-sm text-muted-foreground leading-relaxed">
             Girişi doğrudan resmî UYAP/e-Devlet sayfasında sen yaparsın (e-imza, mobil imza veya
-            e-Devlet şifresi). JurisAI bu bilgileri görmez, saklamaz ve iletmez. Portal yeni
-            sekmede açılır; dosya listesinden ilgili belgeleri veya dosya arşivini indirirsin.
+            e-Devlet şifresi). JurisAI bu bilgileri görmez, saklamaz ve iletmez. Portal yeni sekmede
+            açılır; dosya listesinden ilgili belgeleri veya dosya arşivini indirirsin.
           </p>
           <div className="grid gap-2">
             {UYAP_PORTALS.map((p) => (
@@ -383,18 +389,21 @@ const UyapConnect = () => {
           {busy && <Progress value={progress} />}
 
           {result && (
-            <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-xs space-y-2">
-              <div className="flex items-center gap-2 font-semibold text-emerald-700 dark:text-emerald-400">
-                <CheckCircle2 className="h-4 w-4" /> Aktarım tamamlandı
+            <div className={`rounded-lg border p-3 text-xs space-y-2 ${result.failed ? "border-amber-500/30 bg-amber-500/5" : "border-emerald-500/30 bg-emerald-500/5"}`}>
+              <div className={`flex items-center gap-2 font-semibold ${result.failed ? "text-amber-700 dark:text-amber-400" : "text-emerald-700 dark:text-emerald-400"}`}>
+                {result.failed ? <AlertTriangle className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
+                {result.failed ? "Aktarım kısmen tamamlandı" : "Aktarım tamamlandı"}
               </div>
               <div className="flex flex-wrap gap-2">
                 <Badge variant="outline">Bulunan: {result.found}</Badge>
                 <Badge variant="outline">Eklenen: {result.inserted}</Badge>
                 <Badge variant="outline">Atlanan: {result.skipped}</Badge>
+                {result.failed > 0 && <Badge variant="destructive">Hatalı: {result.failed}</Badge>}
               </div>
+              {result.errors.map((error) => <p key={error} className="text-destructive">{error}</p>)}
               <p className="text-muted-foreground">
-                Belgeler dosya no · birim · tarih · tür bilgisiyle eşleştirildi. Dosyalar
-                sayfasından görüntüleyebilir, AI modüllerinde analiz edebilirsin.
+                Belgeler dosya no · birim · tarih · tür bilgisiyle kaydedildi. Dava kapsamlı AI
+                aramasında kullanmak için belgeyi ilgili davaya ayrıca bağla.
               </p>
             </div>
           )}

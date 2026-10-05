@@ -86,3 +86,19 @@ def html_to_text(value: str) -> str:
         if cleaned:
             paragraphs.append(cleaned)
     return "\n\n".join(paragraphs)
+
+
+def decode_html_bytes(data: bytes) -> str:
+    """Decode Turkish UYAP HTML without losing characters in older 1254/8859-9 pages."""
+    header = data[:4096].decode("ascii", errors="ignore")
+    match = re.search(r"charset\s*=\s*['\"]?\s*([\w-]+)", header, re.IGNORECASE)
+    declared = (match.group(1).lower() if match else "")
+    if declared in {"utf-8", "utf8", "iso-8859-9", "windows-1254", "cp1254"}:
+        try:
+            return data.decode(declared)
+        except UnicodeDecodeError:
+            pass
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return data.decode("cp1254", errors="replace")

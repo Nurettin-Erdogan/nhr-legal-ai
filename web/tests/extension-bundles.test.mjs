@@ -7,7 +7,6 @@ import { unzipSync } from 'fflate';
 
 for (const [archive, dir] of [
   ['jurisai-avukat.zip', 'jurisai-avukat'],
-  ['jurisai-uyap-extension.zip', 'uyap-extension'],
   ['uyap-dosya-cekici.zip', 'uyap-dosya-cekici'],
 ]) {
   test(archive + ' matches reviewed source, with no stale files', () => {

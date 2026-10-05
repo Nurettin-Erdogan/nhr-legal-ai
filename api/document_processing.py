@@ -50,6 +50,7 @@ _SUPPORTED_TYPES = {
     ".pdf": "application/pdf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".txt": "text/plain",
+    ".html": "text/html",
     ".udf": "application/vnd.uyap.udf",
     ".odt": "application/vnd.oasis.opendocument.text",
 }
@@ -253,6 +254,17 @@ def _extract_txt(data: bytes) -> list[ExtractedSection]:
     return [ExtractedSection(content=text)]
 
 
+def _extract_html(data: bytes) -> list[ExtractedSection]:
+    from ingestion.text import decode_html_bytes, html_to_text
+
+    if b"<" not in data[:4096] or b"\x00" in data[:4096]:
+        raise DocumentProcessingError("HTML uzantılı dosyanın içeriği HTML değil.")
+    text = html_to_text(decode_html_bytes(data)).strip()
+    if not text:
+        raise DocumentProcessingError("HTML belgesinde işlenebilir metin bulunamadı.")
+    return [ExtractedSection(content=text)]
+
+
 def _extract_udf(data: bytes) -> list[ExtractedSection]:
     try:
         text = extract_udf_text(data).strip()
@@ -274,7 +286,7 @@ def process_document(file_name: str, data: bytes, *, ocr: str = "off") -> Proces
         raise ValueError(f"Geçersiz OCR kipi: {ocr}")
     extension = Path(file_name).suffix.lower()
     if extension not in _SUPPORTED_TYPES and extension not in _IMAGE_TYPES:
-        raise DocumentProcessingError("Yalnız PDF, DOCX, UDF, ODT, TXT ve görüntü belgeleri desteklenir.")
+        raise DocumentProcessingError("Yalnız PDF, DOCX, UDF, ODT, TXT, HTML ve görüntü belgeleri desteklenir.")
     if not data:
         raise DocumentProcessingError("Yüklenen dosya boş.")
 
@@ -294,6 +306,8 @@ def process_document(file_name: str, data: bytes, *, ocr: str = "off") -> Proces
             raise DocumentProcessingError(f"Dosya uzantısı {extension[1:].upper()} olsa da içerik {extension[1:].upper()} değil.")
         # UDF ve ODT, metni content.xml içinde taşıyan zip arşividir (UYAP ön izleme evrakı ODT gelir).
         sections = _extract_udf(data)
+    elif extension == ".html":
+        sections = _extract_html(data)
     else:
         if b"\x00" in data[:4096]:
             raise DocumentProcessingError("Dosya uzantısı TXT olsa da içerik metin değil.")

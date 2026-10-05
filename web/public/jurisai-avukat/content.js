@@ -63,7 +63,20 @@
   const MAX_ROW_TEXT = 600; // bundan uzun metinli öğe tek bir evrak satırı değil, kapsayıcıdır
   const throttleGap = 1500; // portalın oturumu kapatmaması için istekler arası bekleme
 
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // Sayfa gizliyken (kullanıcı JurisAI sekmesindeyken) Chrome zincirleme zamanlayıcıları dakikada bire kadar seyreltebilir; o zaman
+  // bekleme arka plan betiğine yaptırılır (mesaj yanıtı bu kısıta girmez). JurisAI'dan yönetilen aktarım arka planda yavaşlamaz.
+  const timerSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const sleep = (ms) => {
+    if (!document.hidden) return timerSleep(ms);
+    try {
+      return chrome.runtime.sendMessage({ type: "JURISAI_SLEEP", ms }).then(
+        () => undefined,
+        () => timerSleep(ms),
+      );
+    } catch (_) {
+      return timerSleep(ms); // eklenti yeniden yüklendiyse (yetim betik)
+    }
+  };
 
   /* ---------- Bildirim (toast) ---------- */
   let toastHost = null;
@@ -354,7 +367,9 @@
   /** UYAP dosya penceresi önce "Taraf Bilgileri" ile açılır. Evraklar ancak
       bu sekmeye basıldıktan sonra AJAX ile geldiği için sekmeyi kendimiz açarız. */
   function openEvrakTab(scope = document) {
-    const candidates = [...scope.querySelectorAll("a, button, [role='tab'], li")];
+    // Bootstrap sekme olayı bağlantıda dinlenir; onu saran li'ye tıklamak
+    // bağlantının olayını tetiklemez ve gizli/eski evrak ağacını bırakabilir.
+    const candidates = [...scope.querySelectorAll("a, button, [role='tab']")];
     const tab = candidates.find((el) => {
       const text = textOf(el).toLocaleLowerCase("tr");
       if (text !== "evrak") return false; // "Evrak Gönderme" sekmesine basma
@@ -596,18 +611,18 @@
      Gerçek UYAP sayfası yapısı değiştiğinde seçicileri ayarlamak için YAPI özeti üretir. Hiçbir metin,
      isim, numara ya da bağlantı değeri içermez: yalnız sayılar, rakamları maskelenmiş yol biçimleri ve
      sorgu parametresi ADLARI. Popup'taki "Sayfa tanısını kopyala" düğmesi bunu çağırır. */
-  const mask = (value) => String(value).replace(/\d/g, "#").slice(0, 80);
+  // Yol parçaları kişi/dosya adı da olabilir; tanıya yalnız yolun biçimi girer.
+  const mask = (value) => String(value).split("/").map((part) => part ? ":segment" : "").join("/").slice(0, 80);
   function urlShape(raw) {
     try {
       const url = new URL(raw, location.href);
-      const keys = [...url.searchParams.keys()].slice(0, 8).join(",");
-      return `${url.hostname === location.hostname ? "" : "(dış) "}${mask(url.pathname)}${keys ? "?" + keys : ""}`;
+      return `${url.hostname === location.hostname ? "(aynı kaynak) " : "(dış kaynak) "}${mask(url.pathname)}${url.search ? "?param" : ""}`;
     } catch (_) {
       return "(çözümlenemedi)";
     }
   }
   /* Yapı iskeleti: etiket + sınıf + öznitelik ADLARI ve sayıları. Metin ve öznitelik DEĞERİ yok. */
-  const maskClass = (value) => String(value).replace(/\d+/g, "#").slice(0, 40);
+  const maskClass = () => ":class";
   function structureSketch(root) {
     const signatures = new Map();
     let seen = 0;
@@ -641,8 +656,8 @@
         tag: el.tagName.toLowerCase(),
         classes: [...el.classList].slice(0, 4).map(maskClass),
         attributeNames: [...el.attributes].map((attr) => attr.name).filter((n) => n !== "class").slice(0, 8),
-        onclickFunction: onclick ? onclick.replace(/\(.*$/s, "(…)").slice(0, 40) : "",
-        href: href === null ? "" : /^(#|javascript)/i.test(href) ? href.slice(0, 20) : urlShape(href),
+        hasOnclick: !!onclick,
+        href: href === null ? "" : /^(#|javascript)/i.test(href) ? "(yerel)" : urlShape(href),
         hasChildList: !!el.querySelector("ul"),
         isLeaf: !el.querySelector("ul, li"),
       };
@@ -671,7 +686,7 @@
     return {
       extensionVersion: chrome.runtime.getManifest().version,
       frame: window === window.top ? "üst" : "iç",
-      host: location.hostname,
+      host: "(UYAP)",
       path: mask(location.pathname),
       caseContext: hasCaseContext(),
       tables: document.querySelectorAll("table").length,
@@ -682,24 +697,11 @@
       toolbar: !!document.querySelector(".jurisai-toolbar"),
       docUrlShapes: [...shapes].map(([shape, count]) => ({ shape, count })).slice(0, 12),
       scope: root ? "açık pencere" : "sayfa",
-      refreshError: lastRefreshError,
+      refreshFailed: !!lastRefreshError,
       launcher: !!document.querySelector(".jurisai-launcher"),
       caseOpenTargets: caseOpenTargets().length,
-      // Düğme etiketleri arayüz metnidir (kişisel veri değil); evrak/kişi adı taşıyan bağlantılar dahil değil.
-      buttonLabels: [
-        ...new Set(
-          [...scope.querySelectorAll("button, input[type='button'], a.btn")]
-            .map((el) => textOf(el) || el.value || "")
-            .filter((text) => text && text.length <= 40),
-        ),
-      ].slice(0, 20),
-      tabLabels: [
-        ...new Set(
-          [...scope.querySelectorAll("[role='tab'], .nav-tabs a, .nav-tabs li, ul.nav li")]
-            .map((el) => textOf(el))
-            .filter((text) => text && text.length <= 30),
-        ),
-      ].slice(0, 12),
+      buttonCount: scope.querySelectorAll("button, input[type='button'], a.btn").length,
+      tabCount: scope.querySelectorAll("[role='tab'], .nav-tabs a, .nav-tabs li, ul.nav li").length,
       iframes: [...scope.querySelectorAll("iframe")].slice(0, 5).map((el) => urlShape(el.getAttribute("src") || "about:blank")),
       tree: treeSketch(scope),
       structure: structureSketch(scope),
@@ -725,6 +727,8 @@
   }
   // "İ" harfi büyük/küçük harf duyarsız normal ifadede "i" ile eşleşmez: Türkçe küçük harfe çevrilir.
   const trLower = (text) => String(text || "").toLocaleLowerCase("tr");
+  const sameText = (a, b) =>
+    trLower(String(a || "").replace(/\s+/g, " ").trim()) === trLower(String(b || "").replace(/\s+/g, " ").trim());
   function previewButton(dialog) {
     return [...dialog.querySelectorAll("button, input[type='button']")].find((el) =>
       /ön\s*izleme/.test(trLower(textOf(el) || el.value)),
@@ -849,13 +853,29 @@
       element.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, button: 0 }));
     }
   }
-  /** Ağaçtaki evrakları klasör yoluyla listeler; "Son 20 Evrak" kısayolu ve yinelenen evrak kimlikleri elenir. */
+  /** Evrak balonundaki (data-original-title ya da title) "Birim Evrak No": UYAP her sayfa yüklemesinde `evrak_id`'yi yeniden şifreler, bu numara değişmez. */
+  const evrakNoOf = (span) =>
+    (/Birim Evrak No\s*:?\s*(\d+)/i.exec(String(span.getAttribute("data-original-title") || span.getAttribute("title") || "").replace(/<[^>]+>/g, " ")) || [])[1] || "";
+  /**
+   * Evrağın KALICI kimliği (yüklemeler arasında değişmez; "zaten aktarıldı" denetimi ve yinelenen elemesi buna dayanır):
+   * evrak = birim evrak no, ek = üst evrakın düz `ana_evrak_id`si + "Ek N" başlığı. Dosyanın birimi de eklenir (başka mahkemede aynı numara olabilir).
+   * Bunlar yoksa (başka portal/sayfa) şifreli `evrak_id` son çare olarak kullanılır.
+   */
+  function stableEvrakId(span, birim) {
+    const title = textOf(span);
+    if (span.hasAttribute("ana_evrak_id")) return `ek:${span.getAttribute("ana_evrak_id")}:${title}@${birim}`;
+    const no = evrakNoOf(span);
+    return no ? `ev:${no}@${birim}` : span.getAttribute("evrak_id");
+  }
+  /** Ağaçtaki evrakları klasör yoluyla listeler; "Son 20 Evrak" kısayolu ve aynı evrakın tekrarları (kalıcı kimliğe göre) elenir. */
   function collectEvraklar(dialog) {
     const byId = new Map();
-    let duplicates = 0; // aynı evrak_id'nin "Tüm Evraklar" altında birden çok klasörde görünmesi
+    const { birim } = dosyaIdentity(dialog);
+    let duplicates = 0; // aynı evrakın "Tüm Evraklar" altında birden çok klasörde görünmesi
     for (const span of dialog.querySelectorAll("span.file[evrak_id]")) {
-      const id = span.getAttribute("evrak_id");
-      if (!id) continue;
+      const rawId = span.getAttribute("evrak_id");
+      if (!rawId) continue;
+      const id = stableEvrakId(span, birim);
       const chain = [];
       const folderLabels = [];
       for (let li = span.closest("li")?.parentElement?.closest("li"); li; li = li.parentElement?.closest("li")) {
@@ -878,7 +898,7 @@
       // UYAP klasör adının yanına kendi sayısını yazar ("Kesinleşme Şerhleri (2)"): bulduğumuz sayıyla karşılaştırmak için.
       const nearest = folderLabels.filter((l) => !/^Tüm Evraklar$/i.test(l) && !/^Dosyaya Eklenen Son/i.test(l)).pop() || "";
       const declared = isEk ? null : Number((/\((\d+)\)\s*$/.exec(nearest) || [])[1]) || null;
-      const entry = { id, span, title: textOf(span), folders, typeName, inRecent, isEk, declared };
+      const entry = { id, rawId, span, title: textOf(span), folders, typeName, inRecent, isEk, declared };
       const existing = byId.get(id);
       if (existing && !existing.inRecent && !inRecent) duplicates += 1;
       if (!existing || (existing.inRecent && !inRecent)) byId.set(id, entry);
@@ -900,6 +920,46 @@
   function dosyaIdentity(dialog) {
     const title = textOf(dialog.querySelector("h1,h2,h3,h4,.modal-title"));
     return { esas: esasNoFrom(title), birim: (title.split(" - ")[1] || courtFrom(title) || "").trim().slice(0, 160) };
+  }
+
+  /** UYAP'ın klasör sayılarıyla bulunan evrakların karşılaştırması (seçim penceresi ve JurisAI sayfası aynı hesabı kullanır). */
+  function countSummary(items) {
+    const groups = new Map();
+    for (const item of items) {
+      const key = item.folders.join(" / ") || "(klasörsüz)";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(item);
+    }
+    const countedGroups = [...groups.values()].filter((group) => group[0].declared !== null);
+    const folderStats = items.folderStats || [];
+    // UYAP'ın sayısı ağaçtaki TÜM sayılı klasörlerden alınır: hiç evrak bulunamayan klasör de toplama girer.
+    const declaredTotal = folderStats.length
+      ? folderStats.reduce((sum, entry) => sum + entry.declared, 0)
+      : countedGroups.reduce((sum, group) => sum + group[0].declared, 0);
+    const gapList = folderStats.length
+      ? folderStats.filter((entry) => entry.leaves !== entry.declared).map((entry) => `${entry.name} (UYAP ${entry.declared}, bulunan ${entry.leaves})`)
+      : countedGroups
+          .filter((group) => group[0].declared !== group.length)
+          .map((group) => `${group[0].folders[group[0].folders.length - 1]} (UYAP ${group[0].declared}, bulunan ${group.length})`);
+    const foundTotal = countedGroups.reduce((sum, group) => sum + group.length, 0);
+    const copies = items.duplicates || 0;
+    const matches = declaredTotal === foundTotal;
+    // Fark açıklanmış sayılır: hiçbir klasörde eksik yok (her klasörün DOM'daki evrak sayısı UYAP'ınkine eşit), yani fark
+    // yalnız aynı evrakın birden çok klasörde görünmesinden. (Ek kopyaları da "copies"e girdiği için eşitlik aramak yanıltır.)
+    const explained = !matches && (declaredTotal === foundTotal + copies || (folderStats.length > 0 && gapList.length === 0));
+    return {
+      declaredTotal,
+      foundTotal,
+      eks: items.filter((item) => item.isEk).length,
+      copies,
+      matches,
+      explained,
+      gapList,
+      withoutId: items.withoutId || 0,
+      unopened: items.unopened || 0,
+      domLeaves: items.domLeaves ?? null,
+      emptyOpened: items.emptyOpened || 0,
+    };
   }
 
   /** Çekmeden önce kullanıcı hangi evrakların çekileceğini ve ne yapılacağını seçer (metinler textContent ile, innerHTML yok). */
@@ -936,24 +996,7 @@
       }
       const counter = make("div", "color:#333;font-weight:600;");
       // Toplam doğrulama: UYAP'ın klasör sayıları (evraklar, ekler hariç) ile bulunanlar.
-      const countedGroups = [...groups.values()].filter((group) => group[0].declared !== null);
-      const folderStats = items.folderStats || [];
-      // UYAP'ın sayısı ağaçtaki TÜM sayılı klasörlerden alınır: hiç evrak bulunamayan klasör de toplama girer.
-      const declaredTotal = folderStats.length
-        ? folderStats.reduce((sum, entry) => sum + entry.declared, 0)
-        : countedGroups.reduce((sum, group) => sum + group[0].declared, 0);
-      const gapList = folderStats.length
-        ? folderStats.filter((entry) => entry.leaves !== entry.declared).map((entry) => `${entry.name} (UYAP ${entry.declared}, bulunan ${entry.leaves})`)
-        : countedGroups
-            .filter((group) => group[0].declared !== group.length)
-            .map((group) => `${group[0].folders[group[0].folders.length - 1]} (UYAP ${group[0].declared}, bulunan ${group.length})`);
-      const foundTotal = countedGroups.reduce((sum, group) => sum + group.length, 0);
-      const eks = items.filter((item) => item.isEk).length;
-      const copies = items.duplicates || 0;
-      const matches = declaredTotal === foundTotal;
-      // Fark açıklanmış sayılır: hiçbir klasörde eksik yok (her klasörün DOM'daki evrak sayısı UYAP'ınkine eşit), yani fark
-      // yalnız aynı evrakın birden çok klasörde görünmesinden. (Ek kopyaları da "copies"e girdiği için eşitlik aramak yanıltır.)
-      const explained = !matches && (declaredTotal === foundTotal + copies || (folderStats.length > 0 && gapList.length === 0));
+      const { declaredTotal, foundTotal, eks, matches, explained, gapList } = countSummary(items);
       const verification = make(
         "div",
         `font-size:12px;margin-top:6px;color:${matches || explained ? "#166534" : "#b91c1c"};`,
@@ -1073,133 +1116,156 @@
     });
   }
 
+  /** Ağacı açar, eksik yüklenen düğümleri onarır ve evrakları toplar. */
+  async function prepareTree(dialog, onGaps) {
+    if (!(await ensurePreview(dialog))) return { ok: false, error: "Ön izleme düğmesi bulunamadı (Evrak sekmesinde misin?)" };
+    await expandAll(dialog);
+    await repairTree(dialog, onGaps);
+    const items = collectEvraklar(dialog);
+    if (!items.length) return { ok: false, error: "Ağaçta evrak bulunamadı. Evrak sekmesini aç ve tekrar dene." };
+    return { ok: true, items };
+  }
+
+  /**
+   * Seçilen evrakları sırayla çeker: tıkla → UYAP'ın önizleme isteğini yakala → indir → JurisAI'ya yükle ya da diske kaydet.
+   * `progress` verilirse her adımda güncellenir (JurisAI sayfası oradan izler). `pulling`i çağıran kurar ve kaldırır.
+   */
+  async function runPull(selected, mode, who, { progress = null } = {}) {
+    const toDisk = mode === "disk";
+    const stats = { sent: 0, duplicates: 0, sameContent: 0, failed: 0, known: 0, errors: [] };
+    const spent = { clicks: 0, items: 0, capture: 0, download: 0, upload: 0, pause: 0 }; // ms; özet satırında ortalama gösterilir
+    const report = (patch = {}) => {
+      if (progress) Object.assign(progress, patch, { stats: { ...stats, errors: [...stats.errors] } });
+    };
+    // Anahtar/adres denetimi seçimden SONRA ve yalnız JurisAI'ya aktarırken yapılır (bilgisayara indirme anahtar istemez).
+    const begin = await chrome.runtime.sendMessage({ type: "JURISAI_PULL_BEGIN", mode });
+    if (!begin?.ok) return { ok: false, error: begin?.error || "Ayarlar eksik" };
+    let todo = selected; // evrak sayısı sınırı yok: hız (evrak başına birkaç sn), "Çekmeyi durdur" ve ardışık hata sınırı korur
+    if (!toDisk) {
+      // JurisAI'da zaten olan evraklara hiç tıklanmaz: yarıda kalan çekme sürdürülür, yeniden deneme hızlanır.
+      toast("Daha önce aktarılanlar kontrol ediliyor…");
+      report({ phase: "Daha önce aktarılanlar kontrol ediliyor" });
+      const answer = await chrome.runtime
+        .sendMessage({ type: "JURISAI_PULL_KNOWN", ids: todo.map((item) => item.id), esas: who.esas })
+        .catch(() => null);
+      if (answer?.ok && answer.known.length) {
+        const have = new Set(answer.known);
+        stats.known = todo.filter((item) => have.has(item.id)).length;
+        todo = todo.filter((item) => !have.has(item.id));
+      }
+    }
+    report({ phase: "Aktarılıyor", total: todo.length, done: 0, current: "" });
+    let consecutiveFailures = 0;
+    const baseGap = begin.gapMs || 1500;
+    let gap = baseGap; // hata görülürse iki katına çıkar (en çok 20 sn), başarıda yavaşça normale döner
+    for (let index = 0; index < todo.length && !pulling.stop; index += 1) {
+      const item = todo[index];
+      toast(`Evrak ${index + 1}/${todo.length} çekiliyor…`);
+      report({ done: index, current: item.title });
+      await chrome.runtime.sendMessage({ type: "JURISAI_PULL_ARM", evrakId: item.id });
+      const clickedAt = Date.now();
+      realClick(item.span);
+      let status = {};
+      const captured = await waitUntil(async () => {
+        status = (await chrome.runtime.sendMessage({ type: "JURISAI_PULL_STATUS" })) || {};
+        return status.captured;
+      }, 10000);
+      // Yalnız önizleme sayfası (viewer.jsp) görüldüyse gerçek belge isteğinin düşmesi için kısa süre tanı.
+      if (captured && !status.exact) await sleep(600);
+      status = (await chrome.runtime.sendMessage({ type: "JURISAI_PULL_STATUS" })) || status;
+      spent.capture += Date.now() - clickedAt;
+      spent.clicks += 1;
+      let outcome = {
+        ok: false,
+        error: `evrak adresi yakalanamadı (${
+          status.seen?.length
+            ? `tıklamadan sonra sayfa şu istekleri yaptı: ${status.seen.join(", ")}`
+            : "tıklamadan sonra sayfa hiç istek yapmadı; ön izleme açık mı?"
+        })`,
+      };
+      if (captured) {
+        outcome = await chrome.runtime.sendMessage({
+          type: "JURISAI_PULL_FETCH",
+          mode,
+          meta: {
+            evrakAdi: item.title,
+            evrakId: item.id,
+            evrakTuru: item.typeName || "Evrak",
+            dosyaEsasNo: who.esas,
+            birim: who.birim,
+            klasorYolu: item.folders.join(" / "),
+          },
+        });
+      }
+      if (outcome?.ms) {
+        spent.items += 1;
+        spent.download += outcome.ms.download || 0;
+        spent.upload += outcome.ms.upload || 0;
+      }
+      if (outcome?.ok) {
+        consecutiveFailures = 0;
+        gap = Math.max(baseGap, Math.round(gap * 0.8));
+        if (outcome.sameContent) stats.sameContent += 1;
+        else if (outcome.duplicate) stats.duplicates += 1;
+        else stats.sent += 1; // aktarılan ya da (bilgisayara indirme kipinde) kaydedilen
+      } else {
+        stats.failed += 1;
+        consecutiveFailures += 1;
+        if (stats.errors.length < 5) stats.errors.push(`${item.title.slice(0, 90)}: ${outcome?.error || "bilinmeyen hata"}`);
+        gap = Math.min(20000, gap * 2); // UYAP bizi sınırlıyor olabilir: yavaşla
+      }
+      report({ done: index + 1 });
+      if (consecutiveFailures >= 5) break; // oturum kapanmış ya da portal yanıt vermiyor olabilir
+      spent.pause += gap;
+      await sleep(gap);
+    }
+    const timing = spent.items
+      ? {
+          items: spent.items,
+          capture: Math.round(spent.capture / Math.max(1, spent.clicks)),
+          download: Math.round(spent.download / spent.items),
+          upload: Math.round(spent.upload / spent.items),
+          pause: Math.round(spent.pause / Math.max(1, spent.clicks)),
+        }
+      : null;
+    const reasons = [...new Set(stats.errors)].slice(0, 2).join(" | ");
+    const summary =
+      `${stats.sent} evrak ${toDisk ? "bilgisayara kaydedildi" : "aktarıldı"}` +
+      (stats.known ? `, ${stats.known} daha önce aktarılmıştı (tıklanmadı)` : "") +
+      (stats.duplicates ? `, ${stats.duplicates} zaten vardı` : "") +
+      (stats.sameContent ? `, ${stats.sameContent} aynı içerik atlandı` : "") +
+      (stats.failed ? `, ${stats.failed} hata${reasons ? ` (${reasons})` : ""}` : "") +
+      (pulling.stop ? " (durduruldu)" : "") +
+      (timing
+        ? ` · evrak başına ort.: yakalama ${(timing.capture / 1000).toFixed(1)} sn, indirme ${(timing.download / 1000).toFixed(1)} sn, ` +
+          `${toDisk ? "kayıt" : "yükleme"} ${(timing.upload / 1000).toFixed(1)} sn, bekleme ${(timing.pause / 1000).toFixed(1)} sn`
+        : "");
+    toast(summary, stats.failed ? "error" : "success");
+    report({ phase: pulling.stop ? "Durduruldu" : "Bitti", current: "" });
+    return { ok: true, ...stats, chosen: todo.length, mode, stopped: pulling.stop, timing, summary };
+  }
+
   async function pullDosya(preferred = "upload") {
     if (pulling) return { ok: false, error: "Çekme zaten sürüyor" };
     const dialog = activeRoot();
     if (!dialog) return { ok: false, error: "Açık bir dosya penceresi yok: UYAP'ta dosyayı aç, Evrak sekmesine geç." };
     pulling = { stop: false };
-    const stats = { sent: 0, duplicates: 0, sameContent: 0, failed: 0, known: 0, errors: [] };
-    const spent = { clicks: 0, items: 0, capture: 0, download: 0, upload: 0, pause: 0 }; // ms; özet satırında ortalama gösterilir
     try {
       toast("Evrak ağacı açılıyor…");
-      if (!(await ensurePreview(dialog))) return { ok: false, error: "Ön izleme düğmesi bulunamadı (Evrak sekmesinde misin?)" };
       const who = dosyaIdentity(dialog);
       let items;
       let choice;
       for (;;) {
-        await expandAll(dialog);
-        await repairTree(dialog, (gaps) => toast(`${gaps} klasörde evrak eksik görünüyor, yeniden yükleniyor…`));
-        items = collectEvraklar(dialog);
-        if (!items.length) return { ok: false, error: "Ağaçta evrak bulunamadı. Evrak sekmesini aç ve tekrar dene." };
+        const prepared = await prepareTree(dialog, (gaps) => toast(`${gaps} klasörde evrak eksik görünüyor, yeniden yükleniyor…`));
+        if (!prepared.ok) return prepared;
+        items = prepared.items;
         choice = await chooseEvraklar(items, who, preferred);
         if (choice.action !== "rescan") break;
         toast("Ağaç yeniden taranıyor…");
       }
       if (!choice.action) return { ok: true, cancelled: true, found: items.length };
-      const mode = choice.action;
-      const toDisk = mode === "disk";
-      let todo = choice.selected; // evrak sayısı sınırı yok: hız (evrak başına birkaç sn), "Çekmeyi durdur" ve ardışık hata sınırı korur
-      // Anahtar/adres denetimi seçimden SONRA ve yalnız JurisAI'ya aktarırken yapılır (bilgisayara indirme anahtar istemez).
-      const begin = await chrome.runtime.sendMessage({ type: "JURISAI_PULL_BEGIN", mode });
-      if (!begin?.ok) return { ok: false, error: begin?.error || "Ayarlar eksik" };
-
-      if (!toDisk) {
-        // JurisAI'da zaten olan evraklara hiç tıklanmaz: yarıda kalan çekme sürdürülür, yeniden deneme hızlanır.
-        toast("Daha önce aktarılanlar kontrol ediliyor…");
-        const answer = await chrome.runtime
-          .sendMessage({ type: "JURISAI_PULL_KNOWN", ids: todo.map((item) => item.id), esas: who.esas })
-          .catch(() => null);
-        if (answer?.ok && answer.known.length) {
-          const have = new Set(answer.known);
-          stats.known = todo.filter((item) => have.has(item.id)).length;
-          todo = todo.filter((item) => !have.has(item.id));
-        }
-      }
-      let consecutiveFailures = 0;
-      const baseGap = begin.gapMs || 1500;
-      let gap = baseGap; // hata görülürse iki katına çıkar (en çok 20 sn), başarıda yavaşça normale döner
-      for (let index = 0; index < todo.length && !pulling.stop; index += 1) {
-        const item = todo[index];
-        toast(`Evrak ${index + 1}/${todo.length} çekiliyor…`);
-        await chrome.runtime.sendMessage({ type: "JURISAI_PULL_ARM", evrakId: item.id });
-        const clickedAt = Date.now();
-        realClick(item.span);
-        let status = {};
-        const captured = await waitUntil(async () => {
-          status = (await chrome.runtime.sendMessage({ type: "JURISAI_PULL_STATUS" })) || {};
-          return status.captured;
-        }, 10000);
-        // Yalnız önizleme sayfası (viewer.jsp) görüldüyse gerçek belge isteğinin düşmesi için kısa süre tanı.
-        if (captured && !status.exact) await sleep(600);
-        status = (await chrome.runtime.sendMessage({ type: "JURISAI_PULL_STATUS" })) || status;
-        spent.capture += Date.now() - clickedAt;
-        spent.clicks += 1;
-        let outcome = {
-          ok: false,
-          error: `evrak adresi yakalanamadı (${
-            status.seen?.length
-              ? `tıklamadan sonra sayfa şu istekleri yaptı: ${status.seen.join(", ")}`
-              : "tıklamadan sonra sayfa hiç istek yapmadı; ön izleme açık mı?"
-          })`,
-        };
-        if (captured) {
-          outcome = await chrome.runtime.sendMessage({
-            type: "JURISAI_PULL_FETCH",
-            mode,
-            meta: {
-              evrakAdi: item.title,
-              evrakId: item.id,
-              evrakTuru: item.typeName || "Evrak",
-              dosyaEsasNo: who.esas,
-              birim: who.birim,
-              klasorYolu: item.folders.join(" / "),
-            },
-          });
-        }
-        if (outcome?.ms) {
-          spent.items += 1;
-          spent.download += outcome.ms.download || 0;
-          spent.upload += outcome.ms.upload || 0;
-        }
-        if (outcome?.ok) {
-          consecutiveFailures = 0;
-          gap = Math.max(baseGap, Math.round(gap * 0.8));
-          if (outcome.sameContent) stats.sameContent += 1;
-          else if (outcome.duplicate) stats.duplicates += 1;
-          else stats.sent += 1; // aktarılan ya da (bilgisayara indirme kipinde) kaydedilen
-        } else {
-          stats.failed += 1;
-          consecutiveFailures += 1;
-          if (stats.errors.length < 5) stats.errors.push(outcome?.error || "bilinmeyen hata");
-          gap = Math.min(20000, gap * 2); // UYAP bizi sınırlıyor olabilir: yavaşla
-          if (consecutiveFailures >= 5) break; // oturum kapanmış ya da portal yanıt vermiyor olabilir
-        }
-        spent.pause += gap;
-        await sleep(gap);
-      }
-      const timing = spent.items
-        ? {
-            items: spent.items,
-            capture: Math.round(spent.capture / Math.max(1, spent.clicks)),
-            download: Math.round(spent.download / spent.items),
-            upload: Math.round(spent.upload / spent.items),
-            pause: Math.round(spent.pause / Math.max(1, spent.clicks)),
-          }
-        : null;
-      const reasons = [...new Set(stats.errors)].slice(0, 2).join(" | ");
-      const summary =
-        `${stats.sent} evrak ${toDisk ? "bilgisayara kaydedildi" : "aktarıldı"}` +
-        (stats.known ? `, ${stats.known} daha önce aktarılmıştı (tıklanmadı)` : "") +
-        (stats.duplicates ? `, ${stats.duplicates} zaten vardı` : "") +
-        (stats.sameContent ? `, ${stats.sameContent} aynı içerik atlandı` : "") +
-        (stats.failed ? `, ${stats.failed} hata${reasons ? ` (${reasons})` : ""}` : "") +
-        (pulling.stop ? " (durduruldu)" : "") +
-        (timing
-          ? ` · evrak başına ort.: yakalama ${(timing.capture / 1000).toFixed(1)} sn, indirme ${(timing.download / 1000).toFixed(1)} sn, ` +
-            `${toDisk ? "kayıt" : "yükleme"} ${(timing.upload / 1000).toFixed(1)} sn, bekleme ${(timing.pause / 1000).toFixed(1)} sn`
-          : "");
-      toast(summary, stats.failed ? "error" : "success");
-      return { ok: true, ...stats, found: items.length, chosen: todo.length, mode, stopped: pulling.stop, timing, summary };
+      const result = await runPull(choice.selected, choice.action, who);
+      return { ...result, found: items.length };
     } finally {
       pulling = null;
       chrome.runtime.sendMessage({ type: "JURISAI_PULL_END" }).catch(() => {});
@@ -1221,49 +1287,428 @@
       return label.length < 40 && OPEN_RE.test(label) && visibleElement(el);
     });
   }
-  /** Dosya listesindeki satırlar: JurisAI web uygulamasına gösterilmek üzere (kişisel veri JurisAI sunucusuna gitmez). */
-  function dosyaRows() {
-    const seen = new Map();
-    return caseOpenTargets().map((button) => {
-      const row = button.closest("tr");
-      const table = row?.closest("table");
-      const headers = table ? [...table.querySelectorAll("thead th, tr:first-child th")].map((th) => textOf(th)) : [];
-      const cells = row
-        ? [...row.querySelectorAll("td")]
-            .map((td) => textOf(td).replace(/\s+/g, " ").slice(0, 90))
-            .filter((text) => text && !OPEN_RE.test(text))
-            .slice(0, 8)
-        : [];
-      const esas = cells.find((text) => /^\d{4}\/\d+/.test(text)) || "";
-      const birim = cells.find((text) => /mahkeme|daire|müdürlü|savcılı|kurul|hakem/i.test(trLower(text))) || "";
-      const base = cells.join(" | ");
+  /* ---------- UYAP dosya listesi (Vatandaş Portalı: Dosya Sorgulama) ----------
+     Liste kendiliğinden gelmez: "Yargı Türü" seçilip "Dosya Sorgula"ya basılır (DataTables tablosu, varsayılan 15 kayıt/sayfa).
+     Tüm dosyalar için her yargı türü sırayla sorgulanır ve sayfa boyutu "Tümü" yapılır. Sorgunun bittiği, ağ isteğinin
+     tamamlanmasından (PerformanceObserver) anlaşılır: sonuç değişmese de (aynı tür, boş sonuç) doğru çalışır.
+     Liste kişisel veri içerir: yalnız JurisAI sayfasına verilir, sunucuya gönderilmez. */
+  let xhrDone = 0;
+  try {
+    new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) if (/xmlhttprequest|fetch/.test(entry.initiatorType)) xhrDone += 1;
+    }).observe({ type: "resource" });
+  } catch (_) {
+    /* gözlemci yoksa süre sınırı kullanılır */
+  }
+  const waitForXhr = (since, timeoutMs) => waitUntil(() => xhrDone > since, timeoutMs, 40);
+
+  const selectedTypeLabel = () => {
+    const select = document.querySelector("#yargiTuru");
+    return select && select.selectedIndex >= 0 ? textOf(select.options[select.selectedIndex]) : "";
+  };
+  let shownType = ""; // tablonun şu an hangi yargı türünün sonucunu gösterdiği (kullanıcı kendisi sorgulasa da izlenir)
+  document.addEventListener(
+    "click",
+    (event) => {
+      if (event.target instanceof Element && event.target.closest("#btnQueryDoc")) shownType = selectedTypeLabel();
+    },
+    true,
+  );
+  const currentType = () => shownType || selectedTypeLabel();
+
+  function dosyaQueryForm() {
+    const select = document.querySelector("#yargiTuru");
+    const button =
+      document.querySelector("#btnQueryDoc") ||
+      [...document.querySelectorAll("button, input[type='button']")].find(
+        (el) => trLower(`${textOf(el)} ${el.value || ""}`).trim() === "dosya sorgula" && visibleElement(el),
+      );
+    return select && button && select.options.length ? { select, button } : null;
+  }
+  function dosyaTable() {
+    const byId = document.querySelector("#dosya_listesi_table");
+    if (byId) return byId;
+    return [...document.querySelectorAll("table")].find((table) =>
+      [...table.querySelectorAll("button, a, input[type='button']")].some((el) => OPEN_RE.test(`${textOf(el)} ${el.value || ""}`)),
+    );
+  }
+  const HEADER_FIELDS = {
+    role: /taraf rol/,
+    birim: /mahkeme|birim/,
+    esas: /esas/,
+    tur: /dosya t[uü]r/,
+    acilis: /a[cç][iı]l[iı][sş]/,
+    durum: /durum/,
+  };
+  /** Tablodaki dosya satırları. `seen`: aynı metinli satırlar için sıra numarası (anahtarı benzersiz yapar). */
+  function readDosyaRows(table, yargiTuru, seen = new Map()) {
+    const headers = [...table.querySelectorAll("thead th")].map((th) => trLower(textOf(th)));
+    const index = {};
+    for (const [field, pattern] of Object.entries(HEADER_FIELDS)) {
+      const found = headers.findIndex((header) => pattern.test(header));
+      if (found >= 0) index[field] = found;
+    }
+    const rows = [];
+    for (const tr of table.querySelectorAll("tbody tr")) {
+      if (!tr.querySelector("td") || tr.querySelector("td.dataTables_empty")) continue;
+      const button = [...tr.querySelectorAll("button, a, input[type='button']")].find(
+        (el) => !el.closest(".jurisai-launcher, .jurisai-case-picker, .jurisai-chooser") && OPEN_RE.test(`${textOf(el)} ${el.value || ""}`),
+      );
+      if (!button) continue;
+      const tds = [...tr.querySelectorAll("td")].map((td) => textOf(td).replace(/\s+/g, " ").slice(0, 90));
+      const cells = tds.filter((cell) => cell && !OPEN_RE.test(cell)).slice(0, 8);
+      const pick = (field) => (index[field] !== undefined ? tds[index[field]] || "" : "");
+      const esas = pick("esas") || cells.find((cell) => /^\d{4}\/\d+/.test(cell)) || "";
+      const birim = pick("birim") || cells.find((cell) => /mahkeme|daire|müdürlü|savcılı|kurul|hakem/i.test(trLower(cell))) || "";
+      const base = `${yargiTuru}|${cells.join(" | ")}`;
       const count = (seen.get(base) || 0) + 1;
       seen.set(base, count);
-      return { key: `${base}#${count}`, esas, birim, cells, headers: headers.slice(0, 8), button };
-    });
+      rows.push({
+        key: `${base}#${count}`,
+        esas,
+        birim,
+        role: pick("role"),
+        tur: pick("tur"),
+        acilis: pick("acilis"),
+        durum: pick("durum"),
+        yargiTuru,
+        cells,
+        button,
+      });
+    }
+    return rows;
   }
-  function listDosyalar() {
+  /** Ekranda şu an görünen dosya satırları. */
+  function dosyaRows() {
+    const table = dosyaTable();
+    return table ? readDosyaRows(table, currentType()) : [];
+  }
+  /** DataTables'ta sayfa boyutunu "Tümü"ne çevirir (yoksa en büyük seçenek). */
+  async function showAllRows(table) {
+    const length = table.closest(".dataTables_wrapper")?.querySelector("select[name$='_length']");
+    if (!length) return;
+    const all =
+      [...length.options].find((option) => option.value === "-1") ||
+      [...length.options].sort((a, b) => Number(b.value) - Number(a.value))[0];
+    if (all && length.value !== all.value) {
+      length.value = all.value;
+      length.dispatchEvent(new Event("change", { bubbles: true }));
+      await sleep(400);
+    }
+  }
+  /** Tüm sayfaları okur (sayfa boyutu "Tümü" ise tek sayfadır; değilse "Sonraki" ile gezilir). */
+  const dosyaPageSignature = (table) => readDosyaRows(table, "").map((row) => row.key).join("\n");
+  async function readAllDosyaPages(table, yargiTuru, seen) {
+    const rows = [];
+    const signatures = new Set();
+    for (let page = 0; page < 80; page += 1) {
+      const signature = dosyaPageSignature(table);
+      if (signatures.has(signature)) return { rows, error: `${yargiTuru}: sonraki sayfa yüklenmedi; tarama eksik.` };
+      signatures.add(signature);
+      rows.push(...readDosyaRows(table, yargiTuru, seen));
+      const next = table.closest(".dataTables_wrapper")?.querySelector(".paginate_button.next:not(.disabled)");
+      if (!next) return { rows, error: null };
+      if (page === 79) return { rows, error: `${yargiTuru}: sayfa tarama güvenlik sınırına ulaşıldı; devamı okunamadı.` };
+      (next.querySelector("a") || next).click();
+      if (!(await waitUntil(() => dosyaPageSignature(table) !== signature, 10000)))
+        return { rows, error: `${yargiTuru}: sonraki sayfa yüklenmedi; tarama eksik.` };
+    }
+    return { rows, error: `${yargiTuru}: sayfa taraması tamamlanamadı.` };
+  }
+  /** Bir yargı türünü seçip "Dosya Sorgula"ya basar; sorgunun ağ isteği bitene kadar bekler. */
+  async function queryDosyaType(form, option) {
+    const before = xhrDone;
+    form.select.value = option.value;
+    form.select.dispatchEvent(new Event("change", { bubbles: true }));
+    await waitForXhr(before, 2000); // mahkeme listesi yenilenir (isteği yoksa süre dolar)
+    await sleep(250);
+    const since = xhrDone;
+    shownType = textOf(option);
+    // Herhangi bir XHR'nin bitmesi sonuç tablosunun hazır olduğunu kanıtlamaz (mahkeme sorgusu da XHR yapar).
+    // Aynı/boş sonuç da tbody'yi yeniden çizer; bu yüzden metin değişimini değil çizim olayını bekle.
+    let redrawn = false;
+    const redraw = new MutationObserver((records) => {
+      const tbody = dosyaTable()?.querySelector("tbody");
+      if (tbody && records.some((record) => record.target === tbody || [...record.addedNodes].some((node) => node === tbody || (node instanceof Element && node.contains(tbody)))))
+        redrawn = true;
+    });
+    redraw.observe(document.body, { childList: true, subtree: true });
+    try {
+      form.button.click();
+      if (!(await waitUntil(() => xhrDone > since && redrawn, 20000, 40)))
+        return { ok: false, error: `${textOf(option)} sorgusu yanıt vermedi veya tablo yenilenmedi` };
+      return { ok: true };
+    } finally { redraw.disconnect(); }
+  }
+  async function listAllDosyalar(form) {
+    const items = [];
+    const types = [];
+    const errors = [];
+    const seen = new Map();
+    for (const option of [...form.select.options]) {
+      const label = textOf(option);
+      if (!label) continue;
+      const queried = await queryDosyaType(form, option);
+      if (!queried.ok) {
+        errors.push(queried.error);
+        continue;
+      }
+      const table = dosyaTable();
+      if (!table) {
+        errors.push(`${label}: dosya tablosu bulunamadı`);
+        continue;
+      }
+      await showAllRows(table);
+      const scanned = await readAllDosyaPages(table, label, seen);
+      const rows = scanned.rows;
+      if (scanned.error) errors.push(scanned.error);
+      types.push({ label, count: rows.length });
+      items.push(...rows);
+    }
+    return { items, types, errors };
+  }
+  /** Anahtarı verilen satırı bulur; görünen listede yoksa onun yargı türünü yeniden sorgular. */
+  async function findDosyaRow(key, type) {
+    const visible = dosyaRows().find((entry) => entry.key === key);
+    if (visible) return visible;
+    const form = dosyaQueryForm();
+    if (!form) return null;
+    const label = type || key.split("|")[0];
+    const option = [...form.select.options].find((candidate) => sameText(textOf(candidate), label));
+    if (!option || !(await queryDosyaType(form, option)).ok) return null;
+    const table = dosyaTable();
+    if (table) await showAllRows(table);
+    if (!table) return null;
+    const seen = new Map();
+    for (let page = 0; page < 80; page += 1) {
+      const found = readDosyaRows(table, label, seen).find((entry) => entry.key === key);
+      if (found) return found;
+      const next = table.closest(".dataTables_wrapper")?.querySelector(".paginate_button.next:not(.disabled)");
+      if (!next) return null;
+      const before = dosyaPageSignature(table);
+      (next.querySelector("a") || next).click();
+      if (!(await waitUntil(() => dosyaPageSignature(table) !== before, 10000))) return null;
+    }
+    return null;
+  }
+  /** Dosya Sorgulama sayfasında değilsek yan menüden açar (sayfa yenilenir: yanıt önce verilir, tıklama sonra yapılır). */
+  function openDosyaSorgulamaMenu() {
+    const links = [...document.querySelectorAll("a")];
+    const target = links.find((link) => sameText(textOf(link), "Dosya Sorgulama")); // "Danıştay Dosya Sorgulama" değil
+    if (!target) return false;
+    // Menü bağlantısı `javascript:menuButtonClick("12573")` biçimindedir: yalıtılmış dünyadan tıklamak sayfanın işlevini çalıştırmaz;
+    // işlev sayfanın kendi dünyasında arka plan betiği aracılığıyla (yalnız sayısal kimlikle) çağrılır.
+    const menuId = (/menuButtonClick\(\s*["'](\d{1,8})["']\s*\)/.exec(target.getAttribute("href") || "") || [])[1];
+    if (menuId) {
+      setTimeout(() => chrome.runtime.sendMessage({ type: "JURISAI_MENU", id: menuId }).catch(() => target.click()), 150);
+      return true;
+    }
+    const parent = links.find((link) => sameText(textOf(link), "Sorgulama İşlemleri"));
+    if (!visibleElement(target) && parent) parent.click(); // alt menüyü aç
+    setTimeout(() => target.click(), 300);
+    return true;
+  }
+  let listing = false;
+  async function listDosyalar() {
+    if (listing || pulling) return { ok: false, code: "busy", error: "UYAP'ta bir listeleme veya aktarım sürüyor; bitince yeniden dene." };
+    listing = true;
+    try { return await readDosyalar(); }
+    finally { listing = false; }
+  }
+  async function readDosyalar() {
+    const form = dosyaQueryForm();
+    if (form) {
+      const { items, types, errors } = await listAllDosyalar(form);
+      if (!items.length && errors.length) return { ok: false, code: "query_failed", error: errors[0] };
+      return { ok: true, items: items.map(({ button: _button, ...info }) => info), types, errors, complete: errors.length === 0, pages: null, page: null };
+    }
     const rows = dosyaRows();
-    if (!rows.length) {
+    if (rows.length) {
+      const paging = /Toplam\s+(\d+)\s+sayfadan\s+(\d+)\.\s*sayfa/i.exec(document.body?.innerText || "");
       return {
-        ok: false,
-        code: "no_list",
-        error: "Bu UYAP sekmesinde dosya listesi görünmüyor: UYAP'ta Dosya Sorgulama (dosya listesi) sayfasını aç.",
+        ok: true,
+        items: rows.map(({ button: _button, ...info }) => info),
+        types: [],
+        errors: [],
+        complete: false, // bu portalda yalnız görünen satırlar okunabildi
+        pages: paging ? Number(paging[1]) : null,
+        page: paging ? Number(paging[2]) : null,
       };
     }
-    const paging = /Toplam\s+(\d+)\s+sayfadan\s+(\d+)\.\s*sayfa/i.exec(document.body?.innerText || "");
+    const page = trLower((document.body?.innerText || "").slice(0, 8000));
+    const loginPage = /giriş yap|giriş seçenekleri|e-?devlet ile giriş|e-?imza ile giriş/.test(page) && !/güvenli çıkış|çıkış yap|oturumu kapat/.test(page);
+    if (loginPage) {
+      return {
+        ok: false,
+        code: "login_required",
+        error: "UYAP'ta giriş yapılmamış görünüyor: önce giriş yap, sonra Dosya Sorgulama'yı aç.",
+      };
+    }
+    if (openDosyaSorgulamaMenu()) {
+      return { ok: false, code: "navigating", error: "UYAP'ta Dosya Sorgulama sayfası açılıyor…" };
+    }
     return {
-      ok: true,
-      items: rows.map(({ button: _button, ...info }) => info),
-      pages: paging ? Number(paging[1]) : null,
-      page: paging ? Number(paging[2]) : null,
+      ok: false,
+      code: "no_list",
+      error: "Bu UYAP sekmesinde dosya listesi görünmüyor: UYAP'ta Dosya Sorgulama (dosya listesi) sayfasını aç.",
     };
   }
-  function openDosyaByKey(key) {
-    const row = dosyaRows().find((entry) => entry.key === key);
+  async function openDosyaByKey(key, type) {
+    if (listing) return { ok: false, code: "busy", error: "Dosya listesi taranıyor; bitince tekrar dene." };
+    const row = await findDosyaRow(key, type);
     if (!row) return { ok: false, code: "stale", error: "UYAP'taki liste değişmiş: dosyaları yeniden listele." };
     if (pulling) return { ok: false, code: "busy", error: "Bir çekme zaten sürüyor." };
     openCaseAndChoose(row.button); // dosyayı açar, evrak seçim penceresini UYAP sekmesinde gösterir; beklenmez
+    return { ok: true };
+  }
+  /* ---------- JurisAI sayfasından yönetilen işler (köprü) ----------
+     JurisAI sayfası bir dosyanın evrak ağacını ister (TREE) ve seçtiklerinin çekilmesini başlatır (PULL). İkisi de hemen döner,
+     sayfa ilerlemeyi STATUS ile yoklar. Durum bu içerik betiğinde (UYAP sekmesinde) tutulur: arka plan betiği yeniden başlasa da
+     kaybolmaz. Kullanıcı JurisAI sekmesindeyken UYAP sekmesi gizli kalır; beklemeler bu yüzden `sleep` ile kısılmadan yapılır. */
+  const bridge = { job: null, tree: null, run: null };
+  const newJobId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const serializeItem = ({ id, title, folders, typeName, isEk, declared }) => ({ id, title, folders, typeName, isEk, declared });
+
+  function closeButtonOf(dialog) {
+    return [...dialog.querySelectorAll("button, a, input[type='button'], .close")].find((el) => {
+      if (!visibleElement(el)) return false;
+      const label = trLower(`${textOf(el)} ${el.value || ""} ${el.getAttribute("aria-label") || ""} ${el.getAttribute("title") || ""}`)
+        .replace(/\s+/g, " ")
+        .trim();
+      return /^(kapat|×|x|close)$/.test(label) || el.classList.contains("close");
+    });
+  }
+  async function closeDialog(dialog) {
+    const button = closeButtonOf(dialog);
+    if (!button) return false;
+    button.click();
+    return waitUntil(() => activeRoot() !== dialog, 8000);
+  }
+  /**
+   * Satırın "Dosya Görüntüle" düğmesine basar ve pencerenin açılmasını bekler. Bootstrap modalı kapanırken (≈300 ms animasyon) gelen
+   * "aç" komutunu yutar; liste de yeniden çizilmiş olabilir: her denemede satır yeniden bulunur, açılmazsa bekleyip yeniden denenir.
+   */
+  async function clickOpenWithRetry(key, type) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const row = await findDosyaRow(key, type);
+      if (!row) return false;
+      row.button.click();
+      if (await waitUntil(() => !!activeRoot(), 6000)) return true;
+      await sleep(1200);
+    }
+    return false;
+  }
+  /** Listede anahtarı verilen dosyayı açar (başka bir dosya açıksa önce kapatır) ve Evrak sekmesine geçer. */
+  async function openDosyaForTree(key, type) {
+    const row = key ? await findDosyaRow(key, type) : null;
+    if (key && !row) return { ok: false, code: "stale", error: "UYAP'taki liste değişmiş: dosyaları yeniden listele." };
+    let dialog = activeRoot();
+    if (dialog && row) {
+      const open = dosyaIdentity(dialog);
+      if (open.esas && sameText(open.esas, row.esas) && (!row.birim || sameText(open.birim, row.birim))) {
+        openEvrakTab(dialog);
+      } else {
+        if (!(await closeDialog(dialog)))
+          return { ok: false, code: "cannot_close", error: "UYAP'ta açık olan dosya penceresi kapatılamadı: pencereyi kapatıp tekrar dene." };
+        dialog = null;
+        await sleep(700); // kapanış animasyonu bitsin
+      }
+    }
+    if (!dialog) {
+      if (!row) return { ok: false, code: "stale", error: "UYAP'taki liste değişmiş: dosyaları yeniden listele." };
+      if (!(await clickOpenWithRetry(key, type))) return { ok: false, error: "UYAP'ta dosya penceresi açılamadı." };
+      await sleep(600);
+      dialog = activeRoot();
+      openEvrakTab(dialog);
+    }
+    const hasTree = await waitUntil(() => !!dialog.querySelector("span.file[evrak_id], li.expandable"), 20000);
+    if (!hasTree) {
+      const empty = /dosyaya ait evrak bilgisi bulunamadı/i.test(dialog.textContent || "");
+      return {
+        ok: false,
+        code: empty ? "empty_tree" : "no_tree",
+        error: empty
+          ? "UYAP bu dosyada evrak bilgisi bulunmadığını bildiriyor."
+          : "Bu dosyanın evrak ağacı okunamadı; UYAP sayfasını kontrol edip yeniden dene.",
+      };
+    }
+    return { ok: true, dialog };
+  }
+  function startTreeJob(key, type) {
+    if (listing) return { ok: false, code: "busy", error: "Dosya listesi taranıyor; bitince tekrar dene." };
+    if (pulling) return { ok: false, code: "busy", error: "UYAP sekmesinde bir işlem sürüyor; bitince tekrar dene." };
+    if (!key && !activeRoot()) return { ok: false, code: "no_dialog", error: "UYAP'ta açık bir dosya yok." };
+    const job = { id: newJobId(), kind: "tree", state: "running", phase: "Dosya açılıyor", startedAt: Date.now() };
+    bridge.job = job;
+    bridge.tree = null;
+    pulling = { stop: false };
+    (async () => {
+      const opened = key ? await openDosyaForTree(key, type) : { ok: true, dialog: activeRoot() };
+      if (!opened.ok) throw Object.assign(new Error(opened.error), { code: opened.code });
+      job.phase = "Evrak ağacı açılıyor";
+      const prepared = await prepareTree(opened.dialog, (gaps) => {
+        job.phase = `${gaps} klasör yeniden yükleniyor`;
+      });
+      if (!prepared.ok) throw new Error(prepared.error);
+      job.phase = "Daha önce aktarılanlar kontrol ediliyor";
+      const who = dosyaIdentity(opened.dialog);
+      const known = await chrome.runtime
+        .sendMessage({ type: "JURISAI_PULL_KNOWN", ids: prepared.items.map((item) => item.id), esas: who.esas })
+        .catch(() => null);
+      bridge.tree = { key, who, items: prepared.items, known: known?.ok ? known.known : [], knownChecked: !!known?.ok };
+      Object.assign(job, { state: "done", phase: "Hazır", count: prepared.items.length, finishedAt: Date.now() });
+    })()
+      .catch((error) =>
+        Object.assign(job, { state: "error", error: error.message || "bilinmeyen hata", code: error.code, finishedAt: Date.now() }),
+      )
+      .finally(() => {
+        pulling = null;
+      });
+    return { ok: true, jobId: job.id };
+  }
+  function startPullJob(ids, mode) {
+    if (pulling) return { ok: false, code: "busy", error: "UYAP sekmesinde bir işlem sürüyor; bitince tekrar dene." };
+    if (!bridge.tree) return { ok: false, code: "no_tree", error: "Önce evrakları listele." };
+    const wanted = new Set(Array.isArray(ids) ? ids.map(String) : []);
+    const items = bridge.tree.items.filter((item) => wanted.has(item.id));
+    if (!items.length) return { ok: false, code: "empty", error: "Seçili evrak yok." };
+    if (items.some((item) => !item.span.isConnected))
+      return { ok: false, code: "stale_tree", error: "UYAP'taki dosya penceresi değişti: evrakları yeniden listele." };
+    const job = { id: newJobId(), kind: "pull", state: "running", phase: "Başlıyor", startedAt: Date.now() };
+    const run = { mode: mode === "disk" ? "disk" : "upload", chosen: items.length, total: items.length, done: 0, current: "", startedAt: Date.now() };
+    bridge.job = job;
+    bridge.run = run;
+    pulling = { stop: false };
+    runPull(items, run.mode, bridge.tree.who, { progress: run })
+      .then((result) => {
+        run.result = result;
+        Object.assign(job, result.ok ? { state: "done", phase: run.phase || "Bitti" } : { state: "error", error: result.error }, { finishedAt: Date.now() });
+      })
+      .catch((error) => Object.assign(job, { state: "error", error: error.message || "bilinmeyen hata", finishedAt: Date.now() }))
+      .finally(() => {
+        pulling = null;
+        chrome.runtime.sendMessage({ type: "JURISAI_PULL_END" }).catch(() => {});
+      });
+    return { ok: true, jobId: job.id, total: items.length };
+  }
+  function jobStatus(jobId, withTree) {
+    if (!bridge.job || bridge.job.id !== jobId) return { ok: false, code: "unknown_job", error: "Bu iş bu sekmede yok." };
+    const out = { ok: true, job: { ...bridge.job } };
+    if (bridge.job.kind === "pull" && bridge.run) out.run = JSON.parse(JSON.stringify(bridge.run));
+    if (withTree && bridge.job.kind === "tree" && bridge.tree) {
+      out.tree = {
+        who: bridge.tree.who,
+        items: bridge.tree.items.map(serializeItem),
+        counts: countSummary(bridge.tree.items),
+        known: bridge.tree.known,
+        knownChecked: bridge.tree.knownChecked,
+      };
+    }
+    return out;
+  }
+  function stopJob(jobId) {
+    if (!pulling || !bridge.job || bridge.job.id !== jobId) return { ok: false, code: "idle", error: "Süren işlem yok." };
+    pulling.stop = true;
     return { ok: true };
   }
   function showCasePicker(targets) {
@@ -1521,14 +1966,37 @@
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     // Kayıt yalnız üst çerçevede tutulur; iç çerçeveler (ön izleme iframe'i vb.) "kayıt yok" yanıtıyla araya girmesin.
-    if (/^JURISAI_(RECORD_(START|STOP)|PULL_(DOSYA|STOP|PROBE)|LIST_DOSYALAR|OPEN_DOSYA)$/.test(message?.type || "") && window !== window.top)
+    if (
+      /^JURISAI_(RECORD_(START|STOP)|PULL_(DOSYA|STOP|PROBE|IDS)|LIST_DOSYALAR|OPEN_DOSYA|TREE|JOB_STATUS|BRIDGE_STOP)$/.test(message?.type || "") &&
+      window !== window.top
+    )
       return false;
+    if (message?.type === "JURISAI_TREE") {
+      sendResponse(startTreeJob(String(message.key || ""), String(message.yargiTuru || "")));
+      return true;
+    }
+    if (message?.type === "JURISAI_PULL_IDS") {
+      sendResponse(startPullJob(message.ids, message.mode));
+      return true;
+    }
+    if (message?.type === "JURISAI_JOB_STATUS") {
+      sendResponse(jobStatus(String(message.jobId || ""), !!message.withTree));
+      return true;
+    }
+    if (message?.type === "JURISAI_BRIDGE_STOP") {
+      sendResponse(stopJob(String(message.jobId || "")));
+      return true;
+    }
     if (message?.type === "JURISAI_LIST_DOSYALAR") {
-      sendResponse(listDosyalar());
+      listDosyalar()
+        .then(sendResponse)
+        .catch((error) => sendResponse({ ok: false, error: error.message || "bilinmeyen hata" }));
       return true;
     }
     if (message?.type === "JURISAI_OPEN_DOSYA") {
-      sendResponse(openDosyaByKey(String(message.key || "")));
+      openDosyaByKey(String(message.key || ""), String(message.yargiTuru || ""))
+        .then(sendResponse)
+        .catch((error) => sendResponse({ ok: false, error: error.message || "bilinmeyen hata" }));
       return true;
     }
     if (message?.type === "JURISAI_PULL_PROBE") {

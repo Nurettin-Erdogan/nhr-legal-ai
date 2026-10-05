@@ -22,8 +22,9 @@ from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
 import psycopg
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import FileResponse, JSONResponse
 from psycopg import sql
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
@@ -33,6 +34,9 @@ from api.document_indexing import schedule_index
 from api.auth.routes import current_user_id
 from api.config import get_settings
 from api.db import authenticated_database_connection
+from api.account_export import build_export
+from api.case_summary import extract_facts, load_ready_documents
+from api.document_compare import CompareTooLarge, compare_texts
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +60,7 @@ TABLES: dict[str, str] = {
     "uyap_sync_runs": "office_uyap_sync_runs",
     "case_documents": "office_case_documents",
     "uyap_ingest_tokens": "office_uyap_ingest_tokens",
+    "feedback": "office_feedback",
 }
 # Arayüzün `user_id` dediği sahiplik sütunu bu tablolarda `owner_id`'dir.
 _USER_ID_ALIAS = {"legal_documents", "risk_analyses", "call_settings"}
@@ -66,7 +71,7 @@ _PROTECTED_UPDATE = {"id", "owner_id", "created_at"}
 # uçlardandır (api/office_trash.py): kalıcı silme sohbet cevaplarını da temizlemelidir.
 _SOFT_DELETE_COLUMN = {"case_documents": "deleted_at"}
 _TABLE_PROTECTED_COLUMNS = {
-    "case_documents": {"deleted_at"},
+    "case_documents": {"deleted_at", "uyap_evrak_key", "checksum_sha256"},
     # Özet ve ön ek yalnız tetikleyiciyle yazılır; istemci özet ya da düz değer okuyamaz/yazamaz.
     "uyap_ingest_tokens": {"token_hash", "token_prefix"},
 }
@@ -659,6 +664,112 @@ def case_document_index(
     }
 
 
+@router.get("/cases/{case_id}/documents/compare")
+def compare_case_documents(
+    case_id: UUID,
+    left: UUID,
+    right: UUID,
+    user_id: Annotated[UUID, Depends(current_user_id)],
+    request: Request,
+) -> dict[str, Any]:
+    """Davaya bağlı iki belgenin metin farkı (yapay zekâsız, belirleyici): hangi cümleler değişti, eklendi, silindi."""
+    if left == right:
+        raise HTTPException(status_code=422, detail="Karşılaştırmak için iki farklı belge seçin")
+    try:
+        with authenticated_database_connection(str(user_id)) as connection:
+            _case_for_document(connection, case_id)
+            rows = connection.execute(
+                "SELECT od.id, od.file_name, d.id AS document_id, d.status, d.processing_error, "
+                "(d.metadata->>'ocr') = 'true' AS ocr "
+                "FROM office_case_documents od "
+                "LEFT JOIN documents d ON d.office_case_document_id = od.id "
+                "WHERE od.case_id = %s AND od.id = ANY(%s) AND od.deleted_at IS NULL",
+                (case_id, [left, right]),
+            ).fetchall()
+            by_id = {row["id"]: row for row in rows}
+            if left not in by_id or right not in by_id:
+                raise HTTPException(status_code=404, detail="Belge bulunamadı veya bu davaya bağlı değil")
+            for side in (left, right):
+                row = by_id[side]
+                if row["status"] != "ready":
+                    reason = row["processing_error"] if row["status"] == "failed" and row["processing_error"] else "henüz işlenmedi"
+                    raise HTTPException(status_code=409, detail=f"\"{row['file_name']}\" karşılaştırılamıyor: {reason}")
+            texts = {
+                side: "\n\n".join(
+                    chunk["content"]
+                    for chunk in connection.execute(
+                        "SELECT content FROM document_chunks WHERE document_id = %s ORDER BY chunk_index",
+                        (by_id[side]["document_id"],),
+                    ).fetchall()
+                )
+                for side in (left, right)
+            }
+            # Okuma işlemi: denetim yazılamasa da karşılaştırma engellenmez. Dosya adı ve içerik günlüğe yazılmaz.
+            record_event(connection, action="office.case_document_compare", actor_user_id=user_id,
+                         context=AuditContext.from_request(request), entity_type="case_document", entity_id=left,
+                         metadata={"case_id": str(case_id), "right_document_id": str(right)}, strict=False)
+    except psycopg.Error as exc:
+        logger.exception("Case document compare failed case=%s", case_id)
+        raise HTTPException(status_code=503, detail="Belgeler karşılaştırılamadı") from exc
+    if not texts[left].strip() or not texts[right].strip():
+        raise HTTPException(status_code=409, detail="Belgelerden birinde karşılaştırılacak metin yok")
+    try:
+        result = compare_texts(texts[left], texts[right])
+    except CompareTooLarge as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    def describe(side: UUID) -> dict[str, Any]:
+        return {"id": side, "file_name": by_id[side]["file_name"], "ocr": bool(by_id[side]["ocr"])}
+
+    return {"case_id": case_id, "left": describe(left), "right": describe(right), **result}
+
+
+@router.get("/account/export")
+def export_account_data(
+    user_id: Annotated[UUID, Depends(current_user_id)],
+    request: Request,
+) -> JSONResponse:
+    """KVKK: kullanıcının kendi verilerini JSON olarak indirir (parola/anahtar/iç yol hariç, belge dosyaları dahil değil)."""
+    try:
+        with authenticated_database_connection(str(user_id)) as connection:
+            data = build_export(connection, user_id, TABLES)
+            record_event(connection, action="account.export", actor_user_id=user_id, context=AuditContext.from_request(request),
+                         entity_type="user", entity_id=user_id, metadata={"tables": len(data["office"])}, strict=False)
+    except psycopg.Error as exc:
+        logger.exception("Account export failed")
+        raise HTTPException(status_code=503, detail="Veriler dışa aktarılamadı") from exc
+    return JSONResponse(
+        jsonable_encoder(data),
+        headers={"Content-Disposition": 'attachment; filename="jurisai-verilerim.json"', "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@router.get("/cases/{case_id}/documents/facts")
+def case_document_facts(
+    case_id: UUID,
+    user_id: Annotated[UUID, Depends(current_user_id)],
+) -> dict[str, Any]:
+    """Okunmuş dava belgelerinden belirleyici olgu tablosu (tarih, tutar, esas/karar ve kanun numarası); yapay zekâ yoktur."""
+    try:
+        with authenticated_database_connection(str(user_id)) as connection:
+            _case_for_document(connection, case_id)
+            documents = load_ready_documents(connection, case_id)
+            total = connection.execute(
+                "SELECT count(*) AS n FROM office_case_documents WHERE case_id = %s AND deleted_at IS NULL", (case_id,)
+            ).fetchone()["n"]
+    except psycopg.Error as exc:
+        logger.exception("Case document facts failed case=%s", case_id)
+        raise HTTPException(status_code=503, detail="Belge olguları alınamadı") from exc
+    return {
+        "case_id": case_id,
+        "total": total,
+        "ready": len(documents),
+        "documents": [
+            {"id": item["id"], "file_name": item["file_name"], "ocr": item["ocr"], **extract_facts(item["text"])}
+            for item in documents
+        ],
+    }
+
+
 @router.post("/cases/{case_id}/documents/{document_id}/reindex", status_code=202)
 def reindex_case_document(
     case_id: UUID,
@@ -684,6 +795,39 @@ def reindex_case_document(
 
 
 # Specific paths must be registered before the generic table route.
+@router.get("/case-documents/search")
+def search_case_documents(
+    user_id: Annotated[UUID, Depends(current_user_id)],
+    q: str = Query(default="", max_length=100),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=100),
+) -> dict[str, Any]:
+    """Sahibin tüm aktif belgelerinde sunucu tarafı arama ve sayfalama."""
+    term = q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = f"%{term}%"
+    predicate = (
+        "owner_id = %s AND deleted_at IS NULL AND "
+        "(file_name ILIKE %s ESCAPE '\\' OR uyap_file_no ILIKE %s ESCAPE '\\' "
+        "OR uyap_birim ILIKE %s ESCAPE '\\' OR doc_type ILIKE %s ESCAPE '\\')"
+    )
+    params = (user_id, pattern, pattern, pattern, pattern)
+    try:
+        with authenticated_database_connection(str(user_id)) as connection:
+            total = connection.execute(
+                f"SELECT count(*) AS n FROM office_case_documents WHERE {predicate}", params
+            ).fetchone()["n"]
+            rows = connection.execute(
+                "SELECT id, file_name, storage_path, size_bytes, source, uyap_file_no, uyap_birim, "
+                "doc_type, doc_date, case_id, created_at FROM office_case_documents WHERE " + predicate +
+                " ORDER BY created_at DESC, id DESC LIMIT %s OFFSET %s",
+                (*params, limit, offset),
+            ).fetchall()
+    except psycopg.Error:
+        logger.exception("Belge listesi aranamadı")
+        raise HTTPException(status_code=503, detail="Belge listesi şu an yüklenemiyor") from None
+    return {"rows": rows, "total": total}
+
+
 @router.post("/{table}", response_model=OfficeResult)
 def query_table(
     table: str,

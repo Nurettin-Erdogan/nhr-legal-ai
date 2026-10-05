@@ -1,4 +1,4 @@
-/* JurisAI popup - ayarları chrome.storage.sync üzerinde tutar.
+/* JurisAI popup - anahtarı yalnız yerel depoda, diğer ayarları chrome.storage.sync üzerinde tutar.
    Gizlilik: "otomatik aktarım" ve "yerel kopya" varsayılan olarak kapalıdır; otomatik aktarım
    yalnızca kullanıcı bilgilendirme metnini onaylayarak açabilir. */
 
@@ -27,7 +27,12 @@ function say(message, kind = "") {
 async function load() {
   try {
     const stored = await chrome.storage.sync.get(Object.keys(DEFAULTS));
-    const settings = { ...DEFAULTS, ...stored };
+    const local = await chrome.storage.local.get("apiKey");
+    const settings = { ...DEFAULTS, ...stored, apiKey: local.apiKey || stored.apiKey || "" };
+    if (!local.apiKey && stored.apiKey) {
+      await chrome.storage.local.set({ apiKey: stored.apiKey });
+      await chrome.storage.sync.remove("apiKey");
+    }
     if (!settings.apiUrl || /api\.jurisai\.local/i.test(settings.apiUrl)) {
       settings.apiUrl = DEFAULTS.apiUrl;
       await chrome.storage.sync.set({ apiUrl: settings.apiUrl });
@@ -60,12 +65,13 @@ el("save").addEventListener("click", async () => {
   try {
     await chrome.storage.sync.set({
       apiUrl,
-      apiKey,
       throttleMs,
       autoSync,
       saveLocal,
       ...(autoSync ? { autoSyncConsentAt: new Date().toISOString() } : {}),
     });
+    await chrome.storage.local.set({ apiKey });
+    await chrome.storage.sync.remove("apiKey");
     say("Ayarlar kaydedildi.", "ok");
   } catch (error) {
     say(`Kaydedilemedi: ${error.message}`, "err");
@@ -79,7 +85,9 @@ el("test").addEventListener("click", async () => {
   if (apiKey.length < 20) return say("Önce bağlantı anahtarını yapıştır.", "err");
   say("Deneniyor…");
   try {
-    await chrome.storage.sync.set({ apiUrl, apiKey });
+    await chrome.storage.sync.set({ apiUrl });
+    await chrome.storage.local.set({ apiKey });
+    await chrome.storage.sync.remove("apiKey");
     const res = await chrome.runtime.sendMessage({ type: "JURISAI_TEST" });
     if (res?.ok) say("JurisAI bağlantısı hazır ✓", "ok");
     else say(`Ulaşılamadı: ${res?.error || res?.status || "bilinmeyen"}`, "err");

@@ -1,21 +1,19 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { DashboardLayout } from "@/components/DashboardLayout";
-import { AIRunner } from "@/components/AIRunner";
+import { DeepResearch } from "@/components/DeepResearch";
 
 function AgentResearch() {
   return (
     <DashboardLayout
-      title="Agent Derin Araştırma"
-      subtitle="Çok adımlı, kapsamlı hukuki araştırma raporu"
+      title="Derin Araştırma"
+      subtitle="Çok adımlı araştırma: mevzuat, yargı kararları ve süre/ispat/usul ayrı ayrı, kaynaklı ve doğrulanmış rapor"
     >
-      <AIRunner
-        module="agent_research"
-        placeholder="Derinlemesine araştırılmasını istediğin hukuki soruyu yaz. Agent soruyu parçalara ayıracak; mevzuat, içtihat, doktrin ve karşılaştırmalı hukuk perspektifinden çok katmanlı bir rapor üretecek..."
+      <DeepResearch
         examples={[
-          "Yapay zeka ile üretilen eserlerde telif hakkı sahipliği Türk hukukunda kime aittir?",
-          "Kripto varlıkların miras yoluyla intikalinde uygulanacak hukuk ve pratik sorunlar nelerdir?",
-          "İşçinin uzaktan çalışmada iş kazası geçirmesi halinde işverenin sorumluluğunun kapsamı",
-          "Ticari sözleşmelerde mücbir sebep olarak salgın hastalık: Yargıtay yaklaşımı ve sözleşme uyarlama",
+          "İşçinin iş kazası geçirmesi halinde işverenin sorumluluğunun kapsamı nedir?",
+          "Kıdem tazminatına hak kazanma şartları nelerdir ve zamanaşımı ne zaman başlar?",
+          "Kira sözleşmesinde kiracının erken tahliyesi halinde ev sahibinin talep hakları nelerdir?",
+          "İhtiyati tedbir kararının şartları ve tedbir kararına itiraz usulü",
         ]}
       />
     </DashboardLayout>

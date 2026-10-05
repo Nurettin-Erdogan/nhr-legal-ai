@@ -18,8 +18,20 @@ import {
   X,
   LogOut,
   User as UserIcon,
+  Users,
+  ListChecks,
+  CalendarDays,
+  Bell,
+  Sparkles,
+  FileText,
+  Files,
+  ShieldAlert,
+  ChevronDown,
+  type LucideIcon,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { NAV_COLLAPSED_KEY, NAV_GROUPS, activeNavPath, parseCollapsedGroups, toggleCollapsedGroup, visibleNavItems } from "@/lib/nav";
+import { FeedbackButton } from "@/components/FeedbackButton";
+import { useEffect, useState, type ReactNode } from "react";
 import { Logo } from "./Logo";
 import { cn } from "@/lib/utils";
 import { ThemeToggle } from "./ThemeToggle";
@@ -33,23 +45,33 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 
-const navItems = [
-  { to: "/dashboard", icon: LayoutDashboard, label: "Ana Sayfa" },
-  { to: "/dashboard/cases", icon: Briefcase, label: "Davalar" },
-  { to: "/dashboard/automation", icon: Rocket, label: "Tek Tuşla Otomasyon" },
+const NAV_ICONS: Record<string, LucideIcon> = {
+  "/dashboard": LayoutDashboard,
+  "/dashboard/cases": Briefcase,
+  "/dashboard/clients": Users,
+  "/dashboard/tasks": ListChecks,
+  "/dashboard/calendar": CalendarDays,
+  "/dashboard/reminders": Bell,
+  "/dashboard/applications": Inbox,
+  "/dashboard/ai": Scale,
+  "/dashboard/legislation": BookOpen,
+  "/dashboard/case-law": Gavel,
+  "/dashboard/semantic-search": Sparkles,
+  "/dashboard/agent-research": FileSearch,
+  "/dashboard/drafts": FileSignature,
+  "/dashboard/document-analysis": FileText,
+  "/dashboard/auto-summary": Files,
+  "/dashboard/risk-analysis": ShieldAlert,
+  "/dashboard/files": FolderOpen,
+  "/dashboard/uyap": Link2,
+  "/dashboard/document-processing": ScanText,
+  "/dashboard/scanner": Camera,
+  "/dashboard/automation": Rocket,
+  "/dashboard/settings": Settings,
+};
 
-  { to: "/dashboard/applications", icon: Inbox, label: "Başvurular" },
-  { to: "/dashboard/ai", icon: Scale, label: "Hukuk Asistanı" },
-  { to: "/dashboard/legislation", icon: BookOpen, label: "Mevzuat" },
-  { to: "/dashboard/research", icon: FileSearch, label: "Hukuki Araştırma" },
-  { to: "/dashboard/case-law", icon: Gavel, label: "İçtihat" },
-  { to: "/dashboard/drafts", icon: FileSignature, label: "Dilekçe Yaz" },
-  { to: "/dashboard/files", icon: FolderOpen, label: "Dosyalar" },
-  { to: "/dashboard/document-processing", icon: ScanText, label: "Belge İşleme (OCR)" },
-  { to: "/dashboard/uyap", icon: Link2, label: "UYAP'a Bağlan" },
-  { to: "/dashboard/scanner", icon: Camera, label: "Belge Tarayıcı" },
-  { to: "/dashboard/settings", icon: Settings, label: "Ayarlar" },
-];
+// Her sayfa kendi DashboardLayout'unu kurar; tercih modülde tutulur ki sayfa geçişinde menü açılıp kapanmasın.
+let rememberedCollapsed: string[] | null = null;
 
 export const DashboardLayout = ({
   children,
@@ -82,29 +104,64 @@ export const DashboardLayout = ({
     user?.email ||
     "Kullanıcı";
 
+  const activePath = activeNavPath(location.pathname);
+  const [collapsed, setCollapsed] = useState<string[]>(rememberedCollapsed ?? []);
+  useEffect(() => {
+    if (rememberedCollapsed !== null) return;
+    try {
+      rememberedCollapsed = parseCollapsedGroups(window.localStorage.getItem(NAV_COLLAPSED_KEY));
+    } catch {
+      rememberedCollapsed = [];
+    }
+    setCollapsed(rememberedCollapsed);
+  }, []);
+  const toggleGroup = (title: string) => {
+    const next = toggleCollapsedGroup(collapsed, title);
+    rememberedCollapsed = next;
+    setCollapsed(next);
+    try {
+      window.localStorage.setItem(NAV_COLLAPSED_KEY, JSON.stringify(next));
+    } catch {
+      // saklama kapalıysa tercih yalnız bu oturumda geçerli olur
+    }
+  };
   const nav = (
-    <nav className="space-y-1">
-      {navItems.map((item) => {
-        const active =
-          item.to === "/dashboard"
-            ? location.pathname === "/dashboard"
-            : location.pathname.startsWith(item.to);
+    <nav className="space-y-4" aria-label="Ana menü">
+      {NAV_GROUPS.map((group) => {
+        const isCollapsed = collapsed.includes(group.title);
         return (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            end={item.to === "/dashboard"}
-            onClick={() => setMobileOpen(false)}
-            className={cn(
-              "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors",
-              active
-                ? "bg-secondary text-primary"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground",
-            )}
+        <div key={group.title} className="space-y-1">
+          <button
+            type="button"
+            onClick={() => toggleGroup(group.title)}
+            aria-expanded={!isCollapsed}
+            className="flex w-full items-center justify-between gap-2 rounded-lg px-3 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70 transition-colors hover:text-foreground"
           >
-            <item.icon className="h-[18px] w-[18px] shrink-0" />
-            <span className="truncate">{item.label}</span>
-          </NavLink>
+            <span className="truncate">{group.title}</span>
+            <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 transition-transform", isCollapsed && "-rotate-90")} />
+          </button>
+          {visibleNavItems(group, isCollapsed, activePath).map((item) => {
+            const Icon = NAV_ICONS[item.to] ?? FileText;
+            const active = activePath === item.to;
+            return (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                end={item.to === "/dashboard"}
+                activeOptions={{ exact: item.to === "/dashboard" }}
+                onClick={() => setMobileOpen(false)}
+                aria-current={active ? "page" : undefined}
+                className={cn(
+                  "flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition-colors",
+                  active ? "bg-secondary text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                )}
+              >
+                <Icon className="h-[18px] w-[18px] shrink-0" />
+                <span className="truncate">{item.label}</span>
+              </NavLink>
+            );
+          })}
+        </div>
         );
       })}
     </nav>
@@ -130,7 +187,7 @@ export const DashboardLayout = ({
             onClick={() => setMobileOpen(false)}
             aria-label="Menüyü kapat"
           />
-          <div className="absolute inset-y-0 left-0 w-64 border-r border-border bg-card p-3">
+          <div className="absolute inset-y-0 left-0 w-64 overflow-y-auto border-r border-border bg-card p-3">
             <div className="mb-3 flex h-12 items-center justify-between px-2">
               <Logo />
               <button onClick={() => setMobileOpen(false)} aria-label="Kapat">
@@ -197,6 +254,7 @@ export const DashboardLayout = ({
           {children}
         </main>
       </div>
+      <FeedbackButton />
     </div>
   );
 };

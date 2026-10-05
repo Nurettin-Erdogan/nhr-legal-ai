@@ -6,7 +6,6 @@ import { zipSync } from 'fflate';
 
 export const bundles = [
   ['jurisai-avukat.zip', 'jurisai-avukat'],
-  ['jurisai-uyap-extension.zip', 'uyap-extension'],
   ['uyap-dosya-cekici.zip', 'uyap-dosya-cekici'],
 ];
 

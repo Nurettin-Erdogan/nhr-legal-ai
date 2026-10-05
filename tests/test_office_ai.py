@@ -97,46 +97,105 @@ def test_ocr_reports_missing_engine(monkeypatch):
     assert "Tesseract" in response.json()["detail"]
 
 
-@pytest.mark.parametrize("contexts", [[], [_context(verification="third_party")]])
-def test_no_generation_without_verified_evidence(monkeypatch, contexts):
-    async def retrieve(*args):
+# --- Taslak: iskelet kodla, olgular doğrulanmış, dayanaklar kodla listelenir ------------------------------------
+
+
+def _patch(monkeypatch, *, contexts, output=None, error=None):
+    async def retrieve(*args, **kwargs):
         return contexts
+
     async def generate(*args):
-        pytest.fail("Unverified sources must not reach generation")
+        if error:
+            raise error
+        return output, "test-model"
+
     monkeypatch.setattr(office_ai, "_retrieve_sources", retrieve)
     monkeypatch.setattr(office_ai, "_generate", generate)
-    with pytest.raises(HTTPException) as error:
-        asyncio.run(office_ai._run_module("Taslak", "system", "kira artışı", USER_ID, retrieval_query="kira artışı"))
-    assert error.value.status_code == 422
 
 
-@pytest.mark.parametrize("output", [
-    "Kiracı her durumda tahliye edilir. [K1]",
-    "5237 sayılı Kanun gereği tahliye edilir. [K1]",
-    "Kira bedelinin artışı yenileme dönemindeki TÜFE ortalamasını aşamaz. [K99]",
-])
-def test_unsupported_output_is_blocked_not_only_warned(monkeypatch, output):
-    async def retrieve(*args):
-        return [_context()]
-    async def generate(*args):
-        return output, "test"
-    monkeypatch.setattr(office_ai, "_retrieve_sources", retrieve)
-    monkeypatch.setattr(office_ai, "_generate", generate)
-    with pytest.raises(HTTPException) as error:
-        asyncio.run(office_ai._run_module("Taslak", "system", "kira artışı", USER_ID, retrieval_query="kira artışı"))
-    assert error.value.status_code == 422
-    assert output not in error.value.detail
+def _draft(**overrides):
+    values = dict(doc_type="dilekce", title=None, parties=["Davacı Ahmet Örnek", "Davalı ABC Ltd. Şti."], subject="Kıdem ve ihbar tazminatı talebi", details="Müvekkil 8 yıl 1 ay çalıştı ve 340.000 TL kıdem tazminatı hesaplandı.", user_id=USER_ID)
+    values.update(overrides)
+    return asyncio.run(office_ai._draft(values.pop("doc_type"), values.pop("title"), values.pop("parties"), values.pop("subject"), values.pop("details"), values.pop("user_id")))
 
 
-def test_supported_quote_passes_the_shared_evidence_gate(monkeypatch):
-    context = _context()
-    async def retrieve(*args):
-        return [context]
-    async def generate(*args):
-        return context.content + " [K1]", "test-model"
-    monkeypatch.setattr(office_ai, "_retrieve_sources", retrieve)
-    monkeypatch.setattr(office_ai, "_generate", generate)
-    result = asyncio.run(office_ai._run_module("Analiz", "system", "kira artışı", USER_ID, retrieval_query="kira artışı"))
-    assert context.content in result["content"]
-    assert result["sources"][0]["verification"] == "official"
-    assert result["unverified_references"] == []
+def test_a_draft_is_produced_even_when_no_verified_source_exists_and_says_so(monkeypatch):
+    _patch(monkeypatch, contexts=[_context(verification="third_party")], output="1. Müvekkil 8 yıl 1 ay çalışmıştır.")
+    result = _draft()
+    assert "Korpusta bu konuyla eşleşen doğrulanmış kaynak bulunamadı" in result["content"]
+    assert "6098" not in result["content"] and result["sources"] == []  # doğrulanmamış kaynak asla listelenmez
+    assert "Müvekkil 8 yıl 1 ay çalışmıştır." in result["content"]
+
+
+def test_fabricated_model_facts_never_reach_the_document(monkeypatch):
+    _patch(monkeypatch, contexts=[], output="1. Davalı 999.999 TL ödemiştir.\n2. 5237 sayılı Kanun gereği hapis cezası verilir.\n3. Yargıtay 9. HD 2019/1234 E. kararı uyarınca kabul edilir.")
+    result = _draft()
+    for invented in ("999.999", "5237", "2019/1234", "hapis"):
+        assert invented not in result["content"]
+    assert "340.000 TL" in result["content"]  # kullanıcının kendi olguları kullanıldı
+    assert "sizin yazdığınız bilgilerle oluşturuldu" in result["content"]
+
+
+def test_a_model_failure_still_yields_a_draft_from_the_users_own_facts(monkeypatch):
+    _patch(monkeypatch, contexts=[], error=HTTPException(status_code=502, detail="Ollama yanıtı token sınırında kesildi"))
+    result = _draft()
+    assert "**AÇIKLAMALAR:**" in result["content"] and "8 yıl 1 ay" in result["content"] and result["model"] is None
+
+
+def test_supported_model_paragraphs_are_kept_and_renumbered(monkeypatch):
+    _patch(monkeypatch, contexts=[], output="1. Müvekkil 8 yıl 1 ay çalışmıştır.\n2. Müvekkil için 340.000 TL kıdem tazminatı hesaplanmıştır.\n3. Davalı 12.345 TL borçludur.")
+    result = _draft()
+    content = result["content"]
+    assert "1. Müvekkil 8 yıl 1 ay çalışmıştır." in content and "2. Müvekkil için 340.000 TL" in content
+    assert "12.345" not in content and result["model"] == "test-model"
+    assert "sizin yazdığınız bilgilerle oluşturuldu" not in content
+
+
+def test_verified_statutes_and_decisions_are_listed_by_code_not_by_the_model(monkeypatch):
+    decision = _context(source_type="court_decision", law_name=None, law_no=None, article_no=None, court_name="Yargıtay", chamber="9. Hukuk Dairesi", docket_no="2025/412", decision_no="2026/118")
+    other = _context(source_type="other", law_name=None, law_no=None, article_no=None, title="Sayıştay ilamı")
+    _patch(monkeypatch, contexts=[_context(), _context(), decision, other], output="1. Müvekkil 8 yıl 1 ay çalışmıştır.")
+    result = _draft()
+    assert result["content"].count("Türk Borçlar Kanunu (6098) m. 344") == 1  # tekrar edilmez
+    assert "Yargıtay 9. Hukuk Dairesi, E. 2025/412, K. 2026/118" in result["content"]
+    assert "Sayıştay" not in result["content"]
+    assert [item["verification"] for item in result["sources"]] == ["official", "official"]
+
+
+@pytest.mark.parametrize("doc_type,marker", [("dilekce", "SONUÇ VE İSTEM"), ("ihtarname", "İHTAR:"), ("sozlesme", "MADDE 7 – Uyuşmazlık"), ("diger", "SONUÇ VE İSTEM")])
+def test_every_document_type_has_its_skeleton_and_unfilled_gaps(monkeypatch, doc_type, marker):
+    _patch(monkeypatch, contexts=[], output="1. Müvekkil 8 yıl 1 ay çalışmıştır.")
+    content = _draft(doc_type=doc_type, parties=[])["content"]
+    assert marker in content and "[…]" in content and "Taslaktır" in content
+
+
+# --- Analiz ve risk -------------------------------------------------------------------------------------------
+
+
+def test_document_analysis_summarises_each_marked_document_and_lists_sources_by_code(monkeypatch):
+    async def generate(system, prompt):
+        return "- Kira bedeli 10.000 TL olarak belirlenmiştir."
+
+    from api import office_analysis
+
+    text = "=== BELGE 1: Kira A ===\nKira bedeli 10.000 TL, süre 1 yıl.\n=== BELGE 2: Kira B ===\nKira bedeli 12.000 TL, süre 2 yıl."
+    markdown, sources = asyncio.run(office_analysis.analyze(text, generate, [_context(), _context(verification="third_party")]))
+    assert "## 1. Kira A" in markdown and "## 2. Kira B" in markdown
+    assert "Kira bedeli 10.000 TL olarak belirlenmiştir." in markdown  # belgeyle doğrulanan madde
+    assert "12.000 TL" in markdown and "Belgede geçen olgular" in markdown  # B belgesinin olgusu; uydurma 10.000 B'de elenir
+    assert "Hukuki değerlendirme içermez" in markdown and "Türk Borçlar Kanunu (6098) m. 344" in markdown
+    assert len(sources) == 1  # üçüncü taraf listelenmez
+
+
+def test_risk_analysis_never_predicts_outcomes_and_reports_sources(monkeypatch):
+    from types import SimpleNamespace
+
+    citation = SimpleNamespace(marker="K1", reference="İŞ KANUNU (4857) m. 41", source_url=None, verification="official", source_type="legislation")
+
+    async def answer(user_id, question, conversation_id):
+        return SimpleNamespace(answer=f"Cevap: {question} [K1]", grounded=True, citations=[citation], conversation_id=None)
+
+    monkeypatch.setattr(office_ai, "_deep_answer", answer)
+    result = asyncio.run(office_ai._risk("İşçiye fazla mesai ücreti ödenmedi, puantaj var, dava açılırsa riskler neler?", USER_ID))
+    assert "Dava sonucu tahmini yapılmaz" in result["content"] and "Risk analizi" in result["content"]
+    assert result["sources"] and result["sources"][0]["reference"] == "İŞ KANUNU (4857) m. 41"
