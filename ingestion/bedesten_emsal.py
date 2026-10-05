@@ -171,24 +171,28 @@ class BedestenClient:
         return payload
 
     def search(
-        self, kind: str, start: date, end: date, *, page: int = 1, page_size: int = MAX_PAGE_SIZE
+        self, kind: str, start: date, end: date, *, page: int = 1, page_size: int = MAX_PAGE_SIZE,
+        chamber: str | None = None,
     ) -> BedestenPage:
-        """`start`..`end` (dahil) karar tarihli kararları, tarihe göre sıralı listeler."""
+        """`start`..`end` (dahil) karar tarihli kararları, tarihe göre sıralı listeler.
+
+        `chamber` (birimAdi, ör. "13. Hukuk Dairesi") verilirse yalnız o birimin kararları sayılır/listelenir
+        (ölçüldü: 2026-10-05, 2015-10-21 günü 5387 karar, "1. Hukuk Dairesi" için toplam 75)."""
         first, _ = day_window(start)
         _, last = day_window(end)
-        payload = self._post(
-            "searchDocuments",
-            {
-                "pageNumber": page,
-                "pageSize": min(page_size, MAX_PAGE_SIZE),
-                "itemTypeList": [ITEM_TYPES[kind]],
-                "phrase": SEARCH_PHRASE,
-                "sortFields": ["KARAR_TARIHI"],
-                "sortDirection": "desc",
-                "kararTarihiStart": first,
-                "kararTarihiEnd": last,
-            },
-        )
+        request = {
+            "pageNumber": page,
+            "pageSize": min(page_size, MAX_PAGE_SIZE),
+            "itemTypeList": [ITEM_TYPES[kind]],
+            "phrase": SEARCH_PHRASE,
+            "sortFields": ["KARAR_TARIHI"],
+            "sortDirection": "desc",
+            "kararTarihiStart": first,
+            "kararTarihiEnd": last,
+        }
+        if chamber:
+            request["birimAdi"] = chamber
+        payload = self._post("searchDocuments", request)
         data = payload.get("data") or {}
         items = [
             BedestenItem(

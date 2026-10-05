@@ -1,4 +1,4 @@
-"""Bir kaynağın (yargitay/danistay) bizde olan kararlarını "tarih<TAB>id" olarak .gz dosyaya yazar.
+"""Bir kaynağın (yargitay/danistay) bizde olan kararlarını "tarih<TAB>id<TAB>birim" olarak .gz dosyaya yazar.
 
 Çıktı, başka bir makinedeki `collect_bedesten.py --known-file` için kullanılır: o makinenin
 veritabanında tohum yoksa toplayıcı portalın tamamını yeniden indirirdi.
@@ -25,7 +25,7 @@ def main() -> None:
         sys.exit("DATABASE_ADMIN_URL tanımlı değil")
     prefix = f"{args.source}:"
     sql = (
-        "COPY (SELECT d.decision_date, substr(ls.external_id, %d) FROM court_decision_details d "
+        "COPY (SELECT d.decision_date, substr(ls.external_id, %d), d.chamber FROM court_decision_details d "
         "JOIN legal_sources ls ON ls.id = d.legal_source_id "
         "WHERE ls.external_id LIKE '%s%%' AND ls.is_current AND ls.deleted_at IS NULL "
         "AND d.decision_date >= '%d-01-01') TO STDOUT"

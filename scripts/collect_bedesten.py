@@ -123,7 +123,7 @@ def decision_from_bedesten(kind: str, item: BedestenItem, html: str) -> CourtDec
 
 
 class KnownFile:
-    """Başka bir veritabanındaki (PC) kayıtların listesi: "YYYY-MM-DD<TAB>belge_id" satırları, .gz olabilir.
+    """Başka bir veritabanındaki (PC) kayıtların listesi: "YYYY-MM-DD<TAB>belge_id<TAB>birim" satırları (birim yoksa boş), .gz olabilir.
 
     Azure'un veritabanında Yargıtay tohumları yok; onsuz toplayıcı portalın tamamını yeniden indirir.
     Bu liste "bizde olan"ı (tohumlar dahil) bildirir, böylece yalnız eksik kararlar çekilir.
@@ -133,28 +133,37 @@ class KnownFile:
         import gzip
         self.ids: set[str] = set()
         self.counts: dict[date, int] = {}
+        self.chamber_counts: dict[tuple[str, date], int] = {}
         opener = gzip.open if path.endswith(".gz") else open
         with opener(path, "rt", encoding="utf-8") as handle:
             for line in handle:
-                day_text, _, doc_id = line.rstrip("\n").partition("\t")
+                day_text, _, rest = line.rstrip("\n").partition("\t")
+                doc_id, _, chamber = rest.partition("\t")
                 if not doc_id or not (first_year <= int(day_text[:4]) <= last_year):
                     continue
-                self.add(date.fromisoformat(day_text), doc_id)
+                self.add(date.fromisoformat(day_text), doc_id, "" if chamber == "\\N" else chamber)
 
-    def add(self, day: date, doc_id: str) -> None:
+    def add(self, day: date, doc_id: str, chamber: str = "") -> None:
         if doc_id not in self.ids:
             self.ids.add(doc_id)
             self.counts[day] = self.counts.get(day, 0) + 1
+            key = (chamber, day)
+            self.chamber_counts[key] = self.chamber_counts.get(key, 0) + 1
 
     def day_counts(self, first: date, last: date) -> dict[date, int]:
         return {d: n for d, n in self.counts.items() if first <= d <= last}
 
+    def chamber_day_counts(self, first: date, last: date) -> dict[tuple[str, date], int]:
+        return {k: n for k, n in self.chamber_counts.items() if first <= k[1] <= last}
+
 
 class Collector:
     def __init__(self, kind: str, client: BedestenClient, connection: psycopg.Connection,
-                 known: "KnownFile | None" = None) -> None:
+                 known: "KnownFile | None" = None, by_chamber: bool = False) -> None:
         self.kind = kind
         self.known = known
+        self.by_chamber = by_chamber
+        self._year_chambers: dict[int, set[str]] = {}
         self.client = client
         self.connection = connection
         self.prefix = f"{kind}:"
@@ -215,6 +224,25 @@ class Collector:
         ).fetchall()
         return {row[0]: int(row[1]) for row in rows}
 
+    def db_chamber_counts(self, first: date, last: date) -> dict[tuple[str, date], int]:
+        if self.known:
+            return self.known.chamber_day_counts(first, last)
+        rows = self.connection.execute(
+            "SELECT COALESCE(d.chamber, ''), d.decision_date, count(*) FROM court_decision_details d "
+            "JOIN legal_sources ls ON ls.id = d.legal_source_id "
+            "WHERE d.decision_date >= %s AND d.decision_date <= %s AND ls.external_id LIKE %s "
+            "AND ls.is_current AND ls.deleted_at IS NULL GROUP BY 1, 2",
+            (first, last, self.prefix + "%"),
+        ).fetchall()
+        return {(row[0], row[1]): int(row[2]) for row in rows}
+
+    def year_chambers(self, year: int) -> set[str]:
+        """O yılda bizde kararı olan birim adları (birim-düzeyi taramanın adayları)."""
+        if year not in self._year_chambers:
+            counts = self.db_chamber_counts(date(year, 1, 1), date(year, 12, 31))
+            self._year_chambers[year] = {c for (c, _d) in counts if c}
+        return self._year_chambers[year]
+
     def known_ids(self, ids: list[str]) -> set[str]:
         if self.known:
             from_file = {i for i in ids if i in self.known.ids}
@@ -240,6 +268,9 @@ class Collector:
                 break
             items.extend(result.items)
             page += 1
+        return self._fetch_missing(items, day)
+
+    def _fetch_missing(self, items: list[BedestenItem], day: date) -> int:
         known = self.known_ids([i.document_id for i in items])
         missing = [i for i in items if i.document_id not in known]
         saved = 0
@@ -254,11 +285,64 @@ class Collector:
                 continue
             saved += 1
             if self.known:
-                self.known.add(day, item.document_id)
+                self.known.add(item.decision_date or day, item.document_id, item.chamber)
             self.fetched += 1
             if self.fetched % 25 == 0:
                 self.report(day)
         return saved
+
+    # -- birim (daire) düzeyinde tarama ------------------------------------------------------
+    # Gün gün tarama, eksiği 4 olan 5000 kararlık günde bile 50 liste sayfası ister. Portal `birimAdi` süzgecini
+    # destekler: ay+birim toplamı 1 istektir. Yalnız bizdekinden fazla olan birimlerde aralık ikiye bölünerek
+    # (bizdeki sayıyla karşılaştırılarak) eksik daraltılır ve ancak ≤100 kayıtlık aralıkta liste çekilir.
+    def scan_range(self, first: date, last: date, chamber: str, total: int,
+                   counts: dict[tuple[str, date], int]) -> None:
+        have = sum(n for (c, d), n in counts.items() if c == chamber and first <= d <= last)
+        if total <= have:
+            return
+        if total <= 100 or first == last:
+            items: list[BedestenItem] = []
+            page = 1
+            while len(items) < total:
+                result = self._call(self.client.search, self.kind, first, last, page=page, chamber=chamber)
+                if not result.items:
+                    break
+                items.extend(result.items)
+                page += 1
+            saved = self._fetch_missing(items, last)
+            logger.info("%s %s..%s: portalda %d, bizde %d, çekilen %d", chamber, first, last, total, have, saved)
+            return
+        mid = date.fromordinal((first.toordinal() + last.toordinal()) // 2)
+        left = self._call(self.client.search, self.kind, first, mid, page=1, page_size=1, chamber=chamber).total
+        self.scan_range(first, mid, chamber, left, counts)
+        self.scan_range(date.fromordinal(mid.toordinal() + 1), last, chamber, total - left, counts)
+
+    def collect_month_by_chamber(self, key: str, first_day: date, last_day: date, month_total: int) -> bool:
+        """Ayı birim birim tarar. Birim toplamları ay toplamını vermezse (bilinmeyen birim) False döner."""
+        counts = self.db_chamber_counts(first_day, last_day)
+        chambers = sorted(self.year_chambers(first_day.year) | {c for (c, _d) in counts if c})
+        progress = self.state.setdefault("chamber_state", {}).setdefault(key, {"totals": {}, "done": []})
+        for chamber in chambers:
+            if _stop_requested():
+                raise KeyboardInterrupt
+            if chamber not in progress["totals"]:
+                progress["totals"][chamber] = self._call(
+                    self.client.search, self.kind, first_day, last_day, page=1, page_size=1, chamber=chamber
+                ).total
+                self._save_state()
+        if sum(progress["totals"].values()) != month_total:
+            logger.info("%s: birim toplamları %d, ay toplamı %d; gün gün taranacak",
+                        key, sum(progress["totals"].values()), month_total)
+            self.state["chamber_state"].pop(key, None)
+            return False
+        for chamber in chambers:
+            if chamber in progress["done"]:
+                continue
+            self.scan_range(first_day, last_day, chamber, progress["totals"][chamber], counts)
+            progress["done"].append(chamber)
+            self._save_state()
+        self.state["chamber_state"].pop(key, None)
+        return True
 
     def report(self, day: date) -> None:
         minutes = (time.monotonic() - self.started) / 60
@@ -283,7 +367,11 @@ class Collector:
         if done_at and recent and time.time() - done_at < 6 * 3600:
             return
         counts = self.db_day_counts(first_day, last_day)
-        if self.total(first_day, last_day) <= sum(counts.values()):
+        month_total = self.total(first_day, last_day)
+        if month_total <= sum(counts.values()):
+            self._finish(key)
+            return
+        if self.by_chamber and self.collect_month_by_chamber(key, first_day, last_day, month_total):
             self._finish(key)
             return
         day = last_day
@@ -324,6 +412,8 @@ def main() -> None:
     parser.add_argument("--from-year", type=int, default=date.today().year, help="en yeni yıl")
     parser.add_argument("--to-year", type=int, default=2000, help="en eski yıl")
     parser.add_argument("--interval", type=float, default=4.5, help="başlangıç istek aralığı (sn); 4,4-6 sn arasında hafifçe ayarlanır")
+    parser.add_argument("--by-chamber", action="store_true",
+                        help="eksik ayı birim (daire) toplamlarıyla daralt; gün gün listelemeden çok daha az istek")
     parser.add_argument("--known-file", help="bizde olan kararların listesi (TSV: tarih, id; .gz olabilir); yalnız eksikleri çeker")
     args = parser.parse_args()
 
@@ -344,7 +434,7 @@ def main() -> None:
     with psycopg.connect(url, autocommit=True) as connection:
         connection.execute("SET statement_timeout = '120s'")
         known = KnownFile(args.known_file, args.to_year, args.from_year) if args.known_file else None
-        collector = Collector(args.source, BedestenClient(min_interval=args.interval), connection, known)
+        collector = Collector(args.source, BedestenClient(min_interval=args.interval), connection, known, args.by_chamber)
         try:
             for year in range(args.from_year, args.to_year - 1, -1):
                 for month in range(12, 0, -1):
