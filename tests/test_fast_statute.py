@@ -116,3 +116,23 @@ def test_pipeline_skips_expensive_branches_but_retries_if_model_abstains(monkeyp
     assert calls['embed']==calls['full']==int(reject_fast_draft)
     assert calls['generate']==1+int(reject_fast_draft)
     assert response.search_summary['research_deferred'] is not reject_fast_draft
+
+
+def test_reinstatement_deadline_is_answered_from_the_current_statute_not_from_old_decisions():
+    # Usul 2017'de değişti (önce arabulucu). Sözcük araması yalnız eski usulü anlatan 2015-2016 kararlarını getiriyordu.
+    from api.ai.relevance import passage_relevant, question_intent
+
+    for question in ("İşe iade davası açma süresi nedir?", "İşe iade için ne zaman başvurmam gerekir?", "İşe iade davası kaç gün içinde açılır?"):
+        intent = question_intent(question)
+        assert intent is not None and intent.statute == ("4857", "20"), question
+        assert fast_reference(question) == ("4857", "20"), question
+    # Süre sormayan işe iade sorusu bu maddeye kilitlenmez; içtihat isteyen soru hızlı yola girmez.
+    assert question_intent("İşe iade davasında ispat yükü kimdedir?") is None
+    assert fast_reference("İşe iade davası açma süresi hakkında Yargıtay kararları nelerdir?") is None
+
+    question = "İşe iade davası açma süresi nedir?"
+    mediation = "İş sözleşmesi feshedilen işçi, fesih bildiriminin tebliği tarihinden itibaren bir ay içinde işe iade talebiyle arabulucuya başvurmak zorundadır."
+    lawsuit = "Arabuluculuk faaliyeti sonunda anlaşmaya varılamaması hâlinde, son tutanağın düzenlendiği tarihten itibaren, iki hafta içinde iş mahkemesinde dava açılabilir."
+    burden = "Feshin geçerli bir sebebe dayandığını ispat yükümlülüğü işverene aittir."
+    assert passage_relevant(question, mediation) and passage_relevant(question, lawsuit)
+    assert not passage_relevant(question, burden)

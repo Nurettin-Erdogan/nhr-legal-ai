@@ -29,6 +29,7 @@ const model = compile("../src/lib/consulted-sources.ts");
 const scope = compile("../src/lib/document-scope.ts");
 const { ConsultedSourceList } = compile("../src/components/ChatCitations.tsx", {
   "@/lib/document-scope": scope,
+  "@/lib/citation-groups": compile("../src/lib/citation-groups.ts"),
 });
 
 const official = {

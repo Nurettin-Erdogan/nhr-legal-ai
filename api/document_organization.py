@@ -1,0 +1,147 @@
+"""Belge listesinde üst veriye dayalı, yeniden aktarım gerektirmeyen düzenleme.
+
+Kategoriler içerik analizi veya hukuki değerlendirme değildir. UYAP evrak türü
+önceliklidir; bulunmuyorsa dosya adı kullanılır. Aynı esas numarasını taşıyan
+farklı birimler ayrı klasörlerdir; çalışma alanındaki dava ilişkisi değişmez.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+from uuid import UUID
+
+from fastapi import HTTPException
+
+CATEGORIES = {
+    "financial": "Makbuz ve mali belgeler",
+    "representation": "Vekâlet ve yetki belgeleri",
+    "expert": "Bilirkişi ve raporlar",
+    "notice": "Tebligatlar",
+    "petition": "Dilekçeler ve başvurular",
+    "decision": "Kararlar ve kesinleşme",
+    "minutes": "Tutanak ve duruşma belgeleri",
+    "enforcement": "İcra ve takip belgeleri",
+    "correspondence": "Yazışmalar ve müzekkereler",
+    "attachment": "Ekler",
+    "other": "Diğer / türü belirsiz",
+}
+
+# Sabit düzenli ifadeler; kullanıcı girdisi SQL'e eklenmez. Dosya adındaki
+# ASCII temizleme artıkları (O_deme, I_cra gibi) boşlukları kaldırarak eşleşir.
+_RULES = (
+    ("financial", "makbuz|harc|dekont|masraf|tahsilat|reddiyat"),
+    ("representation", "vekalet|yetkibelgesi"),
+    ("expert", "bilirkisi|rapor"),
+    ("notice", "teblig|mazbata"),
+    ("decision", "karar|ilam|kesinlesme"),
+    ("petition", "dilekce|basvuru|itiraz|istinaf|temyiz|layiha"),
+    ("minutes", "tutanak|durusma|tensip"),
+    ("enforcement", "haciz|odemeemri|odemeicraemri|icraemri|takip|satis"),
+    ("petition", "cevap|talep|beyan"),
+    ("correspondence", "muzekkere|yazisma|dosyagonderme|talimat|yazi"),
+    ("attachment", "^ek[0-9]*$|^ek[0-9]+[.]"),
+)
+_CATEGORY_SQL = "CASE " + " ".join(
+    f"WHEN kind ~ '{pattern}' THEN '{category}'" for category, pattern in _RULES
+) + " ELSE 'other' END"
+
+
+def folder_key(origin: str, file_no: str | None, birim: str | None) -> str:
+    return json.dumps([origin, file_no, birim], ensure_ascii=False, separators=(",", ":"))
+
+
+def parse_folder(value: str) -> tuple[str, str | None, str | None]:
+    try:
+        parts = json.loads(value)
+    except (ValueError, TypeError):
+        parts = None
+    if (
+        not isinstance(parts, list)
+        or len(parts) != 3
+        or parts[0] not in ("uyap", "manual")
+        or any(part is not None and not isinstance(part, str) for part in parts[1:])
+        or any(isinstance(part, str) and len(part) > 200 for part in parts[1:])
+    ):
+        raise HTTPException(status_code=422, detail="Geçersiz belge klasörü")
+    return tuple(parts)
+
+
+def organized_documents(
+    connection: Any, owner: UUID, *, q: str, source: str, category: str,
+    folder: str, order: str, offset: int, limit: int, summary_only: bool = False,
+) -> dict[str, Any]:
+    if category and category not in CATEGORIES:
+        raise HTTPException(status_code=422, detail="Geçersiz belge kategorisi")
+    selected_folder = parse_folder(folder) if folder else None
+    term = q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = f"%{term}%"
+    # RLS'e ek açık sahiplik ve aktif-belge filtresi: sayımlar da yalnız sahibinindir.
+    cte = """WITH matched AS (
+        SELECT id, file_name, storage_path, size_bytes, source, uyap_file_no, uyap_birim,
+               doc_type, doc_date, case_id, created_at,
+               NULLIF(btrim(uyap_file_no), '') AS folder_no,
+               NULLIF(btrim(uyap_birim), '') AS folder_birim,
+               CASE WHEN source IN ('uyap', 'uyap-avukat-eklentisi', 'uyap-extension') THEN 'uyap' ELSE 'manual' END AS origin,
+               regexp_replace(translate(lower(COALESCE(NULLIF(btrim(doc_type), ''),
+                   regexp_replace(regexp_replace(file_name, '^[0-9a-f]{12,64}[-_]', '', 'i'), '[.][^.]+$', ''))),
+                   'çğıöşüİ', 'cgiosui'), '[^a-z0-9.]', '', 'g') AS kind
+        FROM office_case_documents
+        WHERE owner_id = %s AND deleted_at IS NULL AND
+            (file_name ILIKE %s ESCAPE '\\' OR uyap_file_no ILIKE %s ESCAPE '\\'
+             OR uyap_birim ILIKE %s ESCAPE '\\' OR doc_type ILIKE %s ESCAPE '\\')
+    ), categorized AS (SELECT *, """ + _CATEGORY_SQL + " AS category FROM matched) "
+    params: list[Any] = [owner, pattern, pattern, pattern, pattern]
+    base_where = "TRUE"
+    if source != "all":
+        base_where += " AND origin = %s"
+        params.append(source)
+    # Facet sayımları sayfalama öncesinde; ilk 50 belge bütün arşiv gibi sunulmaz.
+    facets = connection.execute(
+        cte + "SELECT origin, folder_no, folder_birim, category, count(*) AS n "
+        "FROM categorized WHERE " + base_where +
+        " GROUP BY origin, folder_no, folder_birim, category "
+        "ORDER BY origin DESC, folder_birim NULLS LAST, folder_no NULLS LAST, category",
+        tuple(params),
+    ).fetchall()
+    folders: dict[str, dict] = {}
+    counts: dict[str, int] = {}
+    total = 0
+    for item in facets:
+        key = folder_key(item["origin"], item["folder_no"], item["folder_birim"])
+        group = folders.setdefault(key, {
+            "key": key, "source": item["origin"], "file_no": item["folder_no"],
+            "birim": item["folder_birim"], "count": 0,
+            "matching_count": 0,
+        })
+        group["count"] += item["n"]
+        counts[item["category"]] = counts.get(item["category"], 0) + item["n"]
+        if (not category or item["category"] == category) and (not folder or key == folder_key(*selected_folder)):
+            total += item["n"]
+            group["matching_count"] += item["n"]
+    where = base_where
+    if category:
+        where += " AND category = %s"
+        params.append(category)
+    if selected_folder:
+        where += " AND origin = %s AND folder_no IS NOT DISTINCT FROM %s AND folder_birim IS NOT DISTINCT FROM %s"
+        params.extend(selected_folder)
+    sorting = {
+        "recent": "created_at DESC, id DESC",
+        "date_desc": "doc_date DESC NULLS LAST, created_at DESC, id DESC",
+        "date_asc": "doc_date ASC NULLS LAST, created_at ASC, id ASC",
+    }[order]
+    rows = [] if summary_only else connection.execute(
+        cte + "SELECT id, file_name, storage_path, size_bytes, source, uyap_file_no, uyap_birim, "
+        "doc_type, doc_date, case_id, created_at, category, origin, folder_no, folder_birim "
+        "FROM categorized WHERE " + where + " ORDER BY " + sorting + " LIMIT %s OFFSET %s",
+        (*params, limit, offset),
+    ).fetchall()
+    for row in rows:
+        row["folder_key"] = folder_key(row.pop("origin"), row.pop("folder_no"), row.pop("folder_birim"))
+    return {
+        "rows": rows, "total": total, "folders": list(folders.values()),
+        "categories": [{"id": key, "label": label, "count": counts[key]}
+                       for key, label in CATEGORIES.items() if counts.get(key)],
+        "matched_total": sum(counts.values()),
+    }

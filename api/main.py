@@ -10,6 +10,7 @@ import psycopg
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.account import router as account_router
 from api.admin_audit import router as admin_audit_router
 from api.admin_ingestion import router as admin_ingestion_router
 from api.ai.providers import AIProviderError, LOCAL_OLLAMA_PROVIDERS, create_provider
@@ -22,6 +23,7 @@ from api.document_trash import purge_expired
 from api.documents import router as documents_router
 from api.legal import router as legal_router, warm_slow_counts
 from api.office import router as office_router
+from api.office_search import router as office_search_router
 from api.office_ai import router as office_ai_router
 from api.office_public import router as office_public_router
 from api.office_trash import router as office_trash_router
@@ -68,6 +70,22 @@ async def _purge_trash_forever() -> None:
         await asyncio.sleep(_TRASH_PURGE_INTERVAL_SECONDS)
 
 
+_REMINDER_MAIL_INTERVAL_SECONDS = 60
+
+
+async def _send_reminder_mails_forever() -> None:
+    """Zamanı gelen e-posta hatırlatmalarını dakikada bir gönderir (SMTP yoksa hiçbir şey yapmaz)."""
+    from api.reminder_mailer import send_due_reminders
+
+    await asyncio.sleep(45)
+    while True:
+        try:
+            await asyncio.to_thread(send_due_reminders)
+        except Exception:  # noqa: BLE001 - döngü hiçbir hatada durmamalı
+            logger.exception("Hatırlatma e-posta döngüsü hatası")
+        await asyncio.sleep(_REMINDER_MAIL_INTERVAL_SECONDS)
+
+
 _WARMUP_QUESTIONS = (
     "kira sözleşmesi tahliye ihtiyaç",
     "işçi kıdem tazminatı fesih",
@@ -95,17 +113,31 @@ def _warm_retrieval_cache() -> None:
         logger.exception("Arama ısınması başlatılamadı")
 
 
+def _warm_law_list() -> None:
+    """Mevzuat listesini açılışta bir kez çıkarır: Mevzuat sayfasına ilk giren kullanıcı ~20 saniye beklemesin."""
+    try:
+        from api.legal import _load_laws_cached
+
+        _load_laws_cached()
+    except Exception:  # noqa: BLE001 - ısınma denemesi; başarısızsa ilk istek listeyi kendi çıkarır
+        logger.info("Mevzuat listesi ısındırılamadı; ilk istekte yüklenecek")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     _warmup_local_model()
     purge_task = None
+    reminder_task = None
     if "pytest" not in sys.modules:
         threading.Thread(target=warm_slow_counts, name="corpus-stats-warmup", daemon=True).start()
         threading.Thread(target=_warm_retrieval_cache, name="retrieval-warmup", daemon=True).start()
+        threading.Thread(target=_warm_law_list, name="law-list-warmup", daemon=True).start()
         purge_task = asyncio.create_task(_purge_trash_forever())
+        reminder_task = asyncio.create_task(_send_reminder_mails_forever())
     yield
-    if purge_task is not None:
-        purge_task.cancel()
+    for task in (purge_task, reminder_task):
+        if task is not None:
+            task.cancel()
 
 
 app = FastAPI(
@@ -127,9 +159,11 @@ app.add_middleware(
 app.include_router(legal_router)
 app.include_router(ai_router)
 app.include_router(auth_router)
+app.include_router(account_router)
 app.include_router(projects_router)
 app.include_router(conversations_router)
 app.include_router(documents_router)
+app.include_router(office_search_router)
 app.include_router(office_router)
 app.include_router(office_trash_router)
 app.include_router(office_ai_router)

@@ -11,6 +11,7 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
+import { searchParamText, splitPathQuery } from "@/lib/path-query";
 
 type AnyProps = Record<string, unknown>;
 
@@ -33,7 +34,8 @@ export const Link = React.forwardRef<HTMLAnchorElement, LinkProps>(function Link
     return <a ref={ref} href={to} {...rest} />;
   }
   const Any = TanStackLink as unknown as React.ComponentType<AnyProps>;
-  return <Any ref={ref} to={to} {...(rest as AnyProps)} />;
+  // Sorgu ya da çapa taşıyan yol ("/dashboard/clients?q=…") yönlendiriciye parçalarına ayrılarak verilir.
+  return <Any ref={ref} {...splitPathQuery(to)} {...(rest as AnyProps)} />;
 });
 
 export interface NavLinkProps extends LinkProps {
@@ -72,7 +74,7 @@ export function useNavigate() {
         if (typeof window !== "undefined") window.location.href = to;
         return;
       }
-      (navigate as unknown as (opts: AnyProps) => void)({ to, replace: options?.replace });
+      (navigate as unknown as (opts: AnyProps) => void)({ ...splitPathQuery(to), replace: options?.replace });
     },
     [navigate],
   );
@@ -80,6 +82,13 @@ export function useNavigate() {
 
 export function useParams<T extends Record<string, string | undefined>>(): T {
   return useTanStackParams({ strict: false }) as unknown as T;
+}
+
+/** Adresteki tek bir sorgu değerini metin olarak verir (yoksa boş metin); adres değişince yeniden okunur. */
+export function useSearchParam(name: string): string {
+  return useRouterState({
+    select: (state) => searchParamText((state.location.search as Record<string, unknown> | undefined)?.[name]),
+  });
 }
 
 export function useLocation() {

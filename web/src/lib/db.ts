@@ -301,7 +301,8 @@ const authShim = {
       .filter(Boolean)
       .join(" ");
     try {
-      const result = await register(credentials.email, credentials.password, name);
+      // Bu uyumluluk yolu onay kutusu göstermez: şart onayı gönderilmez ve sunucu kaydı reddeder (kayıt, formlardan yapılır).
+      const result = await register(credentials.email, credentials.password, name, "");
       return {
         data: { user: result.user, session: { access_token: result.access_token } },
         error: null,

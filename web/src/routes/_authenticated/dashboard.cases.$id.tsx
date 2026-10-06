@@ -6,16 +6,26 @@ import { CaseDocumentActions } from "@/components/CaseDocumentActions";
 import { CaseDocumentAsk } from "@/components/CaseDocumentAsk";
 import { CaseDocumentCompare } from "@/components/CaseDocumentCompare";
 import { CaseDocumentSummary } from "@/components/CaseDocumentSummary";
+import { CaseNotesEditor, CaseTaskComposer } from "@/components/CaseQuickActions";
 import { DocumentTrash } from "@/components/DocumentTrash";
 import { trashDocument } from "@/lib/document-trash";
 import { Button } from "@/components/ui/button";
-import { useParams, Link } from "@/lib/router-compat";
+import { useParams, useSearchParam, Link } from "@/lib/router-compat";
 import { loadCaseDetail, type CaseDetailData } from "@/lib/case-detail";
 import { db } from "@/lib/db";
 import { ArrowLeft, RefreshCw } from "lucide-react";
 
+/** Adresteki "?tab=…" değeri (genel aramadan gelen bağlantı) hangi sekmeyi açar. */
+const TAB_BY_PARAM: Record<string, "Evraklar" | "Görevler" | "Notlar" | "Takvim"> = {
+  evraklar: "Evraklar",
+  gorevler: "Görevler",
+  notlar: "Notlar",
+  takvim: "Takvim",
+};
+
 const CaseDetail = () => {
   const { id } = useParams<{ id: string }>();
+  const urlTab = useSearchParam("tab");
   const [result, setResult] = useState<{ id: string; data?: CaseDetailData; error?: string }>();
   const [revision, setRevision] = useState(0);
   const [downloading, setDownloading] = useState<string>();
@@ -141,20 +151,22 @@ const CaseDetail = () => {
             </p>
           )}
           <CaseDetailView
-            key={id}
+            key={`${id}:${urlTab}`}
             data={data}
             onDownload={download}
             downloading={downloading}
             downloadError={downloadError}
-            initialTab={savedCase === id ? "Evraklar" : "Özet"}
+            initialTab={savedCase === id ? "Evraklar" : (TAB_BY_PARAM[urlTab] ?? "Özet")}
             documentAsk={<CaseDocumentAsk key={id} caseId={id} />}
             documentCompare={<CaseDocumentCompare key={id} caseId={id} />}
             caseSummary={<CaseDocumentSummary key={id} caseId={id} />}
+            notesEditor={<CaseNotesEditor key={id} caseId={id} initial={data.record.notes} onSaved={() => setRevision((n) => n + 1)} />}
+            taskComposer={<CaseTaskComposer key={id} caseId={id} onSaved={() => setRevision((n) => n + 1)} />}
             trashing={trashing}
             onTrash={(documentId) => void moveToTrash(documentId)}
             documentTrash={
               <DocumentTrash
-                key={id}
+                key={`trash:${id}`}
                 caseId={id}
                 refreshKey={trashKey}
                 onChanged={() => setRevision((n) => n + 1)}
@@ -162,7 +174,7 @@ const CaseDetail = () => {
             }
             documentActions={
               <CaseDocumentActions
-                key={id}
+                key={`actions:${id}`}
                 caseId={id}
                 clientId={data.record.client_id}
                 onSaved={() => {

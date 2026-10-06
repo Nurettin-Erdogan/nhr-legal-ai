@@ -43,10 +43,76 @@ AXES: tuple[Axis, ...] = (
 )
 
 
-def plan(question: str) -> list[tuple[Axis, str]]:
-    """Soruyu eksenlere böler: her eksen için soru + kısa ek ifade. Kullanıcı sorusu olduğu gibi korunur."""
+def plan(question: str, hints: list[dict] | None = None) -> list[tuple[Axis, str]]:
+    """Soruyu eksenlere böler: her eksen için soru + kısa ek ifade.
+
+    Konu ipucu varsa (api.statute_hints) mevzuat ekseni doğrudan o maddeyi sorar ("6098 sayılı kanun madde 315"): arama, uzun bir
+    olay anlatımının sözcükleriyle madde bulamıyor ve bölüm "yeterli bilgi yok" diye boş kalıyordu (ölçüldü: 2026-10-05).
+    """
     base = " ".join(question.split())[: MAX_QUESTION_CHARS - 60].rstrip(" ?.")
-    return [(axis, f"{base} {axis.suffix}") for axis in AXES]
+    steps = []
+    for axis in AXES:
+        if axis.key == "mevzuat" and hints:
+            steps.append((axis, f"{hints[0]['law_no']} sayılı kanun madde {hints[0]['article_no']}"))
+        else:
+            steps.append((axis, f"{base} {axis.suffix}"))
+    return steps
+
+
+# --- Olay anlatımını araştırma konusuna indirgeme ---------------------------------------------------------------------------
+# "Kiracı 3 aydır kirayı ödemiyor, ihtarname çektik, 30 gün geçti. Tahliye davası açarsak risklerimiz neler?" gibi bir anlatım
+# aramaya olduğu gibi verilince üç eksen de boş dönüyordu. Model anlatımı tek cümlelik konuya indirger; sonuç kodla denetlenir:
+# yalnız anlatımdaki sözcükler kullanılabilir (konu, süre, kanun uydurulamaz). Güvenli değilse anlatımın kendisi kullanılır.
+
+CONDENSE_SYSTEM = (
+    "Bir avukatın anlattığı olayı, hukuk kaynaklarında aranacak TEK cümlelik konuya indir. Yalnız olayda geçen kavramları kullan; "
+    "yeni olgu, süre, sayı, kanun ya da madde EKLEME. Soru sorma, cevap verme, tavsiye yazma. En çok 20 sözcük. "
+    'Örnek: "Kiracı 3 aydır kirayı ödemiyor, ihtarname çektik. Tahliye davası açarsak riskler neler?" -> '
+    '{"topic":"Kiracının kira bedelini ödememesi nedeniyle ihtarname ve tahliye davası"}. '
+    'Yalnız JSON döndür: {"topic":"..."}'
+)
+_CONDENSE_FREE = frozenset(
+    "için icin olan olarak ilişkin iliskin hakkında nedeniyle sebebiyle halinde durumunda bakımından açısından yönünden ve ile veya "
+    "davası davasında dava talebi talep hukuki sorumluluk sorumluluğu koşulları şartları sonuçları riskleri riski".split()
+)
+_WORDS = __import__("re").compile(r"[0-9a-zçğıöşüâîû]+")
+
+
+def needs_condensing(question: str) -> bool:
+    """Uzun ya da birden çok cümleli anlatım: aramaya olduğu gibi verilmez."""
+    import re
+
+    text = " ".join(question.split())
+    return len(text) > 140 or len(re.findall(r"[.!?]\s+\S", text)) >= 1
+
+
+def accept_topic(candidate: object, narrative: str) -> str | None:
+    """Modelin önerdiği araştırma konusunu denetler; anlatımda olmayan içerik sözcüğü ya da sayı varsa reddeder."""
+    if not isinstance(candidate, str):
+        return None
+    topic = " ".join(candidate.split()).strip(" .")
+    if not 15 <= len(topic) <= 220 or "?" in topic or "[" in topic:
+        return None
+    fold = lambda text: text.replace("İ", "i").replace("I", "ı").lower()  # noqa: E731
+    source = " ".join(_WORDS.findall(fold(narrative)))
+    words = [word for word in _WORDS.findall(fold(topic)) if len(word) >= 4]
+    content = [word for word in words if word not in _CONDENSE_FREE]
+    if len(content) < 2:
+        return None
+    foreign = 0
+    for word in content:
+        if word.isdigit():
+            if word not in source:
+                return None  # anlatımda olmayan sayı (süre, madde no) eklenemez
+            continue
+        # Türkçe çekim kökü değiştirir ("ödemiyor" / "ödememesi"): ilk dört harf karşılaştırılır.
+        if word[:4] not in source:
+            foreign += 1  # "kira bedeli" gibi doğal bir eş anlatım olabilir; birden fazlası konu uydurmadır
+    if foreign > 1:
+        return None
+    if any(number not in source for number in __import__("re").findall(r"\d+", topic)):
+        return None
+    return topic
 
 
 @dataclass
@@ -89,6 +155,10 @@ class ResearchJob:
     started: float = 0.0
     saved_id: UUID | None = None
     conversation_id: UUID | None = None
+    # Anlatım araştırma konusuna indirgendiyse o konu (şeffaflık için raporda gösterilir).
+    topic: str | None = None
+    # Konu ipuçlarından gelen, resmî metniyle doğrulanmış maddeler (ilk bakılacaklar).
+    hints: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -100,6 +170,8 @@ class ResearchJob:
             "error": self.error,
             "steps": [step.as_dict() for step in self.steps],
             "saved_id": str(self.saved_id) if self.saved_id else None,
+            "topic": self.topic,
+            "hints": [{"reference": hint["reference"], "source_url": hint.get("source_url")} for hint in self.hints],
         }
 
 
@@ -150,10 +222,34 @@ def _citation_payload(citation: Any) -> dict[str, Any]:
     }
 
 
-async def run_job(job: ResearchJob, answer: AnswerFn, on_done: Callable[[ResearchJob], Awaitable[None]] | None = None) -> None:
-    """Planın her eksenini sırayla çalıştırır. Bir adımın hatası yalnız o adıma yazılır; diğer adımlar sürer."""
+async def run_job(
+    job: ResearchJob,
+    answer: AnswerFn,
+    on_done: Callable[[ResearchJob], Awaitable[None]] | None = None,
+    *,
+    condense: Callable[[str], Awaitable[str | None]] | None = None,
+    statute_hints: Callable[[str], Awaitable[list[dict[str, Any]]]] | None = None,
+) -> None:
+    """Planın her eksenini sırayla çalıştırır. Bir adımın hatası yalnız o adıma yazılır; diğer adımlar sürer.
+
+    `condense`: uzun olay anlatımını araştırma konusuna indirger (None dönerse anlatım aynen kullanılır).
+    `statute_hints`: konuya göre resmî doğrulanmış madde ipuçları.
+    """
     try:
-        steps = plan(job.question)
+        topic = job.question
+        if condense is not None and needs_condensing(job.question):
+            job.stage = "Olay anlatımı araştırma konusuna indirgeniyor…"
+            try:
+                topic = (await condense(job.question)) or job.question
+            except Exception:  # noqa: BLE001 - indirgeme başarısızsa anlatımın kendisi aranır
+                logger.warning("Araştırma konusu çıkarılamadı; anlatım aynen kullanılacak")
+        job.topic = topic if topic != job.question else None
+        if statute_hints is not None:
+            try:
+                job.hints = await statute_hints(job.question)
+            except Exception:  # noqa: BLE001 - ipucu yoksa plan arama ile sürer
+                logger.warning("Madde ipuçları alınamadı")
+        steps = plan(topic, job.hints)
         seen: set[str] = set()
         for index, (axis, question) in enumerate(steps, start=1):
             job.stage = f"{index}/{len(steps)}: {axis.title} aranıyor ve yazılıyor…"
@@ -202,9 +298,15 @@ async def run_job(job: ResearchJob, answer: AnswerFn, on_done: Callable[[Researc
 _BADGE = {"third_party": " (doğrulanmadı)", "user_document": " (kullanıcı belgesi)"}
 
 
-def render_markdown(question: str, steps: list[StepResult]) -> str:
+def render_markdown(question: str, steps: list[StepResult], *, topic: str | None = None, hints: list[dict[str, Any]] | None = None) -> str:
     """Raporu okunur metin olarak birleştirir. Model metni eklenmez; adım cevapları kendi atıflarıyla gelir."""
     lines = [f"# Derin araştırma raporu", "", f"**Soru:** {' '.join(question.split())}", ""]
+    if topic:
+        lines.extend([f"**Araştırılan konu:** {topic}", ""])
+    if hints:
+        lines.append("**İlk bakılacak maddeler** _(konuya göre otomatik öneri; resmî metinle doğrulandı, uygunluğunu avukat kontrol etmelidir)_")
+        lines.extend(f"- {hint['reference']}" for hint in hints)
+        lines.append("")
     lines.append(
         "_Bu rapor yalnız JurisAI hukuk korpusundaki kaynaklara dayanır; her bölümün cevabı kendi kaynaklarına karşı doğrulanmıştır. "
         "Doktrin ve karşılaştırmalı hukuk kaynakları korpusta yoktur. Hukuki görüş yerine geçmez._"

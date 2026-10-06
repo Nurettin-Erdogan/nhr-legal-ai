@@ -72,6 +72,8 @@ class RAGContext:
     # 'official': resmî portaldan doğrulanmış; 'third_party': üçüncü taraf arşiv, doğrulanmadı;
     # 'user_document': kullanıcının kendi yüklediği belge.
     verification: str = "official"
+    # Parçanın kaynak içindeki sırası (madde metni yeniden kurulurken kaynak sırası korunur).
+    chunk_index: int | None = None
 
     @property
     def kind_label(self) -> str:
@@ -228,7 +230,7 @@ def generate_grounded_answer(
     history: Sequence[HistoryTurn] = (),
 ) -> str:
     from api.ai.evidence_selection import (
-        SELECTION_INSTRUCTION, evidence_candidates, selection_prompt, render_selection,
+        evidence_candidates, selection_instruction, selection_prompt, render_selection,
         preserve_statutory_scope,
     )
 
@@ -238,7 +240,7 @@ def generate_grounded_answer(
     if not evidence:
         return "Kaynaklarda yeterli bilgi bulunmuyor."
     raw = provider.generate(
-        system_instruction=SELECTION_INSTRUCTION,
+        system_instruction=selection_instruction(contexts, evidence),
         prompt=selection_prompt(question, contexts, evidence, history),
     )
     # IDs resolve to the exact source sentences, never to arbitrary model prose.

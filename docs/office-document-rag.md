@@ -134,8 +134,73 @@ etkilediğinden ayrıca ölçülerek yapılmalıdır.
   korpus hiç aranmaz; belgelerde karşılığı yoksa "yeterli bilgi yok" denir. Önceden bu sorulara başka
   davaların kararlarından alıntıyla cevap verilebiliyordu (kullanıcıyı yanıltıcı). Hukuki değerlendirme ya da
   mevzuat belirtisi taşıyan sorular ("hak kazanır mı", "madde", "şartları", "Yargıtay"…) karışık aranır.
-- **Karışık aramada kullanıcının belgeleri önce gelir.** Belge ve hukuk kaynağı puanları aynı ölçekte
-  olmadığından (ts_rank / RRF) ortak puanla sıralama belgeleri geriye atıyordu.
+- **Karışık aramada kullanıcının belgesi ilk sıradadır.** Belge ve hukuk kaynağı puanları aynı ölçekte
+  olmadığından (ts_rank / RRF) ortak puanla sıralama belgeleri geriye atıyordu. (2026-10-06: iki liste artık
+  dönüşümlü dizilir; ayrıntı aşağıda "güncel kurallar" bölümünde.)
 - **İndeksleme bağlanınca başlar.** Belge davaya bağlandığında (ve durum uç noktası hiç işlenmemiş belge
   görünce) arka planda indekslenir; önceden yalnız ilk soruda yetişmeye çalışılıyor, "Bekliyor" öylece kalıyordu.
 - Arayüz: belge bağlayınca açılır liste yenilenir, bağlanan belge listeden düşer.
+
+## Dava sohbetinde kaynak seçimi: güncel kurallar (2026-10-06)
+
+Ölçülen kusurlar: (1) dava sekmesinde "Depozito tutarı nedir?" sorusu kullanıcının sözleşmesindeki 37.000 TL yerine
+başka bir davanın kararındaki tutarla cevaplandı; (2) "İhtarnamede ne kadar süre verilmiş?" sorusu başka bir
+mahkemenin kararındaki "10 gün" ile cevaplandı; (3) doğru cevabın yanında tek bir konu dışı cümle seçilince cevabın
+tamamı 422 ile reddedildi; (4) "Tarih: 10.04.2025" gibi satırlar hiç kanıt olamıyordu. Kurallar:
+
+**1. Hangi kaynaklara bakılır** (`api/ai/pipeline.py::_retrieve`, `api/ai/case_questions.py`, `api/ai/relevance.py`)
+
+| Durum | Aranan |
+| --- | --- |
+| Soru dosyaya özgü bir olgu soruyor (taraf, bilirkişi, "ihtarnamede…", telefon, IBAN…) ve hukuki değerlendirme istemiyor | Yalnız dava belgeleri |
+| Soru bir belgeyi adıyla gösteriyor ve dosyada o adı taşıyan belge var ("ihtarnamede" ↔ `ihtarname.txt` / başlık `İHTARNAME`) | Yalnız **o** belge; hukuki değerlendirme de isteniyorsa o belge + hukuk kaynakları |
+| Hukuki değerlendirme istemeyen sorunun konusu belgelerde geçiyor ("Depozito tutarı nedir?") | Yalnız dava belgeleri |
+| Diğerleri (mevzuat/içtihat/değerlendirme: "madde", "uygun mu", "edilebilir mi", "risk"…) | Belgeler + hukuk kaynakları, **sırayla birer birer** |
+
+- Karışık aramada belgeler ve hukuk kaynakları dönüşümlü dizilir. Eskiden belgeler önce gelirdi; çok belgeli davada
+  modele giden kaynakların tamamı belge oluyor, hukuki soru hiçbir hukuk kaynağına ulaşamıyordu.
+- Karışık aramada sorunun konusuna uyan **resmî doğrulanmış kanun maddesi** hukuk kaynaklarının başına eklenir
+  (`_case_statute_contexts`, tablo: `api/statute_hints.py`). Konu önce sorudan, soruda yoksa sorunun adıyla gösterdiği
+  belgeden çıkarılır (bütün dosyadan değil). Örnek: "İhtarnamede verilen süre kanuna uygun mu?" → TBK m. 315.
+  Madde yalnız adaydır; cümle alaka süzgecinden ve kaynak-destek denetiminden geçer, hiçbir metin üretilmez.
+- Yalnız belgelerden cevaplanan soruda yanıt `document_scope.file_only = true` taşır; arayüz "kanun ve içtihat
+  kaynaklarına bakılmadı" notunu gösterir (`web/src/lib/document-scope.ts`).
+
+**2. Belgeden kanıt birimleri** (`api/ai/source_support.py::source_sentences`)
+
+Kullanıcı belgesinde paragraf sınırı her zaman birim sınırıdır; paragraf içinde başlık ve "Etiket: değer" satırları
+ayrı birimdir, diğer satırlar bir öncekine eklenir (PDF'de cümle satır sonunda bölünür). Belge parçaları paragraf
+sınırında kesildiği için son satır da tamdır. Hukuk kaynaklarında eski kural (yalnız tam cümle, kuyruk yok) değişmedi.
+Kanıt seçimi ve destek denetimi aynı listeyi kullanır: etiketi bir satırdan, değeri başka satırdan alan birleştirme
+kaynakta bulunmadığı için reddedilir.
+
+**3. Belge adı ve cevap türü** (`document_passage_relevant`, `document_hint`)
+
+Sorudaki belge adı cümlenin içinde değil belgenin adında/başlığında geçer; o sözcük belgeyi seçer, cümlede aranmaz.
+Belge açıkça gösterilmişse ("…de/da", "…e göre") ve soru süre/tarih/tutar soruyorsa, o türden değer taşıyan cümle
+alakalı sayılır ("30 gün içinde ödenmesi"). Ad benzerliği tek başına bu indirimi vermez ("kira" ↔ "kira sözleşmesi").
+
+**4. Seçim talimatı** (`evidence_selection.selection_instruction`)
+
+Adayların tamamı kullanıcı belgesindense belgeye özel talimat kullanılır. Genel talimat hukuk kaynakları içindir
+("somut olay tespitleri genel kural değildir") ve model onu belgedeki olguya uygulayıp tek doğru satırı seçmiyordu.
+Model yine yalnız kimlik seçer; metin yazmaz.
+
+**5. Tek satır yüzünden ret yok** (`verification.prune_rejected_lines`)
+
+Taslak yalnız kaynaktan aynen alınmış cümlelerden oluşur. Bir satır denetimden geçmezse (konu dışı ya da
+desteklenmeyen) o satır çıkarılır ve kalan metin **baştan, aynı denetimle** doğrulanır. Yalnız çıkarma yapılır;
+uydurma atıf işareti ya da "birincil mevzuata dayanmıyor" gibi satırla giderilemeyen gerekçelerde cevap eskisi
+gibi reddedilir. Bu kural genel sohbet için de geçerlidir.
+
+**6. Yükleme sonrası okuma**
+
+Dosya penceresinden yüklenen belge genel tablo ucundan eklenir; kayıt kalıcı olduktan sonra metni arka planda
+okunur (`api/office.py::query_table`). Okunan belgenin ilk 1500 karakteri `content_excerpt` alanına yazılır; belge
+seçme listeleri "metni var mı" bilgisini buradan okur, okuma sürerken "metni okunuyor…" gösterir.
+
+Bilinen sınır: eşleşme sözcük tabanlıdır. "İhtarnameyi kim çekmiş?" ↔ "Keşideci: …" gibi eş anlamlı ifadeler
+eşleşmez ve "yeterli bilgi yok" döner (yanlış cevap değil). Hukuki sorularda da kanun cümlesi sorunun sözcüklerini
+taşımıyorsa (ör. "tahliye" ↔ "sona erdirebilir") aday olamaz.
+
+Testler: `tests/test_document_units.py`, `tests/test_document_relevance.py`, `tests/test_case_questions.py`.

@@ -77,12 +77,20 @@ function fake(overrides = {}) {
           query.limit = n;
           return this;
         },
+        range(from, to) {
+          query.offset = from;
+          query.limit = to - from + 1;
+          return this;
+        },
         maybeSingle() {
           query.single = true;
           return this;
         },
         then(resolve, reject) {
-          return Promise.resolve(responses[table]).then(resolve, reject);
+          const result = responses[table];
+          return Promise.resolve(query.offset !== undefined && Array.isArray(result.data)
+            ? { ...result, data: result.data.slice(query.offset, query.offset + query.limit) }
+            : result).then(resolve, reject);
         },
       };
     },
@@ -112,7 +120,7 @@ test("case and all sections use exact IDs, explicit columns and bounded queries"
     if (query.table === "clients") assert.deepEqual(query.filters, [["id", clientId]]);
     else {
       assert.deepEqual(query.filters, [["case_id", id]]);
-      assert.equal(query.limit, 51);
+      assert.equal(query.limit, query.table === "case_documents" ? 1000 : 51);
     }
   }
 });
@@ -158,6 +166,15 @@ test("large sections explicitly disclose the 50 row window", async () => {
   );
   assert.match(html, /Son 50 kayıt/);
   assert.doesNotMatch(html, /Görev 50</);
+});
+test("all UYAP case documents load in bounded batches, not only the first 50", async () => {
+  const documents = Array.from({ length: 1051 }, (_, i) => ({ id: `doc-${i}`, file_name: `evrak-${i}.pdf` }));
+  const client = fake({ case_documents: { data: documents, error: null } });
+  const data = await model.loadCaseDetail(id, client);
+  assert.equal(data.documents.rows.length, 1051);
+  assert.equal(data.documents.hasMore, false);
+  assert.deepEqual(client.requests.filter(x => x.table === "case_documents").map(x => x.offset), [0, 1000]);
+  assert.equal(data.documents.rows.at(-1).id, "doc-1050");
 });
 test("summary uses actual records, no invented AI success or activities", async () => {
   const data = await model.loadCaseDetail(id, fake());

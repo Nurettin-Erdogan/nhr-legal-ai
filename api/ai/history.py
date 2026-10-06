@@ -102,6 +102,7 @@ def record_exchange(
                     "grounded": answer.grounded,
                     "unverified_markers": list(answer.unverified_markers),
                     "as_of": as_of.isoformat() if as_of else None,
+                    **({"summary": list(answer.summary)} if answer.summary else {}),
                 }
             ),
         ),

@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 INDEX_ACTION = "office.document_index"
 MAX_INDEXABLE_BYTES = 50 * 1024 * 1024
 EMBED_BATCH_SIZE = 16
+EXCERPT_CHARS = 1500
 _GENERIC_FAILURE = "Belge işlenemedi."
 
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="office-index")
@@ -137,6 +138,14 @@ def _write_result(
                         for c in chunks
                     ],
                 )
+        if status == "ready" and chunks:
+            # Belge seçme listeleri "metni var mı" bilgisini bu alandan okur; elle yüklenen belgede boş kalıyordu.
+            excerpt = "\n\n".join(chunk.content for chunk in chunks)[:EXCERPT_CHARS]
+            connection.execute(
+                "UPDATE office_case_documents SET content_excerpt = %s "
+                "WHERE id = %s AND (content_excerpt IS NULL OR content_excerpt = '')",
+                (excerpt, office_document_id),
+            )
         record_event(
             connection,
             action=INDEX_ACTION,

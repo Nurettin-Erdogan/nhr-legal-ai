@@ -416,7 +416,7 @@ def test_registration_is_audited_without_email_or_name(auth):
 
     response = auth.client.post(
         "/api/auth/register",
-        json={"email": "yeni@ornek.com", "password": "yeterince-uzun-parola", "full_name": "Yeni Kullanıcı"},
+        json={"email": "yeni@ornek.com", "password": "yeterince-uzun-parola", "full_name": "Yeni Kullanıcı", "terms_accepted": True, "terms_version": "test"},
     )
 
     assert response.status_code == 201

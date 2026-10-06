@@ -7,9 +7,11 @@
 export const ALLOWED_EXTENSIONS = [
   "pdf",
   "udf",
+  "odt",
   "docx",
   "doc",
   "txt",
+  "html",
   "tif",
   "tiff",
   "jpg",
@@ -17,6 +19,10 @@ export const ALLOWED_EXTENSIONS = [
   "png",
   "xml",
   "eyp",
+  "zip",
+  "rar",
+  "xls",
+  "xlsx",
 ] as const;
 
 export const MAX_FILE_BYTES = 50 * 1024 * 1024; // bucket limiti ile aynı
@@ -26,7 +32,7 @@ export const MAX_ARCHIVE_EXPANDED_BYTES = 200 * 1024 * 1024;
 
 /** Elle içe aktarma ve eklenti aktarımı aynı UYAP kökenini taşır. */
 export const isUyapSource = (source: string | null | undefined) =>
-  source === "uyap" || source === "uyap-avukat-eklentisi";
+  source === "uyap" || source === "uyap-avukat-eklentisi" || source === "uyap-extension";
 
 export const extOf = (name: string) => name.split(".").pop()?.toLowerCase() ?? "";
 
@@ -40,7 +46,7 @@ export const safeFileName = (name: string) =>
     .split("/")
     .pop()!
     .normalize("NFKD")
-    .replace(/[^\w.\-]+/g, "_")
+    .replace(/[^\w.-]+/g, "_")
     .replace(/_{2,}/g, "_")
     .slice(-120) || "dosya";
 
@@ -95,7 +101,7 @@ const DOC_TYPES = [
 
 /** Dosya adı / metin içeriğinden UYAP alanlarını çıkarır (yalnızca tahmin). */
 export function parseUyapMeta(fileName: string, sample = ""): UyapMeta {
-  const hay = `${fileName.replace(/[_-]+/g, " ")} ${sample.slice(0, 4000)}`;
+  const hay = `${fileName.replace(/_+/g, " ")} ${sample.slice(0, 4000)}`;
 
   const fileNo = hay.match(/\b(20\d{2})\s*[/_-]\s*(\d{1,7})\b/) ?? null;
   const dateM =
@@ -108,6 +114,10 @@ export function parseUyapMeta(fileName: string, sample = ""): UyapMeta {
       dateM[0].length === 10 && dateM[1]!.length === 4
         ? `${dateM[1]}-${dateM[2]}-${dateM[3]}`
         : `${dateM[3]}-${dateM[2]}-${dateM[1]}`;
+    const [year, month, day] = doc_date.split("-").map(Number);
+    const parsed = new Date(Date.UTC(year!, month! - 1, day!));
+    if (parsed.getUTCFullYear() !== year || parsed.getUTCMonth() + 1 !== month || parsed.getUTCDate() !== day)
+      doc_date = null;
   }
 
   const lower = hay.toLowerCase();
@@ -125,6 +135,7 @@ export function parseUyapMeta(fileName: string, sample = ""): UyapMeta {
 export interface ArchiveEntry {
   name: string;
   data: Uint8Array;
+  error?: string;
 }
 
 /** UYAP'tan indirilen ZIP/EYP arşivini tarayıcıda açar. */
@@ -134,18 +145,31 @@ export async function readArchive(file: File): Promise<ArchiveEntry[]> {
   const buf = new Uint8Array(await file.arrayBuffer());
   let count = 0;
   let expanded = 0;
+  const rejected: ArchiveEntry[] = [];
+  const seen = new Set<string>();
   const unzipped = unzipSync(buf, {
     filter(info) {
       count++;
       expanded += info.originalSize;
       if (count > MAX_ARCHIVE_ENTRIES || expanded > MAX_ARCHIVE_EXPANDED_BYTES || info.originalSize > MAX_FILE_BYTES)
         throw new Error("UYAP arşivi güvenli açma sınırını aşıyor");
-      return !info.name.endsWith("/") && isAllowedFile(info.name);
+      if (info.name.endsWith("/")) return false;
+      if (seen.has(info.name)) throw new Error("Arşivde aynı yolda birden çok belge var; arşivi kontrol edin");
+      seen.add(info.name);
+      if (!isAllowedFile(info.name)) {
+        rejected.push({ name: info.name, data: new Uint8Array(), error: "Desteklenmeyen dosya türü" });
+        return false;
+      }
+      return true;
     },
   });
-  const entries: ArchiveEntry[] = [];
+  const entries: ArchiveEntry[] = [...rejected];
   for (const [name, data] of Object.entries(unzipped)) {
-    if (name.endsWith("/") || !data.length) continue;
+    if (name.endsWith("/")) continue;
+    if (!data.length) {
+      entries.push({ name, data, error: "Boş dosya" });
+      continue;
+    }
     if (!isAllowedFile(name)) continue;
     if (data.length > MAX_FILE_BYTES) continue;
     entries.push({ name, data });
@@ -160,7 +184,7 @@ export async function extractTextSample(name: string, bytes: Uint8Array): Promis
     if (ext === "txt" || ext === "xml") {
       return new TextDecoder().decode(bytes.slice(0, 20000));
     }
-    if (ext === "udf") {
+    if (ext === "udf" || ext === "odt") {
       const { unzipSync, strFromU8 } = await import("fflate");
       const inner = unzipSync(bytes, {
         filter(info) {

@@ -28,6 +28,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from psycopg import sql
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from api.audit import AuditContext, record_event
 from api.document_indexing import schedule_index
@@ -37,6 +38,8 @@ from api.db import authenticated_database_connection
 from api.account_export import build_export
 from api.case_summary import extract_facts, load_ready_documents
 from api.document_compare import CompareTooLarge, compare_texts
+from api.document_organization import organized_documents
+from api.uyap_cases import UYAP_SOURCES, link_document, lock_uyap_owner
 
 logger = logging.getLogger(__name__)
 
@@ -259,7 +262,14 @@ def _fetch_by_ids(
     ).fetchall()
 
 
-def _run(query: OfficeQuery, table: str, user_id: UUID, request: Request) -> OfficeResult:
+def _run(
+    query: OfficeQuery,
+    table: str,
+    user_id: UUID,
+    request: Request,
+    new_documents: list[UUID] | None = None,
+) -> OfficeResult:
+    """`new_documents` verilirse, eklenen ve dosyası olan büro belgelerinin kimlikleri buna yazılır (çağıran okutur)."""
     physical = _table(table)
     try:
         with authenticated_database_connection(str(user_id)) as connection:
@@ -304,6 +314,8 @@ def _run(query: OfficeQuery, table: str, user_id: UUID, request: Request) -> Off
                     raise HTTPException(status_code=400, detail="upsert için on_conflict gerekli")
                 inserted: list[UUID] = []
                 for row in batch:
+                    if table == "case_documents" and row.get("source") in UYAP_SOURCES:
+                        raise HTTPException(status_code=409, detail="UYAP belgesi güvenli aktarım uç noktasından yüklenmelidir.")
                     prepared = _prepare_values(row, table, columns, user_id, insert=True)
                     names = list(prepared)
                     statement = sql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
@@ -333,6 +345,8 @@ def _run(query: OfficeQuery, table: str, user_id: UUID, request: Request) -> Off
                         ).fetchone()
                         if found:
                             inserted[-1] = found["id"]
+                    if new_documents is not None and table == "case_documents" and prepared.get("storage_path"):
+                        new_documents.append(UUID(str(inserted[-1])))
                 affected = len(inserted)
                 audit_ids = inserted
                 rows = _fetch_by_ids(connection, physical, inserted, select)
@@ -747,27 +761,96 @@ def export_account_data(
 def case_document_facts(
     case_id: UUID,
     user_id: Annotated[UUID, Depends(current_user_id)],
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=200),
 ) -> dict[str, Any]:
     """Okunmuş dava belgelerinden belirleyici olgu tablosu (tarih, tutar, esas/karar ve kanun numarası); yapay zekâ yoktur."""
     try:
         with authenticated_database_connection(str(user_id)) as connection:
             _case_for_document(connection, case_id)
-            documents = load_ready_documents(connection, case_id)
-            total = connection.execute(
-                "SELECT count(*) AS n FROM office_case_documents WHERE case_id = %s AND deleted_at IS NULL", (case_id,)
-            ).fetchone()["n"]
+            # Doğrudan Python çağrıları da endpoint varsayılanlarını kullanır.
+            page_offset = offset if isinstance(offset, int) else 0
+            page_limit = limit if isinstance(limit, int) else 100
+            documents = load_ready_documents(connection, case_id, limit=page_limit, offset=page_offset)
+            counts = connection.execute(
+                "SELECT count(*) AS total, count(*) FILTER (WHERE d.status = 'ready') AS ready "
+                "FROM office_case_documents od LEFT JOIN documents d ON d.office_case_document_id = od.id "
+                "WHERE od.case_id = %s AND od.deleted_at IS NULL", (case_id,),
+            ).fetchone()
     except psycopg.Error as exc:
         logger.exception("Case document facts failed case=%s", case_id)
         raise HTTPException(status_code=503, detail="Belge olguları alınamadı") from exc
     return {
         "case_id": case_id,
-        "total": total,
-        "ready": len(documents),
+        "total": counts["total"],
+        "ready": counts["ready"],
+        "offset": page_offset,
+        "has_more": page_offset + len(documents) < counts["ready"],
         "documents": [
             {"id": item["id"], "file_name": item["file_name"], "ocr": item["ocr"], **extract_facts(item["text"])}
             for item in documents
         ],
     }
+
+
+@router.post("/uyap/import")
+async def import_uyap_document(user_id: Annotated[UUID, Depends(current_user_id)], request: Request) -> dict[str, Any]:
+    """Authenticated manual import uses the same atomic store as the extension.
+
+    No client owner, checksum or stable evidence identity is accepted. Filename/path
+    metadata remains a guess and cannot automatically create a case relationship.
+    """
+    from api.office_public import _schedule_index, _store, read_document_upload
+
+    fields, name, mime, data = await read_document_upload(request)
+    try:
+        sync_id = UUID(fields["syncRunId"]) if fields.get("syncRunId") else None
+    except ValueError as exc:
+        raise HTTPException(400, "Geçersiz aktarım kaydı") from exc
+    metadata_name = fields.get("path", name)
+    if len(metadata_name) > 600:
+        raise HTTPException(400, "Belge yolu çok uzun")
+    audit = AuditContext.from_request(request)
+    try:
+        outcome, document_id = await run_in_threadpool(
+            _store, user_id, file_name=name, data=data, source="uyap", mime_type=mime,
+            overrides={"metadata_name": metadata_name, "uyap_path": metadata_name[:400]},
+            dedupe_by_source=True, audit=audit, sync_run_id=sync_id,
+        )
+    except (psycopg.Error, OSError) as exc:
+        logger.exception("Elle UYAP aktarımı kaydedilemedi")
+        raise HTTPException(503, "Belge kaydedilemedi; yeniden deneyin") from exc
+    if outcome == "invalid_sync":
+        raise HTTPException(404, "Aktarım kaydı bulunamadı")
+    if outcome not in {"inserted", "duplicate"}:
+        raise HTTPException(409, "Belge aktarımı tamamlanamadı; mevcut kayıt korundu")
+    if outcome == "inserted":
+        _schedule_index(user_id, document_id, audit)
+    return {"ok": True, "duplicate": outcome == "duplicate", "id": str(document_id)}
+
+
+@router.post("/uyap/link-cases")
+def link_uyap_cases(user_id: Annotated[UUID, Depends(current_user_id)], request: Request,
+                    after: UUID | None = None) -> dict[str, Any]:
+    """Kullanıcının mevcut UYAP arşivini davalara bağla; elle kurulmuş ilişkileri asla ezme."""
+    counts = {"linked": 0, "ambiguous": 0, "client_conflict": 0, "missing_metadata": 0, "already_linked": 0, "unavailable": 0}
+    try:
+        with authenticated_database_connection(str(user_id)) as connection:
+            lock_uyap_owner(connection, user_id)
+            rows = connection.execute(
+                "SELECT id, uyap_file_no, uyap_birim FROM office_case_documents "
+                "WHERE owner_id = %s AND source = ANY(%s) AND case_id IS NULL AND deleted_at IS NULL "
+                "AND (%s::uuid IS NULL OR id > %s::uuid) ORDER BY id LIMIT 501",
+                (user_id, list(UYAP_SOURCES), after, after),
+            ).fetchall()
+            for row in rows[:500]:
+                outcome = link_document(connection, user_id, row["id"], file_no=row["uyap_file_no"],
+                                        birim=row["uyap_birim"], audit=AuditContext.from_request(request))
+                counts[outcome] += 1
+    except psycopg.Error as exc:
+        logger.exception("UYAP dava bağlantıları kurulamadı")
+        raise HTTPException(status_code=503, detail="UYAP dava bağlantıları kurulamadı") from exc
+    return {**counts, "has_more": len(rows) > 500, "next_cursor": str(rows[499]["id"]) if len(rows) > 500 else None}
 
 
 @router.post("/cases/{case_id}/documents/{document_id}/reindex", status_code=202)
@@ -801,8 +884,24 @@ def search_case_documents(
     q: str = Query(default="", max_length=100),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=100),
+    organized: bool = False,
+    summary_only: bool = False,
+    source: Literal["all", "uyap", "manual"] = "all",
+    category: Annotated[str, Query(max_length=60)] = "",
+    folder: Annotated[str, Query(max_length=1000)] = "",
+    order: Literal["recent", "date_desc", "date_asc"] = "recent",
 ) -> dict[str, Any]:
     """Sahibin tüm aktif belgelerinde sunucu tarafı arama ve sayfalama."""
+    if organized or summary_only or source != "all" or category or folder or order != "recent":
+        try:
+            with authenticated_database_connection(str(user_id)) as connection:
+                return organized_documents(
+                    connection, user_id, q=q, source=source, category=category,
+                    folder=folder, order=order, offset=offset, limit=limit, summary_only=summary_only,
+                )
+        except psycopg.Error:
+            logger.exception("Kategorili belge listesi yüklenemedi")
+            raise HTTPException(status_code=503, detail="Belge listesi şu an yüklenemiyor") from None
     term = q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     pattern = f"%{term}%"
     predicate = (
@@ -835,4 +934,11 @@ def query_table(
     user_id: Annotated[UUID, Depends(current_user_id)],
     request: Request,
 ) -> OfficeResult:
-    return _run(query, table, user_id, request)
+    new_documents: list[UUID] = []
+    result = _run(query, table, user_id, request, new_documents)
+    # Dosya penceresinden yüklenen belge bu genel yoldan eklenir; kayıt kalıcı olduktan sonra metni arka planda okunur.
+    # Aksi halde belge ilk soruya ya da dosya sayfası açılana kadar okunmadan kalıyor, belge seçme listeleri onu
+    # "metin çıkarılamadı" diye gösteriyordu (ölçüldü: 2026-10-06).
+    for document_id in new_documents:
+        _schedule_document_index(user_id, document_id, request)
+    return result

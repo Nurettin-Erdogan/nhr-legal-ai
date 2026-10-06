@@ -7,10 +7,11 @@ import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/components/AuthProvider";
 import { UyapDosyalarim } from "@/components/UyapDosyalarim";
+import { UyapCaseLinks } from "@/components/UyapCaseLinks";
 import { setExtensionKey } from "@/lib/uyap-bridge";
 import { supabase } from "@/integrations/supabase/client";
 import { expandDroppedFiles, importEntries, type ImportResult } from "@/lib/uyap-import";
-import { humanSize } from "@/lib/uyap";
+import { ALLOWED_EXTENSIONS, humanSize } from "@/lib/uyap";
 import { toast } from "sonner";
 import {
   AlertTriangle,
@@ -197,6 +198,7 @@ const UyapConnect = () => {
       subtitle="UYAP'ta kendi oturumunu aç; belgeleri JurisAI hesabına sen onaylayarak aktar."
     >
       <UyapDosyalarim />
+      <UyapCaseLinks />
 
       {/* Tarayıcı eklentisi */}
       <section className="mb-6 rounded-xl border bg-card p-5 space-y-4">
@@ -366,7 +368,7 @@ const UyapConnect = () => {
               {busy ? "Belgeler işleniyor..." : "Dosyaları buraya bırak veya seç"}
             </p>
             <p className="text-xs text-muted-foreground">
-              UYAP arşivi (.zip / .eyp) veya tek tek belgeler (.pdf, .udf, .docx, .tif, .jpg)
+              UYAP arşivi (.zip / .eyp) veya tek tek belgeler (.pdf, .udf, .odt, .docx, .html, .tif, .jpg)
             </p>
             <p className="text-xs text-muted-foreground">
               Tek dosya en fazla {humanSize(50 * 1024 * 1024)}
@@ -377,7 +379,7 @@ const UyapConnect = () => {
             ref={inputRef}
             type="file"
             multiple
-            accept=".zip,.eyp,.pdf,.udf,.docx,.doc,.txt,.xml,.tif,.tiff,.jpg,.jpeg,.png"
+            accept={ALLOWED_EXTENSIONS.map((ext) => `.${ext}`).join(",")}
             className="hidden"
             onChange={(e) => {
               const files = Array.from(e.target.files ?? []);

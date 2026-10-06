@@ -95,6 +95,7 @@ def test_pipeline_searches_the_case_scope_and_reports_coverage(monkeypatch):
 
     monkeypatch.setattr(pipeline, "authenticated_database_connection", fake_connection)
     monkeypatch.setattr(pipeline, "retrieve_contexts", lambda *a, **k: [])
+    monkeypatch.setattr(pipeline, "_case_statute_contexts", lambda *a, **k: [])
     monkeypatch.setattr(pipeline, "sweep_unindexed", lambda owner, **k: seen.update(sweep=(owner, k)))
     monkeypatch.setattr(
         pipeline, "case_document_coverage", lambda owner, case_id: {"case_id": str(case_id), "ready": 1}
@@ -118,7 +119,7 @@ def test_pipeline_searches_the_case_scope_and_reports_coverage(monkeypatch):
 
     assert seen["sweep"] == (user, {"case_id": case})
     assert seen["documents"]["case_id"] == str(case) and seen["documents"]["project_id"] is None
-    assert diagnostics["document_scope"] == {"case_id": str(case), "ready": 1}
+    assert diagnostics["document_scope"] == {"case_id": str(case), "ready": 1, "file_only": False}
 
 
 def test_pipeline_rejects_anonymous_case_questions():

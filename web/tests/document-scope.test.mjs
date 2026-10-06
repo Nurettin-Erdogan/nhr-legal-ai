@@ -28,6 +28,7 @@ function compile(relative, dependencies = {}) {
 const scope = compile("../src/lib/document-scope.ts");
 const { CitationList, DocumentScopeNotice } = compile("../src/components/ChatCitations.tsx", {
   "@/lib/document-scope": scope,
+  "@/lib/citation-groups": compile("../src/lib/citation-groups.ts"),
 });
 
 test("scope parsing is defensive about malformed payloads", () => {
@@ -148,4 +149,16 @@ test("scope and index parsing read the OCR flag defensively", () => {
     ],
   });
   assert.deepEqual(index.documents.map((item) => item.ocr), [true, false, false]);
+});
+
+test("a documents-only answer says legal sources were not consulted", () => {
+  const parsed = scope.parseDocumentScope({ total: 2, ready: 2, pending: 0, ocr: 0, failed: [], file_only: true });
+  assert.equal(parsed.fileOnly, true);
+  const summary = scope.describeDocumentScope(parsed);
+  assert.equal(summary.tone, "ok");
+  assert.match(summary.lines.join(" "), /yalnız dava belgelerinizden cevaplandı; kanun ve içtihat kaynaklarına bakılmadı/);
+
+  const mixed = scope.parseDocumentScope({ total: 2, ready: 2, pending: 0, ocr: 0, failed: [], file_only: false });
+  assert.equal("fileOnly" in mixed, false);
+  assert.doesNotMatch(scope.describeDocumentScope(mixed).lines.join(" "), /bakılmadı/);
 });

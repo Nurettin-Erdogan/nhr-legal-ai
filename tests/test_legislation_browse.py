@@ -125,3 +125,52 @@ def test_a_bare_law_number_matches_only_that_law():
     laws = [law("4857", "İŞ KANUNU"), law("34857", "İTHALATTA HAKSIZ REKABET TEBLİĞİ", "communique")]
     assert [item.law_no for item in browse.search_laws(laws, "4857", None)] == ["4857"]
     assert [item.law_no for item in browse.search_laws(laws, "4857 ", "communique")] == ["34857"]  # tür süzgeci o kanunu dışarıda bırakırsa içerenler aranır
+
+
+def test_an_expired_list_is_served_immediately_and_refreshed_in_the_background(monkeypatch):
+    """Mevzuat sayfası her saat başı ~20 sn bekletiyordu: süresi dolan liste hemen döner, yenisi arka planda çıkarılır."""
+    import threading
+    import time
+
+    browse.reset_cache()
+    old, new = [object()], [object(), object()]
+    started, release = threading.Event(), threading.Event()
+
+    def slow_loader():
+        started.set()
+        release.wait(5)
+        return new
+
+    assert browse.cached_laws(lambda: old) is old  # ilk çağrı listeyi çıkarır
+    monkeypatch.setattr(browse, "LAWS_TTL_SECONDS", 0.0)  # liste artık "süresi dolmuş"
+    assert browse.cached_laws(slow_loader) is old  # beklemeden eski liste
+    assert started.wait(5)
+    assert browse.cached_laws(slow_loader) is old  # yenileme sürerken ikinci yenileme başlatılmaz, yine eski liste
+    release.set()
+    for _ in range(100):
+        if browse._cache[1] is new:
+            break
+        time.sleep(0.02)
+    monkeypatch.setattr(browse, "LAWS_TTL_SECONDS", 3600.0)
+    assert browse.cached_laws(slow_loader) is new
+    browse.reset_cache()
+
+
+def test_a_failed_background_refresh_keeps_the_old_list(monkeypatch):
+    import time
+
+    browse.reset_cache()
+    old = [object()]
+
+    def failing():
+        raise RuntimeError("veritabanı yok")
+
+    assert browse.cached_laws(lambda: old) is old
+    monkeypatch.setattr(browse, "LAWS_TTL_SECONDS", 0.0)
+    assert browse.cached_laws(failing) is old
+    for _ in range(100):
+        if not browse._refreshing:
+            break
+        time.sleep(0.02)
+    assert browse.cached_laws(lambda: old) is old
+    browse.reset_cache()

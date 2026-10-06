@@ -220,5 +220,9 @@ class AIAnswerResponse(BaseModel):
     done_reason: str | None = None
     # Request-local candidate counts, never the total matching corpus size.
     search_summary: dict[str, Any] | None = None
+    # Takip sorusu önceki sorulara göre nasıl yorumlandı (yalnız arama içindir; kullanıcıya şeffaflık için gösterilir).
+    interpreted_question: str | None = None
+    # Uzun kanun maddesi cevabı için denetlenmiş kısa özet (yapay zekâ; dayanak aşağıdaki madde metnidir).
+    summary: list[str] = Field(default_factory=list)
     # Dava kapsamlı sorularda: davadaki kaç belgenin cevaba katılabildiği, hangilerinin okunamadığı.
     document_scope: dict[str, Any] | None = None

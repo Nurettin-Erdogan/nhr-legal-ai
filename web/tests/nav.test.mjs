@@ -28,7 +28,7 @@ test("every menu entry points at a real page and no page is listed twice", () =>
 
 test("the working pages are reachable from the menu and unfinished ones are not listed", () => {
   const listed = new Set(nav.NAV_ITEMS.map((item) => item.to));
-  for (const must of ["clients", "tasks", "calendar", "reminders", "document-analysis", "risk-analysis", "auto-summary", "semantic-search", "agent-research", "legislation"]) {
+  for (const must of ["clients", "tasks", "calendar", "reminders", "document-analysis", "risk-analysis", "auto-summary", "case-law", "document-processing", "agent-research", "legislation"]) {
     assert.ok(listed.has(`/dashboard/${must}`), `${must} menüde yok`);
   }
   // "henüz bağlı değil" sayfalar çalışıyormuş izlenimi vermesin
@@ -36,7 +36,7 @@ test("the working pages are reachable from the menu and unfinished ones are not 
     assert.ok(!listed.has(`/dashboard/${stub}`), `${stub} menüde olmamalı`);
   }
   // Menüde olmayan her dashboard sayfası ya bilinçli olarak dışarıda ya da yönlendirme/alt sayfadır
-  const known = new Set(["index", "route", "appointments", "research", "projects.index", "projects.$id", "cases.index", "cases.$id", "execution", "leads", "reports", "staff", "payments", "calls", "call-center", "modules"]);
+  const known = new Set(["index", "route", "appointments", "research", "semantic-search", "automation", "projects.index", "projects.$id", "cases.index", "cases.$id", "execution", "leads", "reports", "staff", "payments", "calls", "call-center", "modules"]);
   const unlisted = readdirSync(routesDir)
     .map((file) => file.replace(/^dashboard\./, "").replace(/\.tsx$/, ""))
     .filter((name) => !listed.has(`/dashboard/${name}`) && !known.has(name));
@@ -54,8 +54,27 @@ test("collapsed headings survive bad storage and never hide the page the user is
 
   const buro = nav.NAV_GROUPS[0];
   assert.equal(nav.visibleNavItems(buro, false, "/dashboard/cases").length, buro.items.length);
-  assert.deepEqual(nav.visibleNavItems(buro, true, "/dashboard/cases").map((item) => item.to), ["/dashboard/cases"]);
+  assert.deepEqual(nav.visibleNavItems(buro, true, "/dashboard/cases"), buro.items);
   assert.deepEqual(nav.visibleNavItems(buro, true, "/dashboard/ai"), []);
+});
+
+test("the whole active section stays expanded for every page and nested route", () => {
+  for (const group of nav.NAV_GROUPS) {
+    for (const item of group.items) {
+      for (const pathname of [item.to, `${item.to}/detail`]) {
+        const activePath = nav.activeNavPath(pathname);
+        if (activePath !== item.to) continue; // Ana Sayfa yalnız tam eşleşir.
+        assert.equal(nav.isNavGroupCollapsed(group, true, activePath), false);
+        assert.deepEqual(nav.visibleNavItems(group, true, activePath), group.items);
+        for (const other of nav.NAV_GROUPS.filter((entry) => entry !== group)) {
+          assert.equal(nav.isNavGroupCollapsed(other, true, activePath), true);
+          assert.deepEqual(nav.visibleNavItems(other, true, activePath), []);
+        }
+      }
+    }
+    assert.equal(nav.isNavGroupCollapsed(group, false, null), false);
+    assert.equal(nav.isNavGroupCollapsed(group, true, null), true);
+  }
 });
 
 test("the active entry is the longest matching path so similar names do not collide", () => {
@@ -65,7 +84,8 @@ test("the active entry is the longest matching path so similar names do not coll
   assert.equal(active("/dashboard/cases"), "/dashboard/cases");
   assert.equal(active("/dashboard/cases/2f1e"), "/dashboard/cases");
   assert.equal(active("/dashboard/case-law"), "/dashboard/case-law");
-  assert.equal(active("/dashboard/semantic-search"), "/dashboard/semantic-search");
+  assert.equal(active("/dashboard/document-processing"), "/dashboard/document-processing");
+  assert.equal(active("/dashboard/semantic-search"), null); // İçtihat sayfasına yönlendiren eski adres menüde yok
   assert.equal(active("/dashboard/legislation"), "/dashboard/legislation");
   assert.equal(active("/dashboard/projects/5"), null); // menüde olmayan alt sayfa: hiçbir girdi yanlış vurgulanmaz
   assert.equal(active("/dashboard/calendarx"), null);

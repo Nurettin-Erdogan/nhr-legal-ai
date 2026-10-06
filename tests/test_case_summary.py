@@ -128,8 +128,17 @@ def _text_of(prompt: str) -> str:
     return prompt.split('"""\n', 1)[1].split('\n"""', 1)[0]
 
 
+def _approve_all(prompt: str) -> str:
+    """Denetçi çağrısına "hepsi doğru" yanıtı (model denetimi ayrı testlerde sınanır)."""
+    import json
+
+    return json.dumps({"results": [True] * len(json.loads(prompt)["MADDELER"])})
+
+
 def _echo_generate(calls: list):
     async def generate(system, prompt):
+        if "denetçisisin" in system:
+            return _approve_all(prompt)
         calls.append(prompt)
         if "bölüm özetleri" in system:
             return "- Kıdem tazminatı 340.000 TL hesaplanmıştır."
@@ -148,10 +157,72 @@ def test_a_long_document_is_summarised_per_window_then_merged():
 
 def test_fabricated_model_output_yields_an_error_not_a_summary():
     async def liar(system, prompt):
+        assert "denetçisisin" not in system  # kod denetiminden madde geçmediği için model denetimi hiç çağrılmaz
         return "- Davacıya 999.999 TL ödenmiştir.\n- 6098 sayılı Kanun uygulanmıştır."
 
     result = asyncio.run(summary.summarize_document(uuid4(), "x.udf", SOURCE, ocr=False, generate=liar))
     assert result.bullets == [] and result.dropped == 2 and "doğrulanamadı" in result.error
+
+
+NOTICE = (
+    "İHTARNAME\nKeşideci: Ayşe Demir\nMuhatap: Mehmet Kaya\nKonu: 2025 yılı Ocak, Şubat ve Mart aylarına ait toplam 55.500 TL kira "
+    "borcunun 30 gün içinde ödenmesi, aksi halde TBK m. 315 uyarınca sözleşmenin feshedileceği ve tahliye davası açılacağı ihtarıdır."
+)
+
+
+def test_a_bullet_that_turns_an_otherwise_clause_into_a_positive_condition_is_dropped():
+    """Canlıda görüldü: "ödenmesi, aksi halde feshedileceği" → "ödenmesi halinde feshedileceği" (anlam tersine döner)."""
+    flipped = "Kira borcunun 30 gün içinde ödenmesi halinde sözleşmenin feshedileceği ve tahliye davası açılacağı uyarısı yapılmıştır."
+    assert summary.flips_otherwise(flipped, NOTICE) and not summary.bullet_supported(flipped, NOTICE)
+    for faithful in (
+        "Kira borcu 30 gün içinde ödenmezse sözleşmenin feshedileceği ve tahliye davası açılacağı ihtar edilmiştir.",
+        "Kira borcunun 30 gün içinde ödenmesi, aksi halde sözleşmenin feshedileceği ihtar edilmiştir.",
+        "Borç tutarı olarak toplam 55.500 TL belirtilmiştir.",
+    ):
+        assert not summary.flips_otherwise(faithful, NOTICE) and summary.bullet_supported(faithful, NOTICE)
+
+
+def test_true_bullets_are_not_dropped_for_their_own_reporting_verbs():
+    lease = "Aylık kira bedeli 18.500 TL olup her ayın 5'ine kadar ödenir. Depozito 37.000 TL'dir. Süre 1 yıldır."
+    assert summary.bullet_supported("Depozito tutarı 37.000 TL olarak belirlenmiştir.", lease)
+    assert summary.bullet_supported("Aylık kira bedeli 18.500 TL olup her ayın 5'ine kadar ödenmesi şarttır.", lease)
+    assert not summary.bullet_supported("Depozito tutarı 99.000 TL olarak belirlenmiştir.", lease)  # sayı denetimi aynen sürer
+
+
+def test_line_breaks_inside_a_paragraph_survive_windowing():
+    windows, coverage = summary.split_windows("Keşideci:  Ayşe Demir\nMuhatap: Mehmet Kaya\n\nKonu: kira")
+    assert windows == ["Keşideci: Ayşe Demir\nMuhatap: Mehmet Kaya\n\nKonu: kira"] and coverage == 1.0
+
+
+def test_the_model_checker_only_removes_bullets_and_fails_closed_on_unreadable_output():
+    bullets = ["Davalı duruşmaya gelmiştir.", "Bir sonraki duruşma 18.09.2025 tarihine bırakıldı."]
+    window = ["Davalı gelmedi. Bir sonraki duruşma 18.09.2025 tarihine bırakıldı."]
+
+    async def strict(system, prompt):
+        assert "denetçisisin" in system and "Davalı gelmedi" in prompt
+        return '{"results": [false, true]}'
+
+    assert asyncio.run(summary.check_bullets(bullets, window, strict)) == (["Bir sonraki duruşma 18.09.2025 tarihine bırakıldı."], 1)
+
+    async def broken(system, prompt):
+        return "üzgünüm, JSON yazamadım"
+
+    assert asyncio.run(summary.check_bullets(bullets, window, broken)) == ([], 2)
+
+    async def wrong_length(system, prompt):
+        return '{"results": [true]}'
+
+    assert asyncio.run(summary.check_bullets(bullets, window, wrong_length)) == ([], 2)
+
+
+def test_a_bullet_rejected_by_the_checker_is_counted_as_dropped():
+    async def generate(system, prompt):
+        if "denetçisisin" in system:
+            return '{"results": [false]}'
+        return "- Kıdem tazminatı 340.000 TL hesaplanmıştır."
+
+    result = asyncio.run(summary.summarize_document(uuid4(), "x.udf", SOURCE, ocr=False, generate=generate))
+    assert result.bullets == [] and result.dropped == 1 and "doğrulanamadı" in result.error
 
 
 def test_empty_text_is_reported():
@@ -182,6 +253,8 @@ def world(db, monkeypatch):  # noqa: F811
     state = SimpleNamespace(prompts=[], gate=None, fail_for=set(), reply=None)
 
     async def fake_generate(system, prompt):
+        if "denetçisisin" in system:  # model denetimi ayrı testlerde sınanır; burada kod denetimini geçenler onaylanır
+            return _approve_all(prompt)
         state.prompts.append(prompt)
         if state.gate is not None:
             await state.gate.wait()
@@ -336,3 +409,20 @@ def test_facts_endpoint_returns_table_for_ready_documents_and_hides_foreign_case
     with pytest.raises(HTTPException) as foreign:
         office.case_document_facts(case_id=case, user_id=world.bob)
     assert foreign.value.status_code == 404
+
+
+def test_a_validity_or_necessity_claim_absent_from_the_document_is_rejected():
+    # Belgede yalnız tutar yazıyor; özet buna "geçerlilik koşulu" anlamı ekleyemez.
+    from api.case_summary import adds_normative_term, bullet_supported
+
+    source = "Aylık kira bedeli 18.500 TL olup her ayın 5'ine kadar ödenir. Depozito 37.000 TL'dir. Kiracı, kiralananı alt kiraya veremez."
+    invented = "Kira sözleşmesinin geçerliliği için 37.000 TL tutarında depozito alınmıştır."
+    assert adds_normative_term(invented, source) and not bullet_supported(invented, source)
+    assert not bullet_supported("Depozitonun ödenmesi zorunludur ve tutarı 37.000 TL'dir.", source)
+    assert not bullet_supported("Kiracı 18.500 TL kira bedelini ödemekle yükümlüdür; aksi halde sözleşme hükümsüzdür.", source)
+    # Aynı bilgiyi niteleme eklemeden söyleyen madde geçer.
+    assert bullet_supported("Depozito tutarı 37.000 TL olarak belirlenmiştir.", source)
+    assert bullet_supported("Kiracı kiralananı alt kiraya veremez.", source)
+    # Belge nitelemeyi kendisi yapıyorsa madde de yapabilir.
+    conditional = "Sözleşme, depozitonun ödenmesi şartıyla geçerlidir. Depozito 37.000 TL'dir."
+    assert bullet_supported("Sözleşmenin geçerliliği 37.000 TL depozitonun ödenmesi şartına bağlıdır.", conditional)

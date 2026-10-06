@@ -124,6 +124,56 @@ def test_insert_forces_owner_and_reads_back_without_returning(monkeypatch):
     assert any(t.startswith("INSERT INTO activity_logs") or "activity_logs" in t for t, _ in executed)
 
 
+CASE_DOCUMENT_COLUMNS = {
+    "id": "uuid",
+    "owner_id": "uuid",
+    "file_name": "text",
+    "storage_path": "text",
+    "source": "text",
+    "deleted_at": "timestamptz",
+}
+
+
+def _insert_document(client, values):
+    return client.post("/api/office/case_documents", json={"op": "insert", "values": values})
+
+
+def test_document_added_from_the_file_dialog_is_scheduled_for_reading(monkeypatch, scheduled_indexing):
+    # Dosya penceresi belgeyi önce depoya yükler, sonra bu genel uçtan kaydını ekler; metni okunmadan kalmamalı.
+    client, _ = _client(monkeypatch, lambda text, params: [])
+    monkeypatch.setitem(office._column_cache, "office_case_documents", CASE_DOCUMENT_COLUMNS)
+    document_id = uuid4()
+
+    response = _insert_document(
+        client,
+        {"id": str(document_id), "file_name": "ihtarname.txt", "storage_path": f"{USER_ID}/ihtarname.txt", "source": "manual"},
+    )
+
+    assert response.status_code == 200, response.text
+    [(function, args, _)] = scheduled_indexing
+    assert function == "_index_and_embed" and args[:2] == (USER_ID, document_id)
+
+
+def test_document_row_without_a_stored_file_is_not_scheduled(monkeypatch, scheduled_indexing):
+    client, _ = _client(monkeypatch, lambda text, params: [])
+    monkeypatch.setitem(office._column_cache, "office_case_documents", CASE_DOCUMENT_COLUMNS)
+
+    assert _insert_document(client, {"file_name": "not.txt", "source": "manual"}).status_code == 200
+    assert scheduled_indexing == []
+
+
+def test_rejected_document_insert_is_never_scheduled(monkeypatch, scheduled_indexing):
+    client, _ = _client(monkeypatch, lambda text, params: [])
+    monkeypatch.setitem(office._column_cache, "office_case_documents", CASE_DOCUMENT_COLUMNS)
+
+    response = _insert_document(
+        client, {"file_name": "evrak.udf", "storage_path": f"{USER_ID}/evrak.udf", "source": "uyap-avukat-eklentisi"}
+    )
+
+    assert response.status_code == 409
+    assert scheduled_indexing == []
+
+
 def test_update_cannot_change_owner_or_id(monkeypatch):
     client, executed = _client(monkeypatch, lambda text, params: [])
 

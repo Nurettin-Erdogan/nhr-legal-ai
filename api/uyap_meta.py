@@ -17,6 +17,8 @@ from api.udf import extract_udf_text
 
 ALLOWED_EXTENSIONS = frozenset(
     {"pdf", "udf", "odt", "docx", "doc", "txt", "html", "tif", "tiff", "jpg", "jpeg", "png", "xml", "eyp"}
+    # ZIP ekleri güvenli sınırlar içinde indekslenir. Diğerleri yalnız saklanır.
+    | {"zip", "rar", "xls", "xlsx"}
 )
 MAX_FILE_BYTES = 50 * 1024 * 1024
 
@@ -68,7 +70,7 @@ def _valid_date(year: str, month: str, day: str) -> str | None:
 
 
 def parse_uyap_meta(file_name: str, sample: str = "") -> UyapMeta:
-    haystack = f"{re.sub(r'[_-]+', ' ', file_name)} {sample[:4000]}"
+    haystack = f"{re.sub(r'_+', ' ', file_name)} {sample[:4000]}"
     file_no = _FILE_NO_RE.search(haystack)
     doc_date = None
     dmy = _DATE_DMY_RE.search(haystack)

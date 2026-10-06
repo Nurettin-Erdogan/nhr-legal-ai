@@ -64,3 +64,26 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+
+  uyap-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NHR_BROWSER_TESTS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install isolated browser test dependencies
+        # Shared conftest also loads the API auth/indexing fixtures.
+        run: pip install -r requirements.txt playwright cryptography
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Test UYAP extension against local synthetic portals
+        run: python -m pytest tests/test_uyap_extension_browser.py -q --junitxml=uyap-browser-results.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uyap-browser-results
+          path: uyap-browser-results.xml

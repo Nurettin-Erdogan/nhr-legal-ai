@@ -102,25 +102,45 @@ def load_laws(connection) -> list[Law]:
     return laws
 
 
+_refreshing = False
+
+
+def _refresh_in_background(loader) -> None:
+    """Süresi dolan listeyi arka planda yeniler; kullanıcı beklemez, yenileme başarısızsa eski liste kalır."""
+    global _cache, _refreshing
+    try:
+        laws = loader()
+        with _lock:
+            _cache = (time.monotonic(), laws)
+    except Exception:  # noqa: BLE001 - yenileme en iyi çabadır; eski liste kullanılmaya devam eder
+        pass
+    finally:
+        _refreshing = False
+
+
 def cached_laws(loader) -> list[Law]:
-    """Bellekteki liste; süresi dolunca yeniden çıkarılır, çıkarım başarısızsa eski liste kullanılır."""
-    global _cache
+    """Bellekteki liste. Süresi dolmuşsa eski liste hemen döner ve liste arka planda yenilenir.
+
+    Çıkarım soğukta ~20 saniye sürüyor ve Mevzuat sayfası her saat başı (ve sunucu açılışından sonraki ilk girişte) bu kadar
+    bekletiyordu (ölçüldü: 2026-10-05). Yalnız hiç liste yokken (ilk çağrı) beklenir; açılışta `warm_laws` bunu da önceden yapar.
+    """
+    global _cache, _refreshing
     with _lock:
-        if _cache is not None and time.monotonic() - _cache[0] < LAWS_TTL_SECONDS:
-            return _cache[1]
-        try:
-            laws = loader()
-        except psycopg.Error:
-            if _cache is not None:
-                return _cache[1]
-            raise
+        cached = _cache
+        if cached is not None:
+            if time.monotonic() - cached[0] >= LAWS_TTL_SECONDS and not _refreshing:
+                _refreshing = True
+                threading.Thread(target=_refresh_in_background, args=(loader,), name="laws-refresh", daemon=True).start()
+            return cached[1]
+        laws = loader()
         _cache = (time.monotonic(), laws)
         return laws
 
 
 def reset_cache() -> None:
-    global _cache
+    global _cache, _refreshing
     _cache = None
+    _refreshing = False
 
 
 _REFERENCE = re.compile(r"(?<!\d)(\d{1,8})\s*(?:sayılı|sayili)?\s*.*?\b(?:m|md|madde)\.?\s*(\d{1,4}(?:\s*/\s*[A-Za-z])?)\b", re.IGNORECASE)

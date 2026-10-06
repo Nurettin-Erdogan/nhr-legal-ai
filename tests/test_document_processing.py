@@ -70,7 +70,7 @@ def test_extension_and_content_must_match():
     with pytest.raises(DocumentProcessingError, match="içerik PDF değil"):
         process_document("sahte.pdf", b"normal metin")
 
-    with pytest.raises(DocumentProcessingError, match="Yalnız PDF, DOCX, UDF, ODT, TXT, HTML ve görüntü"):
+    with pytest.raises(DocumentProcessingError, match="Yalnız PDF, DOCX, UDF, ODT, TXT, HTML, ZIP ve görüntü"):
         process_document("zararli.exe", b"MZ")
 
 

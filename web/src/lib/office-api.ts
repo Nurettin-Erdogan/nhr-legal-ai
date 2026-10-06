@@ -45,6 +45,42 @@ export interface OfficeSource {
   verification: string;
 }
 
+export interface UyapCaseLinks {
+  linked: number;
+  ambiguous: number;
+  client_conflict: number;
+  missing_metadata: number;
+  already_linked: number;
+  unavailable: number;
+  has_more: boolean;
+  next_cursor: string | null;
+}
+
+export const linkUyapCases = (after?: string | null) =>
+  post<UyapCaseLinks>(`/api/office/uyap/link-cases${after ? `?after=${encodeURIComponent(after)}` : ""}`, {});
+
+export async function importUyapDocument(name: string, data: Uint8Array, syncRunId?: string | null) {
+  const form = new FormData();
+  form.append("file", new Blob([new Uint8Array(data)], { type: "application/octet-stream" }), name.split("/").pop()!);
+  form.append("path", name);
+  if (syncRunId) form.append("syncRunId", syncRunId);
+  const token = inMemoryAccessToken();
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}/api/office/uyap/import`, {
+      method: "POST", credentials: "include", body: form,
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+  } catch {
+    throw new Error("Sunucuya ulaşılamadı. API servisinin çalıştığını kontrol edin.");
+  }
+  const payload = await response.json();
+  if (!response.ok) throw new Error(typeof payload.detail === "string" ? payload.detail : "Belge aktarımı başarısız");
+  if (payload.ok !== true || typeof payload.id !== "string" || typeof payload.duplicate !== "boolean")
+    throw new Error("Sunucudan geçersiz aktarım yanıtı geldi");
+  return payload as { ok: true; duplicate: boolean; id: string };
+}
+
 export interface ModuleResult {
   id: string;
   title: string;

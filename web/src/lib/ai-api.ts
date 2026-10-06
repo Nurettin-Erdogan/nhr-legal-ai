@@ -33,6 +33,10 @@ export interface ChatMessage {
   searchSummary?: SearchSummaryData;
   /** Dava kapsamlı cevapta: belgelerin ne kadarı cevaba katılabildi. */
   documentScope?: DocumentScope;
+  /** Takip sorusu önceki sorulara göre nasıl yorumlandı (yalnız canlı cevapta). */
+  interpretedQuestion?: string;
+  /** Uzun kanun maddesi cevabı için denetlenmiş kısa özet (yapay zekâ; dayanak madde metnidir). */
+  summary?: string[];
 }
 
 export interface ConversationSummary {
@@ -52,10 +56,13 @@ export interface AnswerResult {
   consulted_sources?: Citation[];
   search_summary?: SearchSummaryData;
   document_scope?: DocumentScope | null;
+  interpreted_question?: string | null;
+  summary?: string[];
 }
 
 export const STAGE_LABELS: Record<string, string> = {
   searching: "Kaynaklar aranıyor…",
+  summarizing: "Madde özetleniyor…",
   candidates_found: "Aday belgeler bulundu; kaynaklar kontrol ediliyor…",
   verifying_source: "Adaylar resmî kaynaklarla karşılaştırılıyor…",
   search_summary: "Kaynak seçimi tamamlandı…",
@@ -104,6 +111,7 @@ export async function getConversation(id: string): Promise<ChatMessage[]> {
       grounded: boolean | null;
       unverified_markers: string[];
       citations: Citation[];
+      summary?: string[];
     }>;
   }>(`/api/conversations/${id}`);
   return detail.messages
@@ -115,6 +123,7 @@ export async function getConversation(id: string): Promise<ChatMessage[]> {
       citations: m.citations,
       grounded: m.grounded,
       unverifiedMarkers: m.unverified_markers,
+      summary: Array.isArray(m.summary) ? m.summary.filter((item): item is string => typeof item === "string") : undefined,
     }));
 }
 
@@ -145,6 +154,8 @@ export async function askAssistant(
     caseId?: string | null;
     onStage?: (stage: string) => void;
     onSearchSummary?: (summary: SearchSummaryData) => void;
+    /** Doğrulanmış cevap hazır, ek adım (madde özeti) sürüyor: cevap beklemeden gösterilebilir. Kalıcı sonuç yine döner. */
+    onPreview?: (preview: AnswerResult) => void;
   },
 ): Promise<AnswerResult> {
   const response = await fetch(`${API_BASE_URL}/api/ai/answer/progress`, {
@@ -171,13 +182,20 @@ export async function askAssistant(
   let result: AnswerResult | null = null;
   const handle = (line: string) => {
     if (!line.trim()) return;
-    const event = JSON.parse(line) as { stage: string; result?: AnswerResult; detail?: unknown };
+    const event = JSON.parse(line) as { stage: string; result?: AnswerResult; preview?: AnswerResult; detail?: unknown };
     if (event.stage === "error") {
       throw new Error(typeof event.detail === "string" ? event.detail : "Cevap üretilemedi.");
     }
     if (event.stage === "search_summary") {
       const summary = parseSearchSummary(event);
       if (summary) opts.onSearchSummary?.(summary);
+    }
+    if (event.preview) {
+      opts.onPreview?.({
+        ...event.preview,
+        search_summary: parseSearchSummary(event.preview.search_summary),
+        document_scope: parseDocumentScope(event.preview.document_scope),
+      });
     }
     if (event.stage === "done" && event.result) {
       result = {

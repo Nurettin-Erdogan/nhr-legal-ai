@@ -15,6 +15,7 @@ import { Route as AuthRouteImport } from './routes/auth'
 import { Route as GizlilikRouteImport } from './routes/gizlilik'
 import { Route as KullanimSartlariRouteImport } from './routes/kullanim-sartlari'
 import { Route as PricingRouteImport } from './routes/pricing'
+import { Route as SifreSifirlaRouteImport } from './routes/sifre-sifirla'
 import { Route as SssRouteImport } from './routes/sss'
 import { Route as AuthCallbackRouteImport } from './routes/auth/callback'
 import { Route as AuthenticatedDashboardIndexRouteImport } from './routes/_authenticated/dashboard.index'
@@ -80,6 +81,11 @@ const KullanimSartlariRoute = KullanimSartlariRouteImport.update({
 const PricingRoute = PricingRouteImport.update({
   id: '/pricing',
   path: '/pricing',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SifreSifirlaRoute = SifreSifirlaRouteImport.update({
+  id: '/sifre-sifirla',
+  path: '/sifre-sifirla',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SssRoute = SssRouteImport.update({
@@ -309,6 +315,7 @@ export interface FileRoutesByFullPath {
   '/gizlilik': typeof GizlilikRoute
   '/kullanim-sartlari': typeof KullanimSartlariRoute
   '/pricing': typeof PricingRoute
+  '/sifre-sifirla': typeof SifreSifirlaRoute
   '/sss': typeof SssRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/dashboard/agent-research': typeof AuthenticatedDashboardAgentResearchRoute
@@ -353,6 +360,7 @@ export interface FileRoutesByTo {
   '/gizlilik': typeof GizlilikRoute
   '/kullanim-sartlari': typeof KullanimSartlariRoute
   '/pricing': typeof PricingRoute
+  '/sifre-sifirla': typeof SifreSifirlaRoute
   '/sss': typeof SssRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/dashboard/agent-research': typeof AuthenticatedDashboardAgentResearchRoute
@@ -399,6 +407,7 @@ export interface FileRoutesById {
   '/gizlilik': typeof GizlilikRoute
   '/kullanim-sartlari': typeof KullanimSartlariRoute
   '/pricing': typeof PricingRoute
+  '/sifre-sifirla': typeof SifreSifirlaRoute
   '/sss': typeof SssRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/_authenticated/dashboard/agent-research': typeof AuthenticatedDashboardAgentResearchRoute
@@ -445,6 +454,7 @@ export interface FileRouteTypes {
     | '/gizlilik'
     | '/kullanim-sartlari'
     | '/pricing'
+    | '/sifre-sifirla'
     | '/sss'
     | '/auth/callback'
     | '/dashboard/agent-research'
@@ -489,6 +499,7 @@ export interface FileRouteTypes {
     | '/gizlilik'
     | '/kullanim-sartlari'
     | '/pricing'
+    | '/sifre-sifirla'
     | '/sss'
     | '/auth/callback'
     | '/dashboard/agent-research'
@@ -534,6 +545,7 @@ export interface FileRouteTypes {
     | '/gizlilik'
     | '/kullanim-sartlari'
     | '/pricing'
+    | '/sifre-sifirla'
     | '/sss'
     | '/auth/callback'
     | '/_authenticated/dashboard/agent-research'
@@ -580,6 +592,7 @@ export interface RootRouteChildren {
   GizlilikRoute: typeof GizlilikRoute
   KullanimSartlariRoute: typeof KullanimSartlariRoute
   PricingRoute: typeof PricingRoute
+  SifreSifirlaRoute: typeof SifreSifirlaRoute
   SssRoute: typeof SssRoute
 }
 
@@ -625,6 +638,13 @@ declare module '@tanstack/react-router' {
       path: '/pricing'
       fullPath: '/pricing'
       preLoaderRoute: typeof PricingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/sifre-sifirla': {
+      id: '/sifre-sifirla'
+      path: '/sifre-sifirla'
+      fullPath: '/sifre-sifirla'
+      preLoaderRoute: typeof SifreSifirlaRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/sss': {
@@ -995,6 +1015,7 @@ const rootRouteChildren: RootRouteChildren = {
   GizlilikRoute: GizlilikRoute,
   KullanimSartlariRoute: KullanimSartlariRoute,
   PricingRoute: PricingRoute,
+  SifreSifirlaRoute: SifreSifirlaRoute,
   SssRoute: SssRoute,
 }
 export const routeTree = rootRouteImport

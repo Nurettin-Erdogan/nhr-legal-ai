@@ -77,6 +77,22 @@ export async function loadCaseDetail(id: string, client = db): Promise<CaseDetai
   const record = result.data as CaseRecord;
   async function section<T>(table: string, columns: string, order: string): Promise<Section<T>> {
     try {
+      if (table === "case_documents") {
+        const rows: T[] = [];
+        const seen = new Set<string>();
+        for (let offset = 0; ; offset += 1000) {
+          const response = await client.from(table).select(columns).eq("case_id", id)
+            .order(order, { ascending: false }).order("id", { ascending: false }).range(offset, offset + 999);
+          if (response.error) return { rows: [], hasMore: false, error: response.error.message };
+          if (!Array.isArray(response.data)) throw new Error("Beklenmeyen belge yanıtı.");
+          for (const row of response.data) {
+            if (seen.has(row.id)) throw new Error("Belge listesi değişti; yeniden yükleyin.");
+            seen.add(row.id);
+            rows.push(row);
+          }
+          if (response.data.length < 1000) return { rows, hasMore: false };
+        }
+      }
       const response = await client
         .from(table)
         .select(columns)

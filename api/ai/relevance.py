@@ -37,6 +37,11 @@ def question_intent(question: str) -> Intent | None:
                       ('1475', '14'))
     if 'itirazın iptal' in q:
         return Intent('objection_annulment', (('itirazın iptal',),), ('2004', '67'))
+    if 'işe iade' in q and (re.search(r'\bsüre', q) or any(t in q for t in ('ne zaman', 'kaç gün', 'kaç ay', 'kaç hafta'))):
+        # İşe iade için başvuru usulü 2017'de değişti (önce arabulucu, sonra dava). Sözcük araması bu soruya yalnız eski
+        # usulü anlatan 2015-2016 kararlarını getiriyordu (ölçüldü: 2026-10-06); güncel kural İş Kanunu m. 20'dedir.
+        return Intent('reinstatement_deadline', (('işe iade', 'arabulucu', 'iş mahkemesi'), ('ay içinde', 'hafta içinde')),
+                      ('4857', '20'))
     if 'yıllık izin' in q and any(t in q for t in ('ispat', 'kanıt', 'yük')):
         return Intent('leave_proof', (('yıllık izin',), ('ispat yük', 'izin defter', 'imzalı')))
     if 'idari' in q and any(t in q for t in ('süre', 'kaç gün')):
@@ -57,10 +62,13 @@ def question_intent(question: str) -> Intent | None:
 GENERIC_QUESTION_WORDS = frozenset((
     'kanun', 'kanunu', 'kanunun', 'kanununun', 'madde', 'maddesi', 'maddesinde', 'sayılı', 'sayili', 'neyi', 'neler', 'nelerdir',
     'nedir', 'düzenler', 'düzenlenir', 'düzenlenmiştir', 'düzenlemiştir', 'hangi', 'nasıl', 'hakkında', 'ilişkin',
+    # "olmalı" her metindeki "olması/olmak/olmadığı" ile eşleşir: "İhtar süresi kaç gün olmalı?" sorusuna, içinde yalnız
+    # "süre" ve "olması" geçen temyiz harcı muhtırası cümlesi "alakalı" sayılıp cevap oldu (ölçüldü: 2026-10-06).
+    'olmalı', 'olmalıdır', 'olmak', 'olması', 'olacak', 'olarak', 'olan',
 ))
 
 
-def document_passage_relevant(question: str, text: str) -> bool:
+def document_passage_relevant(question: str, text: str, *, document_hint: str = '') -> bool:
     """Kullanıcı belgesi cümlesi için alaka: konu-niyeti (mevzuat) kapısı uygulanmaz.
 
     `passage_relevant` hukuki bir konu (ör. kıdem tazminatı) tanıdığında cümlenin o konunun tüm
@@ -68,25 +76,181 @@ def document_passage_relevant(question: str, text: str) -> bool:
     için ayarlıdır. Bilirkişi raporu gibi bir belgedeki somut olgu cümlesi ("Kıdem tazminatı 8 yıl
     için 340.000 TL hesaplanmıştır") bu terimleri taşımaz ve eleniyordu. Belgede aranan, sorunun
     sözcükleriyle örtüşmedir; cevap yine kaynak-destek denetiminden geçer.
+
+    `document_hint` cümlenin geldiği belgenin adı ve başlığıdır (bkz. `document_hint`). Sorudaki belge adı
+    ("ihtarnamede", "kira sözleşmesinde") cümlenin içinde değil belgenin adında geçer; o sözcük belgeyi seçer, cümlede
+    aranmaz. Böylece "İhtarnamede ne kadar süre verilmiş?" sorusu ihtarnamenin "30 gün içinde ödenmesi" cümlesini bulur.
     """
     q = normalize(question)
     value = normalize(text)
     # Tutar sorusunda süre değil tutar içeren cümle aranır (passage_relevant ile aynı kural).
     if any(t in q for t in ('kaç lira', 'harcı ne kadar', 'harç tutarı')):
         return bool(re.search(r'\b(?:tl|lira|harç|harcı|ücret)', value))
+    stems = document_question_stems(question)
+    if not stems:
+        return True
+    # Atıf işareti ("[K1]") cümlenin sözcüğü değildir; sayılırsa kısa olgu cümlesi "uzun" görünür.
+    value = _CITATION_MARKER_RE.sub(' ', value)
+    # Kısa olgu cümlesi ("Depozito 37.000 TL'dir.") sorunun yalnız bir sözcüğünü taşır. İki parçalı soruda ("kira bedeli ne kadar
+    # ve depozito nedir?") ikinci parçanın cevabı bu yüzden eleniyor, cevap yarım kalıyordu (ölçüldü: 2026-10-05).
+    short_fact = len(re.findall(r'\w+', value)) <= 9 and bool(re.search(r'\d', value))
+    hint = normalize(document_hint)
+    named = named_stems(question, stems, hint)
+    remaining = stems - named
+    if short_fact:
+        # Belgenin adında da geçen sözcük ("kira" ↔ "kira sözleşmesi") o belgenin her kısa satırında bulunabilir; kısa
+        # olgu indirimi için ad dışındaki bir soru sözcüğü aranır. Yoksa "Kira borcu ne kadar?" sorusuna sözleşmedeki
+        # "Kira başlangıç tarihi …" satırı da cevap adayı oluyordu (ölçüldü: 2026-10-06).
+        if any(stem in value for stem in (remaining if named and remaining else stems)):
+            return True
+    elif sum(stem in value for stem in stems) >= min(2, len(stems)):
+        return True
+    # Cümle sorunun sözcüklerini tek başına taşımıyor; belge adıyla seçilmişse ad olan sözcük cümlede aranmaz.
+    if not named:
+        return False
+    if not remaining:
+        return True  # soru yalnız belgeyi adlandırıyor ("İhtarnamede ne yazıyor?"): o belgenin her cümlesi konu içidir
+    matched = sum(stem in value for stem in remaining)
+    if any(base in hint for base in document_reference_bases(question)) and answers_question_type(q, value):
+        # Soru belgeyi açıkça gösteriyor ("ihtarnamede…") ve süre/tarih/tutar soruyor; cümle o türden bir değer taşıyor.
+        # Yalnız açık göstermede uygulanır: ad benzerliği ("kira" ↔ "kira sözleşmesi") tek başına bu indirimi vermez.
+        matched += 1
+    return matched >= (1 if short_fact else min(2, len(remaining)))
+
+
+_CITATION_MARKER_RE = re.compile(r'\[k\d+\]')
+_DATE_VALUE_RE = re.compile(
+    r'\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b'
+    r'|\b\d{1,2}\s+(?:ocak|şubat|mart|nisan|mayıs|haziran|temmuz|ağustos|eylül|ekim|kasım|aralık)\b'
+)
+_AMOUNT_VALUE_RE = re.compile(r'\d[\d.,]*\s*(?:tl|lira|₺|usd|eur|euro|dolar)\b')
+# Belgede ne yazdığını soran, kendisi konu taşımayan fiiller: cümlede aranmaz.
+_DOCUMENT_GENERIC_VERBS = frozenset((
+    'yazıyor', 'yazmaktadır', 'yazılmış', 'yazılı', 'diyor', 'geçiyor', 'geçmektedir', 'belirtilmiş', 'belirtiliyor',
+    'verilmiş', 'verilen', 'yazılıdır', 'gösterilmiş',
+))
+
+
+def answers_question_type(normalized_question: str, normalized_text: str) -> bool:
+    """Soru bir süre, tarih ya da tutar soruyor ve metinde o türden bir değer var mı? (İkisi de `normalize` edilmiş olmalı.)"""
+    from api.ai.passages import contains_duration, is_duration_question
+    if is_duration_question(normalized_question):
+        return contains_duration(normalized_text)
+    if any(t in normalized_question for t in ('ne zaman', 'tarih', 'hangi gün')):
+        return bool(_DATE_VALUE_RE.search(normalized_text))
+    if any(t in normalized_question for t in ('ne kadar', 'tutar', 'bedel', 'miktar', 'ücret', 'kaç tl', 'kaç lira')):
+        return bool(_AMOUNT_VALUE_RE.search(normalized_text))
+    return False
+
+
+def named_stems(question: str, stems: set[str], normalized_hint: str) -> set[str]:
+    """Soru sözcüklerinden belgenin adında/başlığında geçenler (belgeyi seçen, cümlede aranmayan sözcükler).
+
+    Gövde adın içinde geçiyorsa ya da ek almış sözcüğün kökü ("sözleşmesinde" → "sözleşme") adın içindeyse sayılır.
+    """
+    if not normalized_hint:
+        return set()
+    bases = [base for base in document_reference_bases(question) if base in normalized_hint]
+    return {stem for stem in stems if stem in normalized_hint or any(stem.startswith(base) for base in bases)}
+
+
+def document_hint(context) -> str:
+    """Belgeyi adlandıran metin: dosya adı ve, başlık gibi duruyorsa, içeriğin ilk satırı.
+
+    İlk satır yalnız kısa ve noktasızsa başlık sayılır ("İHTARNAME", "Kira Sözleşmesi"); bir cümleyse belgenin adı değil
+    içeriğidir ve ada katılmaz (aksi halde o cümlenin her sözcüğü "belge adı" sayılırdı).
+    """
+    first_line = next((line.strip() for line in (context.content or '').splitlines() if line.strip()), '')
+    heading = first_line if len(first_line.split()) <= 8 and not first_line.endswith(('.', '!', '?', ':', ';', ',')) else ''
+    return f'{context.title or ""} {heading}'.strip()
+
+
+def document_question_stems(question: str) -> set[str]:
+    """Sorunun belgede aranacak konu sözcüklerinin gövdeleri (soru kalıbı ve miktar sözcükleri hariç)."""
     from api.ai.search_plan import plan_search
     words = [w for w in plan_search(question).text.split() if len(w) >= 4
-             and not w.isdigit() and w not in GENERIC_QUESTION_WORDS]
-    if not words:
-        return True
-    stems = {w[:max(4, len(w) - 2)] for w in words}
-    return sum(stem in value for stem in stems) >= min(2, len(stems))
+             and not w.isdigit() and w not in GENERIC_QUESTION_WORDS and w not in _QUANTITY_QUESTION_WORDS
+             and w not in _DOCUMENT_GENERIC_VERBS]
+    return {w[:max(4, len(w) - 2)] for w in words}
 
 
-def passage_relevant(question: str, text: str, *, source_type: str | None = None) -> bool:
+# "ihtarnamede", "sözleşmesinde", "raporda": bulunma eki almış sözcük bir belgeye işaret edebilir. Ek ve iyelik atılır;
+# kalan kök bir belgenin adında/başlığında geçiyorsa soru o belgeyi kastediyordur.
+_LOCATIVE_RE = re.compile(r'^(\w{4,}?)(?:n?d[ae]|t[ae])(?:ki)?$')
+_POSSESSIVE_RE = re.compile(r'(?:s[ıiuü]|[ıiuü])$')
+# Bulunma eki alsa da belge adı olmayan, her dosyada geçebilen sözcükler.
+_NOT_DOCUMENT_NAMES = frozenset((
+    'dava', 'dosya', 'belge', 'evrak', 'hal', 'durum', 'süre', 'tarih', 'konu', 'taraf', 'yer', 'zaman', 'için', 'hakkın',
+    'sonun', 'şekil', 'ara', 'nere', 'bura', 'ora', 'tür', 'kapsam', 'çerçeve', 'aşama', 'süreç',
+))
+
+
+def document_reference_bases(question: str) -> set[str]:
+    """Soruda bir belgeye işaret eden sözcüklerin kökleri ("ihtarnamede" → "ihtarname", "sözleşmeye göre" → "sözleşme")."""
+    words = re.findall(r'\w+', normalize(question))
+    bases: set[str] = set()
+    for index, word in enumerate(words):
+        candidates = []
+        match = _LOCATIVE_RE.match(word)
+        if match:
+            candidates.append(match.group(1))
+        if index + 1 < len(words) and words[index + 1] == 'göre':
+            candidates.append(re.sub(r'(?:y|n)?[ae]$', '', word))
+        for base in candidates:
+            for form in (base, _POSSESSIVE_RE.sub('', base)):
+                if len(form) >= 4 and form not in _NOT_DOCUMENT_NAMES:
+                    bases.add(form)
+    return bases
+
+
+def documents_named_in(question: str, contexts) -> list:
+    """Sorunun adıyla işaret ettiği belgelerin parçaları (dosya adı ya da başlık eşleşmesi); işaret yoksa boş liste."""
+    bases = document_reference_bases(question)
+    if not bases:
+        return []
+    return [context for context in contexts if any(base in normalize(document_hint(context)) for base in bases)]
+
+
+def documents_answer(question: str, contexts) -> bool:
+    """Belgelerde sorunun konusunu taşıyan en az bir cümle var mı?
+
+    Dava sohbetinde "bu soru önce kullanıcının kendi belgelerinden cevaplanabilir mi" kararı için kullanılır. Sorunun konu
+    sözcüğü yoksa (yalnız "nedir?") belge eşleşmiş sayılmaz: karar verilemez, karışık aramaya bırakılır.
+    """
+    from api.ai.source_support import source_sentences
+    stems = document_question_stems(question)
+    if not stems:
+        return False
+    for context in contexts:
+        hint = normalize(document_hint(context))
+        named = named_stems(question, stems, hint)
+        remaining = stems - named
+        if not remaining:
+            return True  # soru bu belgeyi adıyla soruyor
+        # Cümle süzgecinden (document_passage_relevant) daha sıkıdır: tek ortak sözcük ("süre") belgeyi cevabın kaynağı
+        # yapmaz; yoksa "Arabuluculuk başvuru süresi kaç gün?" sorusu, içinde yalnız "süre 1 yıldır" geçen sözleşmeye
+        # kilitlenir ve hukuk kaynaklarına hiç bakılmaz. Kısa olgu satırı indirimi yalnız belge adıyla anılmışsa uygulanır
+        # ("İhtarname hangi tarihte çekilmiş?" → ihtarnamedeki "Tarih: 10.04.2025").
+        for sentence in source_sentences(context):
+            value = normalize(sentence)
+            if sum(stem in value for stem in stems) >= min(2, len(stems)):
+                return True
+            if named:
+                matched = sum(stem in value for stem in remaining)
+                short_fact = len(re.findall(r'\w+', value)) <= 9 and bool(re.search(r'\d', value))
+                if matched >= min(2, len(remaining)) or (short_fact and matched >= 1):
+                    return True
+    return False
+
+
+# Miktar/tutar soran soru sözcükleri: belgedeki cümlede geçmeleri beklenmez.
+_QUANTITY_QUESTION_WORDS = frozenset(('kadar', 'kadardır', 'tutar', 'tutarı', 'tutarıdır', 'miktar', 'miktarı', 'kaçtır', 'tarihi', 'tarihinde'))
+
+
+def passage_relevant(question: str, text: str, *, source_type: str | None = None, document_hint: str = '') -> bool:
     """Reject known topic mismatches even when the source is genuine."""
     if source_type == 'document':
-        return document_passage_relevant(question, text)
+        return document_passage_relevant(question, text, document_hint=document_hint)
     intent = question_intent(question)
     value = normalize(text)
     if intent and not all(any(re.search(r'(?<!\w)' + re.escape(term), value) for term in group) for group in intent.groups):

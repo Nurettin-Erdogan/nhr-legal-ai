@@ -247,7 +247,7 @@ async function saveLocally(blob, name, contentType, enabled = false) {
 }
 
 /** Bu kullanıcının JurisAI hesabında zaten bulunan evrak kimlikleri (yalnız ek bir hızlandırma: hata olursa hepsi çekilir). */
-async function knownEvraks(ids, esas) {
+async function knownEvraks(ids, esas, birim) {
   try {
     const settings = await getSettings();
     const url = String(settings.apiUrl || "").replace(/\/upload\/?$/, "/known");
@@ -258,7 +258,7 @@ async function knownEvraks(ids, esas) {
       const res = await fetch(url, {
         method: "POST",
         headers: { Authorization: `Bearer ${settings.apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ evrakIds: ids.slice(0, 5000), dosyaEsasNo: esas || null }),
+        body: JSON.stringify({ evrakIds: ids.slice(0, 5000), dosyaEsasNo: esas || null, birim: birim || null }),
         signal: controller.signal,
       });
       const out = await res.json().catch(() => ({}));
@@ -861,10 +861,21 @@ function pullTargetUrl() {
   return derived.href;
 }
 
-async function handlePullFetch(meta, mode = "upload") {
+/** İçerik betiğinin kurduğu adres yalnız bilinen ön izleme adresi biçimindeyse kabul edilir (UYAP alan adı ayrıca denetlenir). */
+function acceptedDirectUrl(url) {
+  try {
+    return /\/view_document(_[a-z]+)?_brd\.uyap$/i.test(new URL(url).pathname) ? url : "";
+  } catch (_) {
+    return "";
+  }
+}
+
+async function handlePullFetch(meta, mode = "upload", direct = "") {
   try {
     const settings = await getSettings();
-    const target = pullTargetUrl();
+    const captured = pullTargetUrl();
+    const viaDirect = !captured && !!acceptedDirectUrl(direct); // tıklamasız yol: başarısızsa beklemeden döner, çağıran tıklama yolunu dener
+    const target = captured || acceptedDirectUrl(direct);
     if (!target) throw new Error("UYAP evrak adresi yakalanamadı");
     const timeout = Number(settings.timeoutMs) || DEFAULTS.timeoutMs;
     const startedAt = Date.now();
@@ -885,12 +896,12 @@ async function handlePullFetch(meta, mode = "upload") {
           fetched = await fetchDocument(saveUrl, timeout, meta);
           viaSave = true;
         } catch (saveError) {
-          if (!transient) throw error; // kalıcı: ön izlemenin kendi açıklaması kullanıcıya gösterilir
+          if (!transient || viaDirect) throw error; // kalıcı: ön izlemenin kendi açıklaması kullanıcıya gösterilir
           retried = true;
           await sleep(8000);
           fetched = await fetchDocument(target, timeout, meta);
         }
-      } else if (transient) {
+      } else if (transient && !viaDirect) {
         // Geçici olabilir (yoğunluk, hazırlanıyor): bir kez bekleyip aynı adresi yeniden dene.
         retried = true;
         await sleep(8000);
@@ -1036,7 +1047,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       });
       return false;
     case "JURISAI_PULL_FETCH":
-      handlePullFetch(message.meta || {}, message.mode).then(sendResponse);
+      handlePullFetch(message.meta || {}, message.mode, message.direct || "").then(sendResponse);
       return true;
     case "JURISAI_MENU": {
       // UYAP yan menüsü `menuButtonClick("<sayı>")` işlevini çağırır; işlev sayfanın kendi dünyasındadır, içerik betiği (yalıtılmış dünya)
@@ -1062,7 +1073,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       setTimeout(() => sendResponse({ ok: true }), Math.max(0, Math.min(60000, Number(message.ms) || 0)));
       return true;
     case "JURISAI_PULL_KNOWN":
-      knownEvraks(message.ids || [], message.esas || "").then(sendResponse);
+      knownEvraks(message.ids || [], message.esas || "", message.birim || "").then(sendResponse);
       return true;
     case "JURISAI_PULL_END":
       pull = null;

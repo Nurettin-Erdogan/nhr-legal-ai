@@ -35,6 +35,8 @@ def fast_reference(question):
         return intent.statute
     if intent.name == 'objection_annulment' and is_duration_question(q):
         return intent.statute
+    if intent.name == 'reinstatement_deadline':
+        return intent.statute
     return None
 
 

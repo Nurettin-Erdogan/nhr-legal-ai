@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import stat
 from dataclasses import dataclass
 from io import BytesIO
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from zipfile import BadZipFile, ZipFile
 
 from docx import Document as DocxDocument
@@ -47,6 +48,7 @@ class ProcessedDocument:
 
 
 _SUPPORTED_TYPES = {
+    ".zip": "application/zip",
     ".pdf": "application/pdf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".txt": "text/plain",
@@ -54,6 +56,9 @@ _SUPPORTED_TYPES = {
     ".udf": "application/vnd.uyap.udf",
     ".odt": "application/vnd.oasis.opendocument.text",
 }
+MAX_ARCHIVE_ENTRIES = 200
+MAX_ARCHIVE_EXPANDED_BYTES = 100 * 1024 * 1024
+MAX_ARCHIVE_MEMBER_BYTES = 50 * 1024 * 1024
 _IMAGE_TYPES = {
     ".tif": "image/tiff",
     ".tiff": "image/tiff",
@@ -275,6 +280,58 @@ def _extract_udf(data: bytes) -> list[ExtractedSection]:
     return [ExtractedSection(content=text)]
 
 
+def _process_archive(data: bytes, ocr: str) -> ProcessedDocument:
+    """ZIP'i diske açmadan oku; bir ek okunamazsa tam okunmuş gibi sunma.
+
+    Orijinal arşiv tek kaynak olarak korunur. Parçalardaki bölüm başlığı ve metin,
+    hangi ekten geldiğini taşır. İç içe arşiv, şifreleme ve tehlikeli yollar reddedilir.
+    """
+    chunks: list[ProcessedChunk] = []
+    ocr_used = False
+    try:
+        with ZipFile(BytesIO(data)) as archive:
+            entries = archive.infolist()
+            if len(entries) > MAX_ARCHIVE_ENTRIES or sum(item.file_size for item in entries) > MAX_ARCHIVE_EXPANDED_BYTES:
+                raise DocumentProcessingError("ZIP arşivi dosya sayısı veya açılmış boyut sınırını aşıyor.")
+            for item in entries:
+                name = item.filename.replace("\\", "/")
+                parts = PurePosixPath(name)
+                if parts.is_absolute() or ".." in parts.parts or ":" in name or "\x00" in name or stat.S_ISLNK(item.external_attr >> 16):
+                    raise DocumentProcessingError("ZIP arşivi güvenli olmayan bir dosya yolu içeriyor.")
+                if item.flag_bits & 1:
+                    raise DocumentProcessingError("Parolalı ZIP arşivleri desteklenmiyor.")
+                if item.is_dir() or name.startswith("__MACOSX/") or parts.name == ".DS_Store":
+                    continue
+                if item.file_size > MAX_ARCHIVE_MEMBER_BYTES or item.file_size > max(1, item.compress_size) * 1000:
+                    raise DocumentProcessingError("ZIP içindeki bir belge açılmış boyut sınırını aşıyor.")
+                extension = parts.suffix.lower()
+                if extension == ".zip" or extension not in _SUPPORTED_TYPES and extension not in _IMAGE_TYPES:
+                    raise DocumentProcessingError(f"ZIP eki işlenemedi: {safe_file_name(name)} (desteklenmeyen tür). Arşivin tamamı aranabilir değil.")
+                member = archive.read(item)
+                if extension in (".docx", ".udf", ".odt"):
+                    with ZipFile(BytesIO(member)) as package:
+                        if sum(entry.file_size for entry in package.infolist()) > MAX_ARCHIVE_MEMBER_BYTES:
+                            raise DocumentProcessingError("ZIP içindeki belge paketi açılmış boyut sınırını aşıyor.")
+                try:
+                    processed = process_document(name, member, ocr=ocr)
+                except OcrRequired:
+                    raise
+                except DocumentProcessingError as exc:
+                    raise DocumentProcessingError(f"ZIP eki işlenemedi: {safe_file_name(name)}. {exc}") from exc
+                ocr_used |= processed.ocr
+                for chunk in processed.chunks:
+                    content = f"Arşiv eki: {name}\n\n{chunk.content}"
+                    chunks.append(ProcessedChunk(len(chunks), content, hashlib.sha256(content.encode()).hexdigest(),
+                                                 chunk.page_number, f"{name} / {chunk.section_title}" if chunk.section_title else name))
+    except DocumentProcessingError:
+        raise
+    except (BadZipFile, OSError, RuntimeError, NotImplementedError, ValueError) as exc:
+        raise DocumentProcessingError("ZIP arşivi okunamadı veya bozuk.") from exc
+    if not chunks:
+        raise DocumentProcessingError("ZIP arşivinde aranabilir belge bulunamadı.")
+    return ProcessedDocument(".zip", "application/zip", hashlib.sha256(data).hexdigest(), tuple(chunks), ocr_used)
+
+
 def process_document(file_name: str, data: bytes, *, ocr: str = "off") -> ProcessedDocument:
     """Belgeden aranabilir parçalar üretir.
 
@@ -286,9 +343,11 @@ def process_document(file_name: str, data: bytes, *, ocr: str = "off") -> Proces
         raise ValueError(f"Geçersiz OCR kipi: {ocr}")
     extension = Path(file_name).suffix.lower()
     if extension not in _SUPPORTED_TYPES and extension not in _IMAGE_TYPES:
-        raise DocumentProcessingError("Yalnız PDF, DOCX, UDF, ODT, TXT, HTML ve görüntü belgeleri desteklenir.")
+        raise DocumentProcessingError("Yalnız PDF, DOCX, UDF, ODT, TXT, HTML, ZIP ve görüntü belgeleri desteklenir.")
     if not data:
         raise DocumentProcessingError("Yüklenen dosya boş.")
+    if extension == ".zip":
+        return _process_archive(data, ocr)
 
     ocr_used = False
     if extension in _IMAGE_TYPES:

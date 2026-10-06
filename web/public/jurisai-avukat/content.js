@@ -846,6 +846,37 @@
       await expandAll(dialog);
     }
   }
+  /**
+   * Evrağın ön izleme adresini tıklamadan kurar. Gerçek portalda ölçüldü (2026-10-05): UYAP'ın kendi menüsü
+   * (Görüntüle/Kaydet) yaprağın `evrak_id` özniteliğini, dosya penceresinin satır içi betiğindeki `dosyaId` ve yargı türüyle
+   * `view_document*_brd.uyap` / `download_document*_brd.uyap` adresine gönderir (Application.convertObjectToURLParameters:
+   * baştaki/sondaki tırnak atılır, değer URL kodlanır). Bilgiler bulunamazsa boş döner; tahmin yapılmaz.
+   */
+  function directViewUrl(span) {
+    try {
+      const evrak = span.getAttribute("evrak_id");
+      const scripts = [...document.scripts].filter((s) => !s.src && s.textContent.includes("evrakSolClickMenu"));
+      const text = scripts.length ? scripts[scripts.length - 1].textContent : "";
+      const dosya = (/var dosyaId='([^']+)'/.exec(text) || [])[1];
+      const yargi = (/\.contextMenu2?\('([^']+)'/.exec(text) || [])[1];
+      if (!evrak || !dosya || !yargi) return "";
+      const clean = (value) => {
+        let v = String(value).replace(/^['"]|['"]$/g, "");
+        if (v.includes("%")) {
+          try {
+            v = decodeURIComponent(v);
+          } catch (_) {
+            /* olduğu gibi */
+          }
+        }
+        return encodeURIComponent(v);
+      };
+      const suffix = yargi === "2" ? "_danistay" : yargi === "3" ? "_yargitay" : "";
+      return `${location.origin}/main/jsp/view_document${suffix}_brd.uyap?mimeType=&evrakId=${clean(evrak)}&dosyaId=${clean(dosya)}&yargiTuru=${clean(yargi)}`;
+    } catch (_) {
+      return "";
+    }
+  }
   /** Gerçek bir fare tıklaması gibi: üzerine gelme, basma, bırakma, tıklama (UYAP üzerine-gelme sınıfını da kullanıyor). */
   function realClick(element) {
     element.scrollIntoView({ block: "center" });
@@ -1146,7 +1177,7 @@
       toast("Daha önce aktarılanlar kontrol ediliyor…");
       report({ phase: "Daha önce aktarılanlar kontrol ediliyor" });
       const answer = await chrome.runtime
-        .sendMessage({ type: "JURISAI_PULL_KNOWN", ids: todo.map((item) => item.id), esas: who.esas })
+        .sendMessage({ type: "JURISAI_PULL_KNOWN", ids: todo.map((item) => item.id), esas: who.esas, birim: who.birim })
         .catch(() => null);
       if (answer?.ok && answer.known.length) {
         const have = new Set(answer.known);
@@ -1162,40 +1193,51 @@
       const item = todo[index];
       toast(`Evrak ${index + 1}/${todo.length} çekiliyor…`);
       report({ done: index, current: item.title });
-      await chrome.runtime.sendMessage({ type: "JURISAI_PULL_ARM", evrakId: item.id });
-      const clickedAt = Date.now();
-      realClick(item.span);
-      let status = {};
-      const captured = await waitUntil(async () => {
-        status = (await chrome.runtime.sendMessage({ type: "JURISAI_PULL_STATUS" })) || {};
-        return status.captured;
-      }, 10000);
-      // Yalnız önizleme sayfası (viewer.jsp) görüldüyse gerçek belge isteğinin düşmesi için kısa süre tanı.
-      if (captured && !status.exact) await sleep(600);
-      status = (await chrome.runtime.sendMessage({ type: "JURISAI_PULL_STATUS" })) || status;
-      spent.capture += Date.now() - clickedAt;
-      spent.clicks += 1;
-      let outcome = {
-        ok: false,
-        error: `evrak adresi yakalanamadı (${
-          status.seen?.length
-            ? `tıklamadan sonra sayfa şu istekleri yaptı: ${status.seen.join(", ")}`
-            : "tıklamadan sonra sayfa hiç istek yapmadı; ön izleme açık mı?"
-        })`,
+      const meta = {
+        evrakAdi: item.title,
+        evrakId: item.id,
+        evrakTuru: item.typeName || "Evrak",
+        dosyaEsasNo: who.esas,
+        birim: who.birim,
+        klasorYolu: item.folders.join(" / "),
       };
-      if (captured) {
-        outcome = await chrome.runtime.sendMessage({
-          type: "JURISAI_PULL_FETCH",
-          mode,
-          meta: {
-            evrakAdi: item.title,
-            evrakId: item.id,
-            evrakTuru: item.typeName || "Evrak",
-            dosyaEsasNo: who.esas,
-            birim: who.birim,
-            klasorYolu: item.folders.join(" / "),
-          },
-        });
+      const itemOnlyError = (text) => /Desteklenmeyen dosya türü|önizlemede vermiyor|çok büyük|zaten/i.test(text || "");
+      await chrome.runtime.sendMessage({ type: "JURISAI_PULL_ARM", evrakId: item.id });
+      // Hızlı yol: evrağın adresi sayfanın kendi bilgilerinden kurulur, tıklama ve ön izlemenin yüklenmesi beklenmez
+      // (canlıda evrak başına ~2,2 sn yakalama + 1,5 sn bekleme → ~0,5 sn). Adres kurulamaz ya da belge gelmezse tıklama yoluna dönülür.
+      const direct = directViewUrl(item.span);
+      let outcome = null;
+      let usedDirect = false;
+      if (direct) {
+        outcome = await chrome.runtime.sendMessage({ type: "JURISAI_PULL_FETCH", mode, direct, meta });
+        usedDirect = !!outcome?.ok || itemOnlyError(outcome?.error);
+      }
+      if (!usedDirect) {
+        await chrome.runtime.sendMessage({ type: "JURISAI_PULL_ARM", evrakId: item.id });
+        const clickedAt = Date.now();
+        realClick(item.span);
+        let status = {};
+        const captured = await waitUntil(async () => {
+          status = (await chrome.runtime.sendMessage({ type: "JURISAI_PULL_STATUS" })) || {};
+          return status.captured;
+        }, 10000);
+        // Yalnız önizleme sayfası (viewer.jsp) görüldüyse gerçek belge isteğinin düşmesi için kısa süre tanı.
+        if (captured && !status.exact) await sleep(600);
+        status = (await chrome.runtime.sendMessage({ type: "JURISAI_PULL_STATUS" })) || status;
+        spent.capture += Date.now() - clickedAt;
+        spent.clicks += 1;
+        const directError = outcome?.error;
+        outcome = {
+          ok: false,
+          error:
+            directError ||
+            `evrak adresi yakalanamadı (${
+              status.seen?.length
+                ? `tıklamadan sonra sayfa şu istekleri yaptı: ${status.seen.join(", ")}`
+                : "tıklamadan sonra sayfa hiç istek yapmadı; ön izleme açık mı?"
+            })`,
+        };
+        if (captured) outcome = await chrome.runtime.sendMessage({ type: "JURISAI_PULL_FETCH", mode, meta });
       }
       if (outcome?.ms) {
         spent.items += 1;
@@ -1210,14 +1252,19 @@
         else stats.sent += 1; // aktarılan ya da (bilgisayara indirme kipinde) kaydedilen
       } else {
         stats.failed += 1;
-        consecutiveFailures += 1;
+        // Evrağın kendisine özgü ret (tür desteklenmiyor, UYAP ön izlemede vermiyor) oturum/portal sorunu değildir: art arda gelse de
+        // aktarım durdurulmaz ve yavaşlatılmaz. Canlıda art arda 5 .zip eki 350 evraklık aktarımı 114. evrakta kesmişti.
+        const itemOnly = itemOnlyError(outcome?.error);
+        if (!itemOnly) consecutiveFailures += 1;
         if (stats.errors.length < 5) stats.errors.push(`${item.title.slice(0, 90)}: ${outcome?.error || "bilinmeyen hata"}`);
-        gap = Math.min(20000, gap * 2); // UYAP bizi sınırlıyor olabilir: yavaşla
+        if (!itemOnly) gap = Math.min(20000, gap * 2); // UYAP bizi sınırlıyor olabilir: yavaşla
       }
       report({ done: index + 1 });
       if (consecutiveFailures >= 5) break; // oturum kapanmış ya da portal yanıt vermiyor olabilir
-      spent.pause += gap;
-      await sleep(gap);
+      // Tıklamasız yolda sayfa ön izleme yüklemez (evrak başına tek istek): hata yokken kısa bekleme yeter; hata görülünce `gap` büyür.
+      const pause = usedDirect && gap === baseGap ? Math.min(gap, 500) : gap;
+      spent.pause += pause;
+      await sleep(pause);
     }
     const timing = spent.items
       ? {
@@ -1225,7 +1272,7 @@
           capture: Math.round(spent.capture / Math.max(1, spent.clicks)),
           download: Math.round(spent.download / spent.items),
           upload: Math.round(spent.upload / spent.items),
-          pause: Math.round(spent.pause / Math.max(1, spent.clicks)),
+          pause: Math.round(spent.pause / Math.max(1, todo.length)),
         }
       : null;
     const reasons = [...new Set(stats.errors)].slice(0, 2).join(" | ");
@@ -1509,6 +1556,13 @@
     return true;
   }
   let listing = false;
+  /** Çıkış bağlantısı açılır menüde gizli olabilir (innerText'e girmez): gerçek portalın karşılama sayfasında giriş yapılmışken
+      "giriş yapılmamış" denmesinin nedeni buydu (2026-10-05). Bağlantının kendisi DOM'da aranır. */
+  function hasLogoutLink() {
+    return [...document.querySelectorAll("a[href]")].some(
+      (link) => /kill_session|logout/i.test(link.getAttribute("href") || "") || /güvenli çıkış|oturumu kapat/.test(trLower(link.textContent || "")),
+    );
+  }
   async function listDosyalar() {
     if (listing || pulling) return { ok: false, code: "busy", error: "UYAP'ta bir listeleme veya aktarım sürüyor; bitince yeniden dene." };
     listing = true;
@@ -1536,7 +1590,7 @@
       };
     }
     const page = trLower((document.body?.innerText || "").slice(0, 8000));
-    const loginPage = /giriş yap|giriş seçenekleri|e-?devlet ile giriş|e-?imza ile giriş/.test(page) && !/güvenli çıkış|çıkış yap|oturumu kapat/.test(page);
+    const loginPage = /giriş yap|giriş seçenekleri|e-?devlet ile giriş|e-?imza ile giriş/.test(page) && !/güvenli çıkış|çıkış yap|oturumu kapat/.test(page) && !hasLogoutLink();
     if (loginPage) {
       return {
         ok: false,
@@ -1653,7 +1707,7 @@
       job.phase = "Daha önce aktarılanlar kontrol ediliyor";
       const who = dosyaIdentity(opened.dialog);
       const known = await chrome.runtime
-        .sendMessage({ type: "JURISAI_PULL_KNOWN", ids: prepared.items.map((item) => item.id), esas: who.esas })
+        .sendMessage({ type: "JURISAI_PULL_KNOWN", ids: prepared.items.map((item) => item.id), esas: who.esas, birim: who.birim })
         .catch(() => null);
       bridge.tree = { key, who, items: prepared.items, known: known?.ok ? known.known : [], knownChecked: !!known?.ok };
       Object.assign(job, { state: "done", phase: "Hazır", count: prepared.items.length, finishedAt: Date.now() });

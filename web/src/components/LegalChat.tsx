@@ -18,6 +18,7 @@ import ReactMarkdown from "react-markdown";
 import { CollapsibleAnswer } from "@/components/CollapsibleAnswer";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
+import { useSearchParam } from "@/lib/router-compat";
 import { ResearchSources } from "@/components/ResearchSources";
 import { SearchSummary } from "@/components/SearchSummary";
 import { shouldAutoResearch, type SearchSummaryData } from "@/lib/search-summary";
@@ -27,6 +28,7 @@ import {
   getConversation,
   listConversations,
   STAGE_LABELS,
+  type AnswerResult,
   type ChatMessage,
   type ConversationSummary,
 } from "@/lib/ai-api";
@@ -54,6 +56,11 @@ export function LegalChat({
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
+  // Üst çubuktaki genel aramadan gelen metin soru kutusuna yazılır; kullanıcı düzenleyip kendisi gönderir.
+  const urlQuestion = useSearchParam("q");
+  useEffect(() => {
+    if (urlQuestion.trim()) setInput(urlQuestion);
+  }, [urlQuestion]);
   const [loading, setLoading] = useState(false);
   const [opening, setOpening] = useState(false);
   const openSequence = useRef(0);
@@ -125,27 +132,35 @@ export function LegalChat({
     setRequestSummary(undefined);
     setRequestError("");
     setStage(STAGE_LABELS.searching);
+    const asMessage = (result: AnswerResult): ChatMessage => ({
+      id: result.message_id ?? undefined,
+      role: "assistant",
+      content: result.answer,
+      citations: result.citations,
+      consultedSources: parseConsultedSources(result.consulted_sources),
+      grounded: result.grounded,
+      unverifiedMarkers: result.unverified_markers,
+      searchSummary: result.search_summary,
+      documentScope: result.document_scope ?? undefined,
+      interpretedQuestion: typeof result.interpreted_question === "string" ? result.interpreted_question : undefined,
+      summary: Array.isArray(result.summary) ? result.summary : undefined,
+    });
+    // Özet beklenirken doğrulanmış cevap önizleme olarak gösterilir; kalıcı cevap gelince onun yerini alır.
+    let previewShown = false;
     try {
       const result = await askAssistant(question, {
         conversationId: activeId,
         caseId: caseId ?? null,
         onStage: (s) => setStage(STAGE_LABELS[s] ?? ""),
         onSearchSummary: setRequestSummary,
-      });
-      setMessages((p) => [
-        ...p,
-        {
-          id: result.message_id ?? undefined,
-          role: "assistant",
-          content: result.answer,
-          citations: result.citations,
-          consultedSources: parseConsultedSources(result.consulted_sources),
-          grounded: result.grounded,
-          unverifiedMarkers: result.unverified_markers,
-          searchSummary: result.search_summary,
-          documentScope: result.document_scope ?? undefined,
+        onPreview: (preview) => {
+          if (previewShown) return;
+          previewShown = true;
+          setRequestSummary(undefined);
+          setMessages((p) => [...p, asMessage(preview)]);
         },
-      ]);
+      });
+      setMessages((p) => [...(previewShown ? p.slice(0, -1) : p), asMessage(result)]);
       setRequestSummary(undefined);
       if (result.conversation_id) setActiveId(result.conversation_id);
       if (!compact) refresh();
@@ -256,6 +271,22 @@ export function LegalChat({
                       m.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted/50",
                     )}
                   >
+                    {m.role === "assistant" && m.interpretedQuestion && (
+                      <p className="mb-2 text-xs text-muted-foreground" data-testid="interpreted-question">
+                        Önceki sorunuza göre şöyle anlaşıldı: “{m.interpretedQuestion}”
+                      </p>
+                    )}
+                    {m.role === "assistant" && (m.summary?.length ?? 0) > 0 && (
+                      <div className="mb-3 rounded-xl border border-primary/20 bg-primary/5 p-3" data-testid="answer-summary">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-primary">Kısa özet</p>
+                        <ul className="mt-1.5 list-disc space-y-1 pl-5 text-sm">
+                          {m.summary?.map((item) => <li key={item}>{item}</li>)}
+                        </ul>
+                        <p className="mt-2 text-[11px] text-muted-foreground">
+                          Yapay zekâ özetidir ve eksik olabilir; koşul ve istisnalar için aşağıdaki madde metnini esas alın.
+                        </p>
+                      </div>
+                    )}
                     <div className="prose prose-sm dark:prose-invert max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
                       <CollapsibleAnswer length={m.role === "assistant" ? m.content.length : 0}>
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>

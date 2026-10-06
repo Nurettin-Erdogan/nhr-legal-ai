@@ -29,8 +29,18 @@ import {
   ChevronDown,
   type LucideIcon,
 } from "lucide-react";
-import { NAV_COLLAPSED_KEY, NAV_GROUPS, activeNavPath, parseCollapsedGroups, toggleCollapsedGroup, visibleNavItems } from "@/lib/nav";
+import {
+  NAV_COLLAPSED_KEY,
+  NAV_GROUPS,
+  activeNavPath,
+  isNavGroupCollapsed,
+  parseCollapsedGroups,
+  toggleCollapsedGroup,
+  visibleNavItems,
+} from "@/lib/nav";
 import { FeedbackButton } from "@/components/FeedbackButton";
+import { GlobalSearch } from "@/components/GlobalSearch";
+import { ReminderBell } from "@/components/ReminderBell";
 import { useEffect, useState, type ReactNode } from "react";
 import { Logo } from "./Logo";
 import { cn } from "@/lib/utils";
@@ -87,8 +97,13 @@ export const DashboardLayout = ({
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
   const incompleteScreen = [
-    "/dashboard/appointments", "/dashboard/execution", "/dashboard/leads",
-    "/dashboard/modules", "/dashboard/payments", "/dashboard/reports", "/dashboard/staff",
+    "/dashboard/appointments",
+    "/dashboard/execution",
+    "/dashboard/leads",
+    "/dashboard/modules",
+    "/dashboard/payments",
+    "/dashboard/reports",
+    "/dashboard/staff",
   ].includes(location.pathname);
   const { profile, user, signOut } = useAuth();
   const navigate = useNavigate();
@@ -128,40 +143,56 @@ export const DashboardLayout = ({
   const nav = (
     <nav className="space-y-4" aria-label="Ana menü">
       {NAV_GROUPS.map((group) => {
-        const isCollapsed = collapsed.includes(group.title);
+        const isActiveGroup = group.items.some((item) => item.to === activePath);
+        const isCollapsed = isNavGroupCollapsed(group, collapsed.includes(group.title), activePath);
         return (
-        <div key={group.title} className="space-y-1">
-          <button
-            type="button"
-            onClick={() => toggleGroup(group.title)}
-            aria-expanded={!isCollapsed}
-            className="flex w-full items-center justify-between gap-2 rounded-lg px-3 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70 transition-colors hover:text-foreground"
-          >
-            <span className="truncate">{group.title}</span>
-            <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 transition-transform", isCollapsed && "-rotate-90")} />
-          </button>
-          {visibleNavItems(group, isCollapsed, activePath).map((item) => {
-            const Icon = NAV_ICONS[item.to] ?? FileText;
-            const active = activePath === item.to;
-            return (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                end={item.to === "/dashboard"}
-                activeOptions={{ exact: item.to === "/dashboard" }}
-                onClick={() => setMobileOpen(false)}
-                aria-current={active ? "page" : undefined}
+          <div key={group.title} className="space-y-1">
+            <button
+              type="button"
+              onClick={() => toggleGroup(group.title)}
+              disabled={isActiveGroup}
+              title={
+                isActiveGroup
+                  ? "Bulunduğunuz bölüm açık kalır"
+                  : isCollapsed
+                    ? "Bölümü aç"
+                    : "Bölümü kapat"
+              }
+              aria-expanded={!isCollapsed}
+              className="flex w-full items-center justify-between gap-2 rounded-lg px-3 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70 transition-colors hover:text-foreground"
+            >
+              <span className="truncate">{group.title}</span>
+              <ChevronDown
                 className={cn(
-                  "flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition-colors",
-                  active ? "bg-secondary text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                  "h-3.5 w-3.5 shrink-0 transition-transform",
+                  isCollapsed && "-rotate-90",
                 )}
-              >
-                <Icon className="h-[18px] w-[18px] shrink-0" />
-                <span className="truncate">{item.label}</span>
-              </NavLink>
-            );
-          })}
-        </div>
+              />
+            </button>
+            {visibleNavItems(group, isCollapsed, activePath).map((item) => {
+              const Icon = NAV_ICONS[item.to] ?? FileText;
+              const active = activePath === item.to;
+              return (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  end={item.to === "/dashboard"}
+                  activeOptions={{ exact: item.to === "/dashboard" }}
+                  onClick={() => setMobileOpen(false)}
+                  aria-current={active ? "page" : undefined}
+                  className={cn(
+                    "flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition-colors",
+                    active
+                      ? "bg-secondary text-primary"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                  )}
+                >
+                  <Icon className="h-[18px] w-[18px] shrink-0" />
+                  <span className="truncate">{item.label}</span>
+                </NavLink>
+              );
+            })}
+          </div>
         );
       })}
     </nav>
@@ -212,8 +243,10 @@ export const DashboardLayout = ({
             <h1 className="truncate text-base font-semibold">{title}</h1>
             {subtitle && <p className="truncate text-xs text-muted-foreground">{subtitle}</p>}
           </div>
+          <GlobalSearch />
           <div className="flex shrink-0 items-center gap-2">
             {actions}
+            <ReminderBell />
             <ThemeToggle />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -248,9 +281,15 @@ export const DashboardLayout = ({
         </header>
 
         <main className="animate-fade-in flex-1 p-4 lg:p-8">
-          {incompleteScreen && <p role="status" className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
-            Bu ekranın veri bağlantısı henüz tamamlanmadı. Boş listeler ve sıfır değerleri gerçek kayıt sayısını göstermez.
-          </p>}
+          {incompleteScreen && (
+            <p
+              role="status"
+              className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm"
+            >
+              Bu ekranın veri bağlantısı henüz tamamlanmadı. Boş listeler ve sıfır değerleri gerçek
+              kayıt sayısını göstermez.
+            </p>
+          )}
           {children}
         </main>
       </div>

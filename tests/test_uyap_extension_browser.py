@@ -1455,13 +1455,13 @@ def test_a_permanent_short_message_is_reported_with_its_text_and_the_run_continu
     page.close()
 
 
-PAGES["/vatandas/dosya-buyuk"] = _one_leaf_page("109")
+PAGES["/vatandas/dosya-buyuk-evrak"] = _one_leaf_page("109")
 
 
 def test_an_evrak_too_large_for_the_preview_is_fetched_from_uyaps_own_save_address(lab):
     """Canlıda 80 evraktan 4'ü "önizlemede vermiyor" diye düşüyordu: taranmış vekâletnameler ön izlemede yok, "Kaydet" adresinde var."""
     lab.configure(throttleMs=500)
-    page = lab.open("/vatandas/dosya-buyuk")
+    page = lab.open("/vatandas/dosya-buyuk-evrak")
     _start_pull(lab)
     page.wait_for_selector(".jurisai-chooser", timeout=30000)
     page.click("#jurisai-pick-upload")

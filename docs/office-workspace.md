@@ -55,3 +55,23 @@ Kullanıcının yüklediği "karar" kişisel belge deposuna gider; korpusa girme
 - Dava belgelerinin (UYAP dahil) aranabilir yapılması: [office-document-rag.md](office-document-rag.md).
 - UYAP eklentileri varsayılan olarak `http://localhost:8766` adresine gönderir.
 - Bağlantı anahtarı düz saklanır (arayüz tekrar gösterir); RLS ve iptal (`revoked`) ile korunur.
+
+## Genel arama (üst çubuk)
+
+`GET /api/office/search?q=` (`api/office_search.py`) oturum sahibinin dava, müvekkil, belge ve görevlerinde arar; her
+gruptan en çok 5 kayıt döner. Yalnız sahibin satırları görünür (RLS + açık `owner_id` koşulu), çöpteki belge
+aranmaz. Büyük/küçük harf ve "İ/I/ı" farkı gözetilmez ("DEMİR" = "demir"); kullanıcının yazdığı `%` ve `_` joker
+sayılmaz. Müvekkil TC/vergi numarasıyla da bulunur ama numara yanıta konmaz. Hukuk korpusu burada aranmaz; kutu aynı
+terimi İçtihat, Mevzuat ve Hukuk Asistanı sayfalarına taşıyan kısayollar sunar (`?q=` ile; asistanda soru yalnız
+kutuya yazılır, gönderilmez). Arayüz: `web/src/components/GlobalSearch.tsx` ("/" ya da Ctrl+K ile odaklanır). Kutu
+dar ekranda (telefon) gösterilmez.
+
+## Takvim, hatırlatma ve form denetimleri
+
+- Davanın "Sonraki Duruşma" tarihi ve açık görevlerin son tarihi takvimde salt okunur etkinlik olarak görünür
+  (`web/src/lib/calendar-derived.ts`); kaynağı dava/görev kaydıdır, takvim tablosuna kopyalanmaz.
+- Zamanı gelen hatırlatmalar üst çubuktaki zilde gösterilir; e-posta kanalı yalnız SMTP kuruluysa açıktır
+  ([account-security.md](account-security.md)).
+- Müvekkil formunda TC kimlik no (11 hane + denetim hanesi), vergi no (10 hane + denetim hanesi; şahıs işletmesinde
+  TC kimlik no) ve telefon (10–15 rakam) doldurulmuşsa denetlenir (`web/src/lib/client-form.ts`). Alanlar isteğe
+  bağlıdır. Denetim yalnız arayüzdedir.

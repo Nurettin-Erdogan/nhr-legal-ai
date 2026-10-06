@@ -8,6 +8,7 @@ import { useAuth } from "@/components/AuthProvider";
 import { db } from "@/lib/db";
 import { beginGoogleLogin, googleAccountLinked, googleLoginAvailable } from "@/lib/auth-api";
 import { downloadMyData } from "@/lib/account-data";
+import { AccountDeletion, AccountProfile, useAccountSecurity } from "@/components/AccountSettings";
 
 type CallPreferences = {
   greeting: string;
@@ -65,6 +66,7 @@ function DataRights() {
 const Settings = () => {
   const { user } = useAuth();
   const userId = user?.id;
+  const security = useAccountSecurity();
   const [values, setValues] = useState<CallPreferences>(defaults);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -172,18 +174,16 @@ const Settings = () => {
   };
 
   return (
-    <DashboardLayout title="Ayarlar" subtitle="Büro tercihleri ve entegrasyon durumu">
+    <DashboardLayout title="Ayarlar" subtitle="Hesabınız, verileriniz ve büro tercihleri">
       <div className="max-w-3xl space-y-6">
-        <div
-          role="status"
-          className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm"
-        >
-          Telefon hattı, sesli AI, Google Takvim, WhatsApp ve ödeme sağlayıcısı bu kurulumda bağlı
-          değil. Aşağıdaki tercihler veritabanına kaydedilir; tek başına arama veya bildirim
-          göndermez.
-        </div>
+        <AccountProfile security={security} />
+        <DataRights />
         <section className="space-y-5 rounded-xl border border-border bg-card p-6">
           <h2 className="text-xl font-semibold">Çağrı tercihleri</h2>
+          <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
+            Telefon hattı, sesli AI, Google Takvim, WhatsApp ve ödeme sağlayıcısı bu kurulumda bağlı değil. Aşağıdaki tercihler
+            veritabanına kaydedilir; tek başına arama veya bildirim göndermez.
+          </p>
           {!userId ? (
             <p>Tercihler için oturum açın.</p>
           ) : loading || loadedFor !== userId ? (
@@ -256,7 +256,6 @@ const Settings = () => {
             </>
           )}
         </section>
-        <DataRights />
         <section className="space-y-3 rounded-xl border border-border bg-card p-6">
           <h2 className="text-xl font-semibold">Google hesabı</h2>
           {!userId || googleLoadedFor !== userId ? (
@@ -274,6 +273,7 @@ const Settings = () => {
             <p>Google girişi bu ortamda henüz yapılandırılmadı.</p>
           )}
         </section>
+        <AccountDeletion security={security} />
       </div>
     </DashboardLayout>
   );

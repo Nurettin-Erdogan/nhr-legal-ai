@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { FolderOpen, Loader2, RefreshCw } from "lucide-react";
+import { docSourceLabel, docTextNote, docTextState, type DocTextState } from "@/lib/case-doc-text";
 
 export interface CaseDocRow {
   id: string;
@@ -13,7 +14,7 @@ export interface CaseDocRow {
   uyap_birim: string | null;
   doc_date: string | null;
   source: string;
-  has_text: boolean;
+  text_state: DocTextState;
 }
 
 interface Props {
@@ -29,11 +30,11 @@ export const CaseDocPicker = ({ value, onChange, max = Infinity }: Props) => {
   const [loading, setLoading] = useState(false);
   const [q, setQ] = useState("");
 
-  const load = async () => {
-    setLoading(true);
+  const load = async (quiet = false) => {
+    if (!quiet) setLoading(true);
     const { data } = await supabase
       .from("case_documents")
-      .select("id, file_name, uyap_file_no, uyap_birim, doc_date, source, content_excerpt")
+      .select("id, file_name, uyap_file_no, uyap_birim, doc_date, source, content_excerpt, created_at")
       .order("created_at", { ascending: false })
       .limit(1000);
     setDocs(
@@ -45,7 +46,7 @@ export const CaseDocPicker = ({ value, onChange, max = Infinity }: Props) => {
         uyap_birim: (d.uyap_birim as string | null) ?? null,
         doc_date: (d.doc_date as string | null) ?? null,
         source: (d.source as string) ?? "manual",
-        has_text: Boolean(d.content_excerpt),
+        text_state: docTextState(d.content_excerpt as string | null, d.created_at as string | null),
       })),
     );
     setLoading(false);
@@ -54,6 +55,14 @@ export const CaseDocPicker = ({ value, onChange, max = Infinity }: Props) => {
   useEffect(() => {
     load();
   }, []);
+
+  // Yeni yüklenen belgenin metni arka planda okunur; okuma bitene kadar liste sessizce yenilenir.
+  const reading = docs.some((d) => d.text_state === "reading");
+  useEffect(() => {
+    if (!reading) return;
+    const timer = window.setTimeout(() => load(true), 4000);
+    return () => window.clearTimeout(timer);
+  }, [reading, docs]);
 
   const toggle = (id: string) => {
     if (value.includes(id)) onChange(value.filter((v) => v !== id));
@@ -97,7 +106,7 @@ export const CaseDocPicker = ({ value, onChange, max = Infinity }: Props) => {
           >
             {allSelected ? "Seçimi temizle" : "Tümünü seç"}
           </Button>
-          <Button size="sm" variant="ghost" onClick={load} disabled={loading}>
+          <Button size="sm" variant="ghost" onClick={() => load()} disabled={loading} aria-label="Listeyi yenile">
             {loading ? (
               <Loader2 className="h-4 w-4 animate-spin" />
             ) : (
@@ -139,8 +148,8 @@ export const CaseDocPicker = ({ value, onChange, max = Infinity }: Props) => {
             <span className="min-w-0 flex-1">
               <span className="block truncate font-medium">{d.file_name}</span>
               <span className="text-muted-foreground">
-                {[d.uyap_file_no, d.uyap_birim, d.doc_date].filter(Boolean).join(" • ") || d.source}
-                {!d.has_text && " • metin çıkarılamadı"}
+                {[d.uyap_file_no, d.uyap_birim, d.doc_date].filter(Boolean).join(" • ") || docSourceLabel(d.source)}
+                {d.text_state !== "ready" && ` • ${docTextNote(d.text_state)}`}
               </span>
             </span>
           </label>

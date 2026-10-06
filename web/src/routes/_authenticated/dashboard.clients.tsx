@@ -35,6 +35,8 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/components/AuthProvider";
 import { toast } from "sonner";
+import { clientFormProblem } from "@/lib/client-form";
+import { useSearchParam } from "@/lib/router-compat";
 import { z } from "zod";
 import {
   DropdownMenu,
@@ -105,6 +107,12 @@ const Clients = () => {
     load();
   }, []);
 
+  // Üst çubuktaki genel aramadan gelen ad ("?q=…") listeyi süzer.
+  const urlQuery = useSearchParam("q");
+  useEffect(() => {
+    if (urlQuery.trim()) setQuery(urlQuery);
+  }, [urlQuery]);
+
   const openCreate = () => {
     setEditing(null);
     setForm(empty);
@@ -131,6 +139,11 @@ const Clients = () => {
       toast.error(parsed.error.issues[0].message);
       return;
     }
+    const problem = clientFormProblem(parsed.data);
+    if (problem) {
+      toast.error(problem);
+      return;
+    }
     if (!user) {
       toast.error("Oturum bulunamadı");
       return;
@@ -141,8 +154,9 @@ const Clients = () => {
       client_type: parsed.data.client_type,
       email: parsed.data.email || null,
       phone: parsed.data.phone || null,
-      national_id: parsed.data.national_id || null,
-      tax_id: parsed.data.tax_id || null,
+      // Tipe göre yalnız görünen numara kaydedilir (tip değiştirilince gizlenen eski değer kayıtta kalmasın).
+      national_id: parsed.data.client_type === "individual" ? parsed.data.national_id || null : null,
+      tax_id: parsed.data.client_type === "corporate" ? parsed.data.tax_id || null : null,
       address: parsed.data.address || null,
       notes: parsed.data.notes || null,
     };
@@ -242,6 +256,9 @@ const Clients = () => {
               <div className="space-y-1.5">
                 <Label>{form.client_type === "corporate" ? "Vergi No" : "TC Kimlik No"}</Label>
                 <Input
+                  inputMode="numeric"
+                  maxLength={14}
+                  placeholder={form.client_type === "corporate" ? "10 hane" : "11 hane"}
                   value={form.client_type === "corporate" ? form.tax_id : form.national_id}
                   onChange={(e) =>
                     setForm({
@@ -256,6 +273,7 @@ const Clients = () => {
                 <Input
                   value={form.phone}
                   onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                  type="tel"
                   placeholder="+90 5xx xxx xx xx"
                 />
               </div>

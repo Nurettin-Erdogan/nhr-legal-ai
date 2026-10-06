@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useSearchParam } from "@/lib/router-compat";
 import {
   DEFAULT_FILTERS,
   MIN_QUERY_LENGTH,
@@ -199,6 +200,13 @@ export function DecisionSearch({
     setPage(null);
     void run(clean, 0, mode);
   };
+
+  // Üst çubuktaki genel aramadan gelen terim ("?q=…") sayfa açılırken ve terim değiştikçe aranır.
+  const urlQuery = useSearchParam("q");
+  useEffect(() => {
+    if (urlQuery.trim()) submit(urlQuery);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlQuery]);
 
   const switchMode = (next: SearchMode) => {
     if (next === mode) return;

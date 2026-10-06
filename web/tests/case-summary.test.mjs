@@ -117,7 +117,7 @@ test("requests carry the token and ids, and failures become readable errors", as
 
     globalThis.fetch = respond(200, { case_id: "c", total: 1, ready: 1, documents: [] });
     await lib.loadFacts("c");
-    assert.match(calls[1].url, /\/api\/office\/cases\/c\/documents\/facts$/);
+    assert.match(calls[1].url, /\/api\/office\/cases\/c\/documents\/facts\?offset=0&limit=100$/);
     assert.equal(calls[1].init.headers.Authorization, undefined);
 
     globalThis.fetch = respond(409, { detail: "Devam eden bir özet işiniz var; bitmesini bekleyin." });
@@ -137,4 +137,23 @@ test("requests carry the token and ids, and failures become readable errors", as
   } finally {
     globalThis.fetch = original;
   }
+});
+test("facts load all pages and keep the actual ready count above 40", async () => {
+  const original = globalThis.fetch;
+  const offsets = [];
+  try {
+    globalThis.fetch = async (url) => {
+      const offset = Number(new URL(url).searchParams.get("offset"));
+      offsets.push(offset);
+      return { ok: true, json: async () => ({ total: 151, ready: 145, has_more: offset === 0,
+        documents: Array.from({ length: offset === 0 ? 100 : 45 }, (_, i) => ({ id: `doc-${offset + i}` })) }) };
+    };
+    const result = await lib.loadFacts("case");
+    assert.equal(result.ready, 145);
+    assert.equal(result.total, 151);
+    assert.equal(result.documents.length, 145);
+    assert.deepEqual(offsets, [0, 100]);
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ total: 45, ready: 45, has_more: true, documents: [] }) });
+    await assert.rejects(lib.loadFacts("case"), /eksik/);
+  } finally { globalThis.fetch = original; }
 });

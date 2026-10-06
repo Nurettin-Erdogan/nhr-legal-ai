@@ -14,6 +14,8 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { Loader2 } from "lucide-react";
+import { authErrorMessage } from "@/lib/account-forms";
+import { TERMS_VERSION } from "@/lib/legal";
 
 type Props = {
   open: boolean;
@@ -27,6 +29,7 @@ export function AuthDialog({ open, onOpenChange, defaultMode = "signup" }: Props
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [accepted, setAccepted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [googleAvailable, setGoogleAvailable] = useState(false);
 
@@ -45,13 +48,15 @@ export function AuthDialog({ open, onOpenChange, defaultMode = "signup" }: Props
       if (mode === "login") await login(email.trim().toLowerCase(), password);
       else {
         if (fullName.trim().length < 2) throw new Error("Ad ve soyadınızı girin.");
-        await register(email.trim().toLowerCase(), password, fullName.trim());
+        if (!accepted) throw new Error("Devam etmek için Kullanım Şartları'nı ve Gizlilik Politikası'nı kabul etmelisiniz.");
+        await register(email.trim().toLowerCase(), password, fullName.trim(), TERMS_VERSION);
       }
       await refreshAuth();
       toast.success(mode === "login" ? "Giriş yapıldı" : "Kaydınız tamamlandı");
       onOpenChange(false);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Oturum işlemi başarısız oldu");
+      const status = error instanceof Error && "status" in error && typeof error.status === "number" ? error.status : undefined;
+      toast.error(authErrorMessage(error instanceof Error ? error.message : "Oturum işlemi başarısız oldu", status));
     } finally {
       setBusy(false);
     }
@@ -104,6 +109,21 @@ export function AuthDialog({ open, onOpenChange, defaultMode = "signup" }: Props
               onChange={(e) => setPassword(e.target.value)}
             />
           </div>
+          {mode === "signup" && (
+            <label className="flex items-start gap-2 text-xs leading-relaxed text-muted-foreground">
+              <input type="checkbox" className="mt-0.5 h-4 w-4 shrink-0" checked={accepted} onChange={(e) => setAccepted(e.target.checked)} />
+              <span>
+                <a href="/kullanim-sartlari" target="_blank" rel="noreferrer" className="font-medium text-primary underline">
+                  Kullanım Şartları
+                </a>
+                'nı ve{" "}
+                <a href="/gizlilik" target="_blank" rel="noreferrer" className="font-medium text-primary underline">
+                  Gizlilik Politikası / KVKK Aydınlatma Metni
+                </a>
+                'ni okudum, kabul ediyorum.
+              </span>
+            </label>
+          )}
           <Button type="submit" className="w-full rounded-full" disabled={busy}>
             {busy ? (
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -123,7 +143,7 @@ export function AuthDialog({ open, onOpenChange, defaultMode = "signup" }: Props
           variant="outline"
           className="w-full rounded-full"
           disabled={!googleAvailable || busy}
-          onClick={() => beginGoogleLogin()}
+          onClick={() => beginGoogleLogin(false, TERMS_VERSION)}
         >
           Google ile devam et
         </Button>

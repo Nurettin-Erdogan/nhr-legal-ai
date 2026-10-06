@@ -329,8 +329,8 @@ def test_known_documents_lists_only_the_evraks_already_stored_for_the_token_owne
     client, _ = _client(monkeypatch)
     seen = []
 
-    def fake_keys(owner_id, esas_no):
-        seen.append((owner_id, esas_no))
+    def fake_keys(owner_id, esas_no, birim):
+        seen.append((owner_id, esas_no, birim))
         return ["101", office_public.evrak_id_prefix("A+/b==")]
 
     monkeypatch.setattr(office_public, "_stored_keys", fake_keys)
@@ -338,12 +338,12 @@ def test_known_documents_lists_only_the_evraks_already_stored_for_the_token_owne
     response = client.post(
         "/api/public/v1/documents/known",
         headers={"Authorization": f"Bearer {TOKEN}"},
-        json={"evrakIds": ["101", "A+/b==", "999", "", "bozuk"], "dosyaEsasNo": "2024/124"},
+        json={"evrakIds": ["101", "A+/b==", "999", "", "bozuk"], "dosyaEsasNo": "2024/124", "birim": "Ankara 1. İcra Dairesi"},
     )
 
     assert response.status_code == 200
     assert response.json() == {"ok": True, "known": ["101", "A+/b=="]}
-    assert seen == [(OWNER, "2024/124")]  # yalnız anahtar sahibinin belgeleri aranır
+    assert seen == [(OWNER, "2024/124", "Ankara 1. İcra Dairesi")]  # owner + case + court
     assert response.headers["access-control-allow-origin"] == "*"
 
 
@@ -366,6 +366,16 @@ def test_known_evrak_ids_uses_explicit_keys_and_ignores_oversized_ids():
     keys = ["ENC-12", "7"]
     assert office_public.known_evrak_ids(["ENC-12", "7", "8", "x" * 601], keys) == ["ENC-12", "7"]
     assert office_public.known_evrak_ids(["bozuk"], ["bozuk-ad-yok.pdf"]) == []
+
+
+def test_known_documents_without_case_and_court_never_skip_evidence(monkeypatch):
+    client, _ = _client(monkeypatch)
+    monkeypatch.setattr(office_public, "_stored_keys", lambda *args: (_ for _ in ()).throw(AssertionError("Ambiguous query")))
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    for payload in ({"evrakIds": ["1"]}, {"evrakIds": ["1"], "dosyaEsasNo": "2024/1"},
+                    {"evrakIds": ["1"], "dosyaEsasNo": "invalid", "birim": "Court"}):
+        response = client.post("/api/public/v1/documents/known", json=payload, headers=headers)
+        assert response.json() == {"ok": True, "known": []}
 
 
 def test_same_named_same_sized_legacy_document_needs_matching_bytes(monkeypatch, tmp_path):

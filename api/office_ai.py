@@ -222,9 +222,15 @@ def _document_context(user_id: UUID, doc_ids: list[UUID], budget: int) -> str:
         return ""
     try:
         with authenticated_database_connection(str(user_id)) as connection:
+            # Sunucuda çıkarılan (indekslenmiş) metin varsa o kullanılır; `content_excerpt` yalnız bazı yükleme yollarında dolar ve
+            # elle yüklenen belgeler "metin çıkarılamadı" diye boş gidiyordu (ölçüldü: 2026-10-05).
             rows = connection.execute(
-                "SELECT file_name, uyap_file_no, uyap_birim, doc_date, content_excerpt "
-                "FROM office_case_documents WHERE id = ANY(%s::uuid[]) AND deleted_at IS NULL LIMIT 40",
+                "SELECT od.file_name, od.uyap_file_no, od.uyap_birim, od.doc_date, "
+                "  COALESCE((SELECT string_agg(part.content, E'\\n\\n' ORDER BY part.chunk_index) FROM ("
+                "      SELECT c.content, c.chunk_index FROM document_chunks c JOIN documents d ON d.id = c.document_id "
+                "      WHERE d.office_case_document_id = od.id AND d.status = 'ready' ORDER BY c.chunk_index LIMIT 4) part), "
+                "    od.content_excerpt) AS content_excerpt "
+                "FROM office_case_documents od WHERE od.id = ANY(%s::uuid[]) AND od.deleted_at IS NULL LIMIT 40",
                 (doc_ids,),
             ).fetchall()
     except psycopg.Error as exc:
@@ -239,6 +245,38 @@ def _document_context(user_id: UUID, doc_ids: list[UUID], budget: int) -> str:
         excerpt = (row["content_excerpt"] or "(metin çıkarılamadı)")[:per_doc]
         parts.append(f"### {row['file_name']}\n{meta}\n{excerpt}".strip())
     return "\n\nDOSYA BELGELERİ:\n" + "\n\n".join(parts)
+
+
+def _statute_hints(text: str) -> list[dict]:
+    """Konu ipuçlarından korpusta resmî doğrulanmış maddeler; veritabanı yoksa ya da eşleşme yoksa boş liste."""
+    from api import statute_hints
+    from api.db import database_connection
+
+    hints = statute_hints.suggest(text)
+    if not hints:
+        return []
+    try:
+        with database_connection() as connection:
+            return statute_hints.load_verified(connection, hints)
+    except psycopg.Error:
+        logger.warning("Madde ipuçları yüklenemedi", exc_info=True)
+        return []
+
+
+async def _statute_hints_async(text: str) -> list[dict]:
+    return await asyncio.to_thread(_statute_hints, text)
+
+
+async def _condense_topic(narrative: str) -> str | None:
+    """Olay anlatımını araştırma konusuna indirger; model çıktısı kodla denetlenir (deep_research.accept_topic)."""
+    import json
+
+    try:
+        raw, _model = await _generate(deep_research.CONDENSE_SYSTEM, narrative[:1500])
+        data = json.loads(raw[7:-3].strip() if raw.startswith("```json") and raw.endswith("```") else raw)
+    except (HTTPException, ValueError, TypeError):
+        return None
+    return deep_research.accept_topic(data.get("topic") if isinstance(data, dict) else None, narrative)
 
 
 class RunRequest(BaseModel):
@@ -263,35 +301,52 @@ async def _draft(
     """Taslak: kodla kurulan iskelet + doğrulanmış olay anlatımı + kodla listelenen resmî dayanaklar (api.draft_documents)."""
     label = draft_documents.DOC_LABELS.get(doc_type, draft_documents.DOC_LABELS["diger"])
     given = draft_documents.given_text(parties, subject, details, extra)
-    contexts = await _retrieve_sources(f"{subject} {(details or '')[:300]}", user_id, top_k=6)
-    legal = draft_documents.legal_references(contexts)
+    topic = f"{subject} {(details or '')[:300]}"
+    contexts = await _retrieve_sources(topic, user_id, top_k=12)
+    suggested = await asyncio.to_thread(_statute_hints, f"{subject} {(details or '')[:1500]}")
+    legal = draft_documents.legal_references(contexts, question=topic, suggested=suggested)
     model = None
     paragraphs: list[str] = []
     prompt = (
         f"Belge türü: {label}\nTaraflar: {'; '.join(parties) or '(belirtilmedi)'}\nKonu: {subject}\n"
         f"Olgular: {(details or '(yok)')[:1500]}{extra[:1200]}\n\nOlguları numaralı paragraflar hâlinde yaz."
     )
-    try:
-        output, model = await _generate(draft_documents.FACT_SYSTEM, prompt)
-        paragraphs = draft_documents.verified_paragraphs(output, given)
-    except HTTPException:
-        logger.warning("Taslak olay anlatımı modelden alınamadı; kullanıcının olguları kullanılacak")
+    if draft_documents.has_facts(details, extra):
+        try:
+            output, model = await _generate(draft_documents.FACT_SYSTEM, prompt)
+            grouped = draft_documents.verified_paragraphs(output, given)
+
+            async def check(system: str, text: str) -> str:
+                return (await _generate(system, text))[0]
+
+            # Kod denetimi koşulun/olumsuzluğun ters çevrilmesini göremez; cümleler bir de modele denetletilir (yalnız eler).
+            flat = [sentence for sentences in grouped for sentence in sentences]
+            approved, _rejected = await case_summary.check_bullets(flat, [given[:6000]], check)
+            allowed = set(approved)
+            paragraphs = draft_documents.join_paragraphs([[s for s in sentences if s in allowed] for sentences in grouped])
+        except HTTPException:
+            logger.warning("Taslak olay anlatımı modelden alınamadı; kullanıcının olguları kullanılacak")
     from_user = not paragraphs
     if from_user:
         paragraphs = draft_documents.fallback_paragraphs(subject, details or extra[:600])
     content = draft_documents.build_document(doc_type, title, parties, subject, paragraphs, legal)
-    if from_user:
+    if from_user and draft_documents.has_facts(details, extra):
         content += "_Olay anlatımı model çıktısı doğrulanamadığı ya da alınamadığı için sizin yazdığınız bilgilerle oluşturuldu; üslubu düzeltin._\n"
+    elif from_user:
+        content += "_Olgu verilmediği için açıklamalar bölümü boş bırakıldı: olayları, tarihleri ve tutarları yazıp yeniden oluşturun ya da elle doldurun._\n"
     return {"content": content, "model": model, "sources": legal.sources, "unverified_references": [], "label": label}
 
 
 async def _risk(prompt: str, user_id: UUID) -> dict[str, Any]:
     """Risk analizi: dava sonucu tahmini yapılmaz; olay mevzuat / yargı kararları / süre-ispat başlıklarında kaynaklı incelenir."""
     job = deep_research.ResearchJob(id=uuid4(), owner_id=user_id, question=prompt.strip()[: deep_research.MAX_QUESTION_CHARS])
-    await deep_research.run_job(job, lambda question, conversation_id: _deep_answer(user_id, question, conversation_id))
+    await deep_research.run_job(
+        job, lambda question, conversation_id: _deep_answer(user_id, question, conversation_id),
+        condense=_condense_topic, statute_hints=_statute_hints_async,
+    )
     if job.state != "done":
         raise HTTPException(status_code=502, detail=job.error or "Kaynaklı inceleme tamamlanamadı")
-    markdown = deep_research.render_markdown(job.question, job.steps).replace(
+    markdown = deep_research.render_markdown(job.question, job.steps, topic=job.topic, hints=job.hints).replace(
         "# Derin araştırma raporu", "# Risk analizi: kaynaklı inceleme\n\n_Dava sonucu tahmini yapılmaz; aşağıda olay üç başlıkta kaynaklara göre incelenmiştir._", 1
     )
     sources = [{"reference": c["reference"], "source_url": c.get("source_url"), "verification": c.get("verification")} for step in job.steps for c in step.citations]
@@ -585,7 +640,8 @@ def _save_deep_research(job: deep_research.ResearchJob) -> UUID:
             "INSERT INTO office_ai_outputs (id, owner_id, module, title, prompt, output, sources) VALUES (%s, %s, %s, %s, %s, %s, %s)",
             (
                 output_id, job.owner_id, _DEEP_MODULE, f"Derin araştırma: {' '.join(job.question.split())[:60]}", job.question[:20000],
-                deep_research.render_markdown(job.question, job.steps), Jsonb({"steps": steps}),
+                deep_research.render_markdown(job.question, job.steps, topic=job.topic, hints=job.hints),
+                Jsonb({"steps": steps, "topic": job.topic, "hints": [{"reference": h["reference"], "source_url": h.get("source_url")} for h in job.hints]}),
             ),
         )
         record_event(connection, action="office.deep_research", actor_user_id=job.owner_id, context=AuditContext(uuid4()),
@@ -598,7 +654,10 @@ async def _deep_run(job: deep_research.ResearchJob) -> None:
     async def save(finished: deep_research.ResearchJob) -> None:
         finished.saved_id = await asyncio.to_thread(_save_deep_research, finished)
 
-    await deep_research.run_job(job, lambda question, conversation_id: _deep_answer(job.owner_id, question, conversation_id), on_done=save)
+    await deep_research.run_job(
+        job, lambda question, conversation_id: _deep_answer(job.owner_id, question, conversation_id), on_done=save,
+        condense=_condense_topic, statute_hints=_statute_hints_async,
+    )
 
 
 @router.post("/deep-research", status_code=202)

@@ -38,7 +38,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Plus, Search, Loader2, MoreHorizontal, Pencil, Trash2, Eye } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "@/lib/router-compat";
+import { Link, useNavigate } from "@/lib/router-compat";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/components/AuthProvider";
 import { toast } from "sonner";
@@ -120,6 +120,7 @@ const statusLabel: Record<string, string> = {
 
 const Cases = () => {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [data, setData] = useState<Case[]>([]);
   const [clients, setClients] = useState<ClientLite[]>([]);
   const [loading, setLoading] = useState(true);
@@ -450,29 +451,48 @@ const Cases = () => {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
+                {/* Dar ekranda yalnız başlık, durum, duruşma ve işlem menüsü kalır; diğer bilgiler başlığın altına iner
+                    (telefon genişliğinde tablo taşıyor, detayı açan menü ekran dışında kalıyordu). */}
                 <tr className="text-left text-xs text-muted-foreground bg-secondary/40 uppercase tracking-wider">
-                  <th className="font-medium px-6 py-3">Dosya No</th>
-                  <th className="font-medium px-6 py-3">Başlık</th>
-                  <th className="font-medium px-6 py-3">Müvekkil</th>
-                  <th className="font-medium px-6 py-3">Karşı Taraf</th>
-                  <th className="font-medium px-6 py-3">Tür</th>
-                  <th className="font-medium px-6 py-3">Durum</th>
-                  <th className="font-medium px-6 py-3">Duruşma</th>
-                  <th className="font-medium px-6 py-3 w-12"></th>
+                  <th className="hidden font-medium px-6 py-3 md:table-cell">Dosya No</th>
+                  <th className="font-medium px-3 py-3 sm:px-6">Başlık</th>
+                  <th className="hidden font-medium px-6 py-3 md:table-cell">Müvekkil</th>
+                  <th className="hidden font-medium px-6 py-3 lg:table-cell">Karşı Taraf</th>
+                  <th className="hidden font-medium px-6 py-3 lg:table-cell">Tür</th>
+                  <th className="font-medium px-3 py-3 sm:px-6">Durum</th>
+                  <th className="hidden font-medium px-6 py-3 sm:table-cell">Duruşma</th>
+                  <th className="font-medium px-2 py-3 w-12 sm:px-6"></th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.map((c) => (
                   <tr
                     key={c.id}
-                    className="border-t border-border hover:bg-secondary/30 transition"
+                    className="border-t border-border hover:bg-secondary/30 transition cursor-pointer"
+                    onClick={() => navigate(`/dashboard/cases/${c.id}`)}
                   >
-                    <td className="px-6 py-4 font-mono text-xs">{c.case_no ?? "—"}</td>
-                    <td className="px-6 py-4 font-medium">{c.title}</td>
-                    <td className="px-6 py-4 text-muted-foreground">{clientName(c.client_id)}</td>
-                    <td className="px-6 py-4 text-muted-foreground">{c.opponent ?? "—"}</td>
-                    <td className="px-6 py-4 text-muted-foreground">{c.case_type ?? "—"}</td>
-                    <td className="px-6 py-4">
+                    <td className="hidden px-6 py-4 font-mono text-xs md:table-cell">{c.case_no ?? "—"}</td>
+                    <td className="px-3 py-4 font-medium sm:px-6">
+                      <Link
+                        to={`/dashboard/cases/${c.id}`}
+                        className="hover:underline"
+                        onClick={(event: React.MouseEvent) => event.stopPropagation()}
+                      >
+                        {c.title}
+                      </Link>
+                      <div className="mt-0.5 text-xs font-normal text-muted-foreground md:hidden">
+                        {[c.case_no, clientName(c.client_id) !== "—" ? clientName(c.client_id) : null].filter(Boolean).join(" · ")}
+                      </div>
+                      {c.next_hearing && (
+                        <div className="mt-0.5 text-xs font-normal text-muted-foreground sm:hidden">
+                          Duruşma: {new Date(c.next_hearing).toLocaleString("tr-TR", { dateStyle: "short", timeStyle: "short" })}
+                        </div>
+                      )}
+                    </td>
+                    <td className="hidden px-6 py-4 text-muted-foreground md:table-cell">{clientName(c.client_id)}</td>
+                    <td className="hidden px-6 py-4 text-muted-foreground lg:table-cell">{c.opponent ?? "—"}</td>
+                    <td className="hidden px-6 py-4 text-muted-foreground lg:table-cell">{c.case_type ?? "—"}</td>
+                    <td className="px-3 py-4 sm:px-6">
                       <span
                         className={cn(
                           "inline-flex items-center px-2.5 py-1 rounded-full border text-xs font-medium",
@@ -482,7 +502,7 @@ const Cases = () => {
                         {statusLabel[c.status]}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-xs">
+                    <td className="hidden px-6 py-4 text-xs sm:table-cell">
                       {c.next_hearing
                         ? new Date(c.next_hearing).toLocaleString("tr-TR", {
                             dateStyle: "short",
@@ -490,10 +510,10 @@ const Cases = () => {
                           })
                         : "—"}
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="px-2 py-4 sm:px-6" onClick={(event) => event.stopPropagation()}>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
-                          <button className="p-1.5 rounded-md hover:bg-secondary">
+                          <button className="p-1.5 rounded-md hover:bg-secondary" aria-label={`${c.title} işlemleri`}>
                             <MoreHorizontal className="h-4 w-4" />
                           </button>
                         </DropdownMenuTrigger>

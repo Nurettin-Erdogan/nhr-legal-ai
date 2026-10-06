@@ -7,7 +7,13 @@ export interface DocumentScope {
   /** OCR ile okunan hazır belge sayısı: okuma hataları olabilir. */
   ocr: number;
   failed: { file_name: string; reason: string }[];
+  /** Soru yalnız dava belgelerinden cevaplandı; hukuk kaynaklarına bakılmadı. */
+  fileOnly?: boolean;
 }
+
+/** Yalnız belgelerden cevaplanan soruda gösterilen not: hukuki değerlendirme için ne yapılacağını söyler. */
+export const FILE_ONLY_NOTE =
+  "Bu soru yalnız dava belgelerinizden cevaplandı; kanun ve içtihat kaynaklarına bakılmadı. Hukuki değerlendirme için soruya kanun, madde ya da içtihat ekleyin veya Hukuk Asistanı'nı kullanın.";
 
 export interface CaseDocumentIndexItem {
   id: string;
@@ -57,6 +63,7 @@ export function parseDocumentScope(raw: unknown): DocumentScope | undefined {
     pending: count(raw.pending),
     ocr: count(raw.ocr),
     failed,
+    ...(raw.file_only === true ? { fileOnly: true } : {}),
   };
 }
 
@@ -74,6 +81,7 @@ export function describeDocumentScope(scope: DocumentScope): ScopeSummary {
     };
   }
   const lines = [`${scope.total} belgeden ${scope.ready} tanesi aranabildi.`];
+  if (scope.fileOnly) lines.push(FILE_ONLY_NOTE);
   if (scope.pending > 0) {
     lines.push(`${scope.pending} belge henüz işlenmedi; cevaba katılmamış olabilir.`);
   }

@@ -1,27 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { DashboardLayout } from "@/components/DashboardLayout";
-import { LegalChat } from "@/components/LegalChat";
+import { Navigate } from "@/lib/router-compat";
 
-const ORNEKLER = [
-  "Kira sözleşmesinde TÜFE üzerinde artış istenirse ne yapılır?",
-  "İşçinin haksız feshinde kıdem hesabı nasıl yapılır?",
-  "Boşanmada ortak velayet hangi şartlarda verilir?",
-  "İcra takibinde itirazın iptali davası süresi nedir?",
-];
-
-const LegalResearch = () => (
-  <DashboardLayout
-    title="Anlık Hukuki Destek"
-    subtitle="Mevzuat ve içtihat için kaynaklı AI hukuk asistanı"
-  >
-    <LegalChat
-      title="Anlık Hukuki Destek"
-      examples={ORNEKLER}
-      intro="Mevzuat ve içtihat sorularınızı yazın; cevap yalnızca getirilen kaynaklara dayanır."
-    />
-  </DashboardLayout>
-);
-
+// Hukuk Asistanı ile aynı sohbetti (ayrı adla ikinci kez sunuluyordu); eski adres asistana yönlendirir.
 export const Route = createFileRoute("/_authenticated/dashboard/research")({
-  component: LegalResearch,
+  component: () => <Navigate to="/dashboard/ai" replace />,
 });

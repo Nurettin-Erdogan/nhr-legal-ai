@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Copy, ExternalLink, Loader2, MessageSquare, Search, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
-import { Link } from "@/lib/router-compat";
+import { Link, useSearchParam } from "@/lib/router-compat";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { loadSourceDetail, isHttpUrl, highlightSegments, type SourceDetail } from "@/lib/decision-search";
@@ -211,6 +211,13 @@ export function LegislationBrowser() {
       void openLaw(result.articleReference.lawNo, result.articleReference.articleNo);
     }
   };
+
+  // Üst çubuktaki genel aramadan gelen terim ("?q=…") sayfa açılırken ve terim değiştikçe aranır.
+  const urlQuery = useSearchParam("q");
+  useEffect(() => {
+    if (urlQuery.trim()) void submit(urlQuery.trim(), "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlQuery]);
 
   const visible = law ? filterArticles(law.articles, articleFilter) : [];
   const index = law ? law.articles.findIndex((article) => article.id === articleId) : -1;

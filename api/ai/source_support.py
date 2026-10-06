@@ -47,8 +47,53 @@ def _sentences(text: str, *, include_tail: bool = True) -> list[str]:
     return pieces
 
 
+_FIELD_LINE = re.compile(r"^[^\s:][^:]{0,40}:\s*\S")
+
+
+def _document_units(text: str) -> list[str]:
+    """Kullanıcı belgesinin kanıt birimleri: cümleler ve "Etiket: değer" satırları.
+
+    Hukuk metni akan cümlelerden oluşur; kullanıcı belgesinde ise bilginin çoğu satır yapısındadır ("Tarih: 10.04.2025",
+    "Muhatap: Mehmet Kaya"). Bütün boşlukları tek satıra indiren `_sentences`, bu satırları başlıkla birlikte tek dev
+    "cümle"ye katıyor, nokta ile bitmeyen son satırı da hiç vermiyordu (ölçüldü: 2026-10-06). Burada paragraf sınırı
+    (boş satır) her zaman birim sınırıdır; paragraf içinde başlık (tümü büyük harf) ve "Etiket: değer" satırları yeni birim
+    başlatır, diğer satırlar bir öncekine eklenir (PDF'lerde cümle satır sonunda bölünür). Belge parçaları paragraf
+    sınırında kesildiği için son birim de tamdır ve atılmaz.
+    """
+    units: list[str] = []
+    for paragraph in re.split(r"\n\s*\n", text.replace("\r\n", "\n")):
+        current: list[str] = []
+
+        def flush() -> None:
+            if current:
+                units.extend(_sentences(" ".join(current)))
+                current.clear()
+
+        for line in (part.strip() for part in paragraph.split("\n")):
+            if not line:
+                continue
+            heading = line == line.upper() and any(char.isalpha() for char in line) and len(line.split()) <= 8
+            if heading:
+                flush()
+                units.append(" ".join(line.split()))
+            elif _FIELD_LINE.match(line):
+                flush()
+                current.append(line)
+            else:
+                current.append(line)
+        flush()
+    return units
+
+
+def source_sentences(context: RAGContext) -> list[str]:
+    """Bir kaynağın, cevaba aynen alınabilecek tam birimleri (kanıt seçimi ve destek denetimi aynı listeyi kullanır)."""
+    if context.source_type == "document":
+        return _document_units(context.content)
+    return _sentences(context.content, include_tail=False)
+
+
 def unsupported_source_claims(text: str, contexts: Sequence[RAGContext]) -> tuple[str, ...]:
-    evidence = [{_normalize(s) for s in _sentences(c.content, include_tail=False)} for c in contexts]
+    evidence = [{_normalize(s) for s in source_sentences(c)} for c in contexts]
     normalized = _AFTER_SENTENCE.sub(lambda m: f" {m.group(2).strip()}{m.group(1)} ", text)
     unsupported: list[str] = []
     for line in normalized.splitlines():

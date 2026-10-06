@@ -80,18 +80,71 @@ export async function login(email: string, password: string): Promise<AuthRespon
   return result;
 }
 
+/**
+ * `termsVersion`: kullanıcının kayıt formunda işaretleyerek kabul ettiği Kullanım Şartları / KVKK aydınlatma metninin sürümü.
+ * Boşsa onay verilmemiş sayılır ve sunucu kaydı reddeder.
+ */
 export async function register(
   email: string,
   password: string,
   fullName: string,
+  termsVersion = "",
 ): Promise<AuthResponse> {
   const result = await request<AuthResponse>("/api/auth/register", {
     method: "POST",
-    body: JSON.stringify({ email, password, full_name: fullName }),
+    body: JSON.stringify({
+      email,
+      password,
+      full_name: fullName,
+      terms_accepted: Boolean(termsVersion),
+      terms_version: termsVersion || null,
+    }),
   });
   accessToken = result.access_token;
   return result;
 }
+
+// --- Hesap: profil, parola, şifre sıfırlama, hesabı silme ------------------------------------------------------------------
+
+export interface AccountSecurity {
+  has_password: boolean;
+  email_delivery: boolean;
+}
+
+export const accountSecurity = () => request<AccountSecurity>("/api/account/security");
+
+export const updateProfile = (fullName: string) =>
+  request<AuthUser>("/api/account/profile", { method: "POST", body: JSON.stringify({ full_name: fullName }) });
+
+export async function changePassword(currentPassword: string, newPassword: string): Promise<AuthResponse> {
+  const result = await request<AuthResponse>("/api/account/password", {
+    method: "POST",
+    body: JSON.stringify({ current_password: currentPassword || null, new_password: newPassword }),
+  });
+  accessToken = result.access_token; // diğer oturumlar kapandı; bu oturum yeni jetonla sürer
+  return result;
+}
+
+export async function deleteAccount(password: string, confirm: string): Promise<void> {
+  await request<void>("/api/account/delete", {
+    method: "POST",
+    body: JSON.stringify({ password: password || null, confirm }),
+  });
+  accessToken = "";
+}
+
+/** `delivery`: "email" ise bağlantı e-postayla gönderilir; "manual" ise bu kurulumda e-posta gönderilemez. */
+export const requestPasswordReset = (email: string) =>
+  request<{ ok: boolean; delivery: "email" | "manual" }>("/api/auth/password-reset/request", {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  });
+
+export const confirmPasswordReset = (token: string, newPassword: string) =>
+  request<void>("/api/auth/password-reset/confirm", {
+    method: "POST",
+    body: JSON.stringify({ token, new_password: newPassword }),
+  });
 
 export async function logout(): Promise<void> {
   try {
@@ -116,7 +169,11 @@ export async function googleAccountLinked(): Promise<boolean> {
   return connection.linked;
 }
 
-export function beginGoogleLogin(linkAccount = false): void {
-  const suffix = linkAccount ? "?link=true" : "";
+/** `termsVersion`: Google ile yeni hesap açılırsa, sayfada gösterilen şartların sürümü hesaba yazılır. */
+export function beginGoogleLogin(linkAccount = false, termsVersion = ""): void {
+  const params = new URLSearchParams();
+  if (linkAccount) params.set("link", "true");
+  if (termsVersion && !linkAccount) params.set("terms", termsVersion);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
   window.location.assign(`${API_BASE_URL}/api/auth/google/start${suffix}`);
 }

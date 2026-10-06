@@ -32,6 +32,22 @@ Emin değilsen REDDET. Yalnız JSON döndür:
 {"supported":true,"relevant":true,"scope_preserved":true,"coverage_preserved":true}.
 Bir tek iddia bile kusurluysa ilgili alan false olmalı."""
 
+# Yokluk, kesinlik ve genelleme bildiren ifadeler. Açıklama iddiasında geçip dayandığı alıntıda geçmiyorsa iddia kaynaktan
+# çıkmaz: model "en az otuz gün" diyen maddeden "olaya özgü istisnalar söz konusu değildir" sonucunu üretti ve model
+# denetçisi bunu onayladı (ölçüldü: 2026-10-06). Kaynak bir şeyin YOKLUĞUNU söylemiyorsa açıklama da söyleyemez.
+_ABSOLUTE_MARKERS = (
+    'istisna', 'hiçbir', 'her durumda', 'her halde', 'her zaman', 'kesinlikle', 'mutlaka', 'asla', 'gerekmez',
+    'zorunlu değil', 'mümkün değil', 'söz konusu değil', 'yoktur', 'bulunmamaktadır', 'aranmaz', 'fark etmez',
+)
+
+
+def unsupported_absolute(claim: str, evidence: str) -> str | None:
+    """İddiadaki, alıntıda karşılığı olmayan ilk yokluk/kesinlik ifadesi; yoksa None."""
+    from api.ai.search_plan import normalize
+    text, source = normalize(claim), normalize(evidence)
+    return next((marker for marker in _ABSOLUTE_MARKERS if marker in text and marker not in source), None)
+
+
 _CASE_FINDING = re.compile(r'somut olay|belirtilerek|açıklanmıştır|değerlendirilmiştir|kanaatine|karar verilmiştir', re.I)
 
 
@@ -50,7 +66,34 @@ def with_coverage_notice(answer: VerifiedAnswer, question: str) -> VerifiedAnswe
             and all(c.source_type == 'legislation' for c in answer.contexts)
             and not re.search(r'\b(?:başvur\w*|itiraz\w*|dava aç\w*|arabulucu\w*|ihtar\w*)', normalize(answer.text))):
         notices.append('Aşağıda mevzuat dayanağı yer alıyor; somut durumda izlenecek başvuru adımlarını bu kaynaklarla doğrulayamadım.')
+    stale = stale_decisions_notice(answer)
+    if stale:
+        notices.append(stale)
     return replace(answer, text='\n\n'.join([*notices, answer.text])) if notices else answer
+
+
+STALE_DECISION_YEARS = 8
+
+
+def stale_decisions_notice(answer: VerifiedAnswer, *, today=None) -> str | None:
+    """Cevap yalnız eski kararlara dayanıyorsa bunu söyler (hukuki iddia değil, kaynakların tarihi).
+
+    "İhbar tazminatında zamanaşımı" sorusuna 2013 tarihli iki karardan "on yıl" cevabı veriliyordu; sonradan yapılan
+    kanun değişikliği korpustaki eski kararlarda görünmez (ölçüldü: 2026-10-05). Sistem hangisinin güncel olduğuna
+    karar vermez; yalnız atıf yapılan en yeni kararın tarihini gösterip güncelliğin kontrol edilmesini ister.
+    """
+    from datetime import date
+    decisions = [c for c in answer.contexts if c.source_type == 'court_decision']
+    if not decisions or any(c.source_type == 'legislation' for c in answer.contexts):
+        return None
+    dates = [c.decision_date for c in decisions if c.decision_date]
+    if len(dates) != len(decisions):
+        return None
+    newest = max(dates)
+    if ((today or date.today()) - newest).days < STALE_DECISION_YEARS * 365:
+        return None
+    return (f'Atıf yapılan en yeni karar {newest.strftime("%d.%m.%Y")} tarihlidir; sonradan mevzuat ya da içtihat '
+            'değişmiş olabilir, güncelliğini kontrol edin.')
 
 
 def _json(raw):
@@ -72,9 +115,15 @@ def validate_claims(raw, answer: VerifiedAnswer, question: str):
         for marker in re.findall(r'\[K(\d+)\]', line):
             quotes.setdefault(int(marker), []).append(line)
     checked = []
+    seen_texts = set()
     for claim in claims:
         if not isinstance(claim, dict):
             return None
+        # Yerel model aynı iddiayı birkaç kez yazabiliyor (ölçüldü: aynı cümle dört kez); tekrar atılır.
+        key = ' '.join(str(claim.get('text', '')).split()).casefold()
+        if key in seen_texts:
+            continue
+        seen_texts.add(key)
         text, ids = claim.get('text'), claim.get('sources')
         if (not isinstance(text, str) or not 5 <= len(text) <= 1000
                 or '[' in text or '\n' in text or '<' in text
@@ -84,6 +133,9 @@ def validate_claims(raw, answer: VerifiedAnswer, question: str):
         evidence = '\n'.join(q for i in dict.fromkeys(ids) for q in quotes[i])
         if not _number_tokens(text).issubset(_number_tokens(evidence)):
             return None
+        if unsupported_absolute(text, evidence):
+            # Yalnız bu iddia atılır; kalan iddialar bütün alıntıları kapsamıyorsa aşağıdaki denetim açıklamayı düşürür.
+            continue
         checked.append(dict(text=text.strip(), sources=list(dict.fromkeys(ids)), evidence=evidence))
     # Individual sentences may use pronouns; assess topicality across the whole
     # explanation, then ask the independent checker about every atomic claim.

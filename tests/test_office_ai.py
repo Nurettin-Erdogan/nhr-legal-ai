@@ -100,17 +100,23 @@ def test_ocr_reports_missing_engine(monkeypatch):
 # --- Taslak: iskelet kodla, olgular doğrulanmış, dayanaklar kodla listelenir ------------------------------------
 
 
-def _patch(monkeypatch, *, contexts, output=None, error=None):
+def _patch(monkeypatch, *, contexts, output=None, error=None, hints=(), reject=()):
     async def retrieve(*args, **kwargs):
         return contexts
 
-    async def generate(*args):
+    async def generate(system, prompt):
         if error:
             raise error
+        if "denetçisisin" in system:  # model denetimi: `reject` içindeki sözcüğü taşıyan paragrafı reddeder
+            import json
+
+            items = json.loads(prompt)["MADDELER"]
+            return json.dumps({"results": [not any(word in item for word in reject) for item in items]}), "test-model"
         return output, "test-model"
 
     monkeypatch.setattr(office_ai, "_retrieve_sources", retrieve)
     monkeypatch.setattr(office_ai, "_generate", generate)
+    monkeypatch.setattr(office_ai, "_statute_hints", lambda text: list(hints))
 
 
 def _draft(**overrides):
@@ -151,6 +157,87 @@ def test_supported_model_paragraphs_are_kept_and_renumbered(monkeypatch):
     assert "sizin yazdığınız bilgilerle oluşturuldu" not in content
 
 
+def test_role_prefixes_are_not_printed_twice_and_parties_land_in_their_own_rows(monkeypatch):
+    """Canlıda "DAVACI: Davacı: Ayşe Demir" çıkıyordu; taraflar ters sırada yazılsa da doğru satıra gider."""
+    _patch(monkeypatch, contexts=[], output="1. Müvekkil 8 yıl 1 ay çalışmıştır.")
+    content = _draft(parties=["Davalı: Mehmet Kaya", "Davacı: Ayşe Demir"])["content"]
+    assert "**DAVACI:** Ayşe Demir" in content and "**DAVALI:** Mehmet Kaya" in content
+    plain = _draft(parties=["Davacı Ahmet Örnek", "Davalı ABC Ltd. Şti."])["content"]
+    assert "**DAVACI:** Ahmet Örnek" in plain and "**DAVALI:** ABC Ltd. Şti." in plain
+    unlabelled = _draft(parties=["Ayşe Demir", "Mehmet Kaya"])["content"]
+    assert "**DAVACI:** Ayşe Demir" in unlabelled and "**DAVALI:** Mehmet Kaya" in unlabelled
+
+
+def test_a_paragraph_rejected_by_the_model_checker_never_reaches_the_document(monkeypatch):
+    _patch(monkeypatch, contexts=[], output="1. Müvekkil 8 yıl 1 ay çalışmıştır.\n2. Müvekkil için 340.000 TL kıdem tazminatı hesaplanmıştır.", reject=("340.000",))
+    content = _draft()["content"]
+    assert "1. Müvekkil 8 yıl 1 ay çalışmıştır." in content and "2. Müvekkil için 340.000 TL" not in content
+
+
+def test_an_invented_sentence_is_cut_out_of_an_otherwise_supported_paragraph(monkeypatch):
+    """Canlıda görüldü: doğru cümlenin yanına eklenen uydurma cümle paragrafla birlikte geçiyordu."""
+    output = "1. Müvekkil 8 yıl 1 ay çalışmıştır. Bu süre işyerindeki yetersiz denetimin sonucu oluşmuştur."
+    _patch(monkeypatch, contexts=[], output=output)
+    content = _draft()["content"]
+    assert "1. Müvekkil 8 yıl 1 ay çalışmıştır." in content and "yetersiz denetimin" not in content
+
+
+def test_the_model_is_not_asked_to_write_facts_when_none_were_given(monkeypatch):
+    """Yalnız konu satırıyla model "davalı da talepte bulunmaktadır" gibi cümleler uyduruyordu: olgu yoksa model çağrılmaz."""
+    calls = []
+
+    async def generate(system, prompt):
+        calls.append(system)
+        return "1. Davalı firma da tahsilat talebinde bulunmaktadır.", "test-model"
+
+    _patch(monkeypatch, contexts=[])
+    monkeypatch.setattr(office_ai, "_generate", generate)
+    result = _draft(details=None, subject="Kıdem ve ihbar tazminatı ile fazla mesai alacağının tahsili")
+    assert calls == [] and "tahsilat talebinde" not in result["content"]
+    assert "Olgu verilmediği için açıklamalar bölümü boş bırakıldı" in result["content"] and result["model"] is None
+
+
+def test_without_facts_the_subject_opens_the_explanations_instead_of_an_empty_section(monkeypatch):
+    _patch(monkeypatch, contexts=[], error=HTTPException(status_code=502, detail="model yok"))
+    content = _draft(details=None, subject="Kira bedelinin ödenmemesi nedeniyle tahliye")["content"]
+    assert "1. Dava konusu: Kira bedelinin ödenmemesi nedeniyle tahliye." in content and "2. […]" in content
+
+
+def test_topic_hints_are_listed_first_as_suggestions_and_never_twice(monkeypatch):
+    hint = {"reference": "TÜRK BORÇLAR KANUNU (6098) m. 315", "source_url": "https://mevzuat.gov.tr/x", "verification": "official",
+            "source_type": "legislation", "law_no": "6098", "article_no": "315"}
+    same_article = _context(law_no="6098", article_no="315", law_name="TÜRK BORÇLAR KANUNU")
+    _patch(monkeypatch, contexts=[same_article, _context()], output="1. Müvekkil 8 yıl 1 ay çalışmıştır.", hints=[hint])
+    result = _draft()
+    content = result["content"]
+    assert "Konuya göre otomatik önerilen maddeler" in content and content.count("m. 315") == 1
+    assert content.index("m. 315") < content.index("Aramada bulunan diğer mevzuat") < content.index("m. 344")
+    assert "uygunluğunu avukat kontrol etmelidir" in content and result["sources"][0]["reference"].endswith("m. 315")
+
+
+def test_an_unknown_topic_gets_no_statute_suggestion():
+    from api import statute_hints
+
+    assert statute_hints.suggest("Komşunun köpeği bahçeme giriyor") == []
+    assert [(h.law_no, h.article_no) for h in statute_hints.suggest("Kira bedelinin ödenmemesi nedeniyle tahliye")] == [("6098", "315"), ("6098", "352")]
+    assert [(h.law_no, h.article_no) for h in statute_hints.suggest("Kira artış oranının tespiti")] == [("6098", "344"), ("6098", "345")]
+    hint = statute_hints.suggest("Kıdem tazminatı alacağı")[0]
+    assert statute_hints.text_matches(hint, "Kıdem tazminatı: Madde 14 – Bu Kanuna tabi işçilerin...") and not statute_hints.text_matches(hint, "Yürürlük: Bu Kanun yayımı tarihinde yürürlüğe girer.")
+
+
+def test_emsal_list_prefers_higher_courts_and_is_capped(monkeypatch):
+    from api import draft_documents
+
+    def decision(court, chamber, docket):
+        return _context(source_type="court_decision", law_name=None, law_no=None, article_no=None, court_name=court, chamber=chamber, docket_no=docket, decision_no="2026/1")
+
+    contexts = [decision("Ankara 9. Asliye Ticaret Mahkemesi", None, "2024/18"), decision("İstanbul Bölge Adliye Mahkemesi", "14. Hukuk Dairesi", "2022/1842"),
+                decision("Yargıtay", "3. Hukuk Dairesi", "2025/5173"), decision("Yargıtay", "Hukuk Genel Kurulu", "2024/785"), decision("Kayseri 1. Asliye Ticaret Mahkemesi", None, "2024/665")]
+    legal = draft_documents.legal_references(contexts)
+    assert len(legal.decisions) == draft_documents.MAX_DECISIONS
+    assert "Hukuk Genel Kurulu" in legal.decisions[0] and "Yargıtay 3. Hukuk Dairesi" in legal.decisions[1] and "Bölge Adliye" in legal.decisions[2]
+
+
 def test_verified_statutes_and_decisions_are_listed_by_code_not_by_the_model(monkeypatch):
     decision = _context(source_type="court_decision", law_name=None, law_no=None, article_no=None, court_name="Yargıtay", chamber="9. Hukuk Dairesi", docket_no="2025/412", decision_no="2026/118")
     other = _context(source_type="other", law_name=None, law_no=None, article_no=None, title="Sayıştay ilamı")
@@ -174,6 +261,10 @@ def test_every_document_type_has_its_skeleton_and_unfilled_gaps(monkeypatch, doc
 
 def test_document_analysis_summarises_each_marked_document_and_lists_sources_by_code(monkeypatch):
     async def generate(system, prompt):
+        if "denetçisisin" in system:  # model denetimi: kod denetimini geçen maddeyi onaylar
+            import json
+
+            return json.dumps({"results": [True] * len(json.loads(prompt)["MADDELER"])})
         return "- Kira bedeli 10.000 TL olarak belirlenmiştir."
 
     from api import office_analysis

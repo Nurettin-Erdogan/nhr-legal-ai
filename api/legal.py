@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 import threading
 import time
@@ -164,8 +165,30 @@ _SEARCH_SELECT_COLUMNS = """
         ls.effective_to,
         ls.source_version,
         ls.revision,
+        -- Yalnız sıralama içindir (yanıttan çıkarılır): üçüncü taraf arşivden gelip henüz doğrulanmamış kayıt.
+        (ls.ingestion_method = 'bulk_seed' AND ls.ingest_status = 'pending') AS seed_pending,
         left(chunk.content, 700) AS excerpt
 """
+
+# Sonuç sırası: yeterince ilgili adaylar (en yüksek puanın en az %35'i) içinde önce kanun/KHK maddesi, sonra yüksek mahkeme
+# (Yargıtay, Danıştay, AYM, Uyuşmazlık), sonra bölge mahkemeleri, sonra diğerleri; her katmanda puan ve tarih sırası korunur.
+# Yalnız metin puanıyla sıralamada "kıdem tazminatı" aramasının başına, bu sözcüğü çok tekrarlayan iflas/rücu dosyalarındaki
+# Asliye Ticaret kararları geliyor, aynı havuzdaki Yargıtay 9. HD kararları altta kalıyordu (ölçüldü: 2026-10-06). Katman
+# yalnız SIRAYI etkiler: hiçbir kayıt eklenmez/çıkarılmaz, doğrulama rozeti ve "kısmi" bayrağı değişmez. Aynı katmanda resmî
+# doğrulanmış kayıt, doğrulanmamış (üçüncü taraf) kayıttan önce gelir; doğrulanmamış kayıt her zaman rozetiyle gösterilir.
+_AUTHORITY_ORDER_SQL = """
+CASE WHEN rank >= 0.35 * max(rank) OVER () THEN
+    CASE
+        WHEN source_type = 'legislation' AND legislation_type IN ('law', 'constitution', 'decree') THEN 0
+        WHEN court_name ~* '^(yargıtay|danıştay|anayasa mahkemesi|uyuşmazlık mahkemesi)' THEN 1
+        WHEN court_name ~* 'bölge (adliye|idare) mahkemesi' THEN 2
+        ELSE 3
+    END
+ELSE 4 END
+"""
+# Katmanlı sıra sayfalar arasında tutarlı kalsın diye ilk sayfalar aynı aday havuzundan çıkar.
+_SEARCH_MIN_CANDIDATES = 300
+
 
 def _current_search_sql(
     hits_call: str, partial_sql: str = "true", hits_columns: str = "hits.chunk_id, hits.rank"
@@ -194,7 +217,9 @@ ranked AS (
 )
 SELECT ranked.*, count(*) OVER () AS total, {partial_sql} AS partial
 FROM ranked
-ORDER BY rank DESC,
+ORDER BY {_AUTHORITY_ORDER_SQL},
+         seed_pending,
+         rank DESC,
          COALESCE(decision_date, official_gazette_date, version_date) DESC NULLS LAST,
          title
 LIMIT %(limit)s OFFSET %(offset)s
@@ -256,7 +281,9 @@ ranked AS (
 )
 SELECT ranked.*, count(*) OVER () AS total
 FROM ranked
-ORDER BY rank DESC,
+ORDER BY {_AUTHORITY_ORDER_SQL},
+         seed_pending,
+         rank DESC,
          COALESCE(decision_date, official_gazette_date, version_date) DESC NULLS LAST,
          title
 LIMIT %(limit)s OFFSET %(offset)s
@@ -835,6 +862,56 @@ def _verification_labels(source_ids: list) -> dict:
     return {row["id"]: ("third_party" if row["third_party"] else "official") for row in rows}
 
 
+# "4857 sayılı Kanun 25", "6098 m. 344" gibi açık madde atfı: madde metninde kanun numarası geçmediği için sözcük araması
+# maddenin kendisini bulamıyor, yalnız ona atıf yapan kararları getiriyordu (ölçüldü: 2026-10-06). Atıf tanınırsa resmî
+# doğrulanmış güncel madde ilk sıraya eklenir; madde korpusta yoksa hiçbir şey eklenmez.
+_EXPLICIT_ARTICLE_RE = re.compile(
+    r"(?<![\d/])(\d{3,5})(?![\d/])\s*(?:sayılı|sayili)?\s*(?:\w+\s+){0,3}?(?:kanun\w*|yasa\w*|khk)?\s*(?:m(?:d|adde)?\.?\s*)?(\d{1,3})(?:\s*\.?\s*madde\w*)?\s*$",
+    re.IGNORECASE,
+)
+_ARTICLE_HIT_SQL = f"""
+SELECT
+{_SEARCH_SELECT_COLUMNS},
+    0::real AS rank
+FROM legal_sources ls
+JOIN legislation_details legislation ON legislation.legal_source_id = ls.id
+LEFT JOIN court_decision_details decision ON decision.legal_source_id = ls.id
+JOIN LATERAL (
+    SELECT c.content FROM legal_chunks c WHERE c.legal_source_id = ls.id ORDER BY c.chunk_index LIMIT 1
+) chunk ON true
+WHERE legislation.law_no = %(law_no)s AND legislation.article_no = %(article_no)s
+  AND ls.source_type = 'legislation' AND ls.deleted_at IS NULL AND ls.is_current
+  AND {_VERIFIED_SOURCE_FILTER}
+LIMIT 1
+"""
+
+
+def explicit_article_reference(query: str) -> tuple[str, str] | None:
+    """Sorgu yalnız bir kanun numarası ve madde numarasından oluşuyorsa (kanun no, madde no); değilse None."""
+    from api import legislation_browse
+
+    marked = legislation_browse.parse_reference(query)
+    if marked:
+        return marked
+    match = _EXPLICIT_ARTICLE_RE.search(query.strip())
+    if not match or len(query.split()) > 8:
+        return None
+    return match.group(1), match.group(2)
+
+
+def _explicit_article_hit(query: str) -> dict | None:
+    reference = explicit_article_reference(query)
+    if reference is None:
+        return None
+    try:
+        with database_connection() as connection:
+            connection.execute("SET LOCAL statement_timeout = '3s'")
+            row = connection.execute(_ARTICLE_HIT_SQL, {"law_no": reference[0], "article_no": reference[1]}).fetchone()
+    except psycopg.Error:
+        return None
+    return dict(row) if row else None
+
+
 @router.get("/search", response_model=LegalSearchResponse)
 def search_legal_sources(
     q: str = Query(min_length=2, max_length=300),
@@ -849,7 +926,7 @@ def search_legal_sources(
         "limit": limit,
         "offset": offset,
         "as_of": as_of,
-        "candidate_limit": max(80, (offset + limit) * 10),
+        "candidate_limit": max(_SEARCH_MIN_CANDIDATES, (offset + limit) * 10),
         "seed_cap": _SEARCH_SEED_CAP,
         "or_candidates": _SEARCH_OR_CANDIDATES,
     }
@@ -920,9 +997,15 @@ def search_legal_sources(
     total = int(rows[0]["total"]) if rows else 0
     partial = bool(rows[0].get("partial")) if rows else False
     results = [dict(row) for row in rows]
+    if offset == 0 and as_of is None:
+        article = _explicit_article_hit(params["query"])  # type: ignore[arg-type]
+        if article is not None and all(result["id"] != article["id"] for result in results):
+            results = [article, *results][:limit]
+            total += 1
     for result in results:
         result.pop("total", None)
         result.pop("partial", None)
+        result.pop("seed_pending", None)
     labels = _verification_labels([result["id"] for result in results])
     for result in results:
         result["verification"] = labels.get(result["id"], "unknown")

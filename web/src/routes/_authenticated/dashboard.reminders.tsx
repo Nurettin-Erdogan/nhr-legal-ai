@@ -36,6 +36,7 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/components/AuthProvider";
 import { toast } from "sonner";
+import { accountSecurity } from "@/lib/auth-api";
 import { z } from "zod";
 import {
   DropdownMenu,
@@ -98,6 +99,13 @@ const channelLabel: Record<string, string> = { in_app: "Uygulama", email: "E-pos
 
 const Reminders = () => {
   const { user } = useAuth();
+  // E-posta kanalı yalnız sunucuda e-posta gönderimi (SMTP) kuruluysa çalışır; kurulu değilse seçenek kapalı gösterilir.
+  const [emailDelivery, setEmailDelivery] = useState(false);
+  useEffect(() => {
+    void accountSecurity()
+      .then((value) => setEmailDelivery(value.email_delivery))
+      .catch(() => setEmailDelivery(false));
+  }, []);
   const [data, setData] = useState<Reminder[]>([]);
   const [cases, setCases] = useState<CaseLite[]>([]);
   const [loading, setLoading] = useState(true);
@@ -247,9 +255,16 @@ const Reminders = () => {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="in_app">Uygulama içi</SelectItem>
-                    <SelectItem value="email">E-posta</SelectItem>
+                    <SelectItem value="email" disabled={!emailDelivery && form.channel !== "email"}>
+                      {emailDelivery ? "E-posta" : "E-posta (bu kurulumda gönderilemiyor)"}
+                    </SelectItem>
                   </SelectContent>
                 </Select>
+                <p className="text-xs text-muted-foreground">
+                  {form.channel === "email" && !emailDelivery
+                    ? "E-posta gönderimi kurulu değil: bu hatırlatma yalnız uygulama içinde (zil ve bildirim) gösterilir."
+                    : "Zamanı gelince üst çubuktaki zilde ve ekranda bildirim olarak görünür; uygulama açık olmalıdır."}
+                </p>
               </div>
               <div className="space-y-1.5">
                 <Label>Durum</Label>

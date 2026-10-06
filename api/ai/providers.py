@@ -13,9 +13,12 @@ import httpx
 class AIProviderError(RuntimeError):
     """An AI provider could not generate a usable response."""
 
-    def __init__(self, message: str, *, status_code: int = 502) -> None:
+    def __init__(self, message: str, *, status_code: int = 502, partial: str = "") -> None:
         super().__init__(message)
         self.status_code = status_code
+        # Çıktı belirteç sınırında kesildiyse o ana kadar üretilen metin. Varsayılan davranış değişmez (hata fırlatılır);
+        # yalnız satırları birbirinden bağımsız olan çağıranlar (madde özeti) tamamlanmış satırları kullanabilir.
+        self.partial = partial
 
 
 class AIProvider(Protocol):
@@ -252,7 +255,15 @@ class OllamaProvider:
                 num_ctx=requested_ctx,
             )
             if body.get("done_reason") == "length":
-                raise AIProviderError("Ollama yanıtı token sınırında kesildi; çıktı sınırını artırın")
+                if answer_key == "message":
+                    cut_message = body.get("message")
+                    cut = cut_message.get("content") if isinstance(cut_message, dict) else ""
+                else:
+                    cut = body.get("response")
+                raise AIProviderError(
+                    "Ollama yanıtı token sınırında kesildi; çıktı sınırını artırın",
+                    partial=_visible_answer(cut) if isinstance(cut, str) else "",
+                )
         else:
             self.last_usage = None
         if answer_key == "message":

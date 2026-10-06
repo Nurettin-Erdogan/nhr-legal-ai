@@ -10,6 +10,10 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=10, max_length=128)
     full_name: str = Field(min_length=2, max_length=150)
+    # Kullanım Şartları ve Gizlilik Politikası/KVKK aydınlatma metni onayı: kayıt için zorunludur; zamanı ve gösterilen metnin
+    # sürümü hesaba yazılır.
+    terms_accepted: bool = False
+    terms_version: str | None = Field(default=None, max_length=40)
 
 
 class LoginRequest(BaseModel):

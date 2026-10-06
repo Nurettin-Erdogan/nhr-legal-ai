@@ -21,7 +21,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import psycopg
-from fastapi import APIRouter, Header, Request, Response
+from fastapi import APIRouter, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 from starlette.concurrency import run_in_threadpool
@@ -32,6 +32,7 @@ from api.db import admin_database_connection, authenticated_database_connection
 from api.document_indexing import schedule_index
 from api.office import _storage_path
 from api.udf import UdfError, extract_udf_text
+from api.uyap_cases import case_number, court_key, link_document, lock_uyap_owner
 from api.uyap_meta import (
     MAX_FILE_BYTES,
     extract_text_sample,
@@ -53,6 +54,49 @@ MULTIPART_OVERHEAD_BYTES = 1024 * 1024
 
 class MultipartTooLarge(Exception):
     pass
+
+async def read_document_upload(request: Request) -> tuple[dict[str, str], str, str | None, bytes]:
+    """Bounded multipart reader. Caller MUST authenticate before calling this."""
+    limit = MAX_FILE_BYTES + MULTIPART_OVERHEAD_BYTES
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > limit:
+        raise HTTPException(413, "Dosya çok büyük")
+    received = 0
+    original_receive = request.receive
+
+    async def bounded_receive() -> dict[str, Any]:
+        nonlocal received
+        message = await original_receive()
+        received += len(message.get("body", b""))
+        if received > limit:
+            raise MultipartTooLarge
+        return message
+
+    bounded = Request(request.scope, receive=bounded_receive)
+    try:
+        form = await bounded.form(max_files=1, max_fields=20, max_part_size=16 * 1024)
+    except MultipartTooLarge as exc:
+        raise HTTPException(413, "Dosya çok büyük") from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, "Dosya eksik veya istek gövdesi okunamadı") from exc
+    try:
+        file = form.get("file")
+        if not isinstance(file, StarletteUploadFile):
+            raise HTTPException(400, "Dosya eksik")
+        fields = {key: value for key, value in form.items() if isinstance(value, str)}
+        name = safe_file_name((fields.get("evrakAdi") or file.filename or "uyap-evrak.pdf").strip()[:300])
+        if not is_allowed_file(name):
+            ext = re.sub(r"[^a-z0-9]", "", extension_of(name))[:10]
+            raise HTTPException(415, f"Desteklenmeyen dosya türü (.{ext})")
+        data = await file.read(MAX_FILE_BYTES + 1)
+        if not data:
+            raise HTTPException(400, "Boş dosya")
+        if len(data) > MAX_FILE_BYTES:
+            raise HTTPException(413, "Dosya çok büyük")
+        return fields, name, file.content_type, data
+    finally:
+        await form.close()
+
 
 _CORS = {
     "Access-Control-Allow-Origin": "*",
@@ -135,6 +179,7 @@ def find_duplicate(
     checksum_sha256: str | None = None,
     evrak_key: str | None = None,
     content_text: str | None = None,
+    uyap_birim: str | None = None,
 ) -> UUID | None:
     """Aynı belgeyi bulur. Yalnız dosya adı yetmez: farklı davalardaki "dilekce.pdf" ayrı belgedir.
 
@@ -145,13 +190,21 @@ def find_duplicate(
     # UYAP aynı ODT'nin ZIP zaman damgasını/sıkıştırmasını değiştirebilir. Kalıcı evrak
     # kimliği varsa boyutu ön koşul yapma; doğrulanmış metin eşitliğini de kontrol et.
     semantic_check = bool(evrak_key and content_text)
-    query = "SELECT id, owner_id, storage_path, checksum_sha256 FROM office_case_documents WHERE file_name = %s"
-    params: list[Any] = [file_name]
+    query = "SELECT id, owner_id, storage_path, checksum_sha256 FROM office_case_documents WHERE "
+    if evrak_key:
+        # Stable identity survives display-name changes. Unkeyed legacy rows still need the name.
+        query += "(uyap_evrak_key = %s OR (uyap_evrak_key IS NULL AND file_name = %s))"
+        params: list[Any] = [evrak_key, file_name]
+    else:
+        query += "file_name = %s"
+        params = [file_name]
     if not semantic_check:
         query += " AND size_bytes = %s"
         params.append(size_bytes)
-    query += " AND uyap_file_no IS NOT DISTINCT FROM %s AND deleted_at IS NULL"
-    params.append(uyap_file_no)
+    query += " AND regexp_replace(uyap_file_no, '\\s', '', 'g') IS NOT DISTINCT FROM %s AND deleted_at IS NULL"
+    params.append(re.sub(r"\s", "", uyap_file_no) if uyap_file_no else None)
+    query += " AND COALESCE(lower(regexp_replace(translate(btrim(uyap_birim), 'İı', 'Ii'), '\\s+', ' ', 'g')), '') = %s"
+    params.append(court_key(uyap_birim))
     if source is not None:
         query += " AND source = %s"
         params.append(source)
@@ -180,14 +233,16 @@ def find_duplicate(
 
 
 def find_identity_conflict(
-    connection: psycopg.Connection, file_no: str | None, evrak_key: str | None, source: str
+    connection: psycopg.Connection, file_no: str | None, evrak_key: str | None, source: str,
+    birim: str | None = None,
 ) -> UUID | None:
     if not evrak_key:
         return None
     row = connection.execute(
-        "SELECT id FROM office_case_documents WHERE uyap_file_no IS NOT DISTINCT FROM %s "
-        "AND uyap_evrak_key = %s AND source = %s AND deleted_at IS NULL LIMIT 1",
-        (file_no, evrak_key, source),
+        "SELECT id FROM office_case_documents WHERE regexp_replace(uyap_file_no, '\\s', '', 'g') IS NOT DISTINCT FROM %s "
+        "AND uyap_evrak_key = %s AND source = %s AND deleted_at IS NULL "
+        "AND COALESCE(lower(regexp_replace(translate(btrim(uyap_birim), 'İı', 'Ii'), '\\s+', ' ', 'g')), '') = %s LIMIT 1",
+        (re.sub(r"\s", "", file_no) if file_no else None, evrak_key, source, court_key(birim)),
     ).fetchone()
     return (row["id"] if isinstance(row, dict) else row[0]) if row else None
 
@@ -217,15 +272,23 @@ def _store(
     overrides: dict[str, str | None],
     dedupe_by_source: bool,
     audit: AuditContext,
+    sync_run_id: UUID | None = None,
 ) -> tuple[str, UUID | None]:
     """Belgeyi diske ve tabloya yazar. ('inserted'|'duplicate'|'failed', kimlik) döndürür."""
     excerpt = " ".join(extract_text_sample(file_name, data).split())
-    meta = parse_uyap_meta(file_name, excerpt)
-    file_no = overrides.get("uyap_file_no") or meta["uyap_file_no"]
+    meta = parse_uyap_meta(overrides.get("metadata_name") or file_name, excerpt)
+    raw_number = overrides.get("uyap_file_no") or meta["uyap_file_no"]
+    file_no = case_number(raw_number) or raw_number
+    birim = overrides.get("uyap_birim") or meta["uyap_birim"]
     evrak_key = evrak_id_prefix(overrides.get("evrak_id")) or None
     checksum = hashlib.sha256(data).hexdigest()
     comparable_text = normalized_repackable_text(file_name, data) if evrak_key else None
     with authenticated_database_connection(str(owner_id)) as connection:
+        lock_uyap_owner(connection, owner_id)
+        if sync_run_id is not None and not connection.execute(
+            "SELECT id FROM office_uyap_sync_runs WHERE id=%s AND owner_id=%s", (sync_run_id, owner_id),
+        ).fetchone():
+            return "invalid_sync", None
         existing_id = find_duplicate(
             connection,
             file_name=file_name,
@@ -235,9 +298,12 @@ def _store(
             checksum_sha256=checksum,
             evrak_key=evrak_key,
             content_text=comparable_text,
+            uyap_birim=overrides.get("uyap_birim") or meta["uyap_birim"],
         )
         if existing_id is not None:
-            if evrak_key and find_identity_conflict(connection, file_no, evrak_key, source) is None:
+            link_document(connection, owner_id, existing_id, file_no=overrides.get("uyap_file_no"),
+                          birim=overrides.get("uyap_birim"), audit=audit)
+            if evrak_key and find_identity_conflict(connection, file_no, evrak_key, source, birim) is None:
                 connection.execute(
                     "UPDATE office_case_documents SET uyap_evrak_key = %s "
                     "WHERE id = %s AND uyap_evrak_key IS NULL",
@@ -245,7 +311,7 @@ def _store(
                 )
             return "duplicate", existing_id
 
-        if find_identity_conflict(connection, file_no, evrak_key, source) is not None:
+        if find_identity_conflict(connection, file_no, evrak_key, source, birim) is not None:
             # Aynı evrak kimliği fakat farklı metin: yeni sürüm sessizce atlanmaz/çoğaltılmaz.
             return "changed", None
 
@@ -263,8 +329,8 @@ def _store(
         try:
             inserted = connection.execute(
                 "INSERT INTO office_case_documents (id, owner_id, file_name, storage_path, size_bytes, source, "
-                "mime_type, uyap_file_no, uyap_birim, doc_date, doc_type, content_excerpt, uyap_path, uyap_evrak_key, checksum_sha256) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                "mime_type, uyap_file_no, uyap_birim, doc_date, doc_type, content_excerpt, uyap_path, uyap_evrak_key, checksum_sha256, sync_run_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
                 (
                     document_id,
                     owner_id,
@@ -281,6 +347,7 @@ def _store(
                     overrides.get("uyap_path"),
                     evrak_key,
                     checksum,
+                    sync_run_id,
                 ),
             )
             if inserted.rowcount == 0:
@@ -289,10 +356,13 @@ def _store(
                     connection, file_name=file_name, size_bytes=len(data), uyap_file_no=file_no,
                     source=source if dedupe_by_source else None, checksum_sha256=checksum,
                     evrak_key=evrak_key, content_text=comparable_text,
+                    uyap_birim=overrides.get("uyap_birim") or meta["uyap_birim"],
                 )
                 if duplicate_id is not None:
+                    link_document(connection, owner_id, duplicate_id, file_no=overrides.get("uyap_file_no"),
+                                  birim=overrides.get("uyap_birim"), audit=audit)
                     return "duplicate", duplicate_id
-                return ("changed", None) if find_identity_conflict(connection, file_no, evrak_key, source) else ("failed", None)
+                return ("changed", None) if find_identity_conflict(connection, file_no, evrak_key, source, birim) else ("failed", None)
             record_event(
                 connection,
                 action="office.uyap_ingest",
@@ -302,6 +372,9 @@ def _store(
                 entity_id=document_id,
                 metadata={"size": len(data), "source": source},
             )
+            # Yalnız portalın açık üst verisi: belge içindeki başka dava numarasından ilişki üretme.
+            link_document(connection, owner_id, document_id, file_no=overrides.get("uyap_file_no"),
+                          birim=overrides.get("uyap_birim"), audit=audit)
         except psycopg.Error:
             target.unlink(missing_ok=True)
             raise
@@ -424,58 +497,14 @@ async def upload_document(
         return _reply({"error": "Geçersiz bağlantı anahtarı"}, 401)
     _, owner_id = owner
 
-    # Çok parçalı gövde, anahtar doğrulandıktan sonra ayrıştırılır; yoksa kimliksiz bir istek
-    # devasa bir gövdeyi diske yazdırabilirdi.
-    declared = request.headers.get("content-length", "")
-    if declared.isdigit() and int(declared) > MAX_FILE_BYTES + MULTIPART_OVERHEAD_BYTES:
-        return _reply({"error": "Dosya çok büyük"}, 413)
-    # Eklentinin "Bağlantıyı dene" düğmesi dosyasız istek gönderir ve 400 + "dosya" bekler:
-    # anahtar doğrulandıktan sonra gelen boş/bozuk gövde de aynı biçimde yanıtlanır.
-    limit = MAX_FILE_BYTES + MULTIPART_OVERHEAD_BYTES
-    received = 0
-    original_receive = request.receive
-
-    async def bounded_receive() -> dict[str, Any]:
-        nonlocal received
-        message = await original_receive()
-        received += len(message.get("body", b""))
-        if received > limit:
-            raise MultipartTooLarge
-        return message
-
-    bounded_request = Request(request.scope, receive=bounded_receive)
+    # Both upload paths share size limits and cleanup. Authentication happens first.
     try:
-        form = await bounded_request.form(max_files=1, max_fields=20, max_part_size=16 * 1024)
-    except MultipartTooLarge:
-        return _reply({"error": "Dosya çok büyük"}, 413)
-    except Exception:  # noqa: BLE001 - çok parçalı ayrıştırıcı farklı istisnalar atabilir
-        return _reply({"error": "Dosya eksik veya istek gövdesi okunamadı"}, 400)
-    try:
-        file = form.get("file")
-        if not isinstance(file, StarletteUploadFile):
-            return _reply({"error": "Dosya eksik"}, 400)
-
-        def field(name: str) -> str | None:
-            value = form.get(name)
-            return value if isinstance(value, str) else None
-
-        evrakAdi, evrakId, evrakTuru = field("evrakAdi"), field("evrakId"), field("evrakTuru")
-        dosyaEsasNo, birim, source = field("dosyaEsasNo"), field("birim"), field("source")
-        klasorYolu = field("klasorYolu")
-        file_name = safe_file_name((evrakAdi or file.filename or "uyap-evrak.pdf").strip()[:300])
-        if not is_allowed_file(file_name):
-            # Uzantı kullanıcıya söylenir (hangi evrak türünün reddedildiği görünsün); dosya adı ve içerik günlüğe yazılmaz.
-            rejected = re.sub(r"[^a-z0-9]", "", extension_of(file_name))[:10]
-            logger.info("UYAP yüklemesi reddedildi: desteklenmeyen uzantı .%s", rejected or "(yok)")
-            return _reply({"error": f"Desteklenmeyen dosya türü (.{rejected})" if rejected else "Desteklenmeyen dosya türü (uzantı yok)"}, 415)
-        data = await file.read(MAX_FILE_BYTES + 1)
-        mime_type = file.content_type
-    finally:
-        await form.close()
-    if not data:
-        return _reply({"error": "Boş dosya"}, 400)
-    if len(data) > MAX_FILE_BYTES:
-        return _reply({"error": "Dosya çok büyük"}, 413)
+        fields, file_name, mime_type, data = await read_document_upload(request)
+    except HTTPException as exc:
+        return _reply({"error": exc.detail}, exc.status_code)
+    evrakId, evrakTuru = fields.get("evrakId"), fields.get("evrakTuru")
+    dosyaEsasNo, birim, source = fields.get("dosyaEsasNo"), fields.get("birim"), fields.get("source")
+    klasorYolu = fields.get("klasorYolu")
 
     prefix = evrak_id_prefix(evrakId)
     unique_name = f"{prefix}-{file_name}" if prefix else file_name
@@ -525,6 +554,7 @@ MAX_KNOWN_ROWS = 50000
 class KnownRequest(BaseModel):
     evrakIds: list[str] = Field(max_length=MAX_KNOWN_IDS)
     dosyaEsasNo: str | None = Field(default=None, max_length=60)
+    birim: str | None = Field(default=None, max_length=160)
 
 
 def known_evrak_ids(evrak_ids: list[str], stored_keys: list[str]) -> list[str]:
@@ -540,19 +570,25 @@ def known_evrak_ids(evrak_ids: list[str], stored_keys: list[str]) -> list[str]:
     return known
 
 
-def stored_keys_on(connection: psycopg.Connection, esas_no: str | None) -> list[str]:
+def stored_keys_on(connection: psycopg.Connection, esas_no: str | None, birim: str | None = None) -> list[str]:
     """Bağlantının (RLS: yalnız çağıranın) çöpte olmayan açık UYAP evrak kimlikleri."""
-    rows = connection.execute(
-        "SELECT uyap_evrak_key FROM office_case_documents WHERE uyap_file_no IS NOT DISTINCT FROM %s "
-        "AND uyap_evrak_key IS NOT NULL AND deleted_at IS NULL LIMIT %s",
-        ((esas_no or "").strip()[:60] or None, MAX_KNOWN_ROWS),
-    ).fetchall()
+    query = (
+        "SELECT uyap_evrak_key FROM office_case_documents WHERE regexp_replace(uyap_file_no, '\\s', '', 'g') IS NOT DISTINCT FROM %s "
+        "AND uyap_evrak_key IS NOT NULL AND deleted_at IS NULL"
+    )
+    params: list[Any] = [re.sub(r"\s", "", esas_no) if esas_no else None]
+    if birim is not None:
+        query += " AND COALESCE(lower(regexp_replace(translate(btrim(uyap_birim), 'İı', 'Ii'), '\\s+', ' ', 'g')), '') = %s"
+        params.append(court_key(birim))
+    query += " LIMIT %s"
+    params.append(MAX_KNOWN_ROWS)
+    rows = connection.execute(query, params).fetchall()
     return [row["uyap_evrak_key"] if isinstance(row, dict) else row[0] for row in rows]
 
 
-def _stored_keys(owner_id: UUID, esas_no: str | None) -> list[str]:
+def _stored_keys(owner_id: UUID, esas_no: str | None, birim: str | None = None) -> list[str]:
     with authenticated_database_connection(str(owner_id)) as connection:
-        return stored_keys_on(connection, esas_no)
+        return stored_keys_on(connection, esas_no, birim)
 
 
 @router.post("/v1/documents/known")
@@ -580,7 +616,8 @@ async def known_documents(
     except ValidationError:
         return _reply({"error": "Geçersiz istek"}, 422)
     try:
-        keys = await run_in_threadpool(_stored_keys, owner_id, body.dosyaEsasNo)
+        # Old clients without a court must re-fetch rather than skip another court's evidence.
+        keys = await run_in_threadpool(_stored_keys, owner_id, body.dosyaEsasNo, body.birim) if case_number(body.dosyaEsasNo) and court_key(body.birim) else []
     except psycopg.Error:
         logger.exception("Bilinen evraklar okunamadı")
         return _reply({"error": "Servis şu an kullanılamıyor"}, 503)

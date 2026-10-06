@@ -215,9 +215,22 @@ async function call(path: string, init: RequestInit & { token?: string | null } 
 const enc = encodeURIComponent;
 
 export async function loadFacts(caseId: string, options: { token?: string | null; signal?: AbortSignal } = {}): Promise<FactsResponse> {
-  const parsed = parseFacts(await call(`/api/office/cases/${enc(caseId)}/documents/facts`, options));
-  if (!parsed) throw new SummaryError("Sunucudan geçersiz bir olgu tablosu geldi.");
-  return parsed;
+  let offset = 0;
+  const documents: DocumentFacts[] = [];
+  const seen = new Set<string>();
+  for (;;) {
+    const raw = await call(`/api/office/cases/${enc(caseId)}/documents/facts?offset=${offset}&limit=100`, options);
+    const parsed = parseFacts(raw);
+    if (!parsed) throw new SummaryError("Sunucudan geçersiz bir olgu tablosu geldi.");
+    for (const document of parsed.documents) {
+      if (seen.has(document.id)) throw new SummaryError("Belge listesi değişti; yeniden yükleyin.");
+      seen.add(document.id);
+      documents.push(document);
+    }
+    if (!isRecord(raw) || raw.has_more !== true) return { ...parsed, documents };
+    if (!parsed.documents.length) throw new SummaryError("Olgu tablosu eksik geldi; yeniden yükleyin.");
+    offset += parsed.documents.length;
+  }
 }
 
 export async function loadSummaryState(caseId: string, options: { token?: string | null; signal?: AbortSignal } = {}): Promise<SummaryState> {

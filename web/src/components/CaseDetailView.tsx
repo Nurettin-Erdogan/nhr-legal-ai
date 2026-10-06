@@ -61,6 +61,8 @@ export function CaseDetailView({
   onTrash,
   trashing,
   initialTab = "Özet",
+  notesEditor,
+  taskComposer,
 }: {
   data: CaseDetailData;
   onDownload: (id: string) => void;
@@ -79,9 +81,15 @@ export function CaseDetailView({
   onTrash?: (id: string) => void;
   trashing?: string;
   initialTab?: Tab;
+  /** "Notlar" sekmesinde düz metin yerine gösterilen düzenleyici (not ekleme/değiştirme). */
+  notesEditor?: ReactNode;
+  /** "Görevler" sekmesinin üstündeki hızlı görev ekleme formu. */
+  taskComposer?: ReactNode;
 }) {
   const [tab, setTab] = useState<Tab>(initialTab);
   const c = data.record;
+  // Telefon/çağrı hizmeti bağlı değilken "Aramalar" sekmesi boş bir söz olur: yalnız gerçek arama kaydı varsa gösterilir.
+  const visibleTabs = tabs.filter((name) => name !== "Aramalar" || data.calls.rows.length > 0 || tab === "Aramalar");
   const fields = [
     ["Dosya numarası", c.case_no],
     ["Esas numarası", c.esas_no],
@@ -100,7 +108,7 @@ export function CaseDetailView({
         aria-label="Dava bölümleri"
         className="flex flex-wrap gap-2 border-b border-border pb-4 mb-5"
       >
-        {tabs.map((name) => (
+        {visibleTabs.map((name) => (
           <button
             type="button"
             key={name}
@@ -133,8 +141,8 @@ export function CaseDetailView({
             değildir.
           </p>
           <p className="mt-2 text-sm text-muted-foreground">
-            Dava bilgileri ve notları dava listesindeki Düzenle işlemiyle güncellenebilir. Tahsilat
-            ve otomatik AI özet bu detaya henüz bağlı değildir.
+            Notlar sekmesinden not ekleyebilir, Görevler sekmesinden bu davaya görev açabilirsiniz. Diğer dava bilgileri dava
+            listesindeki Düzenle işlemiyle güncellenir.
           </p>
         </>
       )}
@@ -156,11 +164,12 @@ export function CaseDetailView({
             Dosya özeti bu görünümde kullanılamıyor.
           </p>
         ))}
-      {tab === "Notlar" && (
-        <p className="whitespace-pre-wrap break-words text-sm">
-          {c.notes || "Bu dava için kayıtlı not bulunmuyor."}
-        </p>
-      )}
+      {tab === "Notlar" &&
+        (notesEditor ?? (
+          <p className="whitespace-pre-wrap break-words text-sm">
+            {c.notes || "Bu dava için kayıtlı not bulunmuyor."}
+          </p>
+        ))}
       {tab === "Evraklar" && (
         <>
           {documentActions}
@@ -213,6 +222,7 @@ export function CaseDetailView({
           {documentTrash}
         </>
       )}
+      {tab === "Görevler" && taskComposer}
       {tab === "Görevler" && (
         <Records section={data.tasks}>
           {(t) => (
@@ -231,7 +241,15 @@ export function CaseDetailView({
           )}
         </Records>
       )}
-      {tab === "Takvim" && (
+      {tab === "Takvim" && c.next_hearing && (
+        <div className="mb-4 rounded-lg border border-border bg-secondary/40 p-3 text-sm" data-testid="case-hearing">
+          <p className="font-medium">Duruşma</p>
+          <p className="text-xs text-muted-foreground">
+            {displayCaseDate(c.next_hearing)} · {c.court || "Mahkeme belirtilmemiş"} · dava kaydındaki "Sonraki Duruşma" tarihi
+          </p>
+        </div>
+      )}
+      {tab === "Takvim" && (!c.next_hearing || data.events.rows.length > 0 || data.events.error) && (
         <Records section={data.events}>
           {(e) => (
             <li key={e.id} className="py-3 text-sm">

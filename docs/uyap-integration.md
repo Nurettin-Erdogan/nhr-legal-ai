@@ -37,9 +37,10 @@ yeniden oluşturulur.
 
 - Kimliksiz genel uçlar gövdeyi kimlik doğrulamadan önce okuduğundan `/uyap-ingest` gövdesi 100 MB,
   çok parçalı yükleme 51 MB ile sınırlıdır; çok parçalı gövde anahtar doğrulandıktan sonra ayrıştırılır.
-- Yinelenen belge denetimi `dosya adı + boyut + UYAP dosya numarası` iledir (farklı davalardaki aynı
-  adlı belge kaybolmaz). Aynı davada aynı adlı ve aynı boyutlu farklı içerik yinelenen sayılır; bunun
-  için içerik özeti (hash) gerekir.
+- Yinelenen belge denetimi sahip, dosya numarası, UYAP birimi, köken ve evrak kimliği kapsamındadır.
+  SHA-256 özeti veya yeniden paketlenmiş ODT/UDF'nin tam metni doğrulanır; yalnız ad/boyut eşitliği
+  başka bir evrağı atlamak için yeterli değildir. Aynı evrak kimliği altında değişmiş içerik sessizce
+  üzerine yazılmaz. Birimi bilinmeyen evrak, birimi bilinen evrakla birleştirilmez.
 - Geçerli anahtar + dosyasız istek `400 {"error": "Dosya eksik"}` döner; eklentinin "Bağlantıyı dene"
   düğmesi bunu bekler.
 
@@ -113,8 +114,8 @@ açılan yeni sekmeleri kaydeder ve `tani-kayit-<zaman>.json` yazar. Bu, "evrak 
 sorusunu kullanıcıya tarif ettirmeden yanıtlar. Hiçbir metin, ad, öznitelik değeri, rakam ya da sorgu değeri
 kaydedilmez (tarayıcı testiyle doğrulanır). Eklentiye yeni izin eklenmedi.
 
-Yine de gerçek evrak listesi sayfasında seçicilerin tutup tutmadığı doğrulanmadı: "Sayfa tanısını kopyala"
-çıktısı bekleniyor. Sunucuda içerik özetiyle yinelenen denetimi henüz yok.
+Bu eski sürümün canlı doğrulama durumu sonraki tarihli bölümlerde güncellenmiştir;
+güncel sunucuda içerik özetiyle yinelenen denetimi vardır.
 
 ## Evrakları klasör yapısıyla çekme (v2.11.0)
 
@@ -358,3 +359,61 @@ uygulamasının birebir kopyası veya onunla performans karşılaştırması de�
 - UYAP kullanım koşulları ve KVKK (müvekkil verisi, avukatlık sırrı) açısından hukuki görüş alınmalıdır.
 - Görüntü dosyaları (tif/jpg/png) ve taranmış PDF'ler OCR ile okunur ([ocr.md](ocr.md)); OCR hata
   yapabilir, belge "OCR ile okundu" diye işaretlenir ve tutar/tarih/numaralar aslından doğrulanmalıdır.
+
+## UYAP → dava → aranabilir belge (2026-10-05)
+
+- Yeni sunucu aktarımında **açıkça gönderilen dosya numarası + birim** birlikte eşleşir.
+  Metin içindeki başka dosyaya yapılan atıftan otomatik dava oluşturulmaz. Tek eşleşmede mevcut
+  dava/müvekkil kullanılır; eşleşme yoksa `pending` dava oluşturulur, müvekkil ve açık/kapalı durumu
+  tahmin edilmez. Birden çok eşleşme ve elle kurulmuş bağlantılar değişmez.
+- Mevcut arşiv için UYAP sayfasında **"Mevcut UYAP belgelerini davalara bağla"** düğmesi vardır.
+  `POST /api/office/uyap/link-cases` yalnız giriş yapanın aktif, henüz bağlanmamış UYAP belgelerini
+  işler; eksik üst veri/belirsizlik ayrı sayılır. 500'lük işlem gruplarında `next_cursor` ile ilerler;
+  eşleştirilemeyen ilk grup sonraki belgeleri engellemez. Bu sunucu işlem sınırıdır, ekran sayfalaması değildir.
+- Davanın belge listesi tüm sayfaları toplar. Belge olguları da 100'lük API sayfalarını sonuna kadar
+  alır; `total` ve `ready` gerçek toplamdır. Tekrar eden/boş eksik sayfa tam başarı diye sunulmaz.
+  AI özetinin kaynak/metin bütçeleri kaldırılmamıştır; bütün belgelerin listelenmesi sınırsız model
+  bağlamı veya bütün belgelerin aynı yanıtta kullanıldığı anlamına gelmez.
+- ZIP eki aslı değiştirilmeden saklanır; desteklenen üyelerin metni `Arşiv eki: <üye yolu>` kaynağıyla
+  indekslenir. Diskte açılmaz. En çok 200 üye, toplam 100 MB açılmış veri ve üye başına 50 MB sınırı
+  vardır. Geçersiz yol, sembolik bağ, şifreli/iç içe arşiv, aşırı sıkıştırma, bozuk veya desteklenmeyen
+  üye reddedilir. Üyelerden biri okunamazsa kısmi metin `ready` sayılmaz; asıl ZIP indirilebilir kalır.
+  RAR ve XLS/XLSX bu değişiklikle aranabilir hâle gelmemiştir.
+- Mevcut kurulumda `database/migrations/046_uyap_court_identity.sql` yönetici bağlantısıyla uygulanır;
+  yeni kurulum karşılığı `database/init/047_uyap_court_identity.sql`'dir. Yalnız iki mükerrerlik indeksi
+  birim kapsamıyla yenilenir; belge/dava silinmez, RLS değişmez. API yeniden başlatılmalıdır.
+
+Doğrulama: `tests/test_uyap_workflow.py` ayrı test veritabanında gerçek `nhr_runtime`/RLS ile çalışır
+ve sonunda geri alınır. `tests/test_archive_processing.py`, arayüz belge/olgu sayfalama ve arşiv
+mükerrerlik testleri birlikte kullanılmalıdır. Bu kontroller gerçek UYAP oturumundan yeniden aktarım
+ve gerçek Avukat Portalı testi yerine geçmez.
+
+## Atomik aktarım ve yayın adayı (2026-10-05, v2.26.10)
+
+- Elle içe aktarma artık `POST /api/office/uyap/import` üzerinden oturumla doğrulanır.
+  Dosya, en çok 50 MB olacak şekilde akışta sınırlandırılır; SHA-256 sunucuda hesaplanır.
+  İstemcinin gönderdiği sahip, içerik özeti veya evrak kimliğine güvenilmez. Aktarım kaydı
+  verilirse aynı kullanıcıya ait olduğu kontrol edilir. UYAP kökenli satırlar genel
+  `case_documents` ekleme/upsert yolundan oluşturulamaz; eski web sürümü yenilenmelidir.
+- Aynı sahibin UYAP yazımları dış transaction kilidiyle sıralanır. İki eşzamanlı yükleme
+  kontrol/ekleme aralığında mükerrer belge üretemez; ters dava sıralı toplu eşleştirmeler
+  kilit döngüsü oluşturmaz. Başka kullanıcıların işlemleri aynı sahip kilidini paylaşmaz.
+- Dosya numarasındaki boşluklar normalleştirilir; eski kayıtlar da karşılaştırmada
+  normalleştirilir. Kalıcı evrak kimliği bulunan kayıtta görünen adın değişmesi artık
+  aynı içeriği yeni sürüm sanmaz. İçerik gerçekten değişirse mevcut evrak korunur ve 409 verilir.
+- `known` optimizasyonu **dosya numarası + birim + kullanıcı** kapsamındadır. Birimi
+  göndermeyen eski eklenti boş bilinenler listesi alır: başka mahkemenin evrakını yanlış
+  atlamak yerine yeniden indirir; sunucu yine mükerrerliği kontrol eder.
+- Açıkça atanmış müvekkil ile eşleşen davanın müvekkili çelişirse bağ kurulmaz ve
+  `client_conflict` sayılır. Yeni dava oluşturuluyorsa açık belge-müvekkil bağı korunur;
+  portal metninden kişi tahmin edilmez.
+- ODT elle ve ZIP içinden yüklenebilir. Desteklenmeyen ve boş arşiv üyeleri sessizce
+  atılmaz; sonuçta dosya adıyla hata gösterilir. Aynı üyeyi aynı yolda iki kez içeren
+  arşiv reddedilir. Takvimde bulunmayan tarihler üst veriye yazılmaz; ISO tarihleri korunur.
+- Bu adım yeni migration gerektirmez; önceki dava kimliği işi için 046 migrationı
+  gereklidir. Eklenti paketleri kaynakla birlikte 2.26.10 olarak yeniden üretildi.
+  API, web ve eklenti beraber güncellenmelidir. Yeni izin eklenmedi.
+
+Test kanıtı, kurulum sırası ve tamamlanmadan yayın onayı verilemeyen canlı kontroller
+[UYAP yayın kontrol listesinde](uyap-release-checklist.md) ayrı tutulur. Önceki sürümdeki
+canlı tek-evrak testi bu sürümün veya Avukat Portalı'nın kabul testi değildir.

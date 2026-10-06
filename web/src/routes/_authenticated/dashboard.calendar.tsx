@@ -45,6 +45,8 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/components/AuthProvider";
 import { toast } from "sonner";
 import { z } from "zod";
+import { deriveCalendarEvents } from "@/lib/calendar-derived";
+import { useNavigate } from "@/lib/router-compat";
 
 interface CalEvent {
   id: string;
@@ -60,11 +62,16 @@ interface CalEvent {
   client_id: string | null;
   color: string | null;
   reminder_minutes: number | null;
+  /** Dava duruşması ya da görev son tarihinden türeyen girdi: takvimde düzenlenmez, kaynağına götürür. */
+  derived?: "case" | "task";
+  link?: string;
 }
 interface CaseLite {
   id: string;
   title: string;
   case_no: string | null;
+  court?: string | null;
+  next_hearing?: string | null;
 }
 interface ClientLite {
   id: string;
@@ -133,6 +140,7 @@ const endOfMonth = (d: Date) => new Date(d.getFullYear(), d.getMonth() + 1, 0);
 
 const CalendarPage = () => {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [cursor, setCursor] = useState(new Date());
   const [view, setView] = useState<"month" | "agenda">("month");
   const [events, setEvents] = useState<CalEvent[]>([]);
@@ -154,18 +162,30 @@ const CalendarPage = () => {
     from.setDate(from.getDate() - 7);
     const to = new Date(monthEnd);
     to.setDate(to.getDate() + 7);
-    const [{ data: e, error }, { data: cs }, { data: cl }] = await Promise.all([
+    const [{ data: e, error }, { data: cs }, { data: cl }, { data: ts }] = await Promise.all([
       supabase
         .from("calendar_events")
         .select("*")
         .gte("start_at", from.toISOString())
         .lte("start_at", to.toISOString())
         .order("start_at", { ascending: true }),
-      supabase.from("cases").select("id, title, case_no").order("created_at", { ascending: false }),
+      supabase.from("cases").select("id, title, case_no, court, next_hearing").order("created_at", { ascending: false }),
       supabase.from("clients").select("id, full_name").order("full_name", { ascending: true }),
+      supabase.from("tasks").select("id, title, due_date, status, case_id").gte("due_date", from.toISOString()).lte("due_date", to.toISOString()),
     ]);
     if (error) toast.error(error.message);
-    setEvents((e ?? []) as CalEvent[]);
+    const own = (e ?? []) as CalEvent[];
+    // Davanın "Sonraki Duruşma" tarihi ve görevlerin son tarihi takvime kendiliğinden düşer (ayrı etkinlik açmak gerekmez).
+    const derived = deriveCalendarEvents(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ((cs ?? []) as any[]).map((c) => ({ id: c.id, title: c.title, court: c.court ?? null, next_hearing: c.next_hearing ?? null })),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ((ts ?? []) as any[]).map((t) => ({ id: t.id, title: t.title, due_date: t.due_date ?? null, status: t.status ?? null, case_id: t.case_id ?? null })),
+      from,
+      to,
+      own,
+    );
+    setEvents([...own, ...derived].sort((a, b) => a.start_at.localeCompare(b.start_at)));
     setCases((cs ?? []) as CaseLite[]);
     setClients((cl ?? []) as ClientLite[]);
     setLoading(false);
@@ -185,6 +205,10 @@ const CalendarPage = () => {
     setOpen(true);
   };
   const openEdit = (ev: CalEvent) => {
+    if (ev.derived && ev.link) {
+      navigate(ev.link); // türeyen girdi kaynağında (dava / görevler) düzenlenir
+      return;
+    }
     setEditing(ev);
     const toLocal = (s: string | null) => {
       if (!s) return "";
@@ -627,9 +651,17 @@ const CalendarPage = () => {
                         <div className="text-xs text-muted-foreground truncate">{e.location}</div>
                       )}
                     </div>
+                    {e.derived && (
+                      <Button variant="outline" size="sm" onClick={() => openEdit(e)}>
+                        {e.derived === "case" ? "Davayı aç" : "Görevlere git"}
+                      </Button>
+                    )}
+                    {!e.derived && (
                     <Button variant="ghost" size="icon" onClick={() => openEdit(e)}>
                       <Pencil className="h-4 w-4" />
                     </Button>
+                    )}
+                    {!e.derived && (
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
                         <Button variant="ghost" size="icon" className="text-destructive">
@@ -647,6 +679,7 @@ const CalendarPage = () => {
                         </AlertDialogFooter>
                       </AlertDialogContent>
                     </AlertDialog>
+                    )}
                   </div>
                 ))}
               </div>

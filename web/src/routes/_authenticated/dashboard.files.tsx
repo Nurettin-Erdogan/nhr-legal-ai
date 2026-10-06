@@ -1,33 +1,60 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DashboardLayout } from "@/components/DashboardLayout";
+import { useSearchParam } from "@/lib/router-compat";
 import { DocumentTrash } from "@/components/DocumentTrash";
 import { FileUploadDialog } from "@/components/FileUploadDialog";
 import { UyapSyncDialog } from "@/components/UyapSyncDialog";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { supabase } from "@/integrations/supabase/client";
-import { inMemoryAccessToken } from "@/lib/auth-api";
+import {
+  listFileBrowser,
+  loadAllFileBrowserDocuments,
+  type FileBrowserDocument as DocRow,
+  type FileBrowserFolder as DocumentFolder,
+  type FileBrowserCategory as DocumentCategory,
+} from "@/lib/file-browser";
 import { restoreDocument, trashDocument } from "@/lib/document-trash";
 import { linkCaseDocument } from "@/lib/case-documents";
 import { humanSize, isUyapSource } from "@/lib/uyap";
 import { toast } from "sonner";
-import { Download, FileText, Loader2, RefreshCw, Search, Trash2, FolderSearch, FolderPlus } from "lucide-react";
+import {
+  Download,
+  FileText,
+  Loader2,
+  RefreshCw,
+  Search,
+  Trash2,
+  FolderSearch,
+  FolderPlus,
+  FolderOpen,
+  Folder,
+  ChevronDown,
+  ChevronRight,
+} from "lucide-react";
 
-interface DocRow {
-  id: string;
-  file_name: string;
-  storage_path: string;
-  size_bytes: number | null;
-  source: string;
-  uyap_file_no: string | null;
-  uyap_birim: string | null;
-  case_id: string | null;
-  doc_type: string | null;
-  doc_date: string | null;
-  created_at: string;
+interface FolderContents {
+  rows: DocRow[];
+  loading: boolean;
+  error?: string;
 }
+
+const folderTitle = (folder: DocumentFolder) => {
+  if (!folder.file_no && !folder.birim)
+    return folder.source === "uyap"
+      ? "Dosya bilgisi eksik UYAP belgeleri"
+      : "Diğer yüklenen belgeler";
+  return `${folder.file_no ?? "Esas numarası eksik"} · ${folder.birim ?? "Birim bilgisi eksik"}`;
+};
 
 interface SyncRow {
   id: string;
@@ -40,19 +67,33 @@ interface SyncRow {
   created_at: string;
 }
 
-interface CaseChoice { id: string; title: string; esas_no: string | null; court: string | null }
+interface CaseChoice {
+  id: string;
+  title: string;
+  esas_no: string | null;
+  court: string | null;
+}
 
 const Files = () => {
-  const pageSize = 50;
   const [docs, setDocs] = useState<DocRow[]>([]);
   const [runs, setRuns] = useState<SyncRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
-  const [page, setPage] = useState(0);
   const [total, setTotal] = useState(0);
   const [loadError, setLoadError] = useState("");
+  const [source, setSource] = useState("all");
+  const [category, setCategory] = useState("");
+  const [folder, setFolder] = useState("");
+  const [order, setOrder] = useState("recent");
+  const [grouped, setGrouped] = useState(true);
+  const [openedFolders, setOpenedFolders] = useState<Set<string>>(() => new Set());
+  const [folderContents, setFolderContents] = useState<Record<string, FolderContents>>({});
+  const [folders, setFolders] = useState<DocumentFolder[]>([]);
+  const [categories, setCategories] = useState<DocumentCategory[]>([]);
   const requestId = useRef(0);
+  const listRequest = useRef<AbortController | null>(null);
+  const folderRequests = useRef(new Map<string, AbortController>());
   const [linkingDoc, setLinkingDoc] = useState<DocRow | null>(null);
   const [cases, setCases] = useState<CaseChoice[]>([]);
   const [chosenCaseId, setChosenCaseId] = useState("");
@@ -62,21 +103,22 @@ const Files = () => {
 
   const load = useCallback(async () => {
     const currentRequest = ++requestId.current;
+    listRequest.current?.abort();
+    const controller = new AbortController();
+    listRequest.current = controller;
+    for (const request of folderRequests.current.values()) request.abort();
+    folderRequests.current.clear();
+    setFolderContents({});
     setLoading(true);
     setLoadError("");
-    const query = new URLSearchParams({ q: searchTerm, offset: String(page * pageSize), limit: String(pageSize) });
-    const base = (import.meta.env.VITE_API_URL ?? "http://localhost:8766").replace(/\/$/, "");
+    const filters = { q: searchTerm, source, category, folder, order };
     const [documents, r] = await Promise.all([
-      fetch(`${base}/api/office/case-documents/search?${query}`, {
-        credentials: "include",
-        headers: inMemoryAccessToken() ? { Authorization: `Bearer ${inMemoryAccessToken()}` } : {},
-      }).then(async (response) => {
-        if (!response.ok) {
-          const body = await response.json().catch(() => null);
-          throw new Error(body?.detail ?? `Belge listesi yüklenemedi (${response.status})`);
-        }
-        return response.json() as Promise<{ rows: DocRow[]; total: number }>;
-      }).catch((error) => ({ error: error instanceof Error ? error.message : "Belge listesi yüklenemedi" })),
+      (grouped
+        ? listFileBrowser(filters, controller.signal, true)
+        : loadAllFileBrowserDocuments(filters, controller.signal)
+      ).catch((error) => ({
+        error: error instanceof Error ? error.message : "Belge listesi yüklenemedi",
+      })),
       supabase
         .from("uyap_sync_runs")
         .select(
@@ -90,23 +132,100 @@ const Files = () => {
       setLoadError(documents.error);
       setDocs([]);
       setTotal(0);
-    } else if (!Array.isArray(documents.rows) || !Number.isFinite(documents.total)) {
+      setFolders([]);
+      setCategories([]);
+    } else if (
+      !Array.isArray(documents.rows) ||
+      !Number.isFinite(documents.total) ||
+      !Array.isArray(documents.folders) ||
+      !Array.isArray(documents.categories)
+    ) {
       setLoadError("Belge listesi beklenmeyen biçimde döndü");
       setDocs([]);
       setTotal(0);
+      setFolders([]);
+      setCategories([]);
     } else {
       setDocs(documents.rows);
       setTotal(documents.total);
+      setFolders(documents.folders);
+      setCategories(documents.categories);
     }
     if (r.error) toast.error(r.error.message);
     setRuns((r.data ?? []) as SyncRow[]);
     setLoading(false);
-  }, [page, searchTerm]);
+  }, [grouped, searchTerm, source, category, folder, order]);
+
+  const documentGroups = useMemo(() => {
+    if (!grouped) return [{ key: "all", folder: undefined, docs }];
+    return folders
+      .filter((item) => item.matching_count > 0)
+      .map((item) => ({
+        key: item.key,
+        folder: item,
+        docs: folderContents[item.key]?.rows ?? [],
+      }));
+  }, [docs, folders, grouped, folderContents]);
+
+  const loadFolder = useCallback(
+    async (key: string) => {
+      if (folderRequests.current.has(key)) return;
+      const controller = new AbortController();
+      folderRequests.current.set(key, controller);
+      const generation = requestId.current;
+      setFolderContents((previous) => ({ ...previous, [key]: { rows: [], loading: true } }));
+      try {
+        const result = await loadAllFileBrowserDocuments(
+          { q: searchTerm, source, category, folder: key, order },
+          controller.signal,
+        );
+        if (generation === requestId.current && !controller.signal.aborted)
+          setFolderContents((previous) => ({
+            ...previous,
+            [key]: { rows: result.rows, loading: false },
+          }));
+      } catch (error) {
+        if (generation === requestId.current && !controller.signal.aborted)
+          setFolderContents((previous) => ({
+            ...previous,
+            [key]: {
+              rows: [],
+              loading: false,
+              error: error instanceof Error ? error.message : "Klasör yüklenemedi",
+            },
+          }));
+      } finally {
+        if (folderRequests.current.get(key) === controller) folderRequests.current.delete(key);
+      }
+    },
+    [searchTerm, source, category, order],
+  );
+
+  useEffect(() => {
+    if (!grouped || loading || loadError) return;
+    for (const group of documentGroups)
+      if (openedFolders.has(group.key) && !folderContents[group.key]) void loadFolder(group.key);
+  }, [documentGroups, openedFolders, folderContents, grouped, loading, loadError, loadFolder]);
+
+  useEffect(
+    () => () => {
+      listRequest.current?.abort();
+      for (const request of folderRequests.current.values()) request.abort();
+      requestId.current++;
+    },
+    [],
+  );
 
   useEffect(() => {
     const timer = window.setTimeout(() => setSearchTerm(q.trim()), 300);
     return () => window.clearTimeout(timer);
   }, [q]);
+
+  // Üst çubuktaki genel aramadan gelen belge adı ("?q=…") arama kutusuna yazılır.
+  const urlQuery = useSearchParam("q");
+  useEffect(() => {
+    if (urlQuery.trim()) setQ(urlQuery);
+  }, [urlQuery]);
 
   useEffect(() => {
     void load();
@@ -143,15 +262,15 @@ const Files = () => {
     setDocs((prev) => prev.filter((d) => d.id !== row.id));
     setTotal((count) => Math.max(0, count - 1));
     setTrashKey((n) => n + 1);
-    if (docs.length === 1 && page > 0) setPage((current) => current - 1);
-    else void load();
+    void load();
   };
 
   const openCaseLink = async (row: DocRow) => {
     setLinkingDoc(row);
     setChosenCaseId("");
     setLinkError("");
-    const result = await supabase.from("cases")
+    const result = await supabase
+      .from("cases")
       .select("id,title,esas_no,court")
       .order("created_at", { ascending: false })
       .limit(1000);
@@ -178,7 +297,7 @@ const Files = () => {
   return (
     <DashboardLayout
       title="Dosyalar"
-      subtitle="Belge yükleme ve UYAP benzeri güvenli dosya senkronizasyonu"
+      subtitle="UYAP ve yüklenen belgeler · dava dosyaları, evrak türleri ve tarihler"
       actions={
         <div className="flex items-center gap-2">
           <Button size="sm" variant="ghost" onClick={() => void load()} disabled={loading}>
@@ -214,14 +333,141 @@ const Files = () => {
         </div>
       )}
 
-      <div className="mb-6 max-w-md relative">
+      <div className="mb-3 max-w-lg relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
         <input
           value={q}
-          onChange={(e) => { setQ(e.target.value); setPage(0); }}
+          aria-label="Belgelerde ara"
+          onChange={(e) => {
+            setQ(e.target.value);
+          }}
           placeholder="Tüm belgelerde ad, dosya no, birim veya tür ara..."
           className="w-full h-11 pl-10 pr-4 rounded-lg bg-card border border-border focus:border-primary/50 outline-none text-sm transition"
         />
+      </div>
+
+      <div className="mb-6 rounded-2xl border border-border bg-card p-4 space-y-4">
+        <div className="flex flex-wrap items-center gap-2">
+          {[
+            ["all", "Tüm belgeler"],
+            ["uyap", "UYAP belgeleri"],
+            ["manual", "Diğer yüklenenler"],
+          ].map(([value, label]) => (
+            <Button
+              key={value}
+              size="sm"
+              variant={source === value ? "default" : "outline"}
+              aria-pressed={source === value}
+              onClick={() => {
+                setSource(value);
+                setFolder("");
+                setCategory("");
+              }}
+            >
+              {label}
+            </Button>
+          ))}
+          <div className="flex gap-2 ml-auto">
+            <Button
+              size="sm"
+              variant={grouped ? "default" : "outline"}
+              aria-pressed={grouped}
+              onClick={() => setGrouped(true)}
+            >
+              <FolderOpen className="h-4 w-4 mr-1" />
+              Dosyaya göre
+            </Button>
+            <Button
+              size="sm"
+              variant={!grouped ? "default" : "outline"}
+              aria-pressed={!grouped}
+              onClick={() => setGrouped(false)}
+            >
+              Düz liste
+            </Button>
+          </div>
+        </div>
+        <div className="grid gap-3 md:grid-cols-[2fr_1fr_1fr]">
+          <label className="text-xs text-muted-foreground space-y-1 block">
+            <span>Dava dosyası / birim</span>
+            <select
+              aria-label="Dava dosyası / birim"
+              value={folder}
+              onChange={(event) => {
+                setFolder(event.target.value);
+              }}
+              className="block w-full min-w-0 rounded-lg border border-border bg-background p-2 text-sm text-foreground"
+            >
+              <option value="">Tüm dosyalar</option>
+              {folder && !folders.some((item) => item.key === folder) && (
+                <option value={folder}>Seçili dosya (eşleşen belge yok)</option>
+              )}
+              {folders.map((item) => (
+                <option key={item.key} value={item.key}>
+                  {folderTitle(item)} ({item.count})
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="text-xs text-muted-foreground space-y-1 block">
+            <span>Evrak kategorisi</span>
+            <select
+              aria-label="Evrak kategorisi"
+              value={category}
+              onChange={(event) => {
+                setCategory(event.target.value);
+              }}
+              className="block w-full rounded-lg border border-border bg-background p-2 text-sm text-foreground"
+            >
+              <option value="">Tüm kategoriler</option>
+              {category && !categories.some((item) => item.id === category) && (
+                <option value={category}>Seçili kategori (eşleşen belge yok)</option>
+              )}
+              {categories.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.label} ({item.count})
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="text-xs text-muted-foreground space-y-1 block">
+            <span>Sıralama</span>
+            <select
+              aria-label="Sıralama"
+              value={order}
+              onChange={(event) => {
+                setOrder(event.target.value);
+              }}
+              className="block w-full rounded-lg border border-border bg-background p-2 text-sm text-foreground"
+            >
+              <option value="recent">Son yüklenen</option>
+              <option value="date_desc">Kayıtlı evrak tarihi: yeni → eski</option>
+              <option value="date_asc">Kayıtlı evrak tarihi: eski → yeni</option>
+            </select>
+          </label>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <p className="flex-1">
+            Kategoriler kayıtlı evrak türüne, tür yoksa dosya adına göre otomatik belirlenir. Tarih
+            sıralaması aktarımda kaydedilen tarihi kullanır. Seçimlerdeki sayılar arama ve kaynak
+            filtresine uyan belgeleri gösterir.
+          </p>
+          {(q || source !== "all" || folder || category) && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setQ("");
+                setSearchTerm("");
+                setSource("all");
+                setFolder("");
+                setCategory("");
+              }}
+            >
+              Filtreleri temizle
+            </Button>
+          )}
+        </div>
       </div>
 
       <div className="rounded-2xl bg-card border border-border overflow-hidden">
@@ -230,11 +476,15 @@ const Files = () => {
             <Loader2 className="h-5 w-5 animate-spin" />
           </div>
         ) : loadError ? (
-          <div className="p-10 text-sm text-destructive" role="alert">{loadError}</div>
-        ) : docs.length === 0 ? (
+          <div className="p-10 text-sm text-destructive" role="alert">
+            {loadError}
+          </div>
+        ) : total === 0 ? (
           <div className="p-12 text-center text-sm text-muted-foreground">
             <FolderSearch className="h-8 w-8 mx-auto mb-3 opacity-40" />
-            {searchTerm ? "Aramanızla eşleşen belge yok." : "Henüz belge yok. Dosya yükleyin veya UYAP arşivinizi senkronize edin."}
+            {searchTerm || source !== "all" || folder || category
+              ? "Seçtiğiniz filtrelerle eşleşen belge yok."
+              : "Henüz belge yok. Dosya yükleyin veya UYAP arşivinizi senkronize edin."}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -243,102 +493,246 @@ const Files = () => {
                 <tr className="text-left text-xs text-muted-foreground bg-secondary/40 uppercase tracking-wider">
                   <th className="font-medium px-6 py-4">Belge</th>
                   <th className="font-medium px-6 py-4">Dosya No / Birim</th>
-                  <th className="font-medium px-6 py-4">Tür</th>
+                  <th className="font-medium px-6 py-4">Kategori / Tür</th>
                   <th className="font-medium px-6 py-4">Kaynak</th>
                   <th className="font-medium px-6 py-4 text-right">İşlem</th>
                 </tr>
               </thead>
               <tbody>
-            {docs.map((d) => (
-                  <tr
-                    key={d.id}
-                    className="border-t border-border hover:bg-secondary/30 transition"
-                  >
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-3">
-                        <div className="h-9 w-9 rounded-lg bg-secondary flex items-center justify-center shrink-0">
-                          <FileText className="h-4 w-4 text-primary" />
-                        </div>
-                        <div className="min-w-0">
-                          <div className="font-medium truncate max-w-[260px]">{d.file_name}</div>
-                          <div className="text-xs text-muted-foreground">
-                            {humanSize(d.size_bytes)} ·{" "}
-                            {new Date(d.created_at).toLocaleDateString("tr-TR")}
+                {documentGroups.map((group) => (
+                  <Fragment key={group.key}>
+                    {grouped && group.folder && (
+                      <tr className="border-t border-border bg-secondary/50">
+                        <th
+                          colSpan={5}
+                          scope="colgroup"
+                          className="px-6 py-3 text-left font-medium"
+                        >
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              className="flex min-w-0 flex-1 flex-wrap items-center gap-2 rounded-md text-left hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                              aria-expanded={openedFolders.has(group.key)}
+                              aria-label={`Klasör: ${folderTitle(group.folder)}`}
+                              title={openedFolders.has(group.key) ? "Klasörü kapat" : "Klasörü aç"}
+                              onClick={() =>
+                                setOpenedFolders((previous) => {
+                                  const next = new Set(previous);
+                                  if (next.has(group.key)) next.delete(group.key);
+                                  else next.add(group.key);
+                                  return next;
+                                })
+                              }
+                            >
+                              {!openedFolders.has(group.key) ? (
+                                <>
+                                  <ChevronRight className="h-4 w-4 shrink-0" />
+                                  <Folder className="h-4 w-4 shrink-0 text-primary" />
+                                </>
+                              ) : (
+                                <>
+                                  <ChevronDown className="h-4 w-4 shrink-0" />
+                                  <FolderOpen className="h-4 w-4 shrink-0 text-primary" />
+                                </>
+                              )}
+                              <span className="break-words">{folderTitle(group.folder)}</span>
+                              <span className="text-xs text-muted-foreground font-normal">
+                                {group.folder.matching_count} belge
+                              </span>
+                            </button>
+                            {folder !== group.key && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="ml-auto"
+                                onClick={() => {
+                                  setFolder(group.key);
+                                  setOpenedFolders((previous) => new Set(previous).add(group.key));
+                                }}
+                              >
+                                Bu dosyayı göster
+                              </Button>
+                            )}
                           </div>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="font-mono text-xs">{d.uyap_file_no ?? "-"}</div>
-                      <div className="text-xs text-muted-foreground truncate max-w-[220px]">
-                        {d.uyap_birim ?? ""}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 text-xs">
-                      {d.doc_type ?? "-"}
-                      {d.doc_date && <div className="text-muted-foreground">{d.doc_date}</div>}
-                    </td>
-                    <td className="px-6 py-4">
-                      <Badge
-                          variant={isUyapSource(d.source) ? "default" : "outline"}
-                        className="text-[10px]"
-                      >
-                          {isUyapSource(d.source) ? "UYAP" : "Elle"}
-                      </Badge>
-                    </td>
-                    <td className="px-6 py-4 text-right whitespace-nowrap">
-                      {!d.case_id && (
-                        <Button size="sm" variant="ghost" title="Davaya bağla" aria-label="Davaya bağla" onClick={() => void openCaseLink(d)}>
-                          <FolderPlus className="h-4 w-4" />
-                        </Button>
+                        </th>
+                      </tr>
+                    )}
+                    {grouped &&
+                      openedFolders.has(group.key) &&
+                      folderContents[group.key]?.loading && (
+                        <tr>
+                          <td colSpan={5} className="px-6 py-5 text-sm text-muted-foreground">
+                            <span role="status" className="flex items-center gap-2">
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                              Belgeler yükleniyor…
+                            </span>
+                          </td>
+                        </tr>
                       )}
-                      <Button size="sm" variant="ghost" onClick={() => void download(d)}>
-                        <Download className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        title="Çöp kutusuna taşı"
-                        aria-label="Çöp kutusuna taşı"
-                        onClick={() => void remove(d)}
-                      >
-                        <Trash2 className="h-4 w-4 text-destructive" />
-                      </Button>
-                    </td>
-                  </tr>
+                    {grouped &&
+                      openedFolders.has(group.key) &&
+                      folderContents[group.key]?.error && (
+                        <tr>
+                          <td colSpan={5} className="px-6 py-4">
+                            <div className="flex items-center gap-3">
+                              <span role="alert" className="text-sm text-destructive">
+                                {folderContents[group.key].error}
+                              </span>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => void loadFolder(group.key)}
+                              >
+                                Yeniden dene
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    {(!grouped || openedFolders.has(group.key)) &&
+                      group.docs.map((d) => (
+                        <tr
+                          key={d.id}
+                          className="border-t border-border hover:bg-secondary/30 transition"
+                        >
+                          <td className="px-6 py-4">
+                            <div className="flex items-center gap-3">
+                              <div className="h-9 w-9 rounded-lg bg-secondary flex items-center justify-center shrink-0">
+                                <FileText className="h-4 w-4 text-primary" />
+                              </div>
+                              <div className="min-w-0">
+                                <div
+                                  className="font-medium truncate max-w-[260px]"
+                                  title={d.file_name}
+                                >
+                                  {d.file_name.replace(/^[a-f0-9]{12,64}[-_]/i, "")}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  {humanSize(d.size_bytes)} ·{" "}
+                                  {new Date(d.created_at).toLocaleDateString("tr-TR")}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="font-mono text-xs">{d.uyap_file_no ?? "-"}</div>
+                            <div className="text-xs text-muted-foreground truncate max-w-[220px]">
+                              {d.uyap_birim ?? ""}
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 text-xs">
+                            <Badge variant="outline" className="mb-1 whitespace-nowrap">
+                              {categories.find((item) => item.id === d.category)?.label ??
+                                "Diğer / türü belirsiz"}
+                            </Badge>
+                            <div>{d.doc_type ?? "Tür bilgisi yok"}</div>
+                            {d.doc_date && (
+                              <div className="text-muted-foreground">{d.doc_date}</div>
+                            )}
+                          </td>
+                          <td className="px-6 py-4">
+                            <Badge
+                              variant={isUyapSource(d.source) ? "default" : "outline"}
+                              className="text-[10px]"
+                            >
+                              {isUyapSource(d.source) ? "UYAP" : "Elle"}
+                            </Badge>
+                          </td>
+                          <td className="px-6 py-4 text-right whitespace-nowrap">
+                            {!d.case_id && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                title="Davaya bağla"
+                                aria-label="Davaya bağla"
+                                onClick={() => void openCaseLink(d)}
+                              >
+                                <FolderPlus className="h-4 w-4" />
+                              </Button>
+                            )}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              title="Belgeyi indir"
+                              aria-label="Belgeyi indir"
+                              onClick={() => void download(d)}
+                            >
+                              <Download className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              title="Çöp kutusuna taşı"
+                              aria-label="Çöp kutusuna taşı"
+                              onClick={() => void remove(d)}
+                            >
+                              <Trash2 className="h-4 w-4 text-destructive" />
+                            </Button>
+                          </td>
+                        </tr>
+                      ))}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
           </div>
         )}
       </div>
-      {!loadError && !loading && total > 0 && (
-        <div className="mt-3 flex items-center justify-between text-sm text-muted-foreground">
-          <span>{total} belgeden {page * pageSize + 1}–{page * pageSize + docs.length} gösteriliyor</span>
-          <div className="flex gap-2">
-            <Button size="sm" variant="outline" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>Önceki</Button>
-            <Button size="sm" variant="outline" disabled={(page + 1) * pageSize >= total} onClick={() => setPage((p) => p + 1)}>Sonraki</Button>
-          </div>
-        </div>
-      )}
       <DocumentTrash refreshKey={trashKey} onChanged={() => void load()} />
-      <Dialog open={!!linkingDoc} onOpenChange={(open) => { if (!open) setLinkingDoc(null); }}>
+      <Dialog
+        open={!!linkingDoc}
+        onOpenChange={(open) => {
+          if (!open) setLinkingDoc(null);
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Belgeyi davaya bağla</DialogTitle>
-            <DialogDescription>Dosya numarası tek başına güvenilir eşleşme değildir. Doğru davayı ve mahkemeyi sen seç; bundan sonra belge dava kapsamlı AI aramasında kullanılabilir.</DialogDescription>
+            <DialogDescription>
+              Dosya numarası tek başına güvenilir eşleşme değildir. Doğru davayı ve mahkemeyi sen
+              seç; bundan sonra belge dava kapsamlı AI aramasında kullanılabilir.
+            </DialogDescription>
           </DialogHeader>
           {linkingDoc && <p className="text-sm break-all">{linkingDoc.file_name}</p>}
-          <select value={chosenCaseId} onChange={(event) => setChosenCaseId(event.target.value)} className="w-full rounded-md border bg-background p-2 text-sm" aria-label="Dava seç">
+          <select
+            value={chosenCaseId}
+            onChange={(event) => setChosenCaseId(event.target.value)}
+            className="w-full rounded-md border bg-background p-2 text-sm"
+            aria-label="Dava seç"
+          >
             <option value="">Dava seç...</option>
-            {cases.map((item) => <option key={item.id} value={item.id}>{item.esas_no ?? "-"} · {item.court ?? "-"} · {item.title}</option>)}
+            {cases.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.esas_no ?? "-"} · {item.court ?? "-"} · {item.title}
+              </option>
+            ))}
           </select>
-          {cases.length === 0 && !linkError && <p className="text-sm text-muted-foreground">Henüz kayıtlı dava yok. Önce <a className="underline" href="/dashboard/cases">Davalar</a> sayfasında dava oluştur.</p>}
-          {cases.length === 1000 && <p className="text-sm text-amber-600">İlk 1000 dava gösteriliyor; aradığın dava yoksa dava sayfasından belgeyi bağla.</p>}
-          {linkError && <p role="alert" className="text-sm text-destructive">{linkError}</p>}
+          {cases.length === 0 && !linkError && (
+            <p className="text-sm text-muted-foreground">
+              Henüz kayıtlı dava yok. Önce{" "}
+              <a className="underline" href="/dashboard/cases">
+                Davalar
+              </a>{" "}
+              sayfasında dava oluştur.
+            </p>
+          )}
+          {cases.length === 1000 && (
+            <p className="text-sm text-amber-600">
+              İlk 1000 dava gösteriliyor; aradığın dava yoksa dava sayfasından belgeyi bağla.
+            </p>
+          )}
+          {linkError && (
+            <p role="alert" className="text-sm text-destructive">
+              {linkError}
+            </p>
+          )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setLinkingDoc(null)}>Vazgeç</Button>
-            <Button disabled={!chosenCaseId || linkBusy} onClick={() => void saveCaseLink()}>{linkBusy ? "Bağlanıyor..." : "Davaya bağla"}</Button>
+            <Button variant="outline" onClick={() => setLinkingDoc(null)}>
+              Vazgeç
+            </Button>
+            <Button disabled={!chosenCaseId || linkBusy} onClick={() => void saveCaseLink()}>
+              {linkBusy ? "Bağlanıyor..." : "Davaya bağla"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

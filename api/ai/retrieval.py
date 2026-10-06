@@ -88,6 +88,7 @@ _SELECT_COLUMNS = """
             THEN 'third_party'
         ELSE 'official'
     END AS verification,
+    chunk.chunk_index,
     chunk.content
 """
 

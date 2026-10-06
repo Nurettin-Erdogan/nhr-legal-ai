@@ -227,6 +227,11 @@ def register(
     settings = get_settings()
     if not settings.allow_registration:
         raise HTTPException(status_code=403, detail="Yeni kullanıcı kaydı kapalı")
+    if not request.terms_accepted:
+        raise HTTPException(
+            status_code=400,
+            detail="Kayıt için Kullanım Şartları'nı ve Gizlilik Politikası'nı (KVKK aydınlatma metni) kabul etmelisiniz.",
+        )
     _auth_secret()
 
     email = str(request.email).strip().lower()
@@ -234,12 +239,12 @@ def register(
         with admin_database_connection() as connection, connection.transaction():
             row = connection.execute(
                 """
-                INSERT INTO users (email, password_hash, full_name)
-                VALUES (%s, %s, %s)
+                INSERT INTO users (email, password_hash, full_name, terms_accepted_at, terms_version)
+                VALUES (%s, %s, %s, now(), %s)
                 RETURNING id, email, full_name, status, created_at,
                           password_hash, ARRAY[]::text[] AS roles
                 """,
-                (email, hash_password(request.password), request.full_name.strip()),
+                (email, hash_password(request.password), request.full_name.strip(), (request.terms_version or "").strip() or None),
             ).fetchone()
             connection.execute(
                 """
@@ -327,7 +332,10 @@ def login(
                 # Parola hiç denenmez: kilitli bir istemci doğru parolayı bile bu yolla sınayamaz.
                 raise HTTPException(
                     status_code=429,
-                    detail="Çok fazla başarısız deneme. Lütfen biraz sonra tekrar deneyin.",
+                    detail=(
+                        f"Çok fazla başarısız deneme. Güvenlik için giriş {LOGIN_WINDOW_MINUTES} dakika kapatıldı; "
+                        "sonra tekrar deneyin ya da şifrenizi sıfırlayın."
+                    ),
                     headers={"Retry-After": str(retry_after)},
                 )
             row = connection.execute(
@@ -438,6 +446,7 @@ def google_connection(user_id: Annotated[UUID, Depends(current_user_id)]) -> dic
 def google_start(
     user_id: Annotated[UUID | None, Depends(optional_current_user_id)],
     link: bool = False,
+    terms: str | None = None,
 ) -> RedirectResponse:
     settings = google_settings()
     if not settings.configured:
@@ -452,6 +461,8 @@ def google_start(
             "nonce": nonce,
             "verifier": verifier,
             "link_user_id": str(user_id) if link else None,
+            # Google ile yeni hesap açılırsa, giriş sayfasında gösterilen şartların sürümü hesaba yazılır.
+            "terms": (terms or "").strip()[:40] or None,
             "iat": now,
             "exp": now + timedelta(seconds=GOOGLE_FLOW_SECONDS),
         },
@@ -484,7 +495,9 @@ def _google_result_redirect(error: str | None = None, *, linked: bool = False) -
     return response
 
 
-def _google_user(subject: str, email: str, name: str, *, link_user_id: UUID | None, context: AuditContext) -> dict:
+def _google_user(
+    subject: str, email: str, name: str, *, link_user_id: UUID | None, context: AuditContext, terms_version: str | None = None
+) -> dict:
     """Link explicitly or provision a new account; never auto-link by email."""
     try:
         with admin_database_connection() as connection, connection.transaction():
@@ -526,8 +539,9 @@ def _google_user(subject: str, email: str, name: str, *, link_user_id: UUID | No
                     raise GoogleAccountExists("Existing account needs explicit linking")
                 user_id = uuid4()
                 connection.execute(
-                    "INSERT INTO users (id, email, password_hash, full_name) VALUES (%s, %s, NULL, %s)",
-                    (user_id, email, name or None),
+                    "INSERT INTO users (id, email, password_hash, full_name, terms_accepted_at, terms_version) "
+                    "VALUES (%s, %s, NULL, %s, CASE WHEN %s::text IS NULL THEN NULL ELSE now() END, %s)",
+                    (user_id, email, name or None, terms_version, terms_version),
                 )
                 connection.execute(
                     "INSERT INTO user_roles (user_id, role_id) SELECT %s, id FROM roles WHERE code = 'lawyer'",
@@ -590,6 +604,7 @@ def google_callback(
         row = _google_user(
             identity["subject"], identity["email"], identity["name"],
             link_user_id=link_user_id, context=AuditContext.from_request(request),
+            terms_version=flow.get("terms"),
         )
     except GoogleAccountExists:
         return _google_result_redirect("account_exists")

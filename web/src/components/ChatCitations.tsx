@@ -1,4 +1,5 @@
 import { Info, ShieldAlert } from "lucide-react";
+import { groupCitations } from "@/lib/citation-groups";
 import type { ConsultedSource } from "@/lib/consulted-sources";
 import {
   USER_DOCUMENT_NOTE,
@@ -38,9 +39,9 @@ export function CitationList({ citations }: { citations: ChatCitation[] }) {
       <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
         Cevapta kullanılan atıflar
       </p>
-      {citations.map((c) => (
-        <div key={c.marker} className="text-xs flex flex-wrap items-start gap-1.5">
-          <span className="font-mono text-muted-foreground">{c.marker}</span>
+      {groupCitations(citations).map(({ label, citation: c }) => (
+        <div key={label} className="text-xs flex flex-wrap items-start gap-1.5">
+          <span className="font-mono text-muted-foreground">{label}</span>
           {c.source_url && /^https?:\/\//i.test(c.source_url) ? (
             <a
               href={c.source_url}

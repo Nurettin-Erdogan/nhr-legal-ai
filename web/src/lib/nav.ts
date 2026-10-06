@@ -2,6 +2,10 @@
  * Kenar çubuğu menüsü (veri ve eşleştirme; simgeler bileşende). Çalışan her ana sayfa buradan erişilebilir olmalıdır; "henüz bağlı değil"
  * diyen sayfalar (İcra, Müvekkil Adayları, Raporlar, Personel, Tahsilat, Aramalar) bilerek menüde yoktur: gerçek veri olmadan
  * çalışıyormuş izlenimi verilmez.
+ *
+ * Aynı işi yapan sayfalar tek girdide toplanır (kullanıcı taramasında "hangisine gireceğim" karışıklığı çıktı, 2026-10-06):
+ * "Semantik İçtihat" → İçtihat sayfasındaki "Olayı anlat" kipi; "Tek Tuşla Otomasyon" → Belge İşleme sayfasındaki tam otomatik akış;
+ * "Anlık Hukuki Destek" → Hukuk Asistanı. Eski adresler yeni sayfaya yönlendirir.
  */
 export interface NavEntry {
   to: string;
@@ -32,7 +36,6 @@ export const NAV_GROUPS: NavGroup[] = [
       { to: "/dashboard/ai", label: "Hukuk Asistanı" },
       { to: "/dashboard/legislation", label: "Mevzuat" },
       { to: "/dashboard/case-law", label: "İçtihat" },
-      { to: "/dashboard/semantic-search", label: "Semantik İçtihat" },
       { to: "/dashboard/agent-research", label: "Derin Araştırma" },
     ],
   },
@@ -52,7 +55,6 @@ export const NAV_GROUPS: NavGroup[] = [
       { to: "/dashboard/uyap", label: "UYAP'a Bağlan" },
       { to: "/dashboard/document-processing", label: "Belge İşleme (OCR)" },
       { to: "/dashboard/scanner", label: "Belge Tarayıcı" },
-      { to: "/dashboard/automation", label: "Tek Tuşla Otomasyon" },
     ],
   },
   {
@@ -67,25 +69,46 @@ export const NAV_ITEMS: NavEntry[] = NAV_GROUPS.flatMap((group) => group.items);
 export const NAV_COLLAPSED_KEY = "jurisai.nav.collapsed";
 
 /** Saklanan değeri okur: bozuk veri ya da artık var olmayan başlık menüyü bozmaz, yok sayılır. */
-export function parseCollapsedGroups(raw: string | null | undefined, groups: NavGroup[] = NAV_GROUPS): string[] {
+export function parseCollapsedGroups(
+  raw: string | null | undefined,
+  groups: NavGroup[] = NAV_GROUPS,
+): string[] {
   if (!raw) return [];
   try {
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
     const titles = new Set(groups.map((group) => group.title));
-    return [...new Set(parsed.filter((value): value is string => typeof value === "string" && titles.has(value)))];
+    return [
+      ...new Set(
+        parsed.filter((value): value is string => typeof value === "string" && titles.has(value)),
+      ),
+    ];
   } catch {
     return [];
   }
 }
 
 export function toggleCollapsedGroup(collapsed: string[], title: string): string[] {
-  return collapsed.includes(title) ? collapsed.filter((value) => value !== title) : [...collapsed, title];
+  return collapsed.includes(title)
+    ? collapsed.filter((value) => value !== title)
+    : [...collapsed, title];
 }
 
-/** Kapalı başlık altında yalnız açık olan sayfa görünür kalır; kullanıcı nerede olduğunu menüde kaybetmez. */
-export function visibleNavItems(group: NavGroup, collapsed: boolean, activePath: string | null): NavEntry[] {
-  return collapsed ? group.items.filter((item) => item.to === activePath) : group.items;
+/** Etkin sayfanın bölümü, saklanan kapatma tercihinden bağımsız olarak her zaman açık kalır. */
+export function isNavGroupCollapsed(
+  group: NavGroup,
+  collapsed: boolean,
+  activePath: string | null,
+): boolean {
+  return collapsed && !group.items.some((item) => item.to === activePath);
+}
+
+export function visibleNavItems(
+  group: NavGroup,
+  collapsed: boolean,
+  activePath: string | null,
+): NavEntry[] {
+  return isNavGroupCollapsed(group, collapsed, activePath) ? [] : group.items;
 }
 
 /**
@@ -94,6 +117,10 @@ export function visibleNavItems(group: NavGroup, collapsed: boolean, activePath:
  */
 export function activeNavPath(pathname: string, items: NavEntry[] = NAV_ITEMS): string | null {
   const clean = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
-  const matches = items.filter((item) => (item.to === "/dashboard" ? clean === item.to : clean === item.to || clean.startsWith(`${item.to}/`)));
+  const matches = items.filter((item) =>
+    item.to === "/dashboard"
+      ? clean === item.to
+      : clean === item.to || clean.startsWith(`${item.to}/`),
+  );
   return matches.sort((a, b) => b.to.length - a.to.length)[0]?.to ?? null;
 }

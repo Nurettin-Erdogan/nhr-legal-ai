@@ -33,6 +33,9 @@ class VerifiedAnswer:
     unverified_markers: tuple[str, ...]
     unsupported_claims: tuple[str, ...] = ()
     foreign_script_detected: bool = False
+    # Uzun kanun maddesi cevabının üstünde gösterilen, denetlenmiş yapay zekâ özeti (bkz. api.ai.statute_summary). Cevap metni
+    # ve atıflar bundan bağımsızdır; `grounded` hesabına girmez.
+    summary: tuple[str, ...] = ()
 
     @property
     def grounded(self) -> bool:
@@ -87,7 +90,7 @@ def verify_answer(answer: str, contexts: list[RAGContext], *, question: str = ""
                                          contexts if available_contexts is None else available_contexts):
             unsupported.append('Genel mevzuat yanıtı getirilen birincil mevzuat kaynağına dayanmıyor.')
     if question:
-        from api.ai.relevance import passage_relevant
+        from api.ai.relevance import document_hint, passage_relevant
         from api.ai.authority import primary_legislation_markers
         primary = primary_legislation_markers(question, list(cited_contexts))
         related_primary = {i for i in primary if passage_relevant(question, cited_contexts[i-1].content)}
@@ -103,8 +106,10 @@ def verify_answer(answer: str, contexts: list[RAGContext], *, question: str = ""
                 1 <= m <= len(cited_contexts) and cited_contexts[m - 1].source_type == 'document'
                 for m in markers
             )
+            hint = ' '.join(document_hint(cited_contexts[m - 1]) for m in sorted(markers)) if document_only else ''
             if (markers and not statutory_qualification
-                    and not passage_relevant(question, line, source_type='document' if document_only else None)):
+                    and not passage_relevant(question, line, source_type='document' if document_only else None,
+                                             document_hint=hint)):
                 unsupported.append(line)
     return VerifiedAnswer(
         text=text.strip(),
@@ -153,6 +158,38 @@ def _unsupported_numeric_claims(
             if not numbers.issubset(_number_tokens(evidence)):
                 unsupported.append(sentence)
     return tuple(unsupported)
+
+
+def _claim_key(text: str) -> str:
+    """Satırın yalnız sözcük dizisi: atıf işareti, noktalama ve boşluk farkları sayılmaz.
+
+    Denetimler aynı cümleyi farklı biçimlerde bildirir (işaret yeniden numaralanır, sondaki işaret noktadan önceye alınır).
+    """
+    return " ".join(re.findall(r"\w+", _MARKER_PATTERN.sub(" ", text).casefold()))
+
+
+def prune_rejected_lines(answer: str, verified: VerifiedAnswer) -> str | None:
+    """Denetimden geçmeyen satırları taslaktan çıkarır; çıkarılacak satır yoksa ya da geriye bir şey kalmıyorsa None.
+
+    Yalnız satır ÇIKARIR, hiçbir şey eklemez ya da değiştirmez; sonucu çağıran yeniden `verify_answer` ile doğrular. Satırla
+    eşleşmeyen ret gerekçeleri (ör. "birincil mevzuat kaynağına dayanmıyor") satır çıkararak giderilemez: o durumda None döner
+    ve cevap eskisi gibi reddedilir.
+    """
+    rejected = [key for key in (_claim_key(claim) for claim in verified.unsupported_claims) if len(key) >= 8]
+    if not rejected or verified.unverified_markers or verified.foreign_script_detected:
+        return None
+    lines = answer.splitlines()
+    cited = [line for line in lines if _MARKER_PATTERN.search(line)]
+    keys = {id(line): _claim_key(line) for line in cited}
+    # Her gerekçe taslaktaki bir satıra oturmalı; oturmayan gerekçe varsa sorun satır çıkararak çözülmez.
+    if not all(any(reason in key for key in keys.values()) for reason in rejected):
+        return None
+    dropped = {id(line) for line in cited if any(reason in keys[id(line)] for reason in rejected)}
+    if len(dropped) == len(cited):
+        return None
+    kept = [line for line in lines if id(line) not in dropped]
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+    return text or None
 
 
 def is_insufficient_source_reply(text: str) -> bool:
