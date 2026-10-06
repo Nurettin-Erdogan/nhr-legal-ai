@@ -38,7 +38,7 @@ class _FakePortal:
         rows = [r for r in self.records if start <= r[2] <= end and (chamber is None or r[1] == chamber)]
         rows.sort(key=lambda r: r[2], reverse=True)
         chunk = rows[(page - 1) * page_size: page * page_size]
-        return BedestenPage(total=len(rows), items=[BedestenItem(i, c, "", "", d) for i, c, d in chunk])
+        return BedestenPage(total=len(rows), items=[BedestenItem(i, c, "" if i.startswith("noesas") else "2015/1", "2015/2", d) for i, c, d in chunk])
 
     def content_html(self, document_id):
         return "<p>x</p>"
@@ -123,3 +123,21 @@ def test_noisy_chamber_labels_fall_back_to_day_scan(tmp_path, monkeypatch):
     collector.collect_month(2015, 10)
 
     assert set(saved) == missing
+
+
+def test_incomplete_list_records_are_skipped_without_downloading_their_text(tmp_path, monkeypatch):
+    monkeypatch.setattr(collect_bedesten, "STATE_DIR", tmp_path)
+    portal = _FakePortal([("good", "1. Hukuk Dairesi", date(2015, 10, 5)), ("noesas", "1. Hukuk Dairesi", date(2015, 10, 5))])
+    fetched: list[str] = []
+    original = portal.content_html
+    portal.content_html = lambda document_id: (fetched.append(document_id), original(document_id))[1]
+    saved: list[str] = []
+    monkeypatch.setattr(collect_bedesten, "decision_from_bedesten", lambda kind, item, html: item)
+    monkeypatch.setattr(collect_bedesten, "upsert_decision", lambda connection, item: saved.append(item.document_id))
+    known = tmp_path / "known.tsv"
+    known.write_text("", encoding="utf-8")
+    collector = collect_bedesten.Collector("yargitay", portal, _FakeConnection(), KnownFile(str(known), 2015, 2015))
+
+    collector.collect_day(date(2015, 10, 5), 2)
+
+    assert fetched == ["good"] and saved == ["good"] and collector.failed == 1

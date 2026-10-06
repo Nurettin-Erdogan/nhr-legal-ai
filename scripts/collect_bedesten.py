@@ -75,9 +75,8 @@ def _stop_requested() -> bool:
     return STOP or STOP_FILE.exists()
 
 
-def decision_from_bedesten(kind: str, item: BedestenItem, html: str) -> CourtDecision:
-    config = SOURCES[kind]
-    missing = [
+def missing_list_fields(item: BedestenItem) -> list[str]:
+    return [
         label
         for label, value in (
             ("daire", item.chamber),
@@ -87,6 +86,11 @@ def decision_from_bedesten(kind: str, item: BedestenItem, html: str) -> CourtDec
         )
         if not value
     ]
+
+
+def decision_from_bedesten(kind: str, item: BedestenItem, html: str) -> CourtDecision:
+    config = SOURCES[kind]
+    missing = missing_list_fields(item)
     if missing:
         raise BedestenError(f"Karar liste kaydında eksik alanlar: {', '.join(missing)}")
     text = normalize_text(html_to_text(html))
@@ -286,6 +290,13 @@ class Collector:
         missing = [i for i in items if i.document_id not in known]
         saved = 0
         for item in missing:
+            # Liste künyesi eksik karar zaten reddedilecek (kayıt künyesiz korpusa alınmaz): metni indirip kotayı harcama.
+            # Ölçüldü: 2026-10-06, 2013-11-26 gününde 136 kararın esas no'su listede boştu, her biri boşuna bir istek yiyordu.
+            incomplete = missing_list_fields(item)
+            if incomplete:
+                self.failed += 1
+                logger.warning("Karar alınamadı %s: Karar liste kaydında eksik alanlar: %s", item.document_id, ", ".join(incomplete))
+                continue
             try:
                 html = self._call(self.client.content_html, item.document_id)
                 decision = decision_from_bedesten(self.kind, item, html)
