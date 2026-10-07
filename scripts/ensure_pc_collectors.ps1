@@ -36,7 +36,8 @@ if (-not $paused -and -not (Test-Running 'collect_emsal\.py')) {
     Start-Hidden 'pc-emsal3' 'scripts\collect_emsal.py --delay 2.0'
 }
 # Tek embedding işçisi, düşük öncelikli: toplayıcıları ve bilgisayarı yavaşlatmadan, yeni gelen kararları yavaş yavaş vektörler.
-if (-not (Test-Running 'embed_chunks\.py')) {
+# Gürültü/yük istenmiyorsa data\campaign\PAUSE_PC_EMBED dosyası embedding işçisini de başlatmaz.
+if (-not (Test-Path -LiteralPath (Join-Path $root 'data\campaign\PAUSE_PC_EMBED')) -and -not (Test-Running 'embed_chunks\.py')) {
     Start-Hidden 'pc-embed-1' 'scripts\embed_chunks.py --loop'
     Start-Sleep -Seconds 3
     Get-Process python -ErrorAction SilentlyContinue | ForEach-Object {
