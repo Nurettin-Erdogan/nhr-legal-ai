@@ -472,7 +472,18 @@ def main() -> None:
         try:
             for year in range(args.from_year, args.to_year - 1, -1):
                 for month in range(12, 0, -1):
-                    collector.collect_month(year, month)
+                    # Ağ kesintisi (bağlantı zaman aşımı) tüm süreci çökertmesin: aynı ay bir süre sonra yeniden denenir
+                    # (gün imleci ve ay durumu dosyada, kaldığı yerden devam eder).
+                    while True:
+                        try:
+                            collector.collect_month(year, month)
+                            break
+                        except BedestenError as exc:
+                            logger.warning("Ağ/portal hatası, 120 sn sonra %d-%02d yeniden denenecek: %s", year, month, str(exc)[:100])
+                            for _ in range(24):
+                                if _stop_requested():
+                                    raise KeyboardInterrupt
+                                time.sleep(5)
                 print(f"{datetime.now():%H:%M:%S} {year} yılı tamam | yeni={collector.fetched}", flush=True)
         except KeyboardInterrupt:
             print("durduruldu", flush=True)
