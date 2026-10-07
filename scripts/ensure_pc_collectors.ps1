@@ -34,3 +34,12 @@ if (-not (Test-Running 'collect_bedesten\.py')) {
 if (-not (Test-Running 'collect_emsal\.py')) {
     Start-Hidden 'pc-emsal3' 'scripts\collect_emsal.py --delay 2.0'
 }
+# Tek embedding işçisi, düşük öncelikli: toplayıcıları ve bilgisayarı yavaşlatmadan, yeni gelen kararları yavaş yavaş vektörler.
+if (-not (Test-Running 'embed_chunks\.py')) {
+    Start-Hidden 'pc-embed-1' 'scripts\embed_chunks.py --loop'
+    Start-Sleep -Seconds 3
+    Get-Process python -ErrorAction SilentlyContinue | ForEach-Object {
+        $line = (Get-CimInstance Win32_Process -Filter "ProcessId=$($_.Id)").CommandLine
+        if ($line -match 'embed_chunks\.py') { try { $_.PriorityClass = 'BelowNormal' } catch {} }
+    }
+}
