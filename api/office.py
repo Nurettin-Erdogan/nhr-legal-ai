@@ -14,9 +14,9 @@ tarafındaki `supabase.from(...)` çağrıları bu sözleşmeye çevrilir. Güve
 
 from __future__ import annotations
 
+import errno
 import logging
 import mimetypes
-import os
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
@@ -39,6 +39,7 @@ from api.account_export import build_export
 from api.case_summary import extract_facts, load_ready_documents
 from api.document_compare import CompareTooLarge, compare_texts
 from api.document_organization import organized_documents
+from api.upload_stream import Upload, UploadTooLarge, receive_upload, upload_limit
 from api.uyap_cases import UYAP_SOURCES, link_document, lock_uyap_owner
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,12 @@ TABLES: dict[str, str] = {
     "uyap_ingest_tokens": "office_uyap_ingest_tokens",
     "feedback": "office_feedback",
 }
+# Genel CRUD ucundan ERİŞİLEMEYEN (yalnız özel uçlar yazar: doğrulama sonucu istemci tarafından uydurulamasın) ama KVKK dışa aktarımına
+# dahil olan sahip tabloları.
+EXPORT_ONLY_TABLES: dict[str, str] = {
+    "uyap_case_sync": "office_uyap_case_sync",
+    "uyap_case_detail": "office_uyap_case_detail",
+}
 # Arayüzün `user_id` dediği sahiplik sütunu bu tablolarda `owner_id`'dir.
 _USER_ID_ALIAS = {"legal_documents", "risk_analyses", "call_settings"}
 # İstemcinin değiştiremeyeceği sütunlar.
@@ -79,7 +86,6 @@ _TABLE_PROTECTED_COLUMNS = {
     "uyap_ingest_tokens": {"token_hash", "token_prefix"},
 }
 _MAX_LIMIT = 1000
-_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
 FilterOp = Literal["eq", "neq", "gt", "gte", "lt", "lte", "in", "is", "like", "ilike"]
 _OPERATORS = {
@@ -434,6 +440,20 @@ def _storage_path(user_id: UUID, key: str) -> Path:
     return target
 
 
+async def _receive(file: UploadFile) -> Upload:
+    """Yüklemeyi bellek kullanmadan ölçer. Boyut sınırı yoktur; yalnız işletmecinin isteğe bağlı `MAX_UPLOAD_BYTES` ayarı varsa 413."""
+    try:
+        return await receive_upload(file, upload_limit())
+    except UploadTooLarge as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+
+
+def _storage_failure(exc: OSError) -> str:
+    if exc.errno == errno.ENOSPC:
+        return "Sunucuda disk alanı kalmadı; dosya kaydedilemedi"
+    return "Dosya kaydedilemedi; yeniden deneyin"
+
+
 @router.post("/storage/upload")
 async def upload_file(
     key: str,
@@ -442,18 +462,18 @@ async def upload_file(
     file: UploadFile = File(...),
 ) -> dict[str, Any]:
     target = _storage_path(user_id, key)
-    data = await file.read(_MAX_UPLOAD_BYTES + 1)
-    if len(data) > _MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="Dosya 50 MB sınırını aşıyor")
     if target.exists():
         raise HTTPException(status_code=409, detail="Bu yolda dosya zaten var")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(target.name + ".tmp")
+    upload = await _receive(file)
     try:
-        temporary.write_bytes(data)
-        os.replace(temporary, target)
+        try:
+            await run_in_threadpool(upload.place, target)  # geçici dosya + atomik yer değiştirme; bellek kullanmaz
+        except OSError as exc:
+            logger.exception("Dosya kaydedilemedi")
+            raise HTTPException(status_code=503, detail=_storage_failure(exc)) from exc
+        size = upload.size
     finally:
-        temporary.unlink(missing_ok=True)
+        upload.discard()
     try:
         with authenticated_database_connection(str(user_id)) as connection:
             record_event(
@@ -462,11 +482,11 @@ async def upload_file(
                 actor_user_id=user_id,
                 context=AuditContext.from_request(request),
                 entity_type="office_file",
-                metadata={"size": len(data)},
+                metadata={"size": size},
             )
     except psycopg.Error:
         logger.exception("Dosya denetim kaydı yazılamadı")
-    return {"key": key, "size": len(data)}
+    return {"key": key, "size": size}
 
 
 @router.get("/storage/download")
@@ -545,28 +565,35 @@ async def upload_case_document(
     target = _storage_path(user_id, key)
     created = False
     ready_to_commit = False
+    upload = None
     try:
+        # Önce kısa bir erişim denetimi: yabancı/yok dava için gövde okunmaz ve dosya yazılmaz.
+        with authenticated_database_connection(str(user_id)) as connection:
+            _case_for_document(connection, case_id)
+        upload = await _receive(file)
+        if upload.size == 0:
+            raise HTTPException(status_code=400, detail="Boş dosya yüklenemez")
+        # Dosya, kayıt işleminden ÖNCE yazılır: büyük dosyanın kopyalanması sürerken dava satırı kilitli kalmaz. Kayıt başarısız
+        # olursa aşağıda yalnız bu çağrının kendi dosyası silinir.
+        try:
+            created = True
+            await run_in_threadpool(upload.place, target, exclusive=True)
+        except OSError as exc:
+            if isinstance(exc, FileExistsError):
+                created = False  # var olan dosya bu çağrıya ait değildir: silinmez
+            raise HTTPException(status_code=503, detail=_storage_failure(exc)) from exc
         with authenticated_database_connection(str(user_id)) as connection:
             case = _case_for_document(connection, case_id)
-            data = await file.read(_MAX_UPLOAD_BYTES + 1)
-            if not data:
-                raise HTTPException(status_code=400, detail="Boş dosya yüklenemez")
-            if len(data) > _MAX_UPLOAD_BYTES:
-                raise HTTPException(status_code=413, detail="Dosya 50 MB sınırını aşıyor")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with target.open("xb") as output:
-                created = True
-                output.write(data)
             connection.execute(
                 "INSERT INTO office_case_documents "
                 "(id, owner_id, case_id, client_id, file_name, storage_path, mime_type, size_bytes, source) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'manual')",
                 (document_id, user_id, case_id, case["client_id"], name, key,
-                 (file.content_type or "application/octet-stream")[:255], len(data)),
+                 (file.content_type or "application/octet-stream")[:255], upload.size),
             )
             record_event(connection, action="office.case_document_upload", actor_user_id=user_id,
                          context=AuditContext.from_request(request), entity_type="case_documents",
-                         entity_id=document_id, metadata={"case_id": str(case_id), "size": len(data)})
+                         entity_id=document_id, metadata={"case_id": str(case_id), "size": upload.size})
             ready_to_commit = True
         _schedule_document_index(user_id, document_id, request)
         return {"id": document_id, "case_id": case_id, "file_name": name}
@@ -586,6 +613,9 @@ async def upload_case_document(
             logger.exception("Case document upload failed id=%s", document_id)
             raise HTTPException(status_code=503, detail="Belge kaydedilemedi; dava evraklarını kontrol edip yeniden deneyin") from exc
         raise
+    finally:
+        if upload is not None:
+            upload.discard()
 
 
 @router.post("/cases/{case_id}/documents/{document_id}/link")
@@ -745,7 +775,7 @@ def export_account_data(
     """KVKK: kullanıcının kendi verilerini JSON olarak indirir (parola/anahtar/iç yol hariç, belge dosyaları dahil değil)."""
     try:
         with authenticated_database_connection(str(user_id)) as connection:
-            data = build_export(connection, user_id, TABLES)
+            data = build_export(connection, user_id, {**TABLES, **EXPORT_ONLY_TABLES})
             record_event(connection, action="account.export", actor_user_id=user_id, context=AuditContext.from_request(request),
                          entity_type="user", entity_id=user_id, metadata={"tables": len(data["office"])}, strict=False)
     except psycopg.Error as exc:
@@ -802,24 +832,27 @@ async def import_uyap_document(user_id: Annotated[UUID, Depends(current_user_id)
     """
     from api.office_public import _schedule_index, _store, read_document_upload
 
-    fields, name, mime, data = await read_document_upload(request)
+    fields, name, mime, upload = await read_document_upload(request)
     try:
-        sync_id = UUID(fields["syncRunId"]) if fields.get("syncRunId") else None
-    except ValueError as exc:
-        raise HTTPException(400, "Geçersiz aktarım kaydı") from exc
-    metadata_name = fields.get("path", name)
-    if len(metadata_name) > 600:
-        raise HTTPException(400, "Belge yolu çok uzun")
-    audit = AuditContext.from_request(request)
-    try:
-        outcome, document_id = await run_in_threadpool(
-            _store, user_id, file_name=name, data=data, source="uyap", mime_type=mime,
-            overrides={"metadata_name": metadata_name, "uyap_path": metadata_name[:400]},
-            dedupe_by_source=True, audit=audit, sync_run_id=sync_id,
-        )
-    except (psycopg.Error, OSError) as exc:
-        logger.exception("Elle UYAP aktarımı kaydedilemedi")
-        raise HTTPException(503, "Belge kaydedilemedi; yeniden deneyin") from exc
+        try:
+            sync_id = UUID(fields["syncRunId"]) if fields.get("syncRunId") else None
+        except ValueError as exc:
+            raise HTTPException(400, "Geçersiz aktarım kaydı") from exc
+        metadata_name = fields.get("path", name)
+        if len(metadata_name) > 600:
+            raise HTTPException(400, "Belge yolu çok uzun")
+        audit = AuditContext.from_request(request)
+        try:
+            outcome, document_id = await run_in_threadpool(
+                _store, user_id, file_name=name, data=upload, source="uyap", mime_type=mime,
+                overrides={"metadata_name": metadata_name, "uyap_path": metadata_name[:400]},
+                dedupe_by_source=True, audit=audit, sync_run_id=sync_id,
+            )
+        except (psycopg.Error, OSError) as exc:
+            logger.exception("Elle UYAP aktarımı kaydedilemedi")
+            raise HTTPException(503, "Belge kaydedilemedi; yeniden deneyin") from exc
+    finally:
+        upload.discard()
     if outcome == "invalid_sync":
         raise HTTPException(404, "Aktarım kaydı bulunamadı")
     if outcome not in {"inserted", "duplicate"}:

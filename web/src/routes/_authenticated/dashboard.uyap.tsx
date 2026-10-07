@@ -11,7 +11,7 @@ import { UyapCaseLinks } from "@/components/UyapCaseLinks";
 import { setExtensionKey } from "@/lib/uyap-bridge";
 import { supabase } from "@/integrations/supabase/client";
 import { expandDroppedFiles, importEntries, type ImportResult } from "@/lib/uyap-import";
-import { ALLOWED_EXTENSIONS, humanSize } from "@/lib/uyap";
+import { ALLOWED_EXTENSIONS } from "@/lib/uyap";
 import { toast } from "sonner";
 import {
   AlertTriangle,
@@ -369,9 +369,6 @@ const UyapConnect = () => {
             </p>
             <p className="text-xs text-muted-foreground">
               UYAP arşivi (.zip / .eyp) veya tek tek belgeler (.pdf, .udf, .odt, .docx, .html, .tif, .jpg)
-            </p>
-            <p className="text-xs text-muted-foreground">
-              Tek dosya en fazla {humanSize(50 * 1024 * 1024)}
             </p>
           </div>
 

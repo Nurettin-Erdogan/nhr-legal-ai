@@ -88,7 +88,7 @@ export function CaseDocumentActions({
         }}
       >
         <label className="text-sm">
-          Yeni evrak (en fazla 50 MB)
+          Yeni evrak
           <input
             key={reload}
             aria-label="Yüklenecek evrak"

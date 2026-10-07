@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import base64
 import binascii
+import errno
 import hashlib
 import logging
-import os
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -32,6 +32,14 @@ from api.db import admin_database_connection, authenticated_database_connection
 from api.document_indexing import schedule_index
 from api.office import _storage_path
 from api.udf import UdfError, extract_udf_text
+from api.upload_stream import (
+    IN_MEMORY_PARSE_BYTES,
+    Upload,
+    UploadTooLarge,
+    file_sha256,
+    receive_upload,
+    upload_limit,
+)
 from api.uyap_cases import case_number, court_key, link_document, lock_uyap_owner
 from api.uyap_meta import (
     MAX_FILE_BYTES,
@@ -55,11 +63,17 @@ MULTIPART_OVERHEAD_BYTES = 1024 * 1024
 class MultipartTooLarge(Exception):
     pass
 
-async def read_document_upload(request: Request) -> tuple[dict[str, str], str, str | None, bytes]:
-    """Bounded multipart reader. Caller MUST authenticate before calling this."""
-    limit = MAX_FILE_BYTES + MULTIPART_OVERHEAD_BYTES
+async def read_document_upload(request: Request) -> tuple[dict[str, str], str, str | None, Upload]:
+    """Çok parçalı yüklemeyi boyut sınırı olmadan okur. Caller MUST authenticate before calling this.
+
+    Dosya gövdesi belleğe alınmaz: Starlette onu geçici dosyaya yazar (1 MB üstü diskte), burada yalnız ölçülür.
+    Dönen `Upload` o geçici dosyayı açık tutar; çağıran işini bitirince `upload.discard()` çağırmalıdır.
+    İşletmecinin isteğe bağlı `MAX_UPLOAD_BYTES` ayarı varsa o üst sınır uygulanır (varsayılan: sınır yok).
+    """
+    limit = upload_limit()
+    body_limit = None if limit is None else limit + MULTIPART_OVERHEAD_BYTES
     declared = request.headers.get("content-length", "")
-    if declared.isdigit() and int(declared) > limit:
+    if body_limit is not None and declared.isdigit() and int(declared) > body_limit:
         raise HTTPException(413, "Dosya çok büyük")
     received = 0
     original_receive = request.receive
@@ -67,9 +81,10 @@ async def read_document_upload(request: Request) -> tuple[dict[str, str], str, s
     async def bounded_receive() -> dict[str, Any]:
         nonlocal received
         message = await original_receive()
-        received += len(message.get("body", b""))
-        if received > limit:
-            raise MultipartTooLarge
+        if body_limit is not None:
+            received += len(message.get("body", b""))
+            if received > body_limit:
+                raise MultipartTooLarge
         return message
 
     bounded = Request(request.scope, receive=bounded_receive)
@@ -79,6 +94,8 @@ async def read_document_upload(request: Request) -> tuple[dict[str, str], str, s
         raise HTTPException(413, "Dosya çok büyük") from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, "Dosya eksik veya istek gövdesi okunamadı") from exc
+    upload: Upload | None = None
+    handed_over = False
     try:
         file = form.get("file")
         if not isinstance(file, StarletteUploadFile):
@@ -88,14 +105,20 @@ async def read_document_upload(request: Request) -> tuple[dict[str, str], str, s
         if not is_allowed_file(name):
             ext = re.sub(r"[^a-z0-9]", "", extension_of(name))[:10]
             raise HTTPException(415, f"Desteklenmeyen dosya türü (.{ext})")
-        data = await file.read(MAX_FILE_BYTES + 1)
-        if not data:
+        try:
+            upload = await receive_upload(file, limit)
+        except UploadTooLarge as exc:
+            raise HTTPException(413, str(exc)) from exc
+        if upload.size == 0:
             raise HTTPException(400, "Boş dosya")
-        if len(data) > MAX_FILE_BYTES:
-            raise HTTPException(413, "Dosya çok büyük")
-        return fields, name, file.content_type, data
+        handed_over = True
+        return fields, name, file.content_type, upload
     finally:
-        await form.close()
+        # Başarıda dosya parçası kapatılmaz: `Upload` onun geçici dosyasını kullanır ve `discard()` ile kapatır.
+        if not handed_over:
+            if upload is not None:
+                upload.discard()
+            await form.close()
 
 
 _CORS = {
@@ -222,7 +245,14 @@ def find_duplicate(
             return stored["id"]
         if stored["checksum_sha256"] is None or semantic_check:
             try:
-                existing_data = _storage_path(stored["owner_id"], stored["storage_path"]).read_bytes()
+                existing_path = _storage_path(stored["owner_id"], stored["storage_path"])
+                if existing_path.stat().st_size > IN_MEMORY_PARSE_BYTES:
+                    # Büyük dosya belleğe alınmaz: özet diskten akıtılarak hesaplanır; ODT/UDF metin karşılaştırması
+                    # yalnız küçük dosyalara uygulanır (büyük bir ODT/UDF zaten beklenmez).
+                    if file_sha256(existing_path) == checksum_sha256:
+                        return stored["id"]
+                    continue
+                existing_data = existing_path.read_bytes()
                 if hashlib.sha256(existing_data).hexdigest() == checksum_sha256:
                     return stored["id"]
                 if semantic_check and normalized_repackable_text(file_name, existing_data) == content_text:
@@ -266,7 +296,7 @@ def _store(
     owner_id: UUID,
     *,
     file_name: str,
-    data: bytes,
+    data: bytes | Upload,
     source: str,
     mime_type: str | None,
     overrides: dict[str, str | None],
@@ -274,15 +304,45 @@ def _store(
     audit: AuditContext,
     sync_run_id: UUID | None = None,
 ) -> tuple[str, UUID | None]:
-    """Belgeyi diske ve tabloya yazar. ('inserted'|'duplicate'|'failed', kimlik) döndürür."""
-    excerpt = " ".join(extract_text_sample(file_name, data).split())
+    """Belgeyi diske ve tabloya yazar. ('inserted'|'duplicate'|'failed', kimlik) döndürür.
+
+    `data` küçük içerik için bayt, büyük içerik için `Upload`'tır (boyut sınırı yok; belleğe alınmaz). `Upload` bu işlevin
+    sonunda kapatılır.
+    """
+    upload = data if isinstance(data, Upload) else Upload.from_bytes(data)
+    try:
+        return _store_upload(
+            owner_id, file_name=file_name, upload=upload, source=source, mime_type=mime_type, overrides=overrides,
+            dedupe_by_source=dedupe_by_source, audit=audit, sync_run_id=sync_run_id,
+        )
+    finally:
+        upload.discard()
+
+
+def _store_upload(
+    owner_id: UUID,
+    *,
+    file_name: str,
+    upload: Upload,
+    source: str,
+    mime_type: str | None,
+    overrides: dict[str, str | None],
+    dedupe_by_source: bool,
+    audit: AuditContext,
+    sync_run_id: UUID | None,
+) -> tuple[str, UUID | None]:
+    # Metin örneği ve ODT/UDF karşılaştırması için içerik yalnız makul boyuttaysa belleğe alınır; büyük dosya (ses/video,
+    # çok sayfalı tarama paketi) hiç okunmadan saklanır.
+    sample = upload.small_bytes(IN_MEMORY_PARSE_BYTES)
+    excerpt = " ".join(extract_text_sample(file_name, sample).split()) if sample is not None else ""
     meta = parse_uyap_meta(overrides.get("metadata_name") or file_name, excerpt)
     raw_number = overrides.get("uyap_file_no") or meta["uyap_file_no"]
     file_no = case_number(raw_number) or raw_number
     birim = overrides.get("uyap_birim") or meta["uyap_birim"]
     evrak_key = evrak_id_prefix(overrides.get("evrak_id")) or None
-    checksum = hashlib.sha256(data).hexdigest()
-    comparable_text = normalized_repackable_text(file_name, data) if evrak_key else None
+    checksum = upload.sha256
+    size = upload.size
+    comparable_text = normalized_repackable_text(file_name, sample) if evrak_key and sample is not None else None
     with authenticated_database_connection(str(owner_id)) as connection:
         lock_uyap_owner(connection, owner_id)
         if sync_run_id is not None and not connection.execute(
@@ -292,7 +352,7 @@ def _store(
         existing_id = find_duplicate(
             connection,
             file_name=file_name,
-            size_bytes=len(data),
+            size_bytes=size,
             uyap_file_no=file_no,
             source=source if dedupe_by_source else None,
             checksum_sha256=checksum,
@@ -317,13 +377,7 @@ def _store(
 
         key = f"{owner_id}/{datetime.now(timezone.utc).year}/{uuid4()}-{file_name}"
         target = _storage_path(owner_id, key)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(target.name + ".tmp")
-        try:
-            temporary.write_bytes(data)
-            os.replace(temporary, target)
-        finally:
-            temporary.unlink(missing_ok=True)
+        upload.place(target)  # geçici dosya + atomik yer değiştirme; büyük içerik dosyadan dosyaya akıtılır
 
         document_id = uuid4()
         try:
@@ -336,7 +390,7 @@ def _store(
                     owner_id,
                     file_name,
                     key,
-                    len(data),
+                    size,
                     source,
                     mime_type,
                     file_no,
@@ -353,7 +407,7 @@ def _store(
             if inserted.rowcount == 0:
                 target.unlink(missing_ok=True)
                 duplicate_id = find_duplicate(
-                    connection, file_name=file_name, size_bytes=len(data), uyap_file_no=file_no,
+                    connection, file_name=file_name, size_bytes=size, uyap_file_no=file_no,
                     source=source if dedupe_by_source else None, checksum_sha256=checksum,
                     evrak_key=evrak_key, content_text=comparable_text,
                     uyap_birim=overrides.get("uyap_birim") or meta["uyap_birim"],
@@ -370,7 +424,7 @@ def _store(
                 context=audit,
                 entity_type="case_document",
                 entity_id=document_id,
-                metadata={"size": len(data), "source": source},
+                metadata={"size": size, "source": source},
             )
             # Yalnız portalın açık üst verisi: belge içindeki başka dava numarasından ilişki üretme.
             link_document(connection, owner_id, document_id, file_no=overrides.get("uyap_file_no"),
@@ -497,9 +551,9 @@ async def upload_document(
         return _reply({"error": "Geçersiz bağlantı anahtarı"}, 401)
     _, owner_id = owner
 
-    # Both upload paths share size limits and cleanup. Authentication happens first.
+    # Kimlik doğrulama önce yapılır; gövde boyut sınırı olmadan, belleğe alınmadan okunur.
     try:
-        fields, file_name, mime_type, data = await read_document_upload(request)
+        fields, file_name, mime_type, upload = await read_document_upload(request)
     except HTTPException as exc:
         return _reply({"error": exc.detail}, exc.status_code)
     evrakId, evrakTuru = fields.get("evrakId"), fields.get("evrakTuru")
@@ -513,7 +567,7 @@ async def upload_document(
             _store,
             owner_id,
             file_name=unique_name,
-            data=data,
+            data=upload,
             source=(source or "uyap-avukat-eklentisi").strip()[:40],
             mime_type=mime_type,
             overrides={
@@ -526,9 +580,16 @@ async def upload_document(
             dedupe_by_source=False,
             audit=AuditContext.from_request(request),
         )
-    except (psycopg.Error, OSError):
+    except OSError as exc:
+        logger.exception("UYAP belgesi kaydedilemedi")
+        if exc.errno == errno.ENOSPC:
+            return _reply({"error": "Sunucuda disk alanı kalmadı; belge kaydedilemedi"}, 507)
+        return _reply({"error": "Kayıt hatası"}, 500)
+    except psycopg.Error:
         logger.exception("UYAP belgesi kaydedilemedi")
         return _reply({"error": "Kayıt hatası"}, 500)
+    finally:
+        upload.discard()  # sahte/erken dönen `_store` olsa da geçici dosya kalmaz
     if outcome == "duplicate":
         return _reply({"ok": True, "duplicate": True, "id": str(document_id)})
     if outcome == "changed":

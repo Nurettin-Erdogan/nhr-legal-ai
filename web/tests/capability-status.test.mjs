@@ -34,8 +34,12 @@ test("call page reports real records and never offers disconnected telephony act
 
 test("legacy appointment route uses the real calendar; remaining mock screens are honest", () => {
   assert.match(route("appointments"), /Navigate to="\/dashboard\/calendar"/);
-  for (const name of ["execution", "leads", "reports", "staff"]) {
+  for (const name of ["leads", "reports", "staff"]) {
     assert.match(route(name), /UnavailableOfficeFeature/);
     assert.doesNotMatch(route(name), /@\/data\/mock|Yeni Üye|₺ 925K|%97/);
   }
+  // İcra Takibi artık gerçek veriyle çalışır: veri sunucudan okunur, uydurma sayı ve mock yoktur.
+  const execution = route("execution");
+  assert.match(execution, /loadExecution/);
+  assert.doesNotMatch(execution, /UnavailableOfficeFeature|@\/data\/mock|₺ 925K|%97/);
 });

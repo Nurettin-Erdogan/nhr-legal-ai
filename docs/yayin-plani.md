@@ -43,13 +43,13 @@ Cevap üretimi tek kilitle sıraya sokuluyor (`_generation_lock`): **aynı anda 
 1. Barındırma kararı (bkz. 5). Alan adı + HTTPS sertifikası.
 2. Web'i Node sunucu hedefiyle derle; API ve web için servis tanımı (Docker ya da systemd), otomatik yeniden başlatma.
 3. Ortam değişkenleri: `AUTH_COOKIE_SECURE=true`, `CORS_ORIGINS` = gerçek adres, `JWT_SECRET` yeni ve rastgele, `ALLOW_REGISTRATION` kapalı/davetli, veritabanı parolaları yenilenmiş, `.env` depoda değil.
-4. Belge deposu: yerel disk yerine yedeklenen bir birim ya da nesne depolama; yükleme boyutu ve kullanıcı başına kota.
+4. Belge deposu: yerel disk yerine yedeklenen bir birim ya da nesne depolama; kullanıcı başına kota. **Yükleme boyutu sınırı kaldırıldı (2026-10-06, kullanıcı kararı)**: dosyalar diske akıtılır, bu yüzden disk doluluğu izlenmeli (madde 6) ve ortak sunucuda gerekirse `MAX_UPLOAD_BYTES` ile üst sınır konabilir.
 5. Yedekleme: 213 GB'ı `pg_dump` ile almak pratik değil. B/C seçeneğinde günlük dökümü + belgelerin ayrı yedeği; **geri yükleme en az bir kez denenmeli**.
 6. İzleme: sağlık kontrolü, hata günlüğü, disk/RAM uyarısı, model sunucusu açık mı.
 7. UYAP eklentisi: gerçek alan adı `WEB_ORIGINS`'e ve eklenti manifestine eklenmeli; Chrome Web Store hesabı + gizlilik e-postası (`docs/chrome-web-store.md`).
 
 **Güvenlik ve KVKK**
-8. Hesap silme (KVKK silme hakkı) ve silinen kullanıcının belge dosyalarının diskten temizlenmesi. *Başka oturumun belge koruma migration'ı bitince yapılacak.*
+8. Hesap silme (KVKK silme hakkı): **yapıldı** (arayüzden "HESABIMI SİL" onayıyla; genel akış testinde doğrulandı). Silinen kullanıcının belge dosyalarının diskten temizlendiği ayrıca kontrol edilmeli.
 9. Aydınlatma metni, gizlilik politikası, kullanım şartları, veri saklama süreleri; müvekkil verisi işlenmesi için avukatın kendi aydınlatma yükümlülüğü hatırlatması (eklenti ayarında var).
 10. Dışarıdan bağımsız temel güvenlik taraması (oturum, yetki izolasyonu testleri zaten var; dış sızma testi yok).
 11. Yapay zekâ **yerelde** kalıyorsa müvekkil verisi sunucudan çıkmaz. Bulut modele geçilirse bu bir KVKK kararıdır (yurt dışı aktarım) ve ayrıca değerlendirilmelidir.

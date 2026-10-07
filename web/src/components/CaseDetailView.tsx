@@ -9,6 +9,8 @@ import {
 const tabs = [
   "Özet",
   "Evraklar",
+  "UYAP Bilgileri",
+  "Süreler",
   "Belgelerle Sor",
   "Belge Kıyasla",
   "Dosya Özeti",
@@ -57,6 +59,8 @@ export function CaseDetailView({
   documentAsk,
   documentCompare,
   caseSummary,
+  uyapDetail,
+  deadlines,
   documentTrash,
   onTrash,
   trashing,
@@ -75,6 +79,10 @@ export function CaseDetailView({
   documentCompare?: ReactNode;
   /** "Dosya Özeti" sekmesinin içeriği (olgu tablosu ve belge özetleri). */
   caseSummary?: ReactNode;
+  /** "UYAP Bilgileri" sekmesinin içeriği (taraflar, safahat, dosya hesabı, tahsilat/reddiyat). */
+  uyapDetail?: ReactNode;
+  /** "Süreler" sekmesinin içeriği (yasal süre hesabı ve takvime ekleme). */
+  deadlines?: ReactNode;
   /** Evraklar sekmesinin altındaki çöp kutusu bölümü. */
   documentTrash?: ReactNode;
   /** Belgeyi çöp kutusuna taşır (geri alınabilir). */
@@ -146,6 +154,18 @@ export function CaseDetailView({
           </p>
         </>
       )}
+      {tab === "UYAP Bilgileri" &&
+        (uyapDetail ?? (
+          <p className="text-sm text-muted-foreground">
+            UYAP dosya bilgileri bu görünümde kullanılamıyor.
+          </p>
+        ))}
+      {tab === "Süreler" &&
+        (deadlines ?? (
+          <p className="text-sm text-muted-foreground">
+            Süre hesabı bu görünümde kullanılamıyor.
+          </p>
+        ))}
       {tab === "Belgelerle Sor" &&
         (documentAsk ?? (
           <p className="text-sm text-muted-foreground">

@@ -24,6 +24,9 @@ from api.documents import router as documents_router
 from api.legal import router as legal_router, warm_slow_counts
 from api.office import router as office_router
 from api.office_search import router as office_search_router
+from api.execution import router as execution_router
+from api.uyap_detail import router as uyap_detail_router
+from api.uyap_sync import router as uyap_sync_router
 from api.office_ai import router as office_ai_router
 from api.office_public import router as office_public_router
 from api.office_trash import router as office_trash_router
@@ -164,6 +167,9 @@ app.include_router(projects_router)
 app.include_router(conversations_router)
 app.include_router(documents_router)
 app.include_router(office_search_router)
+app.include_router(execution_router)
+app.include_router(uyap_sync_router)
+app.include_router(uyap_detail_router)
 app.include_router(office_router)
 app.include_router(office_trash_router)
 app.include_router(office_ai_router)

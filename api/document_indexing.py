@@ -35,7 +35,9 @@ from api.document_processing import DocumentProcessingError, OcrRequired, proces
 logger = logging.getLogger(__name__)
 
 INDEX_ACTION = "office.document_index"
-MAX_INDEXABLE_BYTES = 50 * 1024 * 1024
+# Metni okunup aranabilir yapılan dosyanın üst boyutu: içerik bellekte işlenir (en çok 2 iş parçacığı). Bundan büyük dosya
+# (ör. uzun ses/video kaydı) yine saklanır ve indirilebilir; yalnız metni çıkarılmaz ve açıkça "aranabilir değil" yazılır.
+MAX_INDEXABLE_BYTES = 512 * 1024 * 1024
 EMBED_BATCH_SIZE = 16
 EXCERPT_CHARS = 1500
 _GENERIC_FAILURE = "Belge işlenemedi."
@@ -60,7 +62,7 @@ def _read_source(owner_id: UUID, storage_path: str) -> bytes:
     path = _storage_path(owner_id, storage_path)
     size = path.stat().st_size
     if size > MAX_INDEXABLE_BYTES:
-        raise DocumentProcessingError("Dosya indekslenebilecek boyutu aşıyor.")
+        raise DocumentProcessingError("Dosya saklandı; boyutu nedeniyle metni okunup aranabilir yapılmadı.")
     if size == 0:
         raise DocumentProcessingError("Yüklenen dosya boş.")
     return path.read_bytes()

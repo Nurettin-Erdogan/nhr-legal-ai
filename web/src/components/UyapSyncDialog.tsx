@@ -16,7 +16,6 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/components/AuthProvider";
 import { toast } from "sonner";
 import {
-  MAX_ARCHIVE_ENTRIES,
   humanSize,
   readArchive,
 } from "@/lib/uyap";
@@ -135,8 +134,8 @@ export const UyapSyncDialog = ({ onSynced }: Props) => {
             </div>
             UYAP'ın açık bir API'si yoktur ve e-imza/parola bilgilerinizi hiçbir zaman istemiyoruz.
             Senkronizasyon, sizin indirdiğiniz resmî arşivin içe aktarılmasıyla yapılır. Arşiv
-            tarayıcınızda açılır, dosyalar yalnızca sizin erişebildiğiniz özel depoya yüklenir. En
-            fazla {MAX_ARCHIVE_ENTRIES} belge işlenir.
+            tarayıcınızda açılır, dosyalar yalnızca sizin erişebildiğiniz özel depoya yüklenir. Belge
+            sayısı ve boyutu için sınır yoktur.
           </div>
 
           <input

@@ -96,6 +96,40 @@ def test_imports_create_one_pending_case_and_retries_do_not_duplicate_evidence(w
 
 
 @needs_db
+def test_a_large_upload_is_stored_from_its_temporary_file_and_retries_do_not_duplicate_it(world, monkeypatch, tmp_path):
+    """Boyut sınırı yok: büyük ek (canlıda 53 MB'lık zip) belleğe alınmadan temp dosyadan saklanır, özet/boyut doğru yazılır,
+    aynı evrak yeniden gelince çoğalmaz. Eşik düşürülerek "büyük dosya" yolu küçük veriyle denenir."""
+    from api.upload_stream import Upload
+
+    monkeypatch.setattr(office_public, "IN_MEMORY_PARSE_BYTES", 1024)
+    connection, alice, _, as_user = world
+    payload = b"PK" + os.urandom(200_000)
+
+    def send():
+        upload = Upload.from_stream(io.BytesIO(payload))
+        assert upload.small_bytes(1024) is None  # gerçekten "büyük" yoldayız
+        return office_public._store(
+            alice, file_name="ek-1.zip", data=upload, source="uyap-avukat-eklentisi", mime_type="application/zip",
+            overrides={"uyap_file_no": "2024/195537", "uyap_birim": "İstanbul Anadolu 1. İcra Dairesi", "evrak_id": "ek-büyük"},
+            dedupe_by_source=False, audit=AuditContext(uuid4()),
+        )
+
+    outcome, first = send()
+    assert outcome == "inserted"
+    with as_user(alice):
+        row = connection.execute("SELECT storage_path, size_bytes, checksum_sha256, case_id FROM office_case_documents WHERE id=%s", (first,)).fetchone()
+    assert row["size_bytes"] == len(payload) and row["case_id"] is not None
+    import hashlib
+
+    assert row["checksum_sha256"] == hashlib.sha256(payload).hexdigest()
+    assert (tmp_path / row["storage_path"]).read_bytes() == payload
+    files_before = sorted(p.name for p in tmp_path.rglob("*") if p.is_file())
+
+    assert send() == ("duplicate", first)
+    assert sorted(p.name for p in tmp_path.rglob("*") if p.is_file()) == files_before  # ikinci kopya yazılmadı, geçici dosya kalmadı
+
+
+@needs_db
 def test_same_file_number_in_different_courts_and_owners_is_never_merged(world):
     connection, alice, bob, as_user = world
     put(alice)

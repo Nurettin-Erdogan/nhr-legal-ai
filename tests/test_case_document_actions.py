@@ -16,6 +16,7 @@ USER, CASE, CLIENT, DOC = uuid4(), uuid4(), uuid4(), uuid4()
 
 def setup_client(monkeypatch, tmp_path, *, case=True, document=None, fail_insert=False, fail_commit=False):
     executed, events = [], []
+    opened = []
 
     class Connection:
         def execute(self, statement, params=None):
@@ -32,8 +33,10 @@ def setup_client(monkeypatch, tmp_path, *, case=True, document=None, fail_insert
     @contextmanager
     def connection(user_id):
         assert user_id == str(USER)
+        opened.append(1)
         yield Connection()
-        if fail_commit:
+        # Yükleme iki işlem açar (kısa erişim denetimi, sonra kayıt); "commit hatası" kaydı yazan ikinci işlemin sonunda olur.
+        if fail_commit and len(opened) >= 2:
             raise psycopg.OperationalError("commit failed")
 
     monkeypatch.setattr(office, "authenticated_database_connection", connection)
@@ -80,9 +83,9 @@ def test_inaccessible_case_never_stores_file(monkeypatch, tmp_path):
 @pytest.mark.parametrize("content,status", [(b"", 400), (b"12345", 413)])
 def test_upload_size_checked_before_write(monkeypatch, tmp_path, content, status):
     client, _, _ = setup_client(monkeypatch, tmp_path)
-    monkeypatch.setattr(office, "_MAX_UPLOAD_BYTES", 4)
+    monkeypatch.setenv("MAX_UPLOAD_BYTES", "4")  # işletmecinin isteğe bağlı üst sınırı; varsayılan: sınır yok
     assert upload(client, content).status_code == status
-    assert not list(tmp_path.rglob("*"))
+    assert not [p for p in tmp_path.rglob("*") if p.is_file()]
 
 
 def test_db_failure_cleans_only_its_new_file(monkeypatch, tmp_path):

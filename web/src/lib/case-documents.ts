@@ -3,7 +3,6 @@ import { inMemoryAccessToken } from "@/lib/auth-api";
 
 const API_BASE_URL = (import.meta.env.VITE_API_URL ?? "http://localhost:8766").replace(/\/$/, "");
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-export const MAX_CASE_FILE_SIZE = 50 * 1024 * 1024;
 export interface UnlinkedDocument {
   id: string;
   file_name: string;
@@ -13,7 +12,6 @@ export interface UnlinkedDocument {
 
 export function validateCaseFile(file: Pick<File, "size" | "name">): void {
   if (!file.size) throw new Error("Boş dosya yüklenemez.");
-  if (file.size > MAX_CASE_FILE_SIZE) throw new Error("Dosya 50 MB sınırını aşıyor.");
   if (!file.name.trim() || file.name.length > 255) throw new Error("Geçersiz dosya adı.");
 }
 

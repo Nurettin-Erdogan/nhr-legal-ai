@@ -23,12 +23,36 @@ export const ALLOWED_EXTENSIONS = [
   "rar",
   "xls",
   "xlsx",
+  "mp3",
+  "mp4",
+  "wav",
+  "m4a",
+  "wma",
+  "ogg",
+  "avi",
+  "wmv",
+  "mov",
+  "mpg",
+  "mpeg",
+  "3gp",
+  "mkv",
+  "bmp",
+  "gif",
+  "webp",
+  "rtf",
+  "ppt",
+  "pptx",
+  "ods",
+  "odp",
+  "csv",
+  "eml",
+  "msg",
+  "p7s",
+  "p7m",
+  "7z",
 ] as const;
 
-export const MAX_FILE_BYTES = 50 * 1024 * 1024; // bucket limiti ile aynı
-export const MAX_ARCHIVE_ENTRIES = 200;
-export const MAX_ARCHIVE_BYTES = 50 * 1024 * 1024;
-export const MAX_ARCHIVE_EXPANDED_BYTES = 200 * 1024 * 1024;
+// Belge sayısı ve boyutu için sınır yoktur; tarayıcı belleği yetmezse açıklayıcı bir hata gösterilir (readArchive).
 
 /** Elle içe aktarma ve eklenti aktarımı aynı UYAP kökenini taşır. */
 export const isUyapSource = (source: string | null | undefined) =>
@@ -138,21 +162,24 @@ export interface ArchiveEntry {
   error?: string;
 }
 
-/** UYAP'tan indirilen ZIP/EYP arşivini tarayıcıda açar. */
+const ARCHIVE_MEMORY_ERROR =
+  "Tarayıcı belleği bu arşivi açmaya yetmedi. Arşivi açmadan tek parça olarak yükleyin ya da belgeleri ayrı ayrı yükleyin.";
+
+/** UYAP'tan indirilen ZIP/EYP arşivini tarayıcıda açar. Boyut/sayı sınırı yoktur; yalnız tarayıcı belleği sınırlayıcıdır. */
 export async function readArchive(file: File): Promise<ArchiveEntry[]> {
-  if (file.size > MAX_ARCHIVE_BYTES) throw new Error("UYAP arşivi 50 MB sınırını aşıyor");
   const { unzipSync } = await import("fflate");
-  const buf = new Uint8Array(await file.arrayBuffer());
-  let count = 0;
-  let expanded = 0;
+  let buf: Uint8Array;
+  try {
+    buf = new Uint8Array(await file.arrayBuffer());
+  } catch {
+    throw new Error(ARCHIVE_MEMORY_ERROR);
+  }
   const rejected: ArchiveEntry[] = [];
   const seen = new Set<string>();
-  const unzipped = unzipSync(buf, {
+  let unzipped: Record<string, Uint8Array>;
+  try {
+    unzipped = unzipSync(buf, {
     filter(info) {
-      count++;
-      expanded += info.originalSize;
-      if (count > MAX_ARCHIVE_ENTRIES || expanded > MAX_ARCHIVE_EXPANDED_BYTES || info.originalSize > MAX_FILE_BYTES)
-        throw new Error("UYAP arşivi güvenli açma sınırını aşıyor");
       if (info.name.endsWith("/")) return false;
       if (seen.has(info.name)) throw new Error("Arşivde aynı yolda birden çok belge var; arşivi kontrol edin");
       seen.add(info.name);
@@ -162,7 +189,11 @@ export async function readArchive(file: File): Promise<ArchiveEntry[]> {
       }
       return true;
     },
-  });
+    });
+  } catch (error) {
+    if (error instanceof RangeError) throw new Error(ARCHIVE_MEMORY_ERROR);
+    throw error;
+  }
   const entries: ArchiveEntry[] = [...rejected];
   for (const [name, data] of Object.entries(unzipped)) {
     if (name.endsWith("/")) continue;
@@ -171,7 +202,6 @@ export async function readArchive(file: File): Promise<ArchiveEntry[]> {
       continue;
     }
     if (!isAllowedFile(name)) continue;
-    if (data.length > MAX_FILE_BYTES) continue;
     entries.push({ name, data });
   }
   return entries;

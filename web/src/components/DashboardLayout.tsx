@@ -1,6 +1,7 @@
 import { NavLink, useLocation, Link, useNavigate } from "@/lib/router-compat";
 import {
   LayoutDashboard,
+  Landmark,
   Scale,
   BookOpen,
   FileSearch,
@@ -58,6 +59,7 @@ import {
 const NAV_ICONS: Record<string, LucideIcon> = {
   "/dashboard": LayoutDashboard,
   "/dashboard/cases": Briefcase,
+  "/dashboard/execution": Landmark,
   "/dashboard/clients": Users,
   "/dashboard/tasks": ListChecks,
   "/dashboard/calendar": CalendarDays,
@@ -98,7 +100,6 @@ export const DashboardLayout = ({
   const location = useLocation();
   const incompleteScreen = [
     "/dashboard/appointments",
-    "/dashboard/execution",
     "/dashboard/leads",
     "/dashboard/modules",
     "/dashboard/payments",

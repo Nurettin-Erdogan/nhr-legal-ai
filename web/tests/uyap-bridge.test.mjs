@@ -11,7 +11,9 @@ function compile(relative) {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   });
   const module = { exports: {} };
-  new Function("require", "module", "exports", outputText)(require, module, module.exports);
+  // Bekleme yardımcısı tarayıcı çalışanı kullanır; testte olağan zamanlayıcıyla değiştirilir.
+  const resolve = (name) => (name === "@/lib/steady-timer" ? { steadySleep: (ms) => new Promise((done) => setTimeout(done, ms)) } : require(name));
+  new Function("require", "module", "exports", outputText)(resolve, module, module.exports);
   return module.exports;
 }
 
@@ -386,4 +388,15 @@ test("an oversized tree cannot claim that all evidence has been loaded", () => {
   assert.equal(tree.counts.matches, false);
   assert.equal(tree.counts.explained, false);
   assert.match(tree.counts.gapList[0], /20.000/);
+});
+
+test("detail completeness is checked against the parsed tables and empty unloaded panes", () => {
+  const payload = (tab) => ({ who: {}, tabs: [tab], complete: true });
+  const empty = { key: "hesap", label: "Dosya Hesabı", pairs: [], tables: [], complete: true };
+  assert.equal(bridge.parseDetail(payload(empty)).complete, false);
+  const table = { headers: ["Rol"], rows: [["Davacı"]], declared: 2, complete: true };
+  assert.equal(bridge.parseDetail(payload({ ...empty, tables: [table] })).complete, false);
+  assert.equal(bridge.parseDetail(payload({ ...empty, tables: [{ ...table, declared: 1 }] })).complete, true);
+  assert.equal(bridge.parseDetail(payload({ ...empty, tables: [{ ...table, rows: [], declared: 0 }] })).complete, true);
+  assert.equal(bridge.parseDetail(payload({ ...empty, tables: [{ ...table, rows: [], declared: null }] })).complete, false);
 });

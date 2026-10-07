@@ -28,15 +28,15 @@ test("every menu entry points at a real page and no page is listed twice", () =>
 
 test("the working pages are reachable from the menu and unfinished ones are not listed", () => {
   const listed = new Set(nav.NAV_ITEMS.map((item) => item.to));
-  for (const must of ["clients", "tasks", "calendar", "reminders", "document-analysis", "risk-analysis", "auto-summary", "case-law", "document-processing", "agent-research", "legislation"]) {
+  for (const must of ["clients", "tasks", "calendar", "reminders", "document-analysis", "risk-analysis", "auto-summary", "case-law", "document-processing", "agent-research", "legislation", "execution"]) {
     assert.ok(listed.has(`/dashboard/${must}`), `${must} menüde yok`);
   }
   // "henüz bağlı değil" sayfalar çalışıyormuş izlenimi vermesin
-  for (const stub of ["execution", "leads", "reports", "staff", "payments", "calls", "call-center", "modules"]) {
+  for (const stub of ["leads", "reports", "staff", "payments", "calls", "call-center", "modules"]) {
     assert.ok(!listed.has(`/dashboard/${stub}`), `${stub} menüde olmamalı`);
   }
   // Menüde olmayan her dashboard sayfası ya bilinçli olarak dışarıda ya da yönlendirme/alt sayfadır
-  const known = new Set(["index", "route", "appointments", "research", "semantic-search", "automation", "projects.index", "projects.$id", "cases.index", "cases.$id", "execution", "leads", "reports", "staff", "payments", "calls", "call-center", "modules"]);
+  const known = new Set(["index", "route", "appointments", "research", "semantic-search", "automation", "projects.index", "projects.$id", "cases.index", "cases.$id", "leads", "reports", "staff", "payments", "calls", "call-center", "modules"]);
   const unlisted = readdirSync(routesDir)
     .map((file) => file.replace(/^dashboard\./, "").replace(/\.tsx$/, ""))
     .filter((name) => !listed.has(`/dashboard/${name}`) && !known.has(name));

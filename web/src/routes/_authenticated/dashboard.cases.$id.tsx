@@ -6,6 +6,8 @@ import { CaseDocumentActions } from "@/components/CaseDocumentActions";
 import { CaseDocumentAsk } from "@/components/CaseDocumentAsk";
 import { CaseDocumentCompare } from "@/components/CaseDocumentCompare";
 import { CaseDocumentSummary } from "@/components/CaseDocumentSummary";
+import { UyapCaseDetail } from "@/components/UyapCaseDetail";
+import { DeadlineCalculator } from "@/components/DeadlineCalculator";
 import { CaseNotesEditor, CaseTaskComposer } from "@/components/CaseQuickActions";
 import { DocumentTrash } from "@/components/DocumentTrash";
 import { trashDocument } from "@/lib/document-trash";
@@ -16,8 +18,10 @@ import { db } from "@/lib/db";
 import { ArrowLeft, RefreshCw } from "lucide-react";
 
 /** Adresteki "?tab=…" değeri (genel aramadan gelen bağlantı) hangi sekmeyi açar. */
-const TAB_BY_PARAM: Record<string, "Evraklar" | "Görevler" | "Notlar" | "Takvim"> = {
+const TAB_BY_PARAM: Record<string, "Evraklar" | "Görevler" | "Notlar" | "Takvim" | "UYAP Bilgileri" | "Süreler"> = {
   evraklar: "Evraklar",
+  uyap: "UYAP Bilgileri",
+  sureler: "Süreler",
   gorevler: "Görevler",
   notlar: "Notlar",
   takvim: "Takvim",
@@ -160,6 +164,8 @@ const CaseDetail = () => {
             documentAsk={<CaseDocumentAsk key={id} caseId={id} />}
             documentCompare={<CaseDocumentCompare key={id} caseId={id} />}
             caseSummary={<CaseDocumentSummary key={id} caseId={id} />}
+            uyapDetail={<UyapCaseDetail key={id} caseId={id} />}
+            deadlines={<DeadlineCalculator key={id} caseId={id} onSaved={() => setRevision((n) => n + 1)} />}
             notesEditor={<CaseNotesEditor key={id} caseId={id} initial={data.record.notes} onSaved={() => setRevision((n) => n + 1)} />}
             taskComposer={<CaseTaskComposer key={id} caseId={id} onSaved={() => setRevision((n) => n + 1)} />}
             trashing={trashing}

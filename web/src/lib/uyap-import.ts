@@ -1,5 +1,5 @@
 import { importUyapDocument } from "@/lib/office-api";
-import { extOf, isAllowedFile, MAX_FILE_BYTES, readArchive, type ArchiveEntry } from "@/lib/uyap";
+import { extOf, isAllowedFile, readArchive, type ArchiveEntry } from "@/lib/uyap";
 
 export interface ImportResult {
   found: number;
@@ -21,13 +21,12 @@ export async function expandDroppedFiles(files: File[]): Promise<ArchiveEntry[]>
         entries.push(...(await readArchive(file)));
         continue;
       } catch (error) {
-        if (ext === "zip" || file.size > MAX_FILE_BYTES) throw error;
+        if (ext === "zip") throw error;
         const signature = new Uint8Array(await file.slice(0, 4).arrayBuffer());
         if (signature[0] === 0x50 && signature[1] === 0x4b) throw error;
       }
     }
     const error = !isAllowedFile(file.name) ? "Desteklenmeyen dosya türü"
-      : file.size > MAX_FILE_BYTES ? "Dosya 50 MB sınırını aşıyor"
       : !file.size ? "Boş dosya" : undefined;
     entries.push({ name: file.name, data: error ? new Uint8Array() : new Uint8Array(await file.arrayBuffer()), ...(error ? { error } : {}) });
   }
@@ -46,7 +45,7 @@ export async function importEntries(
     const entry = entries[i]!;
     try {
       if (entry.error) throw new Error(entry.error);
-      if (!entry.data.length || entry.data.length > MAX_FILE_BYTES) throw new Error("Boş veya çok büyük dosya");
+      if (!entry.data.length) throw new Error("Boş dosya");
       const response = await importUyapDocument(entry.name, entry.data, opts.syncRunId);
       if (response.duplicate) skipped++;
       else inserted++;

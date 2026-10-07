@@ -18,7 +18,7 @@ Gateway kullanılmaz. Üretim yerel modelle (DeepSeek/Ollama) yapılır.
 | --- | --- |
 | `POST /api/office/{tablo}` | Genel sorgu (select/insert/update/upsert/delete). Tablo ve sütunlar izin listesindedir. |
 | `POST /api/office/storage/upload`, `GET .../download`, `POST .../remove` | Dosya deposu (`<DOCUMENT_STORAGE_DIR>/office/<kullanıcı>/…`), yalnız kendi klasörü. |
-| `POST /api/office/cases/{case_id}/documents` | Multipart `file`: dava erişimini kontrol eder; belgeyi ve dava/müvekkil ilişkisini kaydeder (50 MB). |
+| `POST /api/office/cases/{case_id}/documents` | Multipart `file`: dava erişimini kontrol eder; belgeyi ve dava/müvekkil ilişkisini kaydeder (boyut sınırı yok; dosya diske akıtılır). |
 | `POST /api/office/cases/{case_id}/documents/{document_id}/link` | Sahibinin henüz davaya bağlanmamış belgesini bağlar; başka dava veya uyumsuz müvekkil için 409 döner. |
 | `POST /api/office-ai/run`, `/document`, `/petition` | Belge analizi, özet, risk, sözleşme, dilekçe üretimi. |
 | `POST /api/office-ai/ocr` | OCR (Tesseract + `tur` dil paketi kurulu olmalı; yoksa 503). |

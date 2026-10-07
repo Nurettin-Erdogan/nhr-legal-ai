@@ -19,7 +19,12 @@ ALLOWED_EXTENSIONS = frozenset(
     {"pdf", "udf", "odt", "docx", "doc", "txt", "html", "tif", "tiff", "jpg", "jpeg", "png", "xml", "eyp"}
     # ZIP ekleri güvenli sınırlar içinde indekslenir. Diğerleri yalnız saklanır.
     | {"zip", "rar", "xls", "xlsx"}
+    # UYAP eki olarak gelebilen ses/görüntü kaydı, imza, ofis ve arşiv türleri: yalnız saklanır, çalıştırılmaz ve içerik olarak sunulmaz.
+    | {"mp3", "mp4", "wav", "m4a", "wma", "ogg", "avi", "wmv", "mov", "mpg", "mpeg", "3gp", "mkv"}
+    | {"bmp", "gif", "webp", "rtf", "ppt", "pptx", "ods", "odp", "csv", "eml", "msg", "p7s", "p7m", "7z"}
 )
+# Yalnız eski JSON/base64 aktarım ucunda (anahtar gövdenin içinde olduğundan kimlik doğrulanmadan okunur) tek dosya üst sınırı.
+# Kimlik doğrulanmış çok parçalı yükleme uçlarında boyut sınırı yoktur (bkz. api/upload_stream.py).
 MAX_FILE_BYTES = 50 * 1024 * 1024
 
 _BIRIM_RE = re.compile(

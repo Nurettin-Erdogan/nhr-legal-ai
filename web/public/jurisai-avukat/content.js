@@ -366,22 +366,27 @@
 
   /** UYAP dosya penceresi önce "Taraf Bilgileri" ile açılır. Evraklar ancak
       bu sekmeye basıldıktan sonra AJAX ile geldiği için sekmeyi kendimiz açarız. */
-  function openEvrakTab(scope = document) {
+  function evrakTabOf(scope) {
     // Bootstrap sekme olayı bağlantıda dinlenir; onu saran li'ye tıklamak
     // bağlantının olayını tetiklemez ve gizli/eski evrak ağacını bırakabilir.
     const candidates = [...scope.querySelectorAll("a, button, [role='tab']")];
-    const tab = candidates.find((el) => {
+    return candidates.find((el) => {
       const text = textOf(el).toLocaleLowerCase("tr");
-      if (text !== "evrak") return false; // "Evrak Gönderme" sekmesine basma
+      if (!["evrak", "evraklar", "evrak bilgileri"].includes(text)) return false; // "Evrak Gönderme" sekmesine basma
       const rect = el.getBoundingClientRect();
       return rect.width > 0 && rect.height > 0;
     });
+  }
+  function openEvrakTab(scope = document, force = false) {
+    const tab = evrakTabOf(scope);
     if (!tab) return false;
+    const pane = detailPane(scope, detailPaneId(tab));
     const active =
       tab.classList.contains("active") ||
       tab.parentElement?.classList.contains("active") ||
       tab.getAttribute("aria-selected") === "true";
-    if (!active) tab.click();
+    // Eski active sınıfı görünür/yüklenmiş içerik değildir; kapalı pane yeniden etkinleştirilmelidir.
+    if (force || !active || (pane && !detailPaneShown(pane, scope))) tab.click();
     return true;
   }
 
@@ -887,26 +892,56 @@
   /** Evrak balonundaki (data-original-title ya da title) "Birim Evrak No": UYAP her sayfa yüklemesinde `evrak_id`'yi yeniden şifreler, bu numara değişmez. */
   const evrakNoOf = (span) =>
     (/Birim Evrak No\s*:?\s*(\d+)/i.exec(String(span.getAttribute("data-original-title") || span.getAttribute("title") || "").replace(/<[^>]+>/g, " ")) || [])[1] || "";
+  /** Kısa, deterministik özet (3 × 32 bit karıştırma, ~96 bit): kimliği eşzamanlı ve bellekte üretmek için; güvenlik amacı yoktur. */
+  function shortFingerprint(value) {
+    let h1 = 0xdeadbeef;
+    let h2 = 0x41c6ce57;
+    let h3 = 0x9e3779b9;
+    for (let i = 0; i < value.length; i += 1) {
+      const code = value.charCodeAt(i);
+      h1 = Math.imul(h1 ^ code, 2654435761);
+      h2 = Math.imul(h2 ^ code, 1597334677);
+      h3 = Math.imul(h3 ^ code, 2246822519);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h3 ^ (h3 >>> 13), 3266489909);
+    h3 = Math.imul(h3 ^ (h3 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return [h1, h2, h3].map((h) => (h >>> 0).toString(16).padStart(8, "0")).join("");
+  }
+  const tooltipOf = (span) =>
+    String(span.getAttribute("data-original-title") || span.getAttribute("title") || "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
   /**
-   * Evrağın KALICI kimliği (yüklemeler arasında değişmez; "zaten aktarıldı" denetimi ve yinelenen elemesi buna dayanır):
-   * evrak = birim evrak no, ek = üst evrakın düz `ana_evrak_id`si + "Ek N" başlığı. Dosyanın birimi de eklenir (başka mahkemede aynı numara olabilir).
-   * Bunlar yoksa (başka portal/sayfa) şifreli `evrak_id` son çare olarak kullanılır.
+   * Evrağın KALICI kimliği (yüklemeler ve OTURUMLAR arasında değişmez; "zaten aktarıldı" denetimi ve yinelenen elemesi buna dayanır):
+   *  - ek: üst evrakın düz `ana_evrak_id`si + "Ek N" başlığı;
+   *  - evrak: balondaki "Birim Evrak No";
+   *  - "Birim Evrak No"su BOŞ olan evrak (ör. Kapalı E-Tebliğ Mazbatası; canlıda ölçüldü 2026-10-06): balondaki öteki alanların (onay/gönderim
+   *    tarihi, kişi, gönderen dosya no/sayı, açıklama, tür, tip) ve başlığın özeti. Birebir aynı iki evrak olabilir; sıra numarası
+   *    `collectEvraklar`da eklenir.
+   * Dosyanın birimi de eklenir (başka mahkemede aynı numara olabilir). Bunların hiçbiri yoksa şifreli `evrak_id` son çaredir; o
+   * HER OTURUMDA değişir, bu yüzden `unstable` işaretlenir ve ağaç "eksiksiz" doğrulanamaz.
+   * @returns {{ id: string, kind: "ek" | "no" | "weak" | "raw" }}
    */
   function stableEvrakId(span, birim) {
     const title = textOf(span);
-    if (span.hasAttribute("ana_evrak_id")) return `ek:${span.getAttribute("ana_evrak_id")}:${title}@${birim}`;
+    if (span.hasAttribute("ana_evrak_id")) return { id: `ek:${span.getAttribute("ana_evrak_id")}:${title}@${birim}`, kind: "ek" };
     const no = evrakNoOf(span);
-    return no ? `ev:${no}@${birim}` : span.getAttribute("evrak_id");
+    if (no) return { id: `ev:${no}@${birim}`, kind: "no" };
+    const tip = tooltipOf(span);
+    if (tip) return { id: `nn:${shortFingerprint(`${tip}\u0001${title}`)}`, kind: "weak" };
+    return { id: span.getAttribute("evrak_id"), kind: "raw" };
   }
   /** Ağaçtaki evrakları klasör yoluyla listeler; "Son 20 Evrak" kısayolu ve aynı evrakın tekrarları (kalıcı kimliğe göre) elenir. */
   function collectEvraklar(dialog) {
     const byId = new Map();
     const { birim } = dosyaIdentity(dialog);
     let duplicates = 0; // aynı evrakın "Tüm Evraklar" altında birden çok klasörde görünmesi
+    const weakOrdinals = new Map(); // numarasız evrakta birebir aynı özet: ağaç sırasıyla 0, 1, ...
     for (const span of dialog.querySelectorAll("span.file[evrak_id]")) {
       const rawId = span.getAttribute("evrak_id");
       if (!rawId) continue;
-      const id = stableEvrakId(span, birim);
       const chain = [];
       const folderLabels = [];
       for (let li = span.closest("li")?.parentElement?.closest("li"); li; li = li.parentElement?.closest("li")) {
@@ -917,6 +952,16 @@
         }
       }
       const inRecent = chain.some((label) => /^Dosyaya Eklenen Son/i.test(label));
+      const identity = stableEvrakId(span, birim);
+      let id = identity.id;
+      if (identity.kind === "weak") {
+        // Birebir aynı özetli iki evrak (aynı gün aynı kişiye iki mazbata) tek sayılmasın: ağaç sırasına göre numaralanır. "Son 20"
+        // kısayol kopyaları ayrı sayılır; asıl ağaç varken zaten elenir ve aynı sıra numarasını alarak asıl evrakla birleşir.
+        const bucket = `${inRecent ? "r" : "f"}|${id}`;
+        const ordinal = weakOrdinals.get(bucket) || 0;
+        weakOrdinals.set(bucket, ordinal + 1);
+        id = `${id}#${ordinal}@${birim}`;
+      }
       const folders = chain
         .slice(1) // ilk öğe dosyanın kendisi (mahkeme + esas no); klasör yolu onun altından başlar
         .filter((label) => !/^Tüm Evraklar$/i.test(label) && !/^Dosyaya Eklenen Son/i.test(label))
@@ -929,7 +974,7 @@
       // UYAP klasör adının yanına kendi sayısını yazar ("Kesinleşme Şerhleri (2)"): bulduğumuz sayıyla karşılaştırmak için.
       const nearest = folderLabels.filter((l) => !/^Tüm Evraklar$/i.test(l) && !/^Dosyaya Eklenen Son/i.test(l)).pop() || "";
       const declared = isEk ? null : Number((/\((\d+)\)\s*$/.exec(nearest) || [])[1]) || null;
-      const entry = { id, rawId, span, title: textOf(span), folders, typeName, inRecent, isEk, declared };
+      const entry = { id, rawId, span, title: textOf(span), folders, typeName, inRecent, isEk, declared, unstable: identity.kind === "raw" };
       const existing = byId.get(id);
       if (existing && !existing.inRecent && !inRecent) duplicates += 1;
       if (!existing || (existing.inRecent && !inRecent)) byId.set(id, entry);
@@ -941,6 +986,7 @@
     const full = all.filter((entry) => !entry.inRecent);
     const result = full.length ? full : all;
     result.withoutId = withoutId; // evrak_id'si olmayan öğeler çekilemez; sayısı seçim penceresinde gösterilir
+    result.unstableId = result.filter((entry) => entry.unstable).length;
     result.duplicates = duplicates;
     result.folderStats = folderStats(dialog);
     result.unopened = [...dialog.querySelectorAll("li.expandable")].filter((li) => li.querySelector(":scope > ul")).length;
@@ -949,7 +995,7 @@
     return result;
   }
   function dosyaIdentity(dialog) {
-    const title = textOf(dialog.querySelector("h1,h2,h3,h4,.modal-title"));
+    const title = textOf(dialog.querySelector(".modal-title") || dialog.querySelector("h1,h2,h3,h4"));
     return { esas: esasNoFrom(title), birim: (title.split(" - ")[1] || courtFrom(title) || "").trim().slice(0, 160) };
   }
 
@@ -987,6 +1033,7 @@
       explained,
       gapList,
       withoutId: items.withoutId || 0,
+      unstableId: items.unstableId || 0,
       unopened: items.unopened || 0,
       domLeaves: items.domLeaves ?? null,
       emptyOpened: items.emptyOpened || 0,
@@ -1201,7 +1248,7 @@
         birim: who.birim,
         klasorYolu: item.folders.join(" / "),
       };
-      const itemOnlyError = (text) => /Desteklenmeyen dosya türü|önizlemede vermiyor|çok büyük|zaten/i.test(text || "");
+      const itemOnlyError = (text) => /Desteklenmeyen dosya türü|önizlemede vermiyor|çok büyük|sınırını aşıyor|zaten/i.test(text || "");
       await chrome.runtime.sendMessage({ type: "JURISAI_PULL_ARM", evrakId: item.id });
       // Hızlı yol: evrağın adresi sayfanın kendi bilgilerinden kurulur, tıklama ve ön izlemenin yüklenmesi beklenmez
       // (canlıda evrak başına ~2,2 sn yakalama + 1,5 sn bekleme → ~0,5 sn). Adres kurulamaz ya da belge gelmezse tıklama yoluna dönülür.
@@ -1482,7 +1529,14 @@
     redraw.observe(document.body, { childList: true, subtree: true });
     try {
       form.button.click();
-      if (!(await waitUntil(() => xhrDone > since && redrawn, 20000, 40)))
+      if (!(await waitUntil(() => {
+        if (!(xhrDone > since && redrawn)) return false;
+        const table = dosyaTable();
+        if (!table || detailLoading(table.closest(".dataTables_wrapper") || table)) return false;
+        // Başarısız AJAX tabloyu yalnız temizleyebilir. Tbody mutasyonu tek başına sonuç değildir:
+        // açılabilir satır ya da portalın açık boş-sonuç hücresi gelmiş olmalı.
+        return readDosyaRows(table, textOf(option)).length > 0 || !!table.querySelector("tbody td.dataTables_empty");
+      }, 20000, 40)))
         return { ok: false, error: `${textOf(option)} sorgusu yanıt vermedi veya tablo yenilenmedi` };
       return { ok: true };
     } finally { redraw.disconnect(); }
@@ -1522,7 +1576,9 @@
     if (!form) return null;
     const label = type || key.split("|")[0];
     const option = [...form.select.options].find((candidate) => sameText(textOf(candidate), label));
-    if (!option || !(await queryDosyaType(form, option)).ok) return null;
+    if (!option) return null;
+    const queried = await queryDosyaType(form, option);
+    if (!queried.ok) throw Object.assign(new Error(queried.error), { code: "query_failed" });
     const table = dosyaTable();
     if (table) await showAllRows(table);
     if (!table) return null;
@@ -1619,7 +1675,7 @@
      JurisAI sayfası bir dosyanın evrak ağacını ister (TREE) ve seçtiklerinin çekilmesini başlatır (PULL). İkisi de hemen döner,
      sayfa ilerlemeyi STATUS ile yoklar. Durum bu içerik betiğinde (UYAP sekmesinde) tutulur: arka plan betiği yeniden başlasa da
      kaybolmaz. Kullanıcı JurisAI sekmesindeyken UYAP sekmesi gizli kalır; beklemeler bu yüzden `sleep` ile kısılmadan yapılır. */
-  const bridge = { job: null, tree: null, run: null };
+  const bridge = { job: null, tree: null, run: null, detail: null };
   const newJobId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const serializeItem = ({ id, title, folders, typeName, isEk, declared }) => ({ id, title, folders, typeName, isEk, declared });
 
@@ -1647,20 +1703,34 @@
       const row = await findDosyaRow(key, type);
       if (!row) return false;
       row.button.click();
-      if (await waitUntil(() => !!activeRoot(), 6000)) return true;
+      if (await waitUntil(() => {
+        const dialog = activeRoot();
+        if (!dialog) return false;
+        const who = dosyaIdentity(dialog);
+        return who.esas && sameText(who.esas, row.esas) && (!row.birim || sameText(who.birim, row.birim));
+      }, 6000)) return true;
       await sleep(1200);
     }
     return false;
   }
   /** Listede anahtarı verilen dosyayı açar (başka bir dosya açıksa önce kapatır) ve Evrak sekmesine geçer. */
-  async function openDosyaForTree(key, type) {
+  async function openDosyaForTree(key, type, { tree = true } = {}) {
+    // Başka yargı türünü sorgulamadan önce modal kapanmalı: açık modal varken arkadaki listeyi sorgulamak portalın
+    // AJAX durumunu bozabilir. Aynı satır görünüyorsa aynı dosya penceresi aşağıda yeniden kullanılabilir.
+    let dialog = activeRoot();
+    if (dialog && key && dosyaQueryForm() && !dosyaRows().some((entry) => entry.key === key)) {
+      if (!(await closeDialog(dialog)))
+        return { ok: false, code: "cannot_close", error: "UYAP'ta açık olan dosya penceresi kapatılamadı: pencereyi kapatıp tekrar dene." };
+      dialog = null;
+      await sleep(700);
+    }
     const row = key ? await findDosyaRow(key, type) : null;
     if (key && !row) return { ok: false, code: "stale", error: "UYAP'taki liste değişmiş: dosyaları yeniden listele." };
-    let dialog = activeRoot();
+    dialog = activeRoot();
     if (dialog && row) {
       const open = dosyaIdentity(dialog);
       if (open.esas && sameText(open.esas, row.esas) && (!row.birim || sameText(open.birim, row.birim))) {
-        openEvrakTab(dialog);
+        if (tree) openEvrakTab(dialog);
       } else {
         if (!(await closeDialog(dialog)))
           return { ok: false, code: "cannot_close", error: "UYAP'ta açık olan dosya penceresi kapatılamadı: pencereyi kapatıp tekrar dene." };
@@ -1670,12 +1740,27 @@
     }
     if (!dialog) {
       if (!row) return { ok: false, code: "stale", error: "UYAP'taki liste değişmiş: dosyaları yeniden listele." };
-      if (!(await clickOpenWithRetry(key, type))) return { ok: false, error: "UYAP'ta dosya penceresi açılamadı." };
+      if (!(await clickOpenWithRetry(key, type))) return { ok: false, code: "open_failed", error: "UYAP'ta istenen dosya penceresi açılamadı veya kimliği doğrulanamadı." };
       await sleep(600);
       dialog = activeRoot();
-      openEvrakTab(dialog);
+      if (tree) openEvrakTab(dialog);
     }
-    const hasTree = await waitUntil(() => !!dialog.querySelector("span.file[evrak_id], li.expandable"), 20000);
+    if (!tree) return { ok: true, dialog };
+    // Sekmeye ilk tıklama Bootstrap/AJAX geçişinde yutulabilir. Görünür pane ve bağlı dosya penceresi
+    // doğrulanmadan gizli/eski ağacı kabul etme; yalnız SALT OKUNUR evrak sekmesini bir kez daha etkinleştir.
+    let hasTree = false;
+    for (let attempt = 0; attempt < 2 && !hasTree && !pulling?.stop; attempt += 1) {
+      if (attempt) openEvrakTab(dialog, true);
+      hasTree = await waitUntil(() => {
+        if (pulling?.stop) return true; // aşağıdaki iptal denetimine hemen dön
+        if (!dialog.isConnected || activeRoot() !== dialog) return false;
+        const tab = evrakTabOf(dialog);
+        const pane = tab && detailPane(dialog, detailPaneId(tab));
+        if (pane && !detailPaneShown(pane, dialog)) return false;
+        return !!dialog.querySelector("span.file[evrak_id], li.expandable");
+      }, 10000);
+    }
+    if (pulling?.stop) return { ok: false, code: "aborted", error: "İptal edildi." };
     if (!hasTree) {
       const empty = /dosyaya ait evrak bilgisi bulunamadı/i.test(dialog.textContent || "");
       return {
@@ -1683,10 +1768,287 @@
         code: empty ? "empty_tree" : "no_tree",
         error: empty
           ? "UYAP bu dosyada evrak bilgisi bulunmadığını bildiriyor."
-          : "Bu dosyanın evrak ağacı okunamadı; UYAP sayfasını kontrol edip yeniden dene.",
+          : "Bu dosyanın evrak sekmesi/ağacı iki denemede yüklenmedi; UYAP penceresindeki Evrak sekmesini ve uyarıları kontrol et.",
       };
     }
     return { ok: true, dialog };
+  }
+  /* ---------- Dosya detayı: dosya bilgileri, dosya hesabı, taraflar, safahat, tahsilat/reddiyat ----------
+     Dosya penceresinin evrak dışındaki sekmeleri SALT OKUNUR okunur (gerçek portalda ölçüldü, 2026-10-06): sekmeye geçilir, tablolar
+     "Tümü" sayfa boyutuyla ya da sayfa sayfa tamamen okunur, UYAP'ın kendi "N Kayıttan" sayısıyla karşılaştırılır. "Evrak Gönderme" ve
+     "Ödeme" sekmelerine (form/ödeme düğmeleri) ve "Borç Öde" gibi düğmelere hiç dokunulmaz. Değerler yorumlanmaz, UYAP'ın yazdığı
+     metin olarak saklanır. */
+  const DETAIL_TABS = [
+    { key: "bilgiler", label: "dosya bilgileri", paneId: "dosya_ayrinti_bilgileri_tab" },
+    { key: "hesap", label: "dosya hesabı", paneId: "dosya_hesap_bilgileri_tab" },
+    { key: "taraflar", label: "taraf bilgileri", paneId: "dosya_taraf_bilgileri_tab" },
+    { key: "safahat", label: "safahat", paneId: "dosya_safahat_bilgileri_tab", press: "#btnQuerySafahatInfo" },
+    { key: "tahsilat", label: "tah./red. bilgileri", paneId: "dosya_tahsilat_reddiyat_bilgileri_tab" },
+  ];
+  const TAB_LINK_SELECTOR = "a[data-toggle='tab'], [data-bs-toggle='tab'], ul.nav-tabs a, ul.nav-pills a, [role='tab']";
+  // Hedef bir CSS seçicisi gibi çalıştırılmaz: yalnız dosya penceresinin içindeki tam id eşleşmesi kullanılır.
+  function detailPaneId(link) {
+    const target = link.getAttribute("data-target") || link.getAttribute("data-bs-target") || link.getAttribute("href") || "";
+    return target.startsWith("#") && target.length > 1 ? target.slice(1) : link.getAttribute("aria-controls") || "";
+  }
+  function detailPane(dialog, id) {
+    return [...dialog.querySelectorAll("[id]")].find((el) => el.id === id) || null;
+  }
+  // Float/absolute çocuklar veya display:contents yüzünden açık pane'in kendi kutusu 0 px olabilir.
+  // Görünürlüğü zorlamadan tüm üst öğelerin CSS durumunu kontrol et; gizli üst öğeyi asla açık sayma.
+  function detailPaneShown(pane, dialog) {
+    if (!pane?.isConnected) return false;
+    const boundary = dialog instanceof Document ? dialog.documentElement : dialog;
+    for (let el = pane; el; el = el.parentElement) {
+      const style = getComputedStyle(el);
+      if (el.hidden || style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") return false;
+      if (el === boundary) return true;
+    }
+    return false;
+  }
+  const detailLoading = (pane) => [pane, ...pane.querySelectorAll(".dataTables_processing, [aria-busy='true']")].some((el) =>
+    (el.getAttribute("aria-busy") === "true" || el.classList.contains("dataTables_processing")) && detailPaneShown(el, pane));
+  const explicitEmptyDetail = (pane) => /kayıt (?:yok|bulunamadı)|bilgi(?:si)? bulunamadı|herhangi bir veri mevcut değil/.test(trLower(textOf(pane)));
+  function confirmedEmptyTable(table) {
+    const cells = [...table.querySelectorAll("tbody td.dataTables_empty")];
+    return cells.some(explicitEmptyDetail) && readDetailTable(table).rows.length === 0 && !detailLoading(table);
+  }
+  const declaredTableRows = (table) => declaredRows(table.closest(".dataTables_wrapper")) ?? (confirmedEmptyTable(table) ? 0 : null);
+  function assertDetailActive(dialog) {
+    if (pulling?.stop) throw Object.assign(new Error("İptal edildi."), { code: "aborted" });
+    if (!dialog.isConnected || !visibleElement(dialog)) throw Object.assign(new Error("Dosya penceresi kapandı; bilgiler okunamadı."), { code: "no_dialog" });
+  }
+  const cellText = (el) => textOf(el).replace(/\s+/g, " ").slice(0, 4000);
+  const isHiddenColumn = (el) => el.classList.contains("hidden") || el.classList.contains("hide") || el.style.display === "none";
+  const hasActionControl = (el) => !!el.querySelector("button, input[type='button'], a.btn");
+
+  /** DataTables'ın "N Kayıttan M - K Arası Kayıtlar" yazısından UYAP'ın söylediği toplam; yazı yoksa null. */
+  function declaredRows(wrapper) {
+    const info = textOf(wrapper?.querySelector(".dataTables_info"));
+    const found = /([\d.]+)\s+kay[ıi]ttan/i.exec(info);
+    if (found) return Number(found[1].replace(/\./g, ""));
+    if (/kay[ıi]t yok/i.test(info)) return 0;
+    return null;
+  }
+  const tableTitle = (table) => {
+    const holder = table.closest(".panel, .box, .portlet, fieldset, .card, .widget-box");
+    const head = holder?.querySelector(".panel-heading, .box-title, .portlet-title, legend, .card-header, .widget-title");
+    return textOf(head || table.querySelector("caption")).slice(0, 80);
+  };
+  /** Bir tablonun görünen (gizli sütunsuz) başlık ve hücrelerini okur; evrak/etkileşim satırı yoktur. */
+  function readDetailTable(table) {
+    const headRow = table.querySelector("thead tr");
+    const headCells = headRow ? [...headRow.children] : [];
+    const columns = headCells.map((th, index) => ({ th, index })).filter(({ th }) => !isHiddenColumn(th));
+    const headers = columns.map(({ th }) => cellText(th));
+    const rows = [];
+    for (const tr of table.querySelectorAll("tbody tr")) {
+      if (tr.querySelector("td.dataTables_empty")) continue;
+      const tds = [...tr.children];
+      const picked = headCells.length ? columns.map(({ index }) => tds[index]) : tds.filter((td) => !isHiddenColumn(td));
+      // Düğme taşıyan hücre ("Detay" gibi eylem sütunu) veri değildir: düğme yazısı değer diye saklanmaz.
+      rows.push(picked.map((td) => (td && !hasActionControl(td) ? cellText(td) : "")));
+    }
+    return { headers, rows };
+  }
+  /** DataTables'ın AJAX ile dolmasını bekler: "N Kayıttan" yazısı, satır sayısı ve boşluk durumu iki turda değişmeden kalmalı. */
+  async function settleTable(table) {
+    const wrapper = table.closest(".dataTables_wrapper");
+    if (!wrapper) return table.isConnected && !detailLoading(table);
+    let last = "";
+    for (let i = 0; i < 40; i += 1) {
+      if (pulling?.stop) throw Object.assign(new Error("İptal edildi."), { code: "aborted" });
+      const state = `${declaredTableRows(table)}|${textOf(table.querySelector("tbody"))}`;
+      if (table.isConnected && !detailLoading(wrapper) && declaredTableRows(table) !== null && state === last && i >= 2) return true;
+      last = state;
+      await sleep(500);
+    }
+    return false;
+  }
+  /** Sayfa boyutunu "Tümü"ne alır; olmazsa sayfaları gezer. Okunan satırların UYAP'ın sayısıyla uyuşup uyuşmadığını da döndürür. */
+  async function readAllDetailRows(table, problems, label) {
+    const wrapper = table.closest(".dataTables_wrapper");
+    let settled = await settleTable(table);
+    const length = wrapper?.querySelector("select[name$='_length']");
+    if (length) {
+      const all = [...length.options].find((option) => option.value === "-1") || [...length.options].sort((a, b) => Number(b.value) - Number(a.value))[0];
+      if (all && length.value !== all.value) {
+        length.value = all.value;
+        length.dispatchEvent(new Event("change", { bubbles: true }));
+        await sleep(700);
+        settled = await settleTable(table);
+      }
+    }
+    const declared = declaredTableRows(table);
+    let result = readDetailTable(table);
+    const signature = () => readDetailTable(table).rows.map((row) => row.join("\u0001")).join("\n");
+    if (declared !== null && result.rows.length < declared) {
+      // Sayfa boyutu "Tümü" olmadı: sayfa sayfa gez (her sayfa ayrı okunur, tekrar eden sayfa durdurur).
+      const collected = [];
+      const seen = new Set();
+      for (let page = 0; page < 500; page += 1) {
+        const sig = signature();
+        if (seen.has(sig)) break;
+        seen.add(sig);
+        collected.push(...readDetailTable(table).rows);
+        const next = wrapper?.querySelector(".paginate_button.next:not(.disabled)");
+        if (!next || collected.length >= declared) break;
+        (next.querySelector("a") || next).click();
+        if (!(await waitUntil(() => signature() !== sig, 8000))) {
+          problems.push(`${label}: sonraki sayfa yüklenmedi.`);
+          break;
+        }
+        if (!(await settleTable(table))) { settled = false; break; }
+      }
+      result = { headers: result.headers, rows: collected };
+    }
+    const complete = settled && (declared === null ? result.rows.length > 0 : result.rows.length === declared);
+    if (!settled) problems.push(`${label}: tablo yüklemesi veya kayıt sayısı doğrulanamadı.`);
+    else if (!complete) problems.push(`${label}: UYAP ${declared ?? "belirsiz"} kayıt yazıyor, ${result.rows.length} okundu.`);
+    return { ...result, declared, complete };
+  }
+  /** İki sütunlu "etiket: değer" tablosu (dosya bilgileri, dosya hesabı). Düğme taşıyan satır (ör. "Borç Öde") okunmaz. */
+  function readPairs(pane) {
+    const pairs = [];
+    for (const table of pane.querySelectorAll("table")) {
+      if (table.querySelector("thead th")) continue;
+      for (const tr of table.querySelectorAll("tbody tr, tr")) {
+        const tds = [...tr.children].filter((cell) => !isHiddenColumn(cell));
+        if (tds.length < 2 || tds.some(hasActionControl)) continue;
+        const label = cellText(tds[0]);
+        if (label && !pairs.some((pair) => pair.label === label)) pairs.push({ label, value: cellText(tds[1]) });
+      }
+    }
+    return pairs;
+  }
+  async function readDetailTab(dialog, spec, problems) {
+    assertDetailActive(dialog);
+    const link = [...dialog.querySelectorAll(TAB_LINK_SELECTOR)].find((el) => visibleElement(el) && (detailPaneId(el) === spec.paneId || trLower(textOf(el)) === spec.label));
+    if (!link) return null; // bu dosya türünde bu sekme yok
+    link.click();
+    const paneId = detailPaneId(link) || spec.paneId;
+    const opened = await waitUntil(() => {
+      assertDetailActive(dialog);
+      const current = detailPane(dialog, paneId);
+      return detailPaneShown(current, dialog);
+    }, 8000);
+    if (!opened) {
+      problems.push(`${textOf(link)}: sekme açılmadı.`);
+      return { key: spec.key, label: textOf(link), pairs: [], tables: [], complete: false };
+    }
+    let pane = detailPane(dialog, paneId);
+    await sleep(500); // sekme içeriği AJAX ile dolar
+    if (spec.press) {
+      const button = pane.querySelector(spec.press);
+      if (button) {
+        // Eski tablo ekranda kalabilir: yalnız eski satırın varlığı değil yeni sorgunun çizimi de görülmeli.
+        let redrawn = false;
+        const observer = new MutationObserver((records) => {
+          if (records.some((record) => {
+            const el = record.target.nodeType === 1 ? record.target : record.target.parentElement;
+            return el && !el.closest(".jurisai-toolbar, .jurisai-send-btn") && (el.closest("tbody, .dataTables_info") ||
+              [...record.addedNodes].some((node) => node instanceof Element && (node.matches("table, tbody, .dataTables_wrapper, .dataTables_empty") || node.querySelector("table, tbody, .dataTables_empty"))));
+          })) redrawn = true;
+        });
+        observer.observe(pane, { childList: true, subtree: true, characterData: true });
+        let drawn;
+        try {
+          button.click();
+          drawn = await waitUntil(() => {
+            assertDetailActive(dialog);
+            pane = detailPane(dialog, paneId);
+            if (!pane || !redrawn || detailLoading(pane)) return false;
+            return [...pane.querySelectorAll("table")].some((table) => declaredTableRows(table) !== null);
+          }, 30000);
+        } finally { observer.disconnect(); }
+        if (!drawn) {
+          problems.push(`${textOf(link)}: sorgu sonucu gelmedi.`);
+          return { key: spec.key, label: textOf(link), pairs: [], tables: [], complete: false };
+        }
+        await sleep(400);
+      }
+    } else {
+      await waitUntil(() => {
+        assertDetailActive(dialog);
+        pane = detailPane(dialog, paneId);
+        return pane && !detailLoading(pane) && (pane.querySelector("table tbody tr") || explicitEmptyDetail(pane));
+      }, 10000);
+    }
+    assertDetailActive(dialog);
+    pane = detailPane(dialog, paneId);
+    if (!pane || detailLoading(pane)) return { key: spec.key, label: textOf(link), pairs: [], tables: [], complete: false };
+    const pairs = readPairs(pane);
+    const tables = [];
+    let complete = true;
+    for (const table of pane.querySelectorAll("table")) {
+      if (!table.querySelector("thead th")) continue; // etiket/değer tablosu yukarıda okundu
+      const title = tableTitle(table);
+      const read = await readAllDetailRows(table, problems, `${textOf(link)}${title ? ` / ${title}` : ""}`);
+      if (!read.complete) complete = false;
+      tables.push({ title, headers: read.headers, rows: read.rows, declared: read.declared, complete: read.complete });
+    }
+    if (!pairs.length && !tables.length) {
+      if (explicitEmptyDetail(pane)) tables.push({ title: "", headers: [], rows: [], declared: 0, complete: true });
+      else {
+        complete = false;
+        problems.push(`${textOf(link)}: içerik yüklenmedi; boş sonuç doğrulanamadı.`);
+      }
+    }
+    return { key: spec.key, label: textOf(link), pairs, tables, complete };
+  }
+  /** Açık dosya penceresinin evrak dışı bilgileri; her sekme ayrı raporlanır, biri okunamazsa diğerleri yine gelir. */
+  async function readDosyaDetail(dialog, onPhase = () => {}) {
+    const problems = [];
+    const tabs = [];
+    for (const spec of DETAIL_TABS) {
+      onPhase(`${spec.label} okunuyor`);
+      try {
+        let tab;
+        let tabProblems = [];
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          assertDetailActive(dialog);
+          tabProblems = [];
+          tab = await readDetailTab(dialog, spec, tabProblems);
+          if (!tab || tab.complete) break;
+          if (attempt === 0) {
+            onPhase(`${spec.label} yeniden okunuyor`);
+            await sleep(2000);
+          }
+        }
+        problems.push(...tabProblems);
+        if (tab) tabs.push(tab);
+      } catch (error) {
+        if (error?.code === "aborted" || error?.code === "no_dialog") throw error;
+        problems.push(`${spec.label}: ${error?.message || "okunamadı"}`);
+        tabs.push({ key: spec.key, label: spec.label, pairs: [], tables: [], complete: false });
+      }
+    }
+    return { tabs, problems: problems.slice(0, 12), complete: tabs.length > 0 && tabs.every((tab) => tab.complete) };
+  }
+  function startDetailJob(key, type) {
+    if (listing) return { ok: false, code: "busy", error: "Dosya listesi taranıyor; bitince tekrar dene." };
+    if (pulling) return { ok: false, code: "busy", error: "UYAP sekmesinde bir işlem sürüyor; bitince tekrar dene." };
+    if (!key && !activeRoot()) return { ok: false, code: "no_dialog", error: "UYAP'ta açık bir dosya yok." };
+    const job = { id: newJobId(), kind: "detail", state: "running", phase: "Dosya açılıyor", startedAt: Date.now() };
+    bridge.job = job;
+    bridge.detail = null;
+    pulling = { stop: false };
+    (async () => {
+      const opened = key ? await openDosyaForTree(key, type, { tree: false }) : { ok: true, dialog: activeRoot() };
+      if (!opened.ok) throw Object.assign(new Error(opened.error), { code: opened.code });
+      const detail = await readDosyaDetail(opened.dialog, (phase) => {
+        job.phase = phase;
+      });
+      bridge.detail = { who: dosyaIdentity(opened.dialog), ...detail };
+      Object.assign(job, { state: "done", phase: "Hazır", count: detail.tabs.length, finishedAt: Date.now() });
+    })()
+      .catch((error) =>
+        Object.assign(job, { state: "error", error: error.message || "bilinmeyen hata", code: error.code, finishedAt: Date.now() }),
+      )
+      .finally(() => {
+        pulling = null;
+      });
+    return { ok: true, jobId: job.id };
   }
   function startTreeJob(key, type) {
     if (listing) return { ok: false, code: "busy", error: "Dosya listesi taranıyor; bitince tekrar dene." };
@@ -1745,10 +2107,11 @@
       });
     return { ok: true, jobId: job.id, total: items.length };
   }
-  function jobStatus(jobId, withTree) {
+  function jobStatus(jobId, withTree, withDetail) {
     if (!bridge.job || bridge.job.id !== jobId) return { ok: false, code: "unknown_job", error: "Bu iş bu sekmede yok." };
     const out = { ok: true, job: { ...bridge.job } };
     if (bridge.job.kind === "pull" && bridge.run) out.run = JSON.parse(JSON.stringify(bridge.run));
+    if (withDetail && bridge.job.kind === "detail" && bridge.detail) out.detail = JSON.parse(JSON.stringify(bridge.detail));
     if (withTree && bridge.job.kind === "tree" && bridge.tree) {
       out.tree = {
         who: bridge.tree.who,
@@ -1757,6 +2120,15 @@
         known: bridge.tree.known,
         knownChecked: bridge.tree.knownChecked,
       };
+    }
+    return out;
+  }
+  /** Bu sekmede o an süren iş (JurisAI sayfası yenilendiğinde ya da yeniden açıldığında süren aktarıma yeniden bağlanabilsin). */
+  function currentJob() {
+    const out = { ok: true, busy: !!(listing || pulling), listing: !!listing, job: null };
+    if (bridge.job && bridge.job.state === "running") {
+      out.job = { ...bridge.job };
+      if (bridge.job.kind === "pull" && bridge.run) out.run = JSON.parse(JSON.stringify(bridge.run));
     }
     return out;
   }
@@ -2021,7 +2393,7 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     // Kayıt yalnız üst çerçevede tutulur; iç çerçeveler (ön izleme iframe'i vb.) "kayıt yok" yanıtıyla araya girmesin.
     if (
-      /^JURISAI_(RECORD_(START|STOP)|PULL_(DOSYA|STOP|PROBE|IDS)|LIST_DOSYALAR|OPEN_DOSYA|TREE|JOB_STATUS|BRIDGE_STOP)$/.test(message?.type || "") &&
+      /^JURISAI_(RECORD_(START|STOP)|PULL_(DOSYA|STOP|PROBE|IDS)|LIST_DOSYALAR|OPEN_DOSYA|TREE|DETAIL|JOB_STATUS|CURRENT_JOB|BRIDGE_STOP)$/.test(message?.type || "") &&
       window !== window.top
     )
       return false;
@@ -2029,12 +2401,20 @@
       sendResponse(startTreeJob(String(message.key || ""), String(message.yargiTuru || "")));
       return true;
     }
+    if (message?.type === "JURISAI_DETAIL") {
+      sendResponse(startDetailJob(String(message.key || ""), String(message.yargiTuru || "")));
+      return true;
+    }
     if (message?.type === "JURISAI_PULL_IDS") {
       sendResponse(startPullJob(message.ids, message.mode));
       return true;
     }
     if (message?.type === "JURISAI_JOB_STATUS") {
-      sendResponse(jobStatus(String(message.jobId || ""), !!message.withTree));
+      sendResponse(jobStatus(String(message.jobId || ""), !!message.withTree, !!message.withDetail));
+      return true;
+    }
+    if (message?.type === "JURISAI_CURRENT_JOB") {
+      sendResponse(currentJob());
       return true;
     }
     if (message?.type === "JURISAI_BRIDGE_STOP") {
@@ -2050,7 +2430,7 @@
     if (message?.type === "JURISAI_OPEN_DOSYA") {
       openDosyaByKey(String(message.key || ""), String(message.yargiTuru || ""))
         .then(sendResponse)
-        .catch((error) => sendResponse({ ok: false, error: error.message || "bilinmeyen hata" }));
+        .catch((error) => sendResponse({ ok: false, code: error.code, error: error.message || "bilinmeyen hata" }));
       return true;
     }
     if (message?.type === "JURISAI_PULL_PROBE") {

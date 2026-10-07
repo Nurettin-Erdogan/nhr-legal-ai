@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
 import {
   EXTENSION_CHANGED_EVENT,
   describeListFailure,
@@ -9,11 +10,15 @@ import {
   listUyapDosyalari,
   openUyapDosya,
   otherCells,
+  currentJob,
+  stopJob,
   type BridgeDosya,
-  type DosyaListe,
+  type CurrentJob,
   type ExtensionStatus,
 } from "@/lib/uyap-bridge";
 import { UyapDosyaPanel } from "@/components/UyapDosyaPanel";
+import { UyapSyncAll } from "@/components/UyapSyncAll";
+import { getSyncState, readResume, resumeIfInterrupted, setListe, subscribeSync } from "@/lib/uyap-sync-store";
 import { toast } from "sonner";
 import { ExternalLink, FolderOpen, Loader2, RefreshCw, ShieldCheck } from "lucide-react";
 
@@ -32,11 +37,14 @@ export const UyapDosyalarim = () => {
   const [extension, setExtension] = useState<ExtensionStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<{ message: string; code?: string } | null>(null);
-  const [liste, setListe] = useState<DosyaListe | null>(null);
+  // Liste depoda durur: başka sayfaya geçip dönünce yeniden taramak gerekmez.
+  const liste = useSyncExternalStore(subscribeSync, () => getSyncState().liste, () => getSyncState().liste);
   const [filter, setFilter] = useState("");
   const [opening, setOpening] = useState<string | null>(null);
   const [panel, setPanel] = useState<BridgeDosya | null>(null);
   const [listPage, setListPage] = useState(0);
+  // "Tüm dosyaları aktar" sürerken liste yenilenmez ve tek dosya işlemleri açılmaz (UYAP sekmesi aynı anda tek iş yürütür).
+  const [syncing, setSyncing] = useState(() => getSyncState().running);
 
   const detect = useCallback(async () => setExtension(await detectExtension()), []);
 
@@ -73,7 +81,14 @@ export const UyapDosyalarim = () => {
     }
     setListe(result.liste);
     setListPage(0);
+    if (resumeIfInterrupted(result.liste)) toast.success("Yarıda kalan aktarım kaldığı yerden sürüyor.");
   };
+
+  // Sayfa yenilendiyse ve yarıda kalmış bir koşu varsa liste kendiliğinden okunur (koşu oradan sürer).
+  useEffect(() => {
+    if (!getSyncState().running && !getSyncState().liste && readResume()) void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const open = async (item: BridgeDosya) => {
     setOpening(item.key);
@@ -89,6 +104,9 @@ export const UyapDosyalarim = () => {
 
   const help = error ? describeListFailure(error.code, error.message) : null;
   const [gaveUp, setGaveUp] = useState(false);
+  // Sayfa yenilendiğinde/yeniden açıldığında UYAP sekmesinde hâlâ süren iş (aktarım UYAP sekmesinde devam eder).
+  const [remote, setRemote] = useState<CurrentJob | null>(null);
+  const waitingForJob = error?.code === "busy";
 
   // UYAP'ta giriş yapılıp liste açılınca burası kendiliğinden dolsun: okuma-yalnız yoklama, en çok ~3 dakika.
   useEffect(() => {
@@ -100,7 +118,15 @@ export const UyapDosyalarim = () => {
     const timer = setInterval(async () => {
       if (busy) return;
       tries += 1;
-      if (tries > WAIT_MAX_TRIES) {
+      if (waitingForJob) {
+        // Süren aktarım saatler sürebilir: vazgeçilmez; ilerleme gösterilir, iş bitince liste okunur.
+        busy = true;
+        const job = await currentJob();
+        busy = false;
+        if (stopped) return;
+        setRemote(job);
+        if (job?.busy) return;
+      } else if (tries > WAIT_MAX_TRIES) {
         clearInterval(timer);
         if (!stopped) setGaveUp(true);
         return;
@@ -112,14 +138,25 @@ export const UyapDosyalarim = () => {
       if (result.ok) {
         clearInterval(timer);
         setError(null);
+        setRemote(null);
         setListe(result.liste);
+        // Sayfa yenilenmeden önce süren "Tüm dosyaları aktar" koşusu varsa kaldığı yerden sürer.
+        if (resumeIfInterrupted(result.liste)) toast.success("Yarıda kalan aktarım kaldığı yerden sürüyor.");
       }
-    }, WAIT_INTERVAL_MS);
+    }, waitingForJob ? 2000 : WAIT_INTERVAL_MS);
     return () => {
       stopped = true;
       clearInterval(timer);
     };
-  }, [help?.waiting, error?.code]);
+  }, [help?.waiting, error?.code, waitingForJob]);
+
+  const remoteRun = remote?.status?.run;
+  const remoteJob = remote?.status?.job;
+  const stopRemote = async () => {
+    if (remote?.tabId == null || !remoteJob) return;
+    await stopJob(remote.tabId, remoteJob.id);
+    toast.success("Durdurma istendi: süren evrak bitince aktarım durur.");
+  };
 
   const shown = useMemo(() => {
     const needle = filter.trim().toLocaleLowerCase("tr");
@@ -206,7 +243,7 @@ export const UyapDosyalarim = () => {
             tut. Aşağıdaki düğme listeyi senin açık oturumundan okur.
           </p>
           <div className="flex flex-wrap gap-2">
-            <Button onClick={() => void load()} disabled={loading || !!panel}>
+            <Button onClick={() => void load()} disabled={loading || !!panel || syncing}>
               {loading ? (
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />
               ) : (
@@ -238,7 +275,27 @@ export const UyapDosyalarim = () => {
               ))}
             </ol>
           )}
-          {help.waiting && (
+          {waitingForJob && (
+            <div className="space-y-2" data-testid="uyap-remote-job">
+              <p className="flex items-center gap-2 text-sm">
+                <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                {remoteRun
+                  ? `Evrak aktarılıyor: ${remoteRun.done}/${remoteRun.total}${remoteRun.current ? ` · ${remoteRun.current}` : ""}`
+                  : remoteJob?.phase || "UYAP sekmesindeki işlem bekleniyor…"}
+              </p>
+              {remoteRun && remoteRun.total > 0 && <Progress value={Math.round((remoteRun.done / remoteRun.total) * 100)} />}
+              {remoteJob?.kind === "pull" && (
+                <Button size="sm" variant="outline" onClick={() => void stopRemote()} data-testid="uyap-remote-stop">
+                  Aktarımı durdur
+                </Button>
+              )}
+              <p className="text-xs text-muted-foreground">
+                Aktarılan evraklar hesabına kaydediliyor. Bu dosya bitince liste burada görünür
+                {readResume() ? " ve aktarım kalan dosyalarla kendiliğinden sürer." : "."}
+              </p>
+            </div>
+          )}
+          {help.waiting && !waitingForJob && (
             <>
               <div className="flex flex-wrap gap-2 pt-1">
                 {UYAP_PORTALS.map((portal) => (
@@ -293,6 +350,11 @@ export const UyapDosyalarim = () => {
               </ul>
             )}
           </div>
+          <UyapSyncAll
+            liste={liste}
+            disabled={loading || !!panel || opening !== null || extension?.connected === false}
+            onRunningChange={setSyncing}
+          />
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <span className="font-medium" data-testid="uyap-dosya-sayisi">
               {liste.items.length} dosya
@@ -338,7 +400,7 @@ export const UyapDosyalarim = () => {
                     <Button
                       size="sm"
                       variant="ghost"
-                      disabled={loading || opening !== null}
+                      disabled={loading || opening !== null || syncing}
                       onClick={() => void open(item)}
                       title="Evrak seçimini UYAP sekmesinde aç"
                     >
@@ -349,7 +411,7 @@ export const UyapDosyalarim = () => {
                     </Button>
                     <Button
                       size="sm"
-                      disabled={loading || opening !== null}
+                      disabled={loading || opening !== null || syncing}
                       onClick={() => setPanel(item)}
                       data-testid="uyap-evraklari-sec"
                     >
@@ -402,8 +464,9 @@ export const UyapDosyalarim = () => {
 
       <p className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
         <ShieldCheck className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-        Dosya listesi yalnız bu sayfada, tarayıcında tutulur; JurisAI sunucusuna gönderilmez.
-        Evrakları çekmeden önce hangilerinin aktarılacağını sen seçersin.
+        Dosya listesi bu sayfada, tarayıcında tutulur. Evraklar yalnız sen başlatınca aktarılır: tek dosyada hangilerinin
+        aktarılacağını seçersin, "Tüm dosyaları aktar" ise onayından sonra hepsini aktarır. Aktarılan dosyanın numarası, birimi ve
+        UYAP listesindeki durumu dava kaydına yazılır.
       </p>
     </section>
   );

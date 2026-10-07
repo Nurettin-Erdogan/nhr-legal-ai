@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from api import office_public
 from api.office_public import router
+from api.upload_stream import Upload
 from api.uyap_meta import extract_text_sample, is_allowed_file, parse_uyap_meta, safe_file_name
 
 TOKEN = "t" * 32
@@ -26,7 +27,10 @@ def _client(monkeypatch, *, owner=(uuid4(), OWNER), outcome=("inserted", uuid4()
         return owner if token == TOKEN else None
 
     def fake_store(owner_id, **kwargs):
-        stored.append({"owner_id": owner_id, **kwargs})
+        data = kwargs["data"]
+        # Uç nokta işi bitince geçici dosyayı kapatır: içerik, çağrı anında (küçükse) okunup kaydedilir.
+        content = data.small_bytes(1024 * 1024) if isinstance(data, Upload) else data
+        stored.append({"owner_id": owner_id, **kwargs, "upload": data, "data": content})
         return outcome
 
     monkeypatch.setattr(office_public, "_owner_for_token", fake_owner)
@@ -143,7 +147,7 @@ def test_extension_connection_check_gets_400_with_a_file_message(monkeypatch):
 
 def test_upload_checks_token_before_parsing_the_multipart_body(monkeypatch):
     client, stored = _client(monkeypatch)
-    monkeypatch.setattr(office_public, "MAX_FILE_BYTES", 10)
+    monkeypatch.setenv("MAX_UPLOAD_BYTES", "10")  # işletmecinin isteğe bağlı üst sınırı
     monkeypatch.setattr(office_public, "MULTIPART_OVERHEAD_BYTES", 10)
     big = {"file": ("evrak.pdf", b"x" * 5000, "application/pdf")}
 
@@ -157,6 +161,28 @@ def test_upload_checks_token_before_parsing_the_multipart_body(monkeypatch):
 
     assert (no_token.status_code, wrong.status_code, too_big.status_code) == (401, 401, 413)
     assert not stored
+
+
+def test_upload_has_no_size_cap_by_default_and_never_holds_the_body_in_memory(monkeypatch):
+    """50 MB'ı aşan UYAP eki (canlıda 53 MB'lık zip) reddedilmez; sunucu içeriği belleğe almaz, ölçüp geçici dosyada tutar."""
+    monkeypatch.delenv("MAX_UPLOAD_BYTES", raising=False)
+    client, stored = _client(monkeypatch)
+    payload = b"PK" + bytes(51 * 1024 * 1024)
+
+    response = client.post(
+        "/api/public/v1/documents/upload",
+        files={"file": ("ek.zip", payload, "application/zip")},
+        data={"evrakId": "9"},
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+
+    assert response.status_code == 200 and response.json()["ok"] is True
+    [call] = stored
+    upload = call["upload"]
+    assert call["data"] is None  # 51 MB belleğe alınmadı
+    assert upload.size == len(payload) and upload.sha256 == hashlib.sha256(payload).hexdigest()
+    assert upload.data is None and upload.stream is not None  # bellekte değil, geçici dosyada
+    assert upload._closed  # uç nokta işi bitince geçici dosyayı kapatır (sahte `_store` kapatmasa bile)
 
 
 def test_upload_requires_bearer_token_and_known_extension(monkeypatch):

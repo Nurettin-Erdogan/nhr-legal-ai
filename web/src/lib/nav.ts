@@ -1,6 +1,6 @@
 /**
  * Kenar çubuğu menüsü (veri ve eşleştirme; simgeler bileşende). Çalışan her ana sayfa buradan erişilebilir olmalıdır; "henüz bağlı değil"
- * diyen sayfalar (İcra, Müvekkil Adayları, Raporlar, Personel, Tahsilat, Aramalar) bilerek menüde yoktur: gerçek veri olmadan
+ * diyen sayfalar (Müvekkil Adayları, Raporlar, Personel, Tahsilat, Aramalar) bilerek menüde yoktur: gerçek veri olmadan
  * çalışıyormuş izlenimi verilmez.
  *
  * Aynı işi yapan sayfalar tek girdide toplanır (kullanıcı taramasında "hangisine gireceğim" karışıklığı çıktı, 2026-10-06):
@@ -23,6 +23,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: "/dashboard", label: "Ana Sayfa" },
       { to: "/dashboard/cases", label: "Davalar" },
+      { to: "/dashboard/execution", label: "İcra Takibi" },
       { to: "/dashboard/clients", label: "Müvekkiller" },
       { to: "/dashboard/tasks", label: "Görevler" },
       { to: "/dashboard/calendar", label: "Takvim" },

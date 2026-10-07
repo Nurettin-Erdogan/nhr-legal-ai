@@ -56,9 +56,11 @@ _SUPPORTED_TYPES = {
     ".udf": "application/vnd.uyap.udf",
     ".odt": "application/vnd.oasis.opendocument.text",
 }
-MAX_ARCHIVE_ENTRIES = 200
-MAX_ARCHIVE_EXPANDED_BYTES = 100 * 1024 * 1024
-MAX_ARCHIVE_MEMBER_BYTES = 50 * 1024 * 1024
+# Arşiv içeriğini aranabilir yapmadaki koruma değerleri (sıkıştırma bombasına karşı). Saklamayı sınırlamazlar: aşan arşiv yine
+# kaydedilir ve indirilebilir, yalnız metni çıkarılmaz. Üye başına oran denetimi (1000x) ayrıca sürer.
+MAX_ARCHIVE_ENTRIES = 2000
+MAX_ARCHIVE_EXPANDED_BYTES = 1024 * 1024 * 1024
+MAX_ARCHIVE_MEMBER_BYTES = 256 * 1024 * 1024
 _IMAGE_TYPES = {
     ".tif": "image/tiff",
     ".tiff": "image/tiff",

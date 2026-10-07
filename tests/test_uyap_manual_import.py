@@ -59,7 +59,7 @@ def test_manual_invalid_files_are_not_stored(client, name, data, status):
 
 def test_manual_size_is_bounded_without_a_content_length(client, monkeypatch):
     browser, _, _, calls, _, _ = client
-    monkeypatch.setattr(office_public, 'MAX_FILE_BYTES', 4)
+    monkeypatch.setenv('MAX_UPLOAD_BYTES', '4')  # işletmecinin isteğe bağlı üst sınırı
     monkeypatch.setattr(office_public, 'MULTIPART_OVERHEAD_BYTES', 1)
     response = browser.post('/api/office/uyap/import', content=iter([b'x' * 20]), headers={'content-type': 'multipart/form-data; boundary=a'})
     assert response.status_code == 413 and not calls

@@ -43,7 +43,6 @@ test("invalid files and identifiers fail before sending a request", async (t) =>
   });
   for (const file of [
     { size: 0, name: "x" },
-    { size: model.MAX_CASE_FILE_SIZE + 1, name: "x" },
     { size: 1, name: "" },
   ]) {
     assert.throws(() => model.validateCaseFile(file));

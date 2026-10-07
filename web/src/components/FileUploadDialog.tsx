@@ -25,7 +25,6 @@ import { useAuth } from "@/components/AuthProvider";
 import { toast } from "sonner";
 import {
   ALLOWED_EXTENSIONS,
-  MAX_FILE_BYTES,
   humanSize,
   isAllowedFile,
   parseUyapMeta,
@@ -70,10 +69,6 @@ export const FileUploadDialog = ({ onUploaded }: Props) => {
     const ok = list.filter((f) => {
       if (!isAllowedFile(f.name)) {
         toast.error(`${f.name}: desteklenmeyen format`);
-        return false;
-      }
-      if (f.size > MAX_FILE_BYTES) {
-        toast.error(`${f.name}: 50 MB sınırını aşıyor`);
         return false;
       }
       return true;
@@ -149,7 +144,7 @@ export const FileUploadDialog = ({ onUploaded }: Props) => {
           <DialogTitle>Dosya Yükle</DialogTitle>
           <DialogDescription>
             Belgeler yalnızca sizin erişebildiğiniz özel alanda saklanır (
-            {ALLOWED_EXTENSIONS.join(", ")} · max 50 MB).
+            {ALLOWED_EXTENSIONS.join(", ")}).
           </DialogDescription>
         </DialogHeader>
 

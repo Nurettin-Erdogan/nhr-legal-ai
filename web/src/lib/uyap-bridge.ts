@@ -6,6 +6,8 @@
  * okunmuştur: güvenilmez veri sayılır, ekranda yalnız metin olarak gösterilir.
  */
 
+import { steadySleep } from "@/lib/steady-timer";
+
 export interface BridgeDosya {
   /** Eklentinin satırı yeniden bulmak için kullandığı anahtar (listeyle birlikte gelir, UYAP sayfası değişince geçersizleşir). */
   key: string;
@@ -58,7 +60,9 @@ export type BridgeCommand =
   | "OPEN_DOSYA"
   | "SET_KEY"
   | "TREE"
+  | "DETAIL"
   | "JOB_STATUS"
+  | "CURRENT_JOB"
   | "PULL_IDS"
   | "STOP_JOB";
 
@@ -98,11 +102,13 @@ export async function detectExtension(timeoutMs = 5000): Promise<ExtensionStatus
     {},
     timeoutMs,
   );
-  if (!reply.ok) return {
-    installed: false,
-    error: typeof reply.error === "string" ? reply.error.slice(0, 500) : "Eklenti yanıtı alınamadı.",
-    ...(typeof reply.code === "string" ? { code: reply.code.slice(0, 80) } : {}),
-  };
+  if (!reply.ok)
+    return {
+      installed: false,
+      error:
+        typeof reply.error === "string" ? reply.error.slice(0, 500) : "Eklenti yanıtı alınamadı.",
+      ...(typeof reply.code === "string" ? { code: reply.code.slice(0, 80) } : {}),
+    };
   return {
     installed: true,
     version: typeof reply.version === "string" ? reply.version : undefined,
@@ -272,6 +278,14 @@ export function describeListFailure(code: string | undefined, message: string): 
         ],
         waiting: true,
       };
+    case "busy":
+      return {
+        title: "UYAP sekmesinde bir işlem sürüyor",
+        steps: [
+          "Daha önce başlattığın aktarım ya da listeleme UYAP sekmesinde devam ediyor (bu sayfa yenilense de durmaz). Bitince liste burada kendiliğinden görünür.",
+        ],
+        waiting: true,
+      };
     default:
       return { title: message || "Dosya listesi okunamadı", steps: [], waiting: false };
   }
@@ -300,6 +314,8 @@ export interface TreeCounts {
   explained: boolean;
   gapList: string[];
   withoutId: number;
+  /** Kalıcı kimliği çıkarılamayan (her oturumda değişen şifreli kimliğe düşen) evrak sayısı: bunlar için eksiksizlik doğrulanamaz. */
+  unstableId: number;
   unopened: number;
   emptyOpened: number;
 }
@@ -322,9 +338,43 @@ export interface PullStats {
   errors: string[];
 }
 
+/* ---------- Dosya detayı (evrak dışı bilgiler) ----------
+   Eklenti dosya penceresinin dosya bilgileri / dosya hesabı / taraflar / safahat / tahsilat-reddiyat sekmelerini salt okunur okur.
+   Değerler UYAP'ın yazdığı metindir; yorumlanmaz. Metinler UYAP sayfasından gelir: güvenilmez, boyut sınırlı ayrıştırılır. */
+
+export interface DetailPair {
+  label: string;
+  value: string;
+}
+
+export interface DetailTable {
+  title: string;
+  headers: string[];
+  rows: string[][];
+  /** UYAP'ın "N Kayıttan" yazısındaki toplam; yazı yoksa null. */
+  declared: number | null;
+  /** Okunan satır sayısı UYAP'ın söylediği sayıyla uyuşuyor (ya da UYAP sayı söylemiyor). */
+  complete: boolean;
+}
+
+export interface DetailTab {
+  key: string;
+  label: string;
+  pairs: DetailPair[];
+  tables: DetailTable[];
+  complete: boolean;
+}
+
+export interface DosyaDetail {
+  who: { esas: string; birim: string };
+  tabs: DetailTab[];
+  problems: string[];
+  complete: boolean;
+}
+
 export interface JobInfo {
   id: string;
-  kind: "tree" | "pull";
+  kind: "tree" | "pull" | "detail";
   state: "running" | "done" | "error";
   phase: string;
   error?: string;
@@ -355,6 +405,7 @@ export interface JobStatus {
   job: JobInfo;
   run?: RunInfo;
   tree?: TreeResult;
+  detail?: DosyaDetail;
 }
 
 const num = (value: unknown, fallback = 0) =>
@@ -414,6 +465,7 @@ export function parseTree(raw: unknown): TreeResult | null {
         ...strings(c.gapList, 200, 12),
       ],
       withoutId: num(c.withoutId),
+      unstableId: num(c.unstableId),
       unopened: num(c.unopened),
       emptyOpened: num(c.emptyOpened),
     },
@@ -452,6 +504,70 @@ export function defaultSelection(
   );
 }
 
+const cell = (value: unknown) => (typeof value === "string" ? value.slice(0, 4000) : "");
+
+/** Eklentiden gelen dosya detayını savunmacı ayrıştırır. Satır/hücre sayısına sınır yoktur; yalnız metin uzunlukları sınırlıdır. */
+export function parseDetail(raw: unknown): DosyaDetail | null {
+  if (!raw || typeof raw !== "object") return null;
+  const source = raw as Record<string, unknown>;
+  const who = (source.who && typeof source.who === "object" ? source.who : {}) as Record<
+    string,
+    unknown
+  >;
+  const tabs: DetailTab[] = [];
+  for (const entry of (Array.isArray(source.tabs) ? source.tabs : []).slice(0, 24)) {
+    if (!entry || typeof entry !== "object") continue;
+    const tab = entry as Record<string, unknown>;
+    const key = text(tab.key, 40);
+    if (!key) continue;
+    const pairs: DetailPair[] = [];
+    for (const pair of (Array.isArray(tab.pairs) ? tab.pairs : []).slice(0, 500)) {
+      if (!pair || typeof pair !== "object") continue;
+      const row = pair as Record<string, unknown>;
+      const label = text(row.label, 160);
+      if (label) pairs.push({ label, value: cell(row.value) });
+    }
+    const tables: DetailTable[] = [];
+    for (const item of (Array.isArray(tab.tables) ? tab.tables : []).slice(0, 24)) {
+      if (!item || typeof item !== "object") continue;
+      const table = item as Record<string, unknown>;
+      const headers = (Array.isArray(table.headers) ? table.headers : [])
+        .slice(0, 60)
+        .map((header) => text(header, 160));
+      const rows = (Array.isArray(table.rows) ? table.rows : []).map((row) =>
+        (Array.isArray(row) ? row : []).slice(0, 60).map(cell),
+      );
+      tables.push({
+        title: text(table.title, 120),
+        headers,
+        rows,
+        declared: typeof table.declared === "number" && table.declared >= 0 ? table.declared : null,
+        complete:
+          table.complete === true &&
+          (rows.length > 0 || table.declared === 0) &&
+          (typeof table.declared !== "number" ||
+            (Number.isFinite(table.declared) && rows.length === table.declared)),
+      });
+    }
+    tabs.push({
+      key,
+      label: text(tab.label, 80),
+      pairs,
+      tables,
+      complete:
+        tab.complete === true &&
+        (pairs.length > 0 || tables.length > 0) &&
+        tables.every((table) => table.complete),
+    });
+  }
+  return {
+    who: { esas: text(who.esas, 60), birim: text(who.birim, 160) },
+    tabs,
+    problems: strings(source.problems, 300, 12),
+    complete: source.complete === true && tabs.length > 0 && tabs.every((tab) => tab.complete),
+  };
+}
+
 export function parseJobStatus(raw: unknown): JobStatus | null {
   if (!raw || typeof raw !== "object") return null;
   const source = raw as Record<string, unknown>;
@@ -462,7 +578,7 @@ export function parseJobStatus(raw: unknown): JobStatus | null {
   const status: JobStatus = {
     job: {
       id: job.id.slice(0, 64),
-      kind: job.kind === "pull" ? "pull" : "tree",
+      kind: job.kind === "pull" ? "pull" : job.kind === "detail" ? "detail" : "tree",
       state,
       phase: text(job.phase, 120),
       error: typeof job.error === "string" ? text(job.error, 400) : undefined,
@@ -505,6 +621,10 @@ export function parseJobStatus(raw: unknown): JobStatus | null {
     const tree = parseTree(source.tree);
     if (tree) status.tree = tree;
   }
+  if (source.detail) {
+    const detail = parseDetail(source.detail);
+    if (detail) status.detail = detail;
+  }
   return status;
 }
 
@@ -544,12 +664,33 @@ async function requestTreeJob(
   return { ok: true, jobId: reply.jobId, tabId: reply.tabId };
 }
 
+/** Dosya penceresinin evrak dışı bilgilerini okuyan işi başlatır (salt okunur); ilerleme `waitForJob(..., { withDetail: true })` ile izlenir. */
+export async function startDetailJob(
+  key: string,
+  yargiTuru = "",
+): Promise<BridgeReply<{ jobId: string; tabId: number }>> {
+  const reply = await bridgeRequest<{ jobId?: unknown; tabId?: unknown }>(
+    "DETAIL",
+    { key, yargiTuru },
+    30000,
+  );
+  if (!reply.ok) return reply;
+  if (typeof reply.jobId !== "string" || typeof reply.tabId !== "number")
+    return {
+      ok: false,
+      error:
+        "Eklenti beklenmeyen bir yanıt verdi: eklentiyi yenile (sürüm 2.26.14 veya üstü gerekir).",
+    };
+  return { ok: true, jobId: reply.jobId, tabId: reply.tabId };
+}
+
 export async function fetchJobStatus(
   tabId: number,
   jobId: string,
   withTree = false,
+  withDetail = false,
 ): Promise<BridgeReply<{ status: JobStatus }>> {
-  const reply = await bridgeRequest("JOB_STATUS", { tabId, jobId, withTree }, 15000);
+  const reply = await bridgeRequest("JOB_STATUS", { tabId, jobId, withTree, withDetail }, 15000);
   if (!reply.ok) return reply;
   const status = parseJobStatus(reply);
   return status
@@ -580,11 +721,33 @@ export async function startPullJob(
   return { ok: true, jobId: reply.jobId, total: num(reply.total, ids.length), tabId };
 }
 
+export interface CurrentJob {
+  /** UYAP sekmesi o an bir listeleme ya da aktarım yürütüyor. */
+  busy: boolean;
+  tabId: number | null;
+  status: JobStatus | null;
+}
+
+/**
+ * UYAP sekmesinde o an süren işi sorar. JurisAI sayfası yenilendiğinde ya da yeniden açıldığında süren aktarım UYAP sekmesinde devam
+ * eder; sayfa bununla ona yeniden bağlanır (ilerlemeyi gösterir, durdurabilir). Eski eklenti bu komutu tanımaz: null döner.
+ */
+export async function currentJob(): Promise<CurrentJob | null> {
+  const reply = await bridgeRequest<{ busy?: unknown; tabId?: unknown }>("CURRENT_JOB", {}, 8000);
+  if (!reply.ok) return null;
+  return {
+    busy: reply.busy === true,
+    tabId: typeof reply.tabId === "number" ? reply.tabId : null,
+    status: parseJobStatus(reply),
+  };
+}
+
 export const stopJob = (tabId: number, jobId: string) =>
   bridgeRequest("STOP_JOB", { tabId, jobId }, 10000);
 
 export interface WaitOptions {
   withTree?: boolean;
+  withDetail?: boolean;
   intervalMs?: number;
   /** Üst üste bu kadar yoklama başarısız olursa vazgeçilir (UYAP sekmesi kapandı ya da eklenti yok). */
   maxFailures?: number;
@@ -601,6 +764,7 @@ export async function waitForJob(
 ): Promise<{ ok: true; status: JobStatus } | BridgeFailure> {
   const {
     withTree = false,
+    withDetail = false,
     intervalMs = 700,
     maxFailures = 6,
     maxMs = 6 * 60 * 60 * 1000,
@@ -612,7 +776,7 @@ export async function waitForJob(
   let last: BridgeFailure = { ok: false, error: "İş durumu okunamadı." };
   while (Date.now() < deadline) {
     if (signal?.aborted) return { ok: false, code: "aborted", error: "İptal edildi." };
-    const reply = await fetchJobStatus(tabId, jobId, withTree);
+    const reply = await fetchJobStatus(tabId, jobId, withTree, withDetail);
     if (reply.ok) {
       failures = 0;
       onUpdate?.(reply.status);
@@ -629,7 +793,8 @@ export async function waitForJob(
         };
       if (failures >= maxFailures || reply.code === "no_uyap_tab") return reply;
     }
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    // Sekme arka plandayken de zamanında yokla (bkz. steady-timer): aktarım saatler sürebilir.
+    await steadySleep(intervalMs);
   }
   return { ...last, code: "timeout", error: "İş çok uzun sürdü." };
 }

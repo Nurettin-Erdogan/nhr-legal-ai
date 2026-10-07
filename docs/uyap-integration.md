@@ -375,8 +375,8 @@ uygulamasının birebir kopyası veya onunla performans karşılaştırması de�
   AI özetinin kaynak/metin bütçeleri kaldırılmamıştır; bütün belgelerin listelenmesi sınırsız model
   bağlamı veya bütün belgelerin aynı yanıtta kullanıldığı anlamına gelmez.
 - ZIP eki aslı değiştirilmeden saklanır; desteklenen üyelerin metni `Arşiv eki: <üye yolu>` kaynağıyla
-  indekslenir. Diskte açılmaz. En çok 200 üye, toplam 100 MB açılmış veri ve üye başına 50 MB sınırı
-  vardır. Geçersiz yol, sembolik bağ, şifreli/iç içe arşiv, aşırı sıkıştırma, bozuk veya desteklenmeyen
+  indekslenir. Diskte açılmaz. Metin çıkarma koruma değerleri (saklamayı sınırlamaz): en çok 2000 üye, toplam 1 GB açılmış veri,
+  üye başına 256 MB. Geçersiz yol, sembolik bağ, şifreli/iç içe arşiv, aşırı sıkıştırma, bozuk veya desteklenmeyen
   üye reddedilir. Üyelerden biri okunamazsa kısmi metin `ready` sayılmaz; asıl ZIP indirilebilir kalır.
   RAR ve XLS/XLSX bu değişiklikle aranabilir hâle gelmemiştir.
 - Mevcut kurulumda `database/migrations/046_uyap_court_identity.sql` yönetici bağlantısıyla uygulanır;
@@ -391,7 +391,7 @@ ve gerçek Avukat Portalı testi yerine geçmez.
 ## Atomik aktarım ve yayın adayı (2026-10-05, v2.26.10)
 
 - Elle içe aktarma artık `POST /api/office/uyap/import` üzerinden oturumla doğrulanır.
-  Dosya, en çok 50 MB olacak şekilde akışta sınırlandırılır; SHA-256 sunucuda hesaplanır.
+  Dosya boyut sınırı olmadan akışla okunur (2026-10-06'dan beri; aşağıya bak); SHA-256 sunucuda hesaplanır.
   İstemcinin gönderdiği sahip, içerik özeti veya evrak kimliğine güvenilmez. Aktarım kaydı
   verilirse aynı kullanıcıya ait olduğu kontrol edilir. UYAP kökenli satırlar genel
   `case_documents` ekleme/upsert yolundan oluşturulamaz; eski web sürümü yenilenmelidir.
@@ -417,3 +417,239 @@ ve gerçek Avukat Portalı testi yerine geçmez.
 Test kanıtı, kurulum sırası ve tamamlanmadan yayın onayı verilemeyen canlı kontroller
 [UYAP yayın kontrol listesinde](uyap-release-checklist.md) ayrı tutulur. Önceki sürümdeki
 canlı tek-evrak testi bu sürümün veya Avukat Portalı'nın kabul testi değildir.
+
+## Tüm dosyaları aktar ve eksiksizlik doğrulaması (2026-10-06)
+
+"UYAP Dosyalarım" bölümündeki **Tüm dosyaları aktar** düğmesi listedeki her dosyanın bütün evraklarını sırayla aktarır
+ve her dosya için eksiksizliği **sunucudaki kayıtla** kanıtlar (`web/src/lib/uyap-sync-all.ts`,
+`web/src/components/UyapSyncAll.tsx`). Eklentide değişiklik yoktur: mevcut köprü komutları (`LIST_DOSYALAR`, `TREE`,
+`PULL_IDS`, `JOB_STATUS`) kullanılır.
+
+**Dosya başına akış:** evrak ağacını oku → JurisAI'da olmayan evrakları çek → ağacı **yeniden oku** → gerekirse tekrarla
+(en çok 3 çekim). Aktarım sayacına güvenilmez: "gönderildi" sayılan ama sunucuya yazılmayan evrak (ör. v2.26.10'da
+düzeltilen, aynı baytlı eklerin atlanması) ancak ikinci okumada görünür.
+
+Bir dosya yalnız şu koşulların hepsi sağlanınca **eksiksiz** yazılır:
+
+1. UYAP'ın ağaçta yazdığı evrak sayısı bulunanla uyuşur (ya da fark yalnız aynı evrakın birden çok klasörde görünmesidir),
+   açılamayan klasör ve kimliksiz evrak yoktur;
+2. ağaçtaki her evrak kimliği JurisAI'da kayıtlıdır;
+3. sunucu kayıtlarını gerçekten bildirmiştir (`knownChecked`).
+
+Aksi hâlde dosya **eksik** (nedenleriyle), ağaç hiç okunamadıysa **okunamadı** yazılır. Oturum/sekme kaybı ya da üst üste
+üç dosyanın okunamaması koşuyu durdurur; kalan dosyalar "işlenmedi" kalır. Koşu yeniden başlatılınca zaten aktarılmış
+evraklar atlanır; "Eksik kalan N dosyayı yeniden dene" yalnız tamamlanmayanları işler. **Yalnız denetle (aktarmadan)**
+hiçbir evrak aktarmadan aynı karşılaştırmayı yapar.
+
+"Bütün dosyalar eksiksiz" bandı ancak her dosya eksiksizse, koşu durdurulmadıysa **ve** dosya listesinin kendisi tam
+tarandıysa (`liste.complete`) yeşil olur.
+
+**Sunucu kaydı** (`api/uyap_sync.py`, migration `048_uyap_case_sync.sql`): koşu bitince dosya başına sonuç
+`POST /api/office/uyap/sync-report` ile `office_uyap_case_sync` tablosuna yazılır (dosya başına tek satır; RLS: yalnız
+sahibi). Sunucu UYAP'ı göremediği için bildirilen "eksiksiz"e körü körüne güvenmez: o dosyanın kendi veritabanındaki
+UYAP evraklarını sayar ve sayı ağaçta bulunandan azsa kaydı eksik yazar. Dava, evrak aktarımıyla aynı kimlikle bulunur
+(esas no + dosya penceresinin yazdığı birim); aynı kimlikte birden çok dava varsa yazılmaz. UYAP listesindeki üst veri
+(yargı türü, dosya türü, durum, taraf rolü, açılış) aynı satıra **UYAP'ın gösterdiği metin olarak** yazılır, yorumlanmaz.
+`GET /api/office/uyap/sync-status` son doğrulamaları döndürür; İcra Takibi listesi (`/api/office/execution/files`)
+dosya durumunu ve doğrulamayı buradan gösterir.
+
+**Uzun koşular:** iş durumu yoklaması tarayıcı çalışanındaki zamanlayıcıyla yapılır (`web/src/lib/steady-timer.ts`);
+JurisAI sekmesi arka planda kalsa da yoklama dakikada bire düşmez. Sayfa görünürken ekranın kapanması önlenmeye
+çalışılır. Sayfa kapatılırsa koşu yarıda kalır (uyarı gösterilir), yeniden başlatılınca kaldığı yerden sürer.
+
+Bilinen davranış: çöp kutusuna taşınmış bir UYAP evrakı "kayıtlı" sayılmaz; "Tüm dosyaları aktar" onu yeniden getirir.
+
+### İşletim notu: aynı IP'den toplu istek UYAP'ı kapatır (ölçüldü: 2026-10-06)
+
+Bu bilgisayarda çalışan yerel karar toplayıcısı (`scripts/collect_bedesten.py`, ~600 istek/saat,
+`bedesten.adalet.gov.tr`) saatler sonra bağlantı zaman aşımı almaya başladı; **aynı dakikalarda** `vatandas.uyap.gov.tr`,
+`turkiye.gov.tr` ve `mevzuat.gov.tr` de bu makineden açılmadı (DNS çözülüyor, TCP 443 kurulmuyor; diğer siteler açık).
+Kesintiler toplayıcının hata saatleriyle birebir örtüştü (13:14–13:28, 13:33–13:55, 14:06→). Nedeni kesin değil (hız
+sınırı ya da ağın çıkış IP'si), ama sonuç açık: **kullanıcının UYAP'a girdiği bilgisayardan/IP'den adalet.gov.tr'ye toplu
+istek atan iş çalıştırılmaz.** Toplama ayrı IP'de (Azure) sürer.
+
+Testler: `web/tests/uyap-sync-all.test.mjs`, `tests/test_uyap_sync.py`; uçtan uca (gerçek eklenti + gerçek sayfa + gerçek
+API ↔ sahte UYAP): `.local/e2e_uyap_sync_all.py`.
+
+### Gerçek hesapta ölçülen sonuç (2026-10-06, vatandaş hesabı, eklenti 2.26.11)
+
+21 dosya (2 Ceza, 2 Hukuk, 17 İcra; liste tam tarandı). Önce **yalnız denetle**: UYAP ağaçlarında 1375 evrak, JurisAI'da
+1306; 69 eksik (12 dosyada). Sonra gerçek aktarım (700 sn): **1373 / 1375 evrak kayıtlı, 19 dosya eksiksiz**, 67 evrak
+gönderildi. Kalan 3 durum:
+
+* **2010/8096 ve 2009/17135** (kapatılmış eski icra daireleri): UYAP "dosyaya ait evrak bilgisi bulunamadı" diyor. Bu bir
+  hata değil, UYAP'ın evrak göstermediği dosyadır; orkestratör bunları **evrak yok** (`empty`) sayar (ikinci okumayla
+  doğrulayarak) ve eksik/hata saymaz. Yalnız evraksız dosyalardan oluşan koşu "bütün dosyalar eksiksiz" bandını yeşertmez.
+* **2024/124 (Ağır Ceza), 2 ek eksik**: iki büyük `.zip` eki. UYAP bunları ön izlemede vermez, yalnız "Kaydet" adresinden
+  parça parça (chunked, boyut başlığı yok) verir; ilk bayt 10–18 sn sonra gelir. Ölçülen: biri tam bir zip (33 üye),
+  **53,2 MB**, 59 sn'de indi → JurisAI'nın **50 MB sınırını aşıyor**, aktarılamaz. Diğerinde UYAP akışı yarıda kesti
+  (12 MB'tan sonra) ve sonraki denemede oturum zaman aşımı sayfası döndü.
+
+**v2.26.12 ile düzeltilenler** (bu ölçümden çıkan eklenti hataları):
+
+1. İndirme zaman aşımı toplam süre değil **"veri gelmedi" süresiydi ama toplam olarak kurulmuştu** (45 sn): yavaş ama akan
+   büyük ek 45. saniyede kesiliyordu. Artık her veri parçasında yeniden kurulur; toplam üst süre 10 dk.
+2. 50 MB üstü ek, "önizlemede vermiyor; **indirip JurisAI'a yükleyin**" diye raporlanıyordu (elle yükleme de 50 MB ile sınırlıydı,
+   yanlış yönlendirmeydi). Sınırın kendisi sonradan kaldırıldı (aşağıya bak).
+3. UYAP'ın akışı yarıda kesmesi (`TypeError`) "UYAP indirmeyi yarıda kesti (N MB geldi)" diye adlandırılır; "Kaydet" akışı
+   kesilirse bir kez beklenip yeniden denenir.
+
+Testler (gerçek Chromium + sahte UYAP): `test_a_slow_but_steady_save_download_is_not_cut_by_the_no_data_timeout`,
+`test_a_save_download_that_uyap_cuts_off_says_so` (50 MB üstü eke ilişkin düzeltme aşağıdaki "Boyut sınırı kaldırıldı"
+bölümüyle geçersiz kılındı).
+
+### Boyut sınırı kaldırıldı (2026-10-06, kullanıcı kararı: "hiçbir sınır koyma", v2.26.13)
+
+Yukarıdaki 53 MB'lık ek, 50 MB sınırı yüzünden alınamıyordu. Karar: UYAP evrakı ve dava belgesi yüklemelerinde **boyut sınırı
+yoktur**. Bunu güvenle mümkün kılan değişiklikler:
+
+* **Eklenti:** indirilen parçalar bellekte biriktirilmez; her ~8 MB'ta tarayıcının Blob deposuna katılır (büyük ek diske taşar) ve
+  JurisAI'a aynı Blob'dan yüklenir. Toplam indirme üst süresi 2 saattir (güvenlik ağı); asıl zaman aşımı "veri gelmedi" süresidir.
+* **Sunucu** (`api/upload_stream.py`): çok parçalı gövde Starlette'in geçici dosyasında kalır (1 MB üstü diskte); dosya bir kez
+  okunup boyutu/SHA-256'sı hesaplanır, kopyalama dosyadan dosyaya akar. Sunucu belleği dosya boyutuyla büyümez. Kayıt işlemi dosya
+  yazıldıktan sonra açılır (büyük kopya sürerken dava satırı kilitli kalmaz). Diskte yer kalmazsa 507/503 ve açık mesaj döner.
+  Kimlik doğrulaması gövdeden **önce** yapıldığı için sınırsız gövde yalnız doğrulanmış kullanıcıdan kabul edilir. Eski
+  JSON/base64 aktarım ucu (anahtar gövdenin içinde, kimliksiz okunur) 50 MB'lık tavanını korur; eklenti artık onu kullanmaz.
+* **İsteğe bağlı işletmeci sınırı:** `MAX_UPLOAD_BYTES` ortam değişkeni ayarlanırsa o üst sınır uygulanır; varsayılan kapalıdır
+  (`.env.example`).
+* **Aranabilir yapma (indeksleme) ayrı bir adımdır** ve sunucuyu korumak için yüksek tavanları vardır: dosya 512 MB'a, ZIP içeriği
+  1 GB açılmış veriye / üye başına 256 MB / 2000 üyeye kadar metne çevrilir. Aşan dosya **yine saklanır ve indirilebilir**,
+  yalnız "boyutu nedeniyle metni okunup aranabilir yapılmadı" diye işaretlenir (aranabilir sanılmaz).
+* **Web:** sürükle-bırak/seçim ve dava evrakı yüklemesindeki 50 MB denetimleri kalktı; tarayıcıda arşiv açarken bellek yetmezse
+  açıklayıcı hata gösterilir.
+* **Dosya türleri:** UYAP ekinde gelebilen ses/görüntü kaydı, imza, ofis ve arşiv türleri (mp3, mp4, wav, avi, mov, p7s, 7z, rtf,
+  pptx, csv, eml…) kabul listesine eklendi (eklenti ↔ sunucu ↔ web aynı liste; yalnız saklanır, çalıştırılmaz). Çalıştırılabilir
+  dosyalar (`.exe` vb.) hâlâ reddedilir.
+
+Dokunulmayanlar (ayrı özellikler): proje belgeleri yüklemesi (`MAX_DOCUMENT_SIZE_MB`, varsayılan 10) ve ana sayfadaki metin
+çıkarıcının 10 MB'ı.
+
+Testler: `tests/test_upload_stream.py`, `test_upload_has_no_size_cap_by_default_and_never_holds_the_body_in_memory`,
+`test_a_large_upload_is_stored_from_its_temporary_file_and_retries_do_not_duplicate_it` (DB) ve gerçek Chromium'da
+`test_an_attachment_over_50_mb_is_uploaded_whole_there_is_no_size_cap`.
+
+### Kalıcı evrak kimliği düzeltmesi (2026-10-06, v2.26.14)
+
+Canlıda ikinci bir doğrulamada, daha önce "eksiksiz" çıkan 4 dosyada 10 evrak yeniden "eksik" göründü. Neden: bazı evraklarda (örneğin
+**Kapalı E-Tebliğ Mazbatası**) balondaki "Birim Evrak No" **boştur**; kimlik şifreli `evrak_id`'ye düşüyordu ve UYAP bunu her
+oturumda değiştirir. Sonuç: aynı evrak her yeni oturumda "eksik" görünüyor ve her aktarımda **yeniden (çoğaltılarak)** yükleniyordu.
+
+Düzeltme (`content.js` `stableEvrakId`): numarası boş evrakın kimliği, balondaki öteki alanların (onay/gönderim tarihi, kişi, gönderen
+dosya no/sayı, açıklama, tür, tip) ve başlığın özetidir (`nn:<24 hane>`); birebir aynı iki evrak ağaç sırasıyla `#0`, `#1` alır, "Son 20"
+kopyaları sayılmaz. Hiçbir kalıcı bilgi yoksa şifreli kimlik **son çare** kalır ama `unstableId` olarak sayılır ve dosya "eksiksiz"
+yazılmaz ("N evrakın kalıcı kimliği çıkarılamadı"). Testler: `test_evraks_with_an_empty_birim_evrak_no_get_a_stable_identity_that_survives_reloads`,
+`test_an_evrak_with_no_stable_identity_at_all_is_counted_so_the_tree_cannot_be_called_complete`.
+
+Not: bu düzeltmeden ÖNCE aktarılan numarasız evraklar sunucuda eski (oturuma bağlı) kimlikle durur; yeniden aktarımda yeni kimlikle ikinci bir
+kopya oluşur. Eski kopyalar tek tek içerik özetiyle eşleştirilip çöpe taşınabilir (geri alınabilir); otomatik silinmez.
+
+### Evrak dışı dosya bilgileri: taraflar, safahat, dosya hesabı, tahsilat/reddiyat (2026-10-06, v2.26.14)
+
+Gerçek portalda dosya penceresinin sekmeleri ölçüldü (yalnız yapı; değerler yazılmadı). Dosya türüne göre değişir:
+
+| Dosya türü | Sekmeler |
+| --- | --- |
+| İcra dosyası (icra dairesi) | Dosya Bilgileri, **Dosya Hesabı**, Taraf Bilgileri, Evrak, Safahat, Evrak Gönderme, Ödeme, Tah./Red. Bilgileri |
+| İcra hukuk mahkemesi | Dosya Bilgileri, Taraf Bilgileri, Evrak, Safahat, Evrak Gönderme, Ödeme, Tah./Red. Bilgileri |
+| Hukuk (BAM) | Dosya Bilgileri, Taraf Bilgileri, Evrak, Evrak Gönderme, Ödeme, Tah./Red. Bilgileri |
+| Ceza (ağır ceza) | Taraf Bilgileri, Evrak, Safahat, Evrak Gönderme, Ödeme, Tah./Red. Bilgileri |
+| Ceza (BAM ceza dairesi) | Taraf Bilgileri, Evrak, Evrak Gönderme, Ödeme, Tah./Red. Bilgileri |
+
+Okunanlar (`content.js` `readDosyaDetail`, köprü komutu `DETAIL` → iş türü `detail`): **Dosya Bilgileri** (etiket/değer: Türü, Yolu,
+Şekli, Dosya Durumu), **Dosya Hesabı** (Takipte Kesinleşen Miktar, Toplam Faiz, Vekalet Ücreti, Masraf, BSMV, Tahsil Harcı, Toplam Alacak,
+Yatan Para, Bakiye Borç), **Taraf Bilgileri** (Rol, Tipi, Adı, Vekil; gizli sütun = iç kimlik okunmaz), **Safahat** (önce salt okunur
+"Sorgula" düğmesi: İşlem Yapan Birim, Tarih, İşlem Türü, Açıklama, İşlem Durumu; ölçülen örnek 73 kayıt), **Tah./Red. Bilgileri** (özet
+satırı + Tahsilat ve Harç/Masraf tabloları).
+
+* **Hiç dokunulmayanlar:** "Evrak Gönderme" ve "Ödeme" sekmeleri, "Borç Öde" ve "Ekle" düğmeleri, "Detay" düğmeleri. Okuma izin listesiyle
+  yapılır (bilinmeyen sekme okunmaz). Sahte sayfada `window.__forbidden` testiyle doğrulanır.
+* **Eksiksizlik:** her tablo "Tümü" sayfa boyutuyla ya da sayfa sayfa gezilerek okunur ve UYAP'ın "N Kayıttan" sayısıyla karşılaştırılır;
+  tablo AJAX'la dolana kadar beklenir (satır sayısı iki turda değişmeden kalmalı). Sunucu bu karşılaştırmayı **kendisi yeniden yapar**
+  (`api/uyap_detail.py`): istemci "tamam" dese de satır sayısı UYAP'ınkine eşit değilse kayıt `complete=false` yazılır. Hiç bilgi sekmesi
+  bulunamazsa "okunamadı" (düzen değişmiş olabilir) yazılır, hiçbir şey kaydedilmez.
+* **Saklama:** `office_uyap_case_detail` (migration `049`, init `050`): dava başına tek satır, JSONB sekmeler, RLS yalnız sahibi, dava/hesap
+  silinince silinir, KVKK dışa aktarımında (`uyap_case_detail`, `uyap_case_sync`; genel CRUD ucuna **açılmaz**, doğrulama sonucu uydurulamasın).
+  Dosyanın hiç evrakı yoksa (UYAP "evrak bilgisi bulunamadı" diyen eski icra dosyası) dava kaydı evrak aktarımıyla aynı kuralla açılır.
+  Değerler UYAP'ın yazdığı metindir; hiçbir tutar hesaplanmaz, hiçbir hukuki sonuç üretilmez.
+* **Uçlar:** `POST /api/office/uyap/case-detail` (oturumlu), `GET /api/office/uyap/case-detail/{case_id}`. İcra Takibi listesi (`/api/office/execution/files`)
+  her dosyada UYAP'ın "Dosya Hesabı" alanlarını (Toplam Alacak, Yatan Para, Bakiye Borç) aynen gösterir.
+* **Arayüz:** "Tüm dosyaları aktar" her dosyadan sonra dosya bilgilerini okur ve hemen kaydeder (koşu yarıda kalsa da alınanlar kalır);
+  rapor "dosya bilgileri: eksiksiz/eksik/okunamadı" yazar. Dava sayfasında yeni **"UYAP Bilgileri"** sekmesi (taraflar, safahat araması,
+  hesap, tahsilat) bu veriyi gösterir; eksik okunan her tablo açıkça uyarılır.
+* Testler: gerçek Chromium + sahte sekmeli UYAP (`test_the_detail_job_reads_every_read_only_tab_completely_and_never_touches_interactive_ones`,
+  `..._pages_through_tables_when_there_is_no_show_all_option`, `test_a_table_that_shows_fewer_rows_than_uyap_declares_is_reported_incomplete`),
+  `tests/test_uyap_detail.py`, `web/tests/uyap-detail-view.test.mjs`, `web/tests/uyap-sync-all.test.mjs`.
+
+### Canlı pencere araçları: ölçülen sınırlar (2026-10-06)
+
+* Playwright'ın `--load-extension` ile yüklediği eklenti `chrome.runtime.reload()` ile **yeniden yüklenemez**: eklenti devre dışı kalır
+  (`ERR_BLOCKED_BY_CLIENT`). İçerik betiği aynı sürümde ikinci kez çalışmaz (`__jurisaiLoadedVersion`). Eklenti kodu değişince canlı
+  pencere yeniden başlatılır ve UYAP'a yeniden giriş gerekir; gerçek kullanıcı Chrome'unda otomatik güncelleme bu sınırdan etkilenmez.
+* Eklentinin `host_permissions`'ı yalnız `http://localhost:8766/*` içerir: API adresi `127.0.0.1` verilirse yükleme "Failed to fetch" ile
+  düşer (artık "JurisAI sunucusuna ulaşılamadı (adres)" yazılır).
+
+### Geçici okuma hataları ve doğru başarı ölçütü (2026-10-07, v2.26.17)
+
+* Geçici ağaç sorgusu/açma hatası en çok iki kez, 4 ve 8 saniye beklenerek yeniden denenir. Oturum/yetki kaybı veya değişmiş liste
+  tekrar edilmez. Zaman aşımı/iptalde eski iş için durdurma komutu gönderilir; üst üste üç kalıcı dosya hatasında koşu yine durur.
+* Başka yargı türü sorgulanmadan önce açık dosya penceresi kapatılır. Açılan pencerenin esas no/birim kimliği istenen satırla
+  eşleşmeden o pencere kabul edilmez.
+* Salt okunur sekmeler `href`, `data-target`, `data-bs-target` veya `aria-controls` ile çözülür; hedef yalnız mevcut dosya
+  penceresinde aranır. Sekme/içerik hatası bir kez beklenerek tekrar okunur; DOM'da görünürlük zorla değiştirilmez.
+* Yüklenmemiş boş sekme tamam sayılmaz. Safahat sorgusunda eski tablo yeterli değildir: yeni çizim de beklenir. DataTables
+  yükleme durumu, satır içeriği ve UYAP toplamı birlikte denetlenir. Durdurma bilgi sekmeleri arasında da uygulanır.
+* **Evraklar eksiksiz** rozeti yalnız evrakları anlatır. Genel başarı için dosya bilgilerinin de tam okunup kaydedilmiş olması
+  gerekir. Sunucunun eksik dediği bilgi veya evrak raporu istemcide başarıya çevrilmez; kaydetme hatası görünür kalır.
+* Yeniden deneme, evrakları tam olsa da bilgileri eksik/kaydedilmemiş dosyaları kapsar. Yeniden denenen alt küme önceki dosya
+  sonuçlarıyla birleştirilir; başarılı dosyalar toplam rapordan kaybolmaz.
+* Doğrulama/bilgi kayıt istekleri 60 saniyede zaman aşımına uğrar; kayıt onayı alınmadan ikinci koşu başlamaz. Eksik/yanlış
+  dosya kimlikli veya bozuk sunucu yanıtı kaydedilmiş sayılmaz. Önceden saklanmış hatalı `complete` bilgisi de tablolardan
+  yeniden denetlenerek gösterilir.
+* Sorgu formu olmayan eski liste görünümünde bilinmeyen dosya anahtarı doğrudan `stale` döner; açık pencereyi kapatmaya
+  çalışıp yanıltıcı `cannot_close` hatasına çevrilmez. Tarayıcı testlerinde başarısız bir testin sekmeleri de temizlenir;
+  başka testin oturumu yanlışlıkla seçilmez.
+
+Yerel Chromium testleri gerçek portala istek göndermez; bunların geçmesi canlı UYAP kabul testinin yerine geçmez. Canlı kabul
+ölçütü: güncel eklentiyle tam dosya listesi taranmalı, her erişilebilir evrak sunucu kaydıyla eşleşmeli, bilgi sekmeleri eksiksiz
+olmalı ve ikinci denetimde gereksiz yeniden yükleme olmamalıdır. Portal/oturum hatası varsa sonuç açıkça eksik kalır.
+
+#### 2026-10-07 test kaydı ve açık kabul kapısı
+
+* API genel yerel testleri: **1.148 geçti, 322 atlandı**. Bu koşuda tarayıcı testleri kapalıydı; izole test veritabanı ve dış
+  servis gerektiren işaretli testler de çalıştırılmadı. Atlanan testler geçmiş kabul edilmez.
+* Arayüz: **265/265** test geçti; TypeScript kontrolü, değiştirilen UYAP dosyalarının ESLint denetimi ve üretim derlemesi geçti.
+  Eklenti ZIP'i kaynak dizinle eşleşti; sunulan son manifest **2.26.17**.
+* İlk geniş Chromium koşusu: **95 geçti, 4 başarısız**. İlk hata, sorgu formu olmayan listede geçersiz anahtarın `stale`
+  yerine `cannot_close` dönmesiydi. Bu hata sonrasında kapanmayan test sekmeleri başka oturum seçilmesine yol açarak üç testi
+  daha etkiledi. Hata yolu düzeltildi; her test sonunda o testin açtığı sekmeleri kapatan izolasyon eklendi.
+* Düzeltme sonrası ayrı Chromium grupları: **10/10** (geçersiz anahtar, liste/sayfa, yargı türü, kalıcı kimlik ve modal geçişi),
+  **9/9** (etkilenen üç senaryo ve tüm bilgi-sekmesi regresyonları), **3/3** (yanlış modalın reddi, güncelleme ve yeniden enjeksiyon).
+  Düzeltme sonrası tüm paketin tek koşuda yeniden geçtiği iddia edilmez. Sahte sayfalar gerçek UYAP'a bağlanmaz.
+* Mevcut hesaptaki **1.398** UYAP belgesinin salt okunur kontrolünde eksik fiziksel dosya, boyut/SHA-256 uyuşmazlığı,
+  aynı evrak kimliğinde mükerrer kayıt, kimliksiz veya davaya bağlanmamış kayıt bulunmadı. Bu yalnız saklanan belgelerin
+  bütünlüğünü gösterir; gerçek UYAP ağacındaki bütün evrakların alındığını kanıtlamaz.
+* Canlı Chrome kontrol aracı Windows sandbox başlatma hatasıyla açılamadı; bu çalışmada yeni canlı evrak aktarımı yapılmadı.
+  Kullanıcı v2.26.16'yı yüklediğini bildirdi; geniş testteki son düzeltme sonrasında paket v2.26.17 oldu. Canlı kabul için
+  son sürüm doğrulanmalı, tam liste/evrak/bilgi denetimi ve ikinci geçişte gereksiz yükleme olmaması ölçülmeli.
+* API, web ve korpus paneli sağlık kontrolleri HTTP 200 döndü. `NHR Legal AI PC Collectors` ve
+  `NHR Legal AI Azure Corpus Sync` görevleri **Disabled** kaldı; korpus çekimi/embedding yeniden başlatılmadı.
+
+### Kullanıcının başarısız canlı denetim raporu sonrası (2026-10-07, v2.26.18)
+
+Canlı rapor: 21 dosyadan ilk üçü okunamadı, 18'i işlenmedi; evrak ağacı okunamadı, pencere kimliği doğrulanamadı ve
+liste değişmiş hataları görüldü. Bu rapor boş dosya veya tamamlanmış aktarım kanıtı değildir. Canlı Chrome kontrol aracı
+bu turda da başlatılamadı; aşağıdaki düzeltmeler sentetik portalda doğrulanır, canlı raporun kesin nedeni sayılmaz.
+
+* Evrak sekmesinin yalnız `active` sınıfına güvenilmez: hedef pane görünür olmalı. `Evrak`, `Evraklar`, `Evrak Bilgileri`
+  etiketleri izinli; `Evrak Gönderme` yine yasak. İlk tıklama yutulursa salt okunur sekme bir kez daha etkinleştirilir.
+  Gizli pane içindeki ağaç hazır sonuç sayılmaz; DOM görünürlüğü zorla değiştirilmez.
+* Dosya kimliğinde `.modal-title` içerik başlıklarından önce seçilir. Esas no ve mahkeme eşleşmesi gevşetilmez.
+* Başarısız sorgunun yalnız tabloyu temizlemesi başarı sayılmaz: yeni açılabilir satır veya açık boş-sonuç hücresi beklenir.
+  Tür sorgusu başarısızsa `query_failed` korunur; yanlışlıkla `stale` denmez, mevcut sınırlı yeniden deneme uygulanabilir.
+* Kopyalanan rapor, okunamayan/denenmeyen dosyada yanıltıcı `0/0 evrak` yerine sayının bilinmediğini yazar;
+  dosya bilgilerine ait hata nedenlerini de içerir.
+* Üç yeni tarayıcı senaryosu eski kodda başarısız oldu (yutulan sekme tıklaması, eski active işareti, içerikte önce gelen başlık).
+  Düzeltme sonrası bu senaryolar ve modal/liste/bilgi-sekmesi regresyonları birlikte **10/10 geçti**.
+  Tüm tarayıcı paketinin yeniden geçtiği veya canlı UYAP'ın düzeldiği iddia edilmez.
+* Ayrı grupta başarısız tür sorgusunun doğru hata koduyla bildirilmesi, tam liste/sayfa taraması ve eşzamanlı listeleme
+  izolasyonu **4/4 geçti**. Web testleri **265/265** geçti; paket/kaynak eşleşmesi de bu teste dahil.

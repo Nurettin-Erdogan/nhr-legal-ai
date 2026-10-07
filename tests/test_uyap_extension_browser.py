@@ -14,6 +14,7 @@ import datetime
 import io
 import json
 import os
+import re
 import shutil
 import ssl
 import tempfile
@@ -225,6 +226,8 @@ def _legacy(evrak_id: str) -> str:
 
 
 class _UyapHandler(BaseHTTPRequestHandler):
+    same_document: bytes | None = None
+
     def log_message(self, *args):
         pass
 
@@ -272,7 +275,7 @@ class _UyapHandler(BaseHTTPRequestHandler):
             return self._send(200, page.encode(), "text/html; charset=utf-8")
         if path == "/main/jsp/view_document_brd.uyap":
             evrak_id = query.split("evrakId=")[-1].split("&")[0].removeprefix("ENC")
-            if evrak_id == "109":
+            if evrak_id in ("109", "110", "111", "112"):
                 message = "Görüntülemek istediğiniz evrakın boyutu çok büyük! Lütfen evrakı sisteminize kaydederek görüntüleyiniz."
                 return self._send(200, message.encode(), "text/plain; charset=utf-8")
             if evrak_id in ("107", "108"):
@@ -289,7 +292,11 @@ class _UyapHandler(BaseHTTPRequestHandler):
             if evrak_id == "104":  # TIFF: belge yerine kısa mesaj
                 message = "Bu evrak türü (Tiff) görüntülenemediğinden dolayı evrak indiriliyor.".encode()
                 return self._send(200, message, "text/plain; charset=utf-8")
-            data = _odt(f"Evrak {evrak_id} metni")
+            data = (
+                type(self).same_document
+                if evrak_id in ("101", "102") and type(self).same_document is not None
+                else _odt(f"Evrak {evrak_id} metni")
+            )
             self.send_response(200)
             self.send_header("Content-Type", "application/vnd.oasis.opendocument.text")
             self.send_header("Content-Disposition", "attachment; filename=evrak.odt")
@@ -301,8 +308,10 @@ class _UyapHandler(BaseHTTPRequestHandler):
             # Gerçek portalda ölçüldü (2026-10-05): "Kaydet" (downloadDoc) ön izlemenin eşi olan bu adresi aynı evrakId/dosyaId/
             # yargiTuru ile, `mimeType` OLMADAN ister; ön izlemenin "boyutu çok büyük" dediği evrak buradan gerçek dosyasıyla gelir.
             evrak_id = query.split("evrakId=")[-1].split("&")[0].removeprefix("ENC")
-            if evrak_id != "109" or "mimeType=" in query:
+            if evrak_id not in ("109", "110", "111", "112") or "mimeType=" in query:
                 return self._send(404, b"yok", "text/plain")
+            if evrak_id in ("110", "111", "112"):
+                return self._big_attachment(evrak_id)
             data = b"\xff\xd8\xff\xe0\x00\x10JFIF" + b"fake-jpeg-109" * 40
             self.send_response(200)
             self.send_header("Content-Type", "application/download")
@@ -332,6 +341,37 @@ class _UyapHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _big_attachment(self, evrak_id):
+        """Gerçek portalda ölçüldü (2026-10-06): büyük ekler "Kaydet" adresinden parça parça (chunked) gelir, ilk bayt 10-18 sn sonra,
+        tamamı bir dakikaya yakın sürer; bazen UYAP akışı yarıda keser. 110: yavaş ama durmadan akan küçük dosya; 111: 50 MB'ı aşan
+        akış (boyut başlığı yok); 112: bildirilen boydan önce kesilen akış."""
+        self.send_response(200)
+        self.send_header("Content-Type", "application/download")
+        try:
+            if evrak_id == "110":
+                self.send_header("Content-Disposition", 'attachment; filename="ek_110.jpg"')
+                self.end_headers()
+                self.wfile.write(b"\xff\xd8\xff\xe0\x00\x10JFIF")
+                for _ in range(5):
+                    time.sleep(0.7)  # eklentinin 1,5 sn'lik "veri gelmedi" sınırından kısa, toplamı ondan uzun
+                    self.wfile.write(b"fake-jpeg-110-" * 20)
+                    self.wfile.flush()
+            elif evrak_id == "111":
+                self.send_header("Content-Disposition", 'attachment; filename="buyuk_111.zip"')
+                self.end_headers()
+                block = b"\0" * (1024 * 1024)
+                for _ in range(52):
+                    self.wfile.write(block)
+            else:
+                self.send_header("Content-Disposition", 'attachment; filename="kesik_112.zip"')
+                self.send_header("Content-Length", str(5 * 1024 * 1024))
+                self.end_headers()
+                self.wfile.write(b"PK\x03\x04" + b"\0" * 100_000)
+                self.wfile.flush()
+                self.close_connection = True
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass  # eklenti sınırı aşan akışı bilerek keser
 
 
 class _ApiHandler(BaseHTTPRequestHandler):
@@ -498,6 +538,16 @@ def lab():
         uyap.shutdown()
         api.shutdown()
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
+def close_test_tabs(lab):
+    """Başarısız bir testin sekmesi sonraki testte yanlış UYAP oturumu olarak seçilmesin."""
+    existing = set(lab.context.pages)
+    yield
+    for page in lab.context.pages:
+        if page not in existing and not page.is_closed():
+            page.close()
 
 
 def _buttons(page) -> int:
@@ -1035,6 +1085,25 @@ def test_pulling_a_case_creates_one_upload_per_evrak_with_its_folder_path(lab):
     page.close()
 
 
+def test_manual_pull_keeps_distinct_evrak_ids_with_identical_file_bytes(lab):
+    """Aynı içerik farklı UYAP evrak kimliklerine aitse ikisi de sunucuya gönderilir."""
+    lab.configure(throttleMs=500)
+    _UyapHandler.same_document = _odt("Aynı içerik, iki farklı evrak")
+    page = None
+    try:
+        page = lab.open("/vatandas/dosya-agaci")
+        result = _pull(lab, page)
+        assert result["ok"] and result["sent"] == 4 and result["failed"] == 0, result
+        uploads = {_legacy(upload["fields"]["evrakId"]): upload for upload in lab.uploads}
+        assert sorted(uploads) == ["101", "102", "103", "104"]
+        assert uploads["101"]["file"]["data"] == uploads["102"]["file"]["data"]
+        assert result["sameContent"] == 0
+    finally:
+        _UyapHandler.same_document = None
+        if page is not None:
+            page.close()
+
+
 def test_only_the_evraks_the_user_ticks_are_pulled(lab):
     """"Biz hangisini seçersek o çekilir": işaretsiz bırakılan evrak hiç istenmez."""
     lab.configure(throttleMs=500)
@@ -1475,6 +1544,53 @@ def test_an_evrak_too_large_for_the_preview_is_fetched_from_uyaps_own_save_addre
     page.close()
 
 
+for _leaf in ("110", "111", "112"):
+    PAGES[f"/vatandas/dosya-ek-{_leaf}"] = _one_leaf_page(_leaf)
+
+
+def test_a_slow_but_steady_save_download_is_not_cut_by_the_no_data_timeout(lab):
+    """Canlıda 53 MB'lık ek 59 sn'de geldi; eski toplam 45 sn sınırı akan indirmeyi kesiyordu. Sınır "veri gelmedi" süresidir."""
+    lab.configure(throttleMs=500, timeoutMs=1500)
+    try:
+        page = lab.open("/vatandas/dosya-ek-110")
+        result = _pull(lab, page)
+        uploads = list(lab.uploads)  # configure() kayıtları siler
+    finally:
+        lab.configure(timeoutMs=45000)
+
+    assert result["ok"] and result["failed"] == 0, result  # indirme 1,5 sn'den uzun sürdü, yine de geldi
+    [upload] = [item for item in uploads if _legacy(item["fields"]["evrakId"]) == "110"]
+    assert upload["file"]["name"].endswith(".jpg") and upload["file"]["data"].startswith(b"\xff\xd8\xff")
+    assert upload["file"]["data"].count(b"fake-jpeg-110-") == 5 * 20  # akışın tamamı geldi
+    page.close()
+
+
+def test_an_attachment_over_50_mb_is_uploaded_whole_there_is_no_size_cap(lab):
+    """Canlıda 53 MB'lık zip bir "50 MB sınırı" yüzünden alınamıyordu. Sınır kaldırıldı: büyük ek tam olarak, Blob olarak
+    biriktirilip JurisAI'a yüklenir (dosyanın tamamı gelir, eksik ya da kesik değil)."""
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-ek-111")
+    result = _pull(lab, page)
+
+    assert result["ok"] and result["failed"] == 0, result
+    [upload] = [item for item in lab.uploads if _legacy(item["fields"]["evrakId"]) == "111"]
+    assert upload["file"]["name"].endswith(".zip")
+    assert len(upload["file"]["data"]) == 52 * 1024 * 1024  # UYAP'ın verdiği 52 MB'ın tamamı
+    page.close()
+
+
+def test_a_save_download_that_uyap_cuts_off_says_so(lab):
+    lab.configure(throttleMs=500)
+    page = lab.open("/vatandas/dosya-ek-112")
+    result = _pull(lab, page)
+
+    assert result["ok"] and result["failed"] == 1 and result["sent"] >= 4, result
+    reason = result["errors"][0]
+    assert "yarıda kesti" in reason and "indirip" not in reason, reason  # UYAP'ın kestiği söylenir, elle yükleme önerilmez
+    assert "112" not in [_legacy(upload["fields"]["evrakId"]) for upload in lab.uploads]
+    page.close()
+
+
 def test_the_save_address_is_derived_only_from_known_preview_addresses(lab):
     derived = lab.worker.evaluate("""() => [
       downloadUrlFor('https://vatandas.uyap.gov.tr/main/jsp/view_document_brd.uyap?mimeType=&evrakId=a%2Bb%40c&dosyaId=d%2Fe&yargiTuru=1'),
@@ -1895,12 +2011,13 @@ def test_the_extension_refuses_a_malformed_connection_key(lab):
 # --- JurisAI sayfasından evrak ağacı + aktarım (TREE / PULL_IDS / JOB_STATUS / STOP_JOB) -----------------------
 
 
-def _poll_job(web, tab_id, job_id, with_tree=False, timeout=120):
+def _poll_job(web, tab_id, job_id, with_tree=False, timeout=120, with_detail=False):
     """İş bitene kadar (done/error) JurisAI sayfası gibi yoklar."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         reply = web.evaluate(
-            "(p) => window.ask('JOB_STATUS', p)", {"tabId": tab_id, "jobId": job_id, "withTree": with_tree}
+            "(p) => window.ask('JOB_STATUS', p)",
+            {"tabId": tab_id, "jobId": job_id, "withTree": with_tree, "withDetail": with_detail},
         )
         assert reply.get("ok"), reply
         if reply["job"]["state"] != "running":
@@ -2063,6 +2180,7 @@ _REAL_LIST_HTML = """<html><body>
   <h4 class="modal-title"></h4>
   <button type="button" id="kapat">Kapat</button>
   <button type="button" id="onizleme">Ön İzlemeyi Aktifleştir</button>
+  @@DETAIL@@
   <ul id="tree" class="treeview"></ul>
   <div id="viewer"></div>
 </div>
@@ -2083,7 +2201,26 @@ _REAL_LIST_HTML = """<html><body>
   function folder(name, children, open) {
     return '<li class="' + (open ? 'collapsable' : 'expandable') + '"><div class="hitarea"></div><span class="folder">' + name + '</span><ul' + (open ? '' : ' style="display:none"') + '>' + children + '</ul></li>';
   }
+  // Canlıda ölçüldü (2026-10-06): "Kapalı E-Tebliğ Mazbatası" gibi evrakların balonunda "Birim Evrak No" BOŞ; öteki alanlar dolu.
+  function evNoNo(title, date) {
+    var tip = '<b>Birim Evrak No: </b><br>Evrakın Onaylandığı Tarih: ' + date + '<br>Kişi: Deneme Kişi<br>Gönderen Sayı: 2023/55<br>Türü: Tebligat';
+    return '<li><span class="file" ce="e" data-placement="top" data-html="true" evrak_id="&quot;' + rnd() + '&quot;" data-original-title="' + tip + '">' + title + '</span></li>';
+  }
+  function evBare(title) { return '<li><span class="file" evrak_id="&quot;' + rnd() + '&quot;">' + title + '</span></li>'; }
+  function buildNoNoTree(label, bare) {
+    var mazbata = 'Kapalı E-Tebliğ Mazbatası 01/02/2023';
+    var other = 'Kapalı E-Tebliğ Mazbatası 05/02/2023';
+    // Her yaprak kendi şifreli kimliğini taşır; birebir aynı iki mazbata (mazbata) farklı yapraklardır.
+    var recent = folder('Dosyaya Eklenen Son 20 Evrak', evNoNo(mazbata, '01/02/2023') + evNoNo(other, '05/02/2023'), false);
+    var inner = bare
+      ? ev(6001, 'Tebligat 01/02/2023') + evBare('Tebligat Zarfı')
+      : ev(6001, 'Tebligat 01/02/2023') + evNoNo(mazbata, '01/02/2023') + evNoNo(mazbata, '01/02/2023') + evNoNo(other, '05/02/2023');
+    var all = folder('Tüm Evraklar', folder('2022 (İcra Dosyası)', folder(bare ? 'Tebligat (2)' : 'Tebligat (4)', inner, false), false), true);
+    return '<li class="collapsable"><span class="folder">' + label + '</span><ul>' + recent + all + '</ul></li>';
+  }
   function buildTree(label) {
+    if (label.indexOf('2022/110') >= 0) return buildNoNoTree(label, false);
+    if (label.indexOf('2022/111') >= 0) return buildNoNoTree(label, true);
     var recent = folder('Dosyaya Eklenen Son 20 Evrak', ev(5001, 'Kesinleşme Şerhleri 01/07/2025') + ev(5003, 'Gerekçeli Karar 30/06/2025', eks('7000000001')), false);
     var all = folder('Tüm Evraklar', folder('2024 (Dava Dosyası)',
       folder('Kesinleşme Şerhleri (2)', ev(5001, 'Kesinleşme Şerhleri 01/07/2025') + ev(5002, 'Kesinleşme Şerhleri 02/07/2025'), false) +
@@ -2122,6 +2259,7 @@ _REAL_LIST_HTML = """<html><body>
     document.getElementById('tree').innerHTML = buildTree(row.birim + ' ' + row.esas);
     preview = false; document.getElementById('onizleme').textContent = 'Ön İzlemeyi Aktifleştir';
     modal.style.display = 'block';
+    if (window.__onOpenDetail) window.__onOpenDetail(row);
   }
   function render() {
     var tb = document.querySelector('#dosya_listesi_table tbody'); tb.innerHTML = '';
@@ -2156,17 +2294,120 @@ _REAL_LIST_HTML = """<html><body>
 </script></body></html>"""
 
 
-def _real_list_page(all_option: bool = True, lock_ms: int = 300) -> str:
+_DETAIL_TABS_HTML = r"""<ul class="nav nav-tabs" id="dosya_tabs"></ul>
+<div class="tab-content" id="dosya_panes"></div>
+<script>
+  // Gerçek portalda ölçülen dosya penceresi sekmeleri (2026-10-06): salt okunur sekmeler okunur; "Evrak Gönderme", "Ödeme" ve "Borç Öde"
+  // gibi etkileşimli öğelere eklenti ASLA dokunmamalı (window.__forbidden dolarsa test düşer).
+  window.__forbidden = [];
+  var DTS = {};
+  function dtRender(id) {
+    var s = DTS[id], wrap = document.getElementById(id + '_wrapper');
+    var size = s.size === -1 ? Math.max(1, s.rows.length) : s.size;
+    var from = s.page * size, slice = s.rows.slice(from, from + size);
+    var tb = wrap.querySelector('tbody'); tb.innerHTML = '';
+    if (!s.rows.length) tb.innerHTML = '<tr><td class="dataTables_empty" colspan="' + s.headers.length + '">Tabloda herhangi bir veri mevcut değil</td></tr>';
+    slice.forEach(function (r) {
+      var tr = document.createElement('tr');
+      r.forEach(function (v, i) { var td = document.createElement('td'); if (s.hidden === i) td.className = 'hidden'; td.textContent = v; tr.appendChild(td); });
+      tb.appendChild(tr);
+    });
+    var total = s.declared !== undefined ? s.declared : s.rows.length;
+    wrap.querySelector('.dataTables_info').textContent = s.rows.length ? total + ' Kayıttan ' + (from + 1) + ' - ' + (from + slice.length) + ' Arası Kayıtlar' : 'Kayıt Yok';
+    wrap.querySelector('.paginate_button.next').classList.toggle('disabled', from + size >= s.rows.length);
+  }
+  function dtHtml(id, headers, rows, opts) {
+    opts = opts || {};
+    DTS[id] = { headers: headers, rows: rows, size: opts.noAll ? 5 : 10, page: 0, hidden: opts.hidden, declared: opts.declared };
+    var ths = headers.map(function (h, i) { return '<th' + (opts.hidden === i ? ' class="hidden"' : '') + '>' + h + '</th>'; }).join('');
+    var lengths = opts.noAll ? '<option value="5">5</option><option value="10">10</option>' : '<option value="10">10</option><option value="25">25</option><option value="-1">Tümü</option>';
+    return '<div id="' + id + '_wrapper" class="dataTables_wrapper"><select name="' + id + '_length">' + lengths + '</select>' +
+      '<table id="' + id + '" class="table dataTable"><thead><tr>' + ths + '</tr></thead><tbody></tbody></table>' +
+      '<div class="dataTables_info"></div><div class="dataTables_paginate"><ul><li class="paginate_button previous disabled"><a href="#">Önceki</a></li><li class="paginate_button next"><a href="#">Sonraki</a></li></ul></div></div>';
+  }
+  function dtWire(id) {
+    var wrap = document.getElementById(id + '_wrapper');
+    wrap.querySelector("select[name$='_length']").addEventListener('change', function () { DTS[id].size = parseInt(this.value, 10); DTS[id].page = 0; dtRender(id); });
+    wrap.querySelector('.paginate_button.next a').addEventListener('click', function (e) { e.preventDefault(); if (!this.parentElement.classList.contains('disabled')) { DTS[id].page += 1; dtRender(id); } });
+    dtRender(id);
+  }
+  function kv(rows, button) {
+    return '<table class="table"><tbody>' + rows.map(function (r) { return '<tr><td>' + r[0] + '</td><td>' + r[1] + '</td></tr>'; }).join('') +
+      (button ? '<tr><td colspan="2"><button type="button" class="btn btn-danger" data-forbidden="borc-ode">' + button + '</button></td></tr>' : '') + '</tbody></table>';
+  }
+  function rows(n, make) { var out = []; for (var i = 1; i <= n; i++) out.push(make(i)); return out; }
+  function panel(title, inner) { return '<div class="panel"><div class="panel-heading">' + title + '</div>' + inner + '</div>'; }
+  window.__onOpenDetail = function (row) {
+    var variant = row.esas === '2022/113' ? 'paging' : row.esas === '2022/114' ? 'liar' : 'normal';
+    var noAll = variant === 'paging';
+    var tabs = [
+      ['Dosya Bilgileri', 'dosya_ayrinti_bilgileri_tab'], ['Dosya Hesabı', 'dosya_hesap_bilgileri_tab'], ['Taraf Bilgileri', 'dosya_taraf_bilgileri_tab'],
+      ['Evrak', 'dosya_evrak_bilgileri_tab'], ['Safahat', 'dosya_safahat_bilgileri_tab'], ['Evrak Gönderme', 'dosya_evrak_gonderme_tab'],
+      ['Ödeme', 'dosya_odeme_tab'], ['Tah./Red. Bilgileri', 'dosya_tahsilat_reddiyat_bilgileri_tab']
+    ];
+    document.getElementById('dosya_tabs').innerHTML = tabs.map(function (t, i) { return '<li' + (i === 0 ? ' class="active"' : '') + '><a data-toggle="tab" href="#' + t[1] + '">' + t[0] + '</a></li>'; }).join('');
+    var panes = {};
+    panes.dosya_ayrinti_bilgileri_tab = kv([['Türü', 'İcra Dosyası'], ['Yolu', 'Genel İcra'], ['Şekli', 'İlamsız Takip'], ['Dosya Durumu', 'Açık']]);
+    panes.dosya_hesap_bilgileri_tab = kv([['Takipte Kesinleşen Miktar', '10.000,00 TL'], ['Toplam Faiz Miktarı', '1.250,50 TL'], ['Vekalet Ücreti', '1.500,00 TL'], ['Masraf Miktarı', '320,00 TL'], ['BSMV Miktarı', '12,50 TL'], ['Tahsil Harcı', '700,00 TL'], ['Toplam Alacak', '13.783,00 TL'], ['Yatan Para', '2.000,00 TL'], ['Bakiye Borç Miktarı', '11.783,00 TL']], 'Borç Öde');
+    panes.dosya_taraf_bilgileri_tab = dtHtml('taraf_listesi_table', ['Rol', 'Tipi', '', 'Adı', 'Vekil', 'İşlem'],
+      rows(12, function (i) { return [i % 2 ? 'Alacaklı' : 'Borçlu', i % 2 ? 'Tüzel' : 'Gerçek', String(1000 + i), 'Taraf ' + i, i % 3 ? 'Av. Vekil ' + i : '', '']; }), { hidden: 2, noAll: noAll });
+    panes.dosya_evrak_bilgileri_tab = '<div>evrak ağacı bu sahte sayfada modalın içinde</div>';
+    panes.dosya_safahat_bilgileri_tab = '<button type="button" class="btn btn-success" id="btnQuerySafahatInfo">Sorgula</button><div id="safahat_slot"></div>';
+    panes.dosya_evrak_gonderme_tab = '<button type="button" data-forbidden="evrak-gonder">Evrak Gönder</button>';
+    panes.dosya_odeme_tab = '<button type="button" data-forbidden="odeme-ekle">Ekle</button>';
+    panes.dosya_tahsilat_reddiyat_bilgileri_tab =
+      panel('Özet', '<table class="table"><thead><tr><th>Tahsilat</th><th>Reddiyat</th><th>Tahsilat Kalanı</th></tr></thead><tbody><tr><td>2.000,00 TL</td><td>500,00 TL</td><td>1.500,00 TL</td></tr></tbody></table>') +
+      panel('Tahsilat Bilgileri', dtHtml('tahsilat_listesi_table', ['Dosya No', 'Tahsilat Türü', 'Tahsilat Tarihi', 'Makbuz No', 'Tahsilat Tutarı'], rows(3, function (i) { return ['2022/1' + i, 'Haricen', '0' + i + '.03.2024', String(7000 + i), i + '00,00 TL']; }))) +
+      panel('Harç / Masraf Bilgileri', dtHtml('harc_listesi_table', ['Harç/Masraf Adı', 'Tahsilat Tarihi', 'Miktar'], rows(2, function (i) { return ['Posta Masrafı', '0' + i + '.04.2024', i + '5,00 TL']; })));
+    document.getElementById('dosya_panes').innerHTML = tabs.map(function (t, i) { return '<div class="tab-pane' + (i === 0 ? ' active' : '') + '" id="' + t[1] + '" style="display:' + (i === 0 ? 'block' : 'none') + '">' + panes[t[1]] + '</div>'; }).join('');
+    if (window.__detailMode === 'targets') document.querySelectorAll('#dosya_tabs a').forEach(function (a) {
+      a.setAttribute('data-target', a.getAttribute('href')); a.setAttribute('href', '#');
+    });
+    if (window.__detailMode === 'blank') document.getElementById('dosya_hesap_bilgileri_tab').innerHTML = '<div>Yükleniyor...</div>';
+    ['taraf_listesi_table', 'tahsilat_listesi_table', 'harc_listesi_table'].forEach(dtWire);
+    document.querySelectorAll('[data-forbidden]').forEach(function (b) { b.addEventListener('click', function () { window.__forbidden.push(b.getAttribute('data-forbidden')); }); });
+    document.querySelectorAll('#dosya_tabs a').forEach(function (a) {
+      a.addEventListener('click', function (e) {
+        e.preventDefault();
+        var label = a.textContent;
+        if (label === 'Safahat' && window.__detailMode === 'swallow' && !window.__swallowed) { window.__swallowed = true; return; }
+        if (label === 'Evrak Gönderme' || label === 'Ödeme') window.__forbidden.push('sekme:' + label);
+        document.querySelectorAll('#dosya_tabs li').forEach(function (li) { li.classList.remove('active'); });
+        a.parentElement.classList.add('active');
+        document.querySelectorAll('#dosya_panes .tab-pane').forEach(function (p) { p.style.display = 'none'; p.classList.remove('active'); });
+        var target = document.querySelector(a.getAttribute('data-target') || a.getAttribute('href')); target.style.display = 'block'; target.classList.add('active');
+      });
+    });
+    document.getElementById('btnQuerySafahatInfo').addEventListener('click', function () {
+      // Sorgu AJAX ile döner: tablo kısa bir gecikmeyle çizilir.
+      setTimeout(function () {
+        var data = rows(23, function (i) { return ['Ankara ' + (i % 4 + 1) + '. İcra Dairesi', (i % 28 + 1) + '.01.2024', 'İşlem ' + i, 'Açıklama metni ' + i, '']; });
+        document.getElementById('safahat_slot').innerHTML = dtHtml('safahat_listesi_table', ['İşlem Yapan Birim', 'Tarih', 'İşlem Türü', 'Açıklama', 'İşlem Durumu'], data, { noAll: noAll, declared: variant === 'liar' ? 25 : undefined });
+        dtWire('safahat_listesi_table');
+      }, 700);
+    });
+  };
+</script>
+"""
+
+
+def _real_list_page(all_option: bool = True, lock_ms: int = 300, detail: bool = False) -> str:
     options = "".join(f'<option value="{value}">{label}</option>' for value, label in _REAL_TYPES)
     lengths = '<option value="10">10</option><option value="15" selected>15</option>'
     if all_option:
         lengths += '<option value="50">50</option><option value="-1">Tümü</option>'
-    return _REAL_LIST_HTML.replace("@@OPTIONS@@", options).replace("@@LENGTHS@@", lengths).replace("@@LOCK@@", str(lock_ms))
+    return (
+        _REAL_LIST_HTML.replace("@@OPTIONS@@", options)
+        .replace("@@LENGTHS@@", lengths)
+        .replace("@@LOCK@@", str(lock_ms))
+        .replace("@@DETAIL@@", _DETAIL_TABS_HTML if detail else "")
+    )
 
 
 PAGES["/vatandas/dosya-sorgulama-gercek"] = _real_list_page()
 PAGES["/vatandas/dosya-sorgulama-sayfali"] = _real_list_page(all_option=False)  # "Tümü" yok: "Sonraki" ile gezilmeli
 PAGES["/vatandas/dosya-sorgulama-kilitli"] = _real_list_page(lock_ms=1500)  # modal kapanırken "aç" tıklaması 1,5 sn yutulur
+PAGES["/vatandas/dosya-sorgulama-detay"] = _real_list_page(detail=True)  # dosya penceresinde evrak dışı sekmeler (salt okunur okunur)
 PAGES["/vatandas/anasayfa-gercek"] = """<html><body>
 <ul class="menu"><li><a id="ust" href="javascript:void(0)">Sorgulama İşlemleri</a>
   <ul id="alt" style="display:none"><li><a href="javascript:menuButtonClick('12573')">Dosya Sorgulama</a></li><li><a href="javascript:void(0)">Danıştay Dosya Sorgulama</a></li></ul></li></ul>
@@ -2260,6 +2501,81 @@ def test_a_case_on_a_later_page_can_be_opened_from_jurisai(lab):
         uyap.close()
 
 
+def test_a_wrong_case_modal_is_never_accepted_as_the_requested_case(lab):
+    """Gecikmiş/yanlış modal görünse de başka dosyanın evrakı istenen dosyanın sonucu olamaz."""
+    lab.configure(throttleMs=500)
+    uyap = lab.open("/vatandas/dosya-sorgulama-gercek")
+    web = _jurisai_page(lab)
+    item = _by_esas(_real_list(web), "2024/124")
+    uyap.evaluate("""() => {
+      const actualOpen = window.openModal;
+      window.openModal = () => actualOpen({ esas: '2024/2000', birim: 'Başka Mahkeme', tur: 'Ceza Dava Dosyası' });
+    }""")
+    started = _ask(web, "TREE", {"key": item["key"], "yargiTuru": item["yargiTuru"]})
+    assert started["ok"] is True
+    done = _poll_job(web, started["tabId"], started["jobId"], with_tree=True)
+    assert done["job"]["state"] == "error" and done["job"]["code"] == "open_failed", done
+    assert done.get("tree") is None and lab.uploads == []
+
+
+@pytest.mark.parametrize("mode", ["swallowed", "stale-active"])
+def test_evrak_tab_recovers_from_a_swallowed_click_or_stale_active_marker(lab, mode):
+    lab.configure(throttleMs=500)
+    uyap = lab.open("/vatandas/dosya-sorgulama-detay")
+    web = _jurisai_page(lab)
+    listing = _real_list(web)
+    uyap.evaluate("""mode => {
+      const original = window.__onOpenDetail;
+      window.__onOpenDetail = row => {
+        original(row);
+        const pane = document.getElementById('dosya_evrak_bilgileri_tab');
+        pane.appendChild(document.getElementById('tree'));
+        const tab = document.querySelector('#dosya_tabs a[href="#dosya_evrak_bilgileri_tab"]');
+        tab.textContent = 'Evraklar';
+        if (mode === 'stale-active') tab.parentElement.classList.add('active');
+        else tab.addEventListener('click', event => {
+          if (!window.__evrakSwallowed) {
+            window.__evrakSwallowed = true;
+            event.stopImmediatePropagation();
+          }
+        }, true);
+      };
+    }""", mode)
+    _, tree = _real_tree(web, _by_esas(listing, "2024/2000"))
+    assert tree["items"] and tree["who"]["esas"] == "2024/2000", tree
+    assert uyap.locator('#dosya_evrak_bilgileri_tab').is_visible()
+    assert uyap.evaluate("() => window.__forbidden") == []
+    assert lab.uploads == []
+
+
+def test_case_identity_uses_modal_title_not_an_earlier_content_heading(lab):
+    lab.configure(throttleMs=500)
+    uyap = lab.open("/vatandas/dosya-sorgulama-gercek")
+    web = _jurisai_page(lab)
+    listing = _real_list(web)
+    uyap.evaluate("""() => {
+      const modal = document.getElementById('dosya_goruntule_modal');
+      const heading = document.createElement('h3');
+      heading.textContent = 'Dosya ayrıntıları';
+      modal.prepend(heading);
+    }""")
+    _, tree = _real_tree(web, _by_esas(listing, "2024/2000"))
+    assert tree["who"]["esas"] == "2024/2000" and tree["items"]
+    assert lab.uploads == []
+
+
+def test_failed_type_query_is_not_misreported_as_a_changed_case_list(lab):
+    lab.configure(throttleMs=500)
+    uyap = lab.open("/vatandas/dosya-sorgulama-gercek")
+    web = _jurisai_page(lab)
+    listing = _real_list(web)
+    uyap.route("**/dosya/sorgu?tur=0", lambda route: route.fulfill(status=503, body="{}", content_type="application/json"))
+    started = _ask(web, "TREE", {"key": _by_esas(listing, "2024/2000")["key"], "yargiTuru": "Ceza"})
+    done = _poll_job(web, started["tabId"], started["jobId"], with_tree=True)
+    assert done["job"]["state"] == "error" and done["job"]["code"] == "query_failed", done
+    assert done.get("tree") is None and lab.uploads == []
+
+
 def test_the_extension_opens_dosya_sorgulama_from_the_menu_when_it_is_not_open(lab):
     lab.configure(throttleMs=500)
     uyap = lab.open("/vatandas/anasayfa-gercek")
@@ -2303,6 +2619,210 @@ def test_the_tree_identity_is_stable_even_though_uyap_reencrypts_evrak_ids_on_ev
     uyap.wait_for_timeout(1800)
     _tab, second = _real_tree(web, _by_esas(_real_list(web), "2024/2000"))
     assert sorted(item["id"] for item in second["items"]) == ids
+    web.close()
+    uyap.close()
+
+
+def test_evraks_with_an_empty_birim_evrak_no_get_a_stable_identity_that_survives_reloads(lab):
+    """Canlıda (2026-10-06) "Kapalı E-Tebliğ Mazbatası"nın balonunda "Birim Evrak No" boştu; kimlik her oturumda değişen şifreli
+    evrak_id'ye düşüyordu: aynı evrak her doğrulamada yeniden "eksik" görünüyor ve her aktarımda çoğalıyordu. Balondaki öteki alanların
+    özeti kimlik olur; birebir aynı iki evrak (aynı gün aynı kişi) sıra numarasıyla ayrı kalır; "Son 20" kopyaları sayılmaz."""
+    lab.configure(throttleMs=500)
+    uyap = lab.open("/vatandas/dosya-sorgulama-gercek")
+    web = _jurisai_page(lab)
+    _tab, first = _real_tree(web, _by_esas(_real_list(web), "2022/110"))
+    ids = sorted(item["id"] for item in first["items"])
+    weak = [identity for identity in ids if identity.startswith("nn:")]
+    assert len(ids) == 4 and len(weak) == 3, ids  # 1 numaralı + 3 numarasız (2'si birebir aynı)
+    assert all(re.fullmatch(r"nn:[0-9a-f]{24}#[01]@.+", identity) for identity in weak), weak
+    assert len({identity.split("#")[0] for identity in weak}) == 2  # iki farklı özet; birinde #0 ve #1 var
+    assert first["counts"]["unstableId"] == 0 and first["counts"]["foundTotal"] == 4
+
+    uyap.reload()  # UYAP tüm şifreli kimlikleri yeniden üretir
+    uyap.wait_for_timeout(1800)
+    _tab, second = _real_tree(web, _by_esas(_real_list(web), "2022/110"))
+    assert sorted(item["id"] for item in second["items"]) == ids  # yeni yüklemede aynı kimlikler
+    web.close()
+    uyap.close()
+
+
+def test_an_evrak_with_no_stable_identity_at_all_is_counted_so_the_tree_cannot_be_called_complete(lab):
+    lab.configure(throttleMs=500)
+    uyap = lab.open("/vatandas/dosya-sorgulama-gercek")
+    web = _jurisai_page(lab)
+    _tab, tree = _real_tree(web, _by_esas(_real_list(web), "2022/111"))
+    assert len(tree["items"]) == 2 and tree["counts"]["unstableId"] == 1, tree["counts"]  # balonsuz yaprak: kimliği her oturumda değişir
+    web.close()
+    uyap.close()
+
+
+def _detail(web, item):
+    started = _ask(web, "DETAIL", {"key": item["key"], "yargiTuru": item["yargiTuru"]})
+    assert started.get("ok"), started
+    done = _poll_job(web, started["tabId"], started["jobId"], with_detail=True)
+    return started["tabId"], done
+
+
+def _tab(detail, key):
+    return next(tab for tab in detail["tabs"] if tab["key"] == key)
+
+
+def test_the_detail_job_reads_every_read_only_tab_completely_and_never_touches_interactive_ones(lab):
+    """Gerçek portalda ölçüldü (2026-10-06): dosya penceresinde Dosya Bilgileri / Dosya Hesabı / Taraf Bilgileri / Safahat / Tah.-Red.
+    sekmeleri okunur; "Evrak Gönderme", "Ödeme" sekmelerine ve "Borç Öde" düğmesine ASLA dokunulmaz. Tablolar UYAP'ın "N Kayıttan"
+    sayısıyla karşılaştırılır; gizli sütun (iç kimlik) okunmaz."""
+    lab.configure(throttleMs=500)
+    uyap = lab.open("/vatandas/dosya-sorgulama-detay")
+    web = _jurisai_page(lab)
+    _tab_id, done = _detail(web, _by_esas(_real_list(web), "2022/112"))
+
+    assert done["job"]["state"] == "done" and done["job"]["kind"] == "detail", done
+    detail = done["detail"]
+    assert detail["complete"] is True and detail["problems"] == [], detail
+    assert [tab["key"] for tab in detail["tabs"]] == ["bilgiler", "hesap", "taraflar", "safahat", "tahsilat"]
+    assert detail["who"]["esas"] == "2022/112"
+
+    assert [pair["label"] for pair in _tab(detail, "bilgiler")["pairs"]] == ["Türü", "Yolu", "Şekli", "Dosya Durumu"]
+    hesap = {pair["label"]: pair["value"] for pair in _tab(detail, "hesap")["pairs"]}
+    assert hesap["Toplam Alacak"] == "13.783,00 TL" and hesap["Bakiye Borç Miktarı"] == "11.783,00 TL"
+    assert "Borç Öde" not in hesap and len(hesap) == 9  # düğme satırı okunmadı
+
+    [taraf] = _tab(detail, "taraflar")["tables"]
+    assert taraf["headers"] == ["Rol", "Tipi", "Adı", "Vekil", "İşlem"]  # gizli sütun (iç kimlik) yok
+    assert len(taraf["rows"]) == 12 and taraf["declared"] == 12 and taraf["complete"] is True
+    assert all(len(row) == 5 for row in taraf["rows"]) and taraf["rows"][0][:3] == ["Alacaklı", "Tüzel", "Taraf 1"]
+
+    [safahat] = _tab(detail, "safahat")["tables"]  # "Sorgula" ile gelen tablo
+    assert len(safahat["rows"]) == 23 and safahat["declared"] == 23 and safahat["complete"] is True
+    assert safahat["headers"][:3] == ["İşlem Yapan Birim", "Tarih", "İşlem Türü"]
+
+    tahsilat = _tab(detail, "tahsilat")["tables"]
+    assert [table["title"] for table in tahsilat] == ["Özet", "Tahsilat Bilgileri", "Harç / Masraf Bilgileri"]
+    assert tahsilat[0]["rows"] == [["2.000,00 TL", "500,00 TL", "1.500,00 TL"]]
+    assert [len(table["rows"]) for table in tahsilat] == [1, 3, 2]
+
+    assert uyap.evaluate("() => window.__forbidden") == []  # Evrak Gönderme / Ödeme / Borç Öde'ye dokunulmadı
+    web.close()
+    uyap.close()
+
+
+def test_the_detail_job_pages_through_tables_when_there_is_no_show_all_option(lab):
+    lab.configure(throttleMs=500)
+    uyap = lab.open("/vatandas/dosya-sorgulama-detay")
+    web = _jurisai_page(lab)
+    _tab_id, done = _detail(web, _by_esas(_real_list(web), "2022/113"))  # sayfa boyutları 5/10: "Tümü" yok
+
+    detail = done["detail"]
+    [taraf] = _tab(detail, "taraflar")["tables"]
+    [safahat] = _tab(detail, "safahat")["tables"]
+    assert (len(taraf["rows"]), taraf["complete"]) == (12, True)  # 10'luk sayfa + sayfa gezme
+    assert (len(safahat["rows"]), safahat["complete"]) == (23, True)
+    assert len({tuple(row) for row in safahat["rows"]}) == 23  # sayfalar tekrarlanmadı, hiçbiri atlanmadı
+    assert detail["complete"] is True
+    web.close()
+    uyap.close()
+
+
+@pytest.mark.parametrize("mode", ["targets", "swallow"])
+def test_detail_tabs_resolve_data_targets_and_retry_a_swallowed_activation(lab, mode):
+    lab.configure(throttleMs=500)
+    uyap = lab.open("/vatandas/dosya-sorgulama-detay")
+    uyap.evaluate("mode => { window.__detailMode = mode; }", mode)
+    web = _jurisai_page(lab)
+    _, done = _detail(web, _by_esas(_real_list(web), "2022/112"))
+    detail = done["detail"]
+    assert detail["complete"] is True and detail["problems"] == [], detail
+    assert len(_tab(detail, "safahat")["tables"][0]["rows"]) == 23
+    assert uyap.evaluate("() => window.__forbidden") == []
+    web.close()
+    uyap.close()
+
+
+@pytest.mark.parametrize("hidden_parent", [False, True])
+def test_detail_pane_visibility_does_not_depend_on_its_box_height(lab, hidden_parent):
+    lab.configure(throttleMs=500)
+    uyap = lab.open("/vatandas/dosya-sorgulama-detay")
+    web = _jurisai_page(lab)
+    uyap.evaluate("""hiddenParent => {
+      const original = window.__onOpenDetail;
+      window.__onOpenDetail = row => {
+        original(row);
+        for (const id of ['dosya_hesap_bilgileri_tab', 'dosya_safahat_bilgileri_tab']) {
+          const pane = document.getElementById(id);
+          pane.style.height = '0px';
+          pane.style.overflow = 'visible';
+          if (hiddenParent && id === 'dosya_hesap_bilgileri_tab') {
+            const wrapper = document.createElement('div');
+            wrapper.style.display = 'none';
+            pane.replaceWith(wrapper); wrapper.appendChild(pane);
+          }
+        }
+      };
+    }""", hidden_parent)
+    _, done = _detail(web, _by_esas(_real_list(web), "2022/112"))
+    detail = done["detail"]
+    assert _tab(detail, "safahat")["complete"] is True, detail
+    assert len(_tab(detail, "safahat")["tables"][0]["rows"]) == 23
+    assert _tab(detail, "hesap")["complete"] is not hidden_parent, detail
+    assert detail["complete"] is not hidden_parent
+    assert uyap.evaluate("() => window.__forbidden") == []
+    assert lab.uploads == []
+
+
+@pytest.mark.parametrize("loading", [False, True])
+def test_explicit_empty_detail_table_without_datatables_info_is_verified_only_when_not_loading(lab, loading):
+    lab.configure(throttleMs=500)
+    uyap = lab.open("/vatandas/dosya-sorgulama-detay")
+    web = _jurisai_page(lab)
+    uyap.evaluate("""loading => {
+      const original = window.__onOpenDetail;
+      window.__onOpenDetail = row => {
+        original(row);
+        const table = document.getElementById('tahsilat_listesi_table');
+        table.querySelector('tbody').innerHTML = '<tr><td class="dataTables_empty" colspan="5">Tabloda herhangi bir veri mevcut değil</td></tr>';
+        const wrapper = table.parentElement;
+        wrapper.replaceWith(table);
+        if (loading) table.setAttribute('aria-busy', 'true');
+      };
+    }""", loading)
+    _, done = _detail(web, _by_esas(_real_list(web), "2022/112"))
+    detail = done["detail"]
+    tahsilat = _tab(detail, "tahsilat")
+    assert tahsilat["complete"] is not loading, detail
+    if not loading:
+        empty = next(table for table in tahsilat["tables"] if not table["rows"])
+        assert empty["declared"] == 0 and empty["complete"] is True, empty
+    assert uyap.evaluate("() => window.__forbidden") == []
+    assert lab.uploads == []
+
+
+def test_a_detail_pane_that_never_loads_is_not_reported_as_complete_empty_data(lab):
+    lab.configure(throttleMs=500)
+    uyap = lab.open("/vatandas/dosya-sorgulama-detay")
+    uyap.evaluate("() => { window.__detailMode = 'blank'; }")
+    web = _jurisai_page(lab)
+    _, done = _detail(web, _by_esas(_real_list(web), "2022/112"))
+    detail = done["detail"]
+    assert detail["complete"] is False and _tab(detail, "hesap")["complete"] is False
+    assert any("boş sonuç doğrulanamadı" in problem for problem in detail["problems"])
+    assert _tab(detail, "safahat")["complete"] is True
+    assert uyap.evaluate("() => window.__forbidden") == []
+    web.close()
+    uyap.close()
+
+
+def test_a_table_that_shows_fewer_rows_than_uyap_declares_is_reported_incomplete(lab):
+    lab.configure(throttleMs=500)
+    uyap = lab.open("/vatandas/dosya-sorgulama-detay")
+    web = _jurisai_page(lab)
+    _tab_id, done = _detail(web, _by_esas(_real_list(web), "2022/114"))  # safahat: UYAP 25 yazıyor, 23 satır geliyor
+
+    detail = done["detail"]
+    [safahat] = _tab(detail, "safahat")["tables"]
+    assert (len(safahat["rows"]), safahat["declared"], safahat["complete"]) == (23, 25, False)
+    assert detail["complete"] is False
+    assert any("25" in problem and "23" in problem for problem in detail["problems"]), detail["problems"]
+    assert _tab(detail, "taraflar")["complete"] is True  # öteki sekmeler etkilenmez
     web.close()
     uyap.close()
 

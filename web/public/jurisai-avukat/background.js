@@ -75,7 +75,12 @@ function fileNameFor(meta, contentType) {
 /** Belgeyi kullanıcının UYAP oturumuyla indirir. */
 /* Savunma katmanı (içerik betiği zaten süzer): yalnız UYAP'ın kendi alan adından belge indirilir. */
 const SITE_HOST_RE = /(^|\.)(uyap|adalet)\.gov\.tr$/i;
-const MAX_DOCUMENT_BYTES = 50 * 1024 * 1024;
+/* Belge boyutu sınırı yoktur: indirilen parçalar bellekte biriktirilmez, tarayıcının Blob deposuna katılır (büyük ekler
+   diske taşar) ve JurisAI'a aynı Blob'dan akıtılarak yüklenir. */
+const BLOB_FOLD_BYTES = 8 * 1024 * 1024;
+/** Bir indirmenin toplam üst süresi (yalnız bir güvenlik ağı): asıl zaman aşımı "veri gelmeden geçen süre"dir ve akan indirmeyi
+    kesmez (UYAP büyük ekleri ~1 MB/sn verir; 2 saat ≈ 7 GB). */
+const MAX_DOWNLOAD_MS = 2 * 60 * 60 * 1000;
 function assertUyapUrl(url) {
   let parsed;
   try {
@@ -162,36 +167,66 @@ async function isUyapReceipt(blob, meta) {
 async function fetchDocument(url, timeoutMs, meta = null) {
   assertUyapUrl(url);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // Zaman aşımı veri geldikçe yeniden kurulur; yalnız "timeoutMs boyunca hiç veri gelmedi" ya da toplam üst süre kesintisidir.
+  let timer;
+  const arm = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(), timeoutMs);
+  };
+  const hardStop = setTimeout(() => controller.abort(), MAX_DOWNLOAD_MS);
+  arm();
+  const stalled = (bytes) =>
+    Object.assign(
+      new Error(`UYAP ${Math.round(timeoutMs / 1000)} sn boyunca veri göndermedi; indirme durdu (${(bytes / 1048576).toFixed(1)} MB geldi).`),
+      { retryable: true },
+    );
   try {
-    const res = await fetch(url, {
-      credentials: "include",
-      signal: controller.signal,
-      headers: { Accept: "application/pdf,application/octet-stream,*/*" },
-    });
+    let res;
+    try {
+      res = await fetch(url, {
+        credentials: "include",
+        signal: controller.signal,
+        headers: { Accept: "application/pdf,application/octet-stream,*/*" },
+      });
+    } catch (error) {
+      if (error?.name === "AbortError") throw stalled(0); // UYAP yanıt başlığını bile göndermedi
+      throw error;
+    }
     if (res.url) assertUyapUrl(res.url);
     if (!res.ok) throw new Error(`UYAP yanıtı HTTP ${res.status}`);
     const type = res.headers.get("content-type") || "";
-    if (Number(res.headers.get("content-length")) > MAX_DOCUMENT_BYTES) throw new Error("UYAP belgesi 50 MB sınırını aşıyor");
-    const chunks = [];
+    // Parçalar önce küçük bir listede toplanır, `BLOB_FOLD_BYTES`'ı geçince Blob'a katılır: JS belleğinde en çok birkaç MB durur.
+    let folded = new Blob([]);
+    let pending = [];
+    let pendingBytes = 0;
     let bytes = 0;
     if (!res.body) throw new Error("UYAP belgesi okunamadı");
     const reader = res.body.getReader();
     try {
       while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        bytes += value.byteLength;
-        if (bytes > MAX_DOCUMENT_BYTES) {
-          await reader.cancel();
-          throw new Error("UYAP belgesi 50 MB sınırını aşıyor");
+        arm();
+        let step;
+        try {
+          step = await reader.read();
+        } catch (error) {
+          // Veri gelmeden zaman aşımı (AbortError) ve UYAP'ın akışı yarıda kesmesi (TypeError) ayrı ayrı, açıkça yazılır.
+          if (error?.name === "AbortError") throw stalled(bytes);
+          throw Object.assign(new Error(`UYAP indirmeyi yarıda kesti (${(bytes / 1048576).toFixed(1)} MB geldi).`), { retryable: true });
         }
-        chunks.push(value);
+        if (step.done) break;
+        bytes += step.value.byteLength;
+        pending.push(step.value);
+        pendingBytes += step.value.byteLength;
+        if (pendingBytes >= BLOB_FOLD_BYTES) {
+          folded = new Blob([folded, ...pending]);
+          pending = [];
+          pendingBytes = 0;
+        }
       }
     } finally {
       reader.releaseLock();
     }
-    const blob = new Blob(chunks, { type });
+    const blob = new Blob([folded, ...pending], { type });
     if (!blob.size) throw new Error("boş belge");
     if (/text\/html/i.test(type)) {
       // UYAP bazı makbuzları PDF yerine gerçek HTML belge olarak sunar. Yalnızca
@@ -220,6 +255,7 @@ async function fetchDocument(url, timeoutMs, meta = null) {
     return { blob, type, filename };
   } finally {
     clearTimeout(timer);
+    clearTimeout(hardStop);
   }
 }
 
@@ -285,11 +321,23 @@ async function uploadDocument(settings, meta, blob, contentType) {
   form.append("klasorYolu", meta.klasorYolu || "");
   form.append("source", "uyap-avukat-eklentisi");
 
-  const res = await fetch(settings.apiUrl, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${settings.apiKey}` },
-    body: form,
-  });
+  let res;
+  try {
+    res = await fetch(settings.apiUrl, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${settings.apiKey}` },
+      body: form,
+    });
+  } catch (_) {
+    // Ağ/CORS/adres hatasında tarayıcı yalnız "Failed to fetch" der: kullanıcıya neyin denendiği söylenir.
+    let host = "";
+    try {
+      host = new URL(settings.apiUrl).origin;
+    } catch (_) {
+      /* adres bozuksa boş kalır */
+    }
+    throw new Error(`JurisAI sunucusuna ulaşılamadı${host ? ` (${host})` : ""}: sunucunun çalıştığını ve eklenti ayarındaki adresi kontrol edin.`);
+  }
   const out = await res.json().catch(() => ({}));
   if (res.status === 401)
     throw new Error("JurisAI bağlantı anahtarı geçersiz: UYAP'a Bağlan sayfasında anahtarı yenile ve eklentiye yapıştır");
@@ -547,8 +595,15 @@ async function handleBridge(type, payload) {
     }
     case "BRIDGE_TREE":
       return askUyapTab({ type: "JURISAI_TREE", key: textArg(payload?.key, 600), yargiTuru: textArg(payload?.yargiTuru, 80) });
+    case "BRIDGE_DETAIL":
+      return askUyapTab({ type: "JURISAI_DETAIL", key: textArg(payload?.key, 600), yargiTuru: textArg(payload?.yargiTuru, 80) });
     case "BRIDGE_JOB_STATUS":
-      return askTab(payload?.tabId, { type: "JURISAI_JOB_STATUS", jobId: textArg(payload?.jobId, 64), withTree: payload?.withTree === true });
+      return askTab(payload?.tabId, {
+        type: "JURISAI_JOB_STATUS",
+        jobId: textArg(payload?.jobId, 64),
+        withTree: payload?.withTree === true,
+        withDetail: payload?.withDetail === true,
+      });
     case "BRIDGE_PULL_IDS": {
       if (Array.isArray(payload?.ids) && payload.ids.length > 5000)
         return { ok: false, code: "too_many", error: "Bir aktarımda en fazla 5.000 evrak seç; kalanları sonraki aktarımda seç." };
@@ -556,6 +611,8 @@ async function handleBridge(type, payload) {
       if (!ids.length) return { ok: false, code: "empty", error: "Seçili evrak yok." };
       return askTab(payload?.tabId, { type: "JURISAI_PULL_IDS", ids, mode: payload?.mode === "disk" ? "disk" : "upload" });
     }
+    case "BRIDGE_CURRENT_JOB":
+      return askUyapTab({ type: "JURISAI_CURRENT_JOB" });
     case "BRIDGE_STOP_JOB":
       return askTab(payload?.tabId, { type: "JURISAI_BRIDGE_STOP", jobId: textArg(payload?.jobId, 64) });
     case "BRIDGE_LIST_DOSYALAR":
@@ -791,7 +848,7 @@ async function saveToFolder(blob, contentType, meta) {
    YAKALANIR (webRequest, yalnız gözlem) ve belge bu adresten kullanıcının kendi oturumuyla indirilip
    JurisAI'ya yüklenir. Adres bellekte tutulur; kaydedilmez, günlüğe yazılmaz, içerik betiğine verilmez. */
 let pull = null; // { tabId, expectedEvrakId, url }
-let pullRun = null; // { hashes: Set } — aynı içerik bir çekmede bir kez gönderilir
+let pullRun = null; // Etkin kullanıcı çekimi; evrak kimliği sunucuda tekilleştirilir.
 
 /* Ön izleme önizleyemediği evrak için (ör. TIFF) belge yerine kısa bir metin döndürür ve gerçek dosyayı AYRI bir
    istekle (Content-Disposition: attachment) indirtir. O isteğin adresi de yakalanır; belge istendiğinde metin
@@ -896,10 +953,22 @@ async function handlePullFetch(meta, mode = "upload", direct = "") {
           fetched = await fetchDocument(saveUrl, timeout, meta);
           viaSave = true;
         } catch (saveError) {
-          if (!transient || viaDirect) throw error; // kalıcı: ön izlemenin kendi açıklaması kullanıcıya gösterilir
-          retried = true;
-          await sleep(8000);
-          fetched = await fetchDocument(target, timeout, meta);
+          if (saveError.retryable && !viaDirect) {
+            // UYAP "Kaydet" akışını yarıda kesti: bir kez bekleyip aynı adresi yeniden dene.
+            retried = true;
+            await sleep(8000);
+            fetched = await fetchDocument(saveUrl, timeout, meta);
+            viaSave = true;
+          } else if (!transient || viaDirect) {
+            // Kalıcı. Ön izleme "çok büyük" dediyse kullanıcıya yalnız bunu söylemek yanlış yönlendirir: "Kaydet" yolu da denendi.
+            throw error.previewRefused
+              ? Object.assign(new Error(`UYAP bu evrakı önizlemede vermiyor ve "Kaydet" adresinden de alınamadı: ${saveError.message}`), { previewRefused: true })
+              : error;
+          } else {
+            retried = true;
+            await sleep(8000);
+            fetched = await fetchDocument(target, timeout, meta);
+          }
         }
       } else if (transient && !viaDirect) {
         // Geçici olabilir (yoğunluk, hazırlanıyor): bir kez bekleyip aynı adresi yeniden dene.
@@ -910,12 +979,11 @@ async function handlePullFetch(meta, mode = "upload", direct = "") {
         throw error;
       }
     }
-    const timing = { download: Date.now() - startedAt, upload: 0, retried, viaSave };
+    const timing ={ download: Date.now() - startedAt, upload: 0, retried, viaSave };
     const { blob, type, filename } = fetched;
     if (filename) meta = { ...meta, fileExt: (/\.([A-Za-z0-9]{2,5})$/.exec(filename) || [])[1] || "" };
-    const digest = await sha256Hex(blob);
-    if (pullRun?.hashes.has(digest)) return { ok: true, sameContent: true, ms: timing };
-    pullRun?.hashes.add(digest);
+    // Farklı UYAP evrakları birebir aynı baytlara sahip olabilir (özellikle ekler).
+    // İçerik hash'iyle atlamak bunları sessizce kaybettirir; sunucu evrak kimliğiyle tekilleştirir.
     const savingFrom = Date.now();
     if (mode === "disk") {
       await saveToFolder(blob, type, meta);
@@ -1029,7 +1097,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           if ((settings.apiKey || "").trim().length < 20)
             return sendResponse({ ok: false, error: "Bağlantı anahtarı ayarlanmadı (eklenti penceresine yapıştır)" });
         }
-        pullRun = { hashes: new Set() };
+        pullRun = {};
         sendResponse({ ok: true, gapMs: Math.max(1500, Number(settings.throttleMs) || DEFAULTS.throttleMs) });
       });
       return true;
