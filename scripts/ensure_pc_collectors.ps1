@@ -30,7 +30,7 @@ function Start-Hidden([string]$name, [string]$scriptArgs) {
 }
 
 if (-not $paused -and -not (Test-Running 'collect_bedesten\.py')) {
-    Start-Hidden 'pc-gap-yargitay' 'scripts\collect_bedesten.py --source yargitay --by-chamber --from-year 2026 --to-year 2018'
+    Start-Hidden 'pc-gap-yargitay' 'scripts\collect_bedesten.py --source yargitay --by-chamber --from-year 2026 --to-year 2021'
 }
 if (-not $paused -and -not (Test-Running 'collect_emsal\.py')) {
     Start-Hidden 'pc-emsal3' 'scripts\collect_emsal.py --delay 2.0'
