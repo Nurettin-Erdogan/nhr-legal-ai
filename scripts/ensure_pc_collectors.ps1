@@ -2,14 +2,15 @@
 # Görev Zamanlayıcı 5 dakikada bir ve oturum açılışında çalıştırır: süreç yoksa gizli ve oturumdan bağımsız başlatır.
 # PC kapanıp açılınca ya da süreç ölünce kendiliğinden kaldığı yerden devam eder (aylık/günlük imleçler durum dosyasında).
 #
-# Geçici durdurma: data\campaign\PAUSE_PC_COLLECTORS dosyası varken hiçbir şey başlatılmaz (çalışanları kendiniz durdurun).
+# Geçici durdurma: data\campaign\PAUSE_PC_COLLECTORS dosyası varken portal toplayıcıları (Bedesten/Emsal) başlatılmaz (çalışanları kendiniz durdurun);
+# portala istek atmayan embedding işçisi etkilenmez.
 # Örn. UYAP'a bu bilgisayardan girerken: dosyayı oluşturup süreçleri durdurun, bitince dosyayı silin.
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $py = Join-Path $root '.venv\Scripts\python.exe'
 $pause = Join-Path $root 'data\campaign\PAUSE_PC_COLLECTORS'
 $logs = Join-Path $root 'data\logs'
-if (Test-Path -LiteralPath $pause) { exit 0 }
+$paused = Test-Path -LiteralPath $pause
 if (-not (Test-Path -LiteralPath $py)) { throw "Python bulunamadı: $py" }
 New-Item -ItemType Directory -Force $logs | Out-Null
 
@@ -28,10 +29,10 @@ function Start-Hidden([string]$name, [string]$scriptArgs) {
     } | Out-Null
 }
 
-if (-not (Test-Running 'collect_bedesten\.py')) {
+if (-not $paused -and -not (Test-Running 'collect_bedesten\.py')) {
     Start-Hidden 'pc-gap-yargitay' 'scripts\collect_bedesten.py --source yargitay --by-chamber --from-year 2026 --to-year 2018'
 }
-if (-not (Test-Running 'collect_emsal\.py')) {
+if (-not $paused -and -not (Test-Running 'collect_emsal\.py')) {
     Start-Hidden 'pc-emsal3' 'scripts\collect_emsal.py --delay 2.0'
 }
 # Tek embedding işçisi, düşük öncelikli: toplayıcıları ve bilgisayarı yavaşlatmadan, yeni gelen kararları yavaş yavaş vektörler.
