@@ -90,6 +90,21 @@ ORDER BY q.request_count DESC, q.requested_at
 LIMIT %(batch)s
 """
 
+# Daha önce "uyuşmuyor" işaretlenenleri öncelik kuyruğuna koyar (yalnız taranmış tarih aralığında bulunabilirler).
+_REQUEUE_MISMATCH = """
+INSERT INTO seed_verification_queue (legal_source_id, request_count)
+SELECT ls.id, 1000000
+FROM court_decision_details d
+JOIN legal_sources ls ON ls.id = d.legal_source_id
+WHERE d.decision_date >= %(since)s::date
+  AND ls.ingestion_method = 'bulk_seed'
+  AND ls.ingest_status = 'pending'
+  AND ls.source_type = 'court_decision'
+  AND ls.external_id LIKE %(prefix)s
+  AND ls.metadata->>'verify_status' = 'mismatch'
+ON CONFLICT (legal_source_id) DO UPDATE SET request_count = EXCLUDED.request_count, picked_at = NULL
+"""
+
 _QUEUE_DONE = "DELETE FROM seed_verification_queue WHERE legal_source_id = ANY(%s)"
 
 _VERIFY = """
@@ -114,6 +129,13 @@ UPDATE legal_sources SET metadata = metadata || %(metadata)s
 WHERE id = %(id)s AND ingestion_method = 'bulk_seed' AND ingest_status = 'pending'
 """
 
+# Resmî metinle harf/rakam düzeyinde uyuşmayan üçüncü taraf kayıt korpustan ÇIKARILIR (kullanıcı kararı, 2026-10-07): aramada ve
+# atıfta görünmez. Satır silinmez (`deleted_at`): neden ve tarih kayıtta kalır, resmî kampanya aynı kararı kendi üst verisiyle ekleyebilir.
+_TRASH = """
+UPDATE legal_sources SET metadata = metadata || %(metadata)s, deleted_at = NOW()
+WHERE id = %(id)s AND ingestion_method = 'bulk_seed' AND ingest_status = 'pending' AND deleted_at IS NULL
+"""
+
 
 # Görünmez biçim karakterleri (yön denetimi, sıfır genişlikli, yumuşak tire, BOM). Resmî
 # metinde bulunup üçüncü taraf derlemede temizlenmiş olabilirler; hukuki anlam taşımazlar.
@@ -127,6 +149,38 @@ def _canon(text: str) -> str:
 def _nospace(text: str) -> str:
     """Boşlukların tamamı atılmış anahtar: satır sonu/boşluk kaybı farklarını yok sayar."""
     return re.sub(r"\s+", "", _INVISIBLE.sub("", text)).casefold()
+
+
+def _alnum(text: str) -> str:
+    """Yalnız harf ve rakamlar: noktalama/işaret ve boşluk farklarını yok sayar (hukuki içerik harf ve rakamdadır)."""
+    return "".join(ch for ch in _INVISIBLE.sub("", text).casefold() if ch.isalnum())
+
+
+# Kayıt resmî metnin bir PARÇASI sayılmak için en az bu kadar harf/rakam taşımalı (kısa ortak kalıplar eşleşme sayılmasın).
+MIN_PART_CHARS = 400
+
+
+def compare_texts(seed_text: str, official: str, stripped_official: str) -> tuple[str, str]:
+    """(durum, doğrulama türü). Durum "verified" ise kayıt resmî metinle değiştirilir; "mismatch" ise dokunulmaz.
+
+    Gerçek portalda ölçüldü (2026-10-07, 24 "uyuşmayan" karar): 23'ünde harf ve rakamlar birebir aynıydı, fark derlemede
+    düşmüş 2-6 işaret karakteriydi; 1'inde derleme resmî metnin kesintisiz bir parçasıydı (eksik metin). Hiçbirinde farklı
+    sözcük, rakam ya da başka karar yoktu. Bu yüzden:
+      * boşluk farkı dışında aynı            → "text_equal_ignoring_whitespace"
+      * harf ve rakamlar birebir aynı         → "text_equal_ignoring_punctuation"
+      * kayıt, resmî metnin kesintisiz parçası → "seed_is_part_of_official_text" (resmî TAM metin yazılır)
+    Tek bir harf ya da rakam farklıysa kayıt doğrulanmaz.
+    """
+    candidates = (official, stripped_official)
+    if _canon(seed_text) in {_canon(text) for text in candidates} or _nospace(seed_text) in {_nospace(text) for text in candidates}:
+        return "verified", "text_equal_ignoring_whitespace"
+    seed_key = _alnum(seed_text)
+    official_keys = [_alnum(text) for text in candidates]
+    if seed_key and seed_key in official_keys:
+        return "verified", "text_equal_ignoring_punctuation"
+    if len(seed_key) >= MIN_PART_CHARS and any(seed_key in key for key in official_keys):
+        return "verified", "seed_is_part_of_official_text"
+    return "mismatch", ""
 
 
 def _handle_stop(signum: int, _frame: object) -> None:
@@ -182,6 +236,8 @@ def main() -> int:
     parser.add_argument("--queue-only", action="store_true",
                         help="Yalnız atıf kuyruğunu doğrula (tarih taraması yok); kuyruk boşsa 5 dk bekler")
     parser.add_argument("--dry-run", action="store_true", help="Yazma; yalnız eşleşme oranını göster")
+    parser.add_argument("--recheck-mismatch", action="store_true",
+                        help="Yalnız daha önce 'uyuşmuyor' işaretlenenleri güncel kuralla yeniden denetle (imleci değiştirmez)")
     parser.add_argument("--restart", action="store_true", help="İmleci sıfırla (en yeni tarihten başla)")
     args = parser.parse_args()
 
@@ -239,6 +295,15 @@ def main() -> int:
 
     with psycopg.connect(url, autocommit=True) as connection:
         connection.execute("SET statement_timeout = '120s'")
+        if args.recheck_mismatch:
+            if not cursor_date:
+                raise SystemExit("Taranmış aralık yok: yeniden denetlenecek kayıt bulunamaz")
+            connection.execute("SET statement_timeout = '30min'")
+            queued = connection.execute(_REQUEUE_MISMATCH, {"since": cursor_date, "prefix": cfg["prefix"] + "%"}).rowcount
+            connection.execute("SET statement_timeout = '120s'")
+            print(f"yeniden denetlenecek 'uyuşmayan' kayıt: {queued}", flush=True)
+            args.queue_only = True
+            totals["mismatch"] = max(0, totals["mismatch"] - queued)  # yeniden sayılacaklar
         while not STOP:
             rows = connection.execute(
                 _SELECT_QUEUE, {"prefix": cfg["prefix"] + "%", "batch": args.batch}
@@ -316,15 +381,9 @@ def main() -> int:
                 transient_failures = 0
                 now = datetime.now(UTC).isoformat(timespec="seconds")
                 if status is None and official.strip():
-                    seed_key = _canon(seed_text or "")
-                    # Kayıtlı metin üçüncü taraf temizliğinden geçmiş olabilir ("İçtihat Metni"
-                    # başlık satırı atılmış ya da satır içinde kalmış olabilir): ham ya da temizlenmiş
-                    # resmî metinden biri boşluk farkları dışında aynıysa doğrulanır.
-                    same = seed_key in (_canon(official), _canon(strip_third_party_markup(official)))
-                    if not same:
-                        seed_flat = _nospace(seed_text or "")
-                        same = seed_flat in (_nospace(official), _nospace(strip_third_party_markup(official)))
-                    status = "verified" if same else "mismatch"
+                    # Kayıtlı metin üçüncü taraf temizliğinden geçmiş olabilir ("İçtihat Metni" başlık satırı atılmış ya da
+                    # satır içinde kalmış olabilir): ham ve temizlenmiş resmî metnin ikisiyle de karşılaştırılır.
+                    status, verification = compare_texts(seed_text or "", official, strip_third_party_markup(official))
                 elif status is None:
                     status, reason = "unavailable", "boş resmî metin"
 
@@ -350,7 +409,9 @@ def main() -> int:
                                             "provenance": "official_portal",
                                             "verified_via": "seed_verifier",
                                             "verified_at": now,
-                                            "verification": "text_equal_ignoring_whitespace",
+                                            "verification": verification,
+                                            # Eski bir "uyuşmuyor" işareti varsa üstüne yazılır (yeniden denetimde doğrulananlar).
+                                            "verify_status": "verified",
                                         }
                                     ),
                                 },
@@ -358,7 +419,7 @@ def main() -> int:
                 else:
                     if not args.dry_run:
                         connection.execute(
-                            _MARK,
+                            _TRASH if status == "mismatch" else _MARK,
                             {
                                 "id": source_id,
                                 "metadata": Jsonb({"verify_status": status, "verify_checked_at": now, "verify_reason": reason or None}),
