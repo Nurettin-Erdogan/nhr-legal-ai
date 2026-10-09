@@ -230,9 +230,18 @@ def main() -> int:
 
     if shard == 0:
         def base_loop() -> None:
+            # Kesin sayım 28,8 milyon satırı tarar (görünürlük haritası eksikken 4-5 dk, işlemci %100) ve aynı anda başka
+            # sayımlarla üst üste binince aramayı ~5 kat yavaşlattı (2026-10-10). Bu yüzden: dosya 6 saatten tazeyse sayılmaz
+            # (işçi yeniden başlasa da tekrar saymaz), sayımlar en erken 6 saatte bir yapılır.
+            target = SHARD_PROGRESS_DIR / "embed_base.json"
             while not STOP:
-                write_embedded_base(url)
-                for _ in range(1800):  # 30 dk; durdurmada hızlı çıkış
+                try:
+                    age = time.time() - target.stat().st_mtime
+                except OSError:
+                    age = 1e9
+                if age >= 6 * 3600:
+                    write_embedded_base(url)
+                for _ in range(900):  # 15 dk'da bir dosya tazeliği yeniden bakılır; durdurmada hızlı çıkış
                     if STOP:
                         return
                     time.sleep(1)
