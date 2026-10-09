@@ -185,6 +185,12 @@ class Collector:
         self.fetched = 0
         self.failed = 0
         self.streak = 0
+        self.floor = 4.4  # AIMD alt sınırı (sn); --min-interval ile değiştirilir
+        self.requests = 0
+        self.limited_count = 0
+        self._beat_at = time.monotonic()
+        self._beat_requests = 0
+        self._beat_limited = 0
         self.started = time.monotonic()
         self.state_path = STATE_DIR / f"bedesten-{kind}-state.json"
         try:
@@ -197,20 +203,36 @@ class Collector:
         # Ölçüm: engel ~10 sn sürer ve sabit ~4,5 sn aralık + kısa bekleme dakikada ~13 istek verir.
         # 429'da aralığı büyütmek verimi düşürür; yalnız hafifçe (%3) ve en çok 6 sn'ye kadar artır.
         self.streak = 0
+        self.limited_count += 1
         self.client.min_interval = min(self.client.min_interval * 1.03, 6.0)
         logger.warning("429: aralık %.1f sn", self.client.min_interval)
 
     def _ok(self) -> None:
         self.streak += 1
-        if self.streak >= 10 and self.client.min_interval > 4.4:
+        if self.streak >= 10 and self.client.min_interval > self.floor:
             self.streak = 0
-            self.client.min_interval = max(self.client.min_interval * 0.97, 4.4)
+            self.client.min_interval = max(self.client.min_interval * 0.97, self.floor)
+
+    def _heartbeat(self) -> None:
+        """5 dakikada bir gerçek istek sayısı ve 429 sayısı (hız ayarını varsayımla değil ölçümle yapmak için)."""
+        now = time.monotonic()
+        if now - self._beat_at < 300:
+            return
+        hours = (now - self._beat_at) / 3600
+        logger.info(
+            "ölçüm: %d istek/%d dk = %.0f istek/sa | 429=%d | aralık=%.1f sn",
+            self.requests - self._beat_requests, round((now - self._beat_at) / 60),
+            (self.requests - self._beat_requests) / hours, self.limited_count - self._beat_limited, self.client.min_interval,
+        )
+        self._beat_at, self._beat_requests, self._beat_limited = now, self.requests, self.limited_count
 
     def _call(self, fn, *args, **kwargs):
         """429'da aynı çağrıyı bekleyerek yeniden dener (en çok 8 kez)."""
         for attempt in range(8):
             if _stop_requested():
                 raise KeyboardInterrupt
+            self._heartbeat()
+            self.requests += 1
             try:
                 result = fn(*args, **kwargs)
                 self._ok()
@@ -446,6 +468,8 @@ def main() -> None:
     parser.add_argument("--from-year", type=int, default=date.today().year, help="en yeni yıl")
     parser.add_argument("--to-year", type=int, default=2000, help="en eski yıl")
     parser.add_argument("--interval", type=float, default=4.5, help="başlangıç istek aralığı (sn); 4,4-6 sn arasında hafifçe ayarlanır")
+    parser.add_argument("--min-interval", type=float, default=4.4,
+                        help="AIMD'nin inebileceği en kısa istek aralığı (sn); 429 oranı artarsa kendiliğinden yükselir")
     parser.add_argument("--by-chamber", action="store_true",
                         help="eksik ayı birim (daire) toplamlarıyla daralt; gün gün listelemeden çok daha az istek")
     parser.add_argument("--known-file", help="bizde olan kararların listesi (TSV: tarih, id; .gz olabilir); yalnız eksikleri çeker")
@@ -469,6 +493,7 @@ def main() -> None:
         connection.execute("SET statement_timeout = '120s'")
         known = KnownFile(args.known_file, args.to_year, args.from_year) if args.known_file else None
         collector = Collector(args.source, BedestenClient(min_interval=args.interval), connection, known, args.by_chamber)
+        collector.floor = args.min_interval
         try:
             for year in range(args.from_year, args.to_year - 1, -1):
                 for month in range(12, 0, -1):
@@ -478,8 +503,10 @@ def main() -> None:
                         try:
                             collector.collect_month(year, month)
                             break
-                        except BedestenError as exc:
-                            logger.warning("Ağ/portal hatası, 120 sn sonra %d-%02d yeniden denenecek: %s", year, month, str(exc)[:100])
+                        except (BedestenError, psycopg.errors.QueryCanceled, psycopg.errors.LockNotAvailable) as exc:
+                            # Veritabanında ağır bir sorgu (ör. embedding sayımı) 120 sn'lik sorgu zaman aşımına çarptıysa da süreç çökmesin
+                            # (2026-10-10 00:2x: toplayıcı QueryCanceled ile ölmüş, görev 5 dk sonra yeniden başlatmıştı).
+                            logger.warning("Ağ/portal/veritabanı hatası, 120 sn sonra %d-%02d yeniden denenecek: %s", year, month, str(exc)[:100])
                             for _ in range(24):
                                 if _stop_requested():
                                     raise KeyboardInterrupt
