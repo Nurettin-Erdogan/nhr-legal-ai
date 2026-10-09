@@ -45,3 +45,12 @@ if (-not (Test-Path -LiteralPath (Join-Path $root 'data\campaign\PAUSE_PC_EMBED'
         if ($line -match 'embed_chunks\.py') { try { $_.PriorityClass = 'BelowNormal' } catch {} }
     }
 }
+
+# Azure->PC senkron yedeği: 'NHR Legal AI Azure Corpus Sync' görevi bazen "Queued"da takılıp hiç başlamıyor (2026-10-09 18:48'den sonra
+# 45 dk, bir tur 0xC0000142 ile kesilmişti). Senkron süreci yoksa ve günlüğe 15 dakikadır yazılmadıysa doğrudan, gizli başlatılır;
+# betiğin kendi kilidi çakışmayı önler. Duraklatma bayrağından etkilenmez (portala değil Azure'a bağlanır).
+$syncLog = Join-Path $root 'data\azure-corpus-sync.log'
+$syncAge = if (Test-Path -LiteralPath $syncLog) { ((Get-Date) - (Get-Item -LiteralPath $syncLog).LastWriteTime).TotalMinutes } else { 999 }
+if ($syncAge -gt 15 -and -not (Test-Running 'sync_azure_corpus\.py')) {
+    Start-Hidden 'sync-fallback' 'scripts\sync_azure_corpus.py --embed-limit 500'
+}
