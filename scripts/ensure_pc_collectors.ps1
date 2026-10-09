@@ -35,14 +35,14 @@ if (-not $paused -and -not (Test-Running 'collect_bedesten\.py')) {
 if (-not $paused -and -not (Test-Running 'collect_emsal\.py')) {
     Start-Hidden 'pc-emsal3' 'scripts\collect_emsal.py --delay 2.0'
 }
-# Embedding: kullanıcı 2026-10-09'da "her şey maksimumda" istedi: 5 dilim (K/5), her biri ayrı denetlenir ve ölürse yeniden başlar.
-# Gürültü/yük istenmiyorsa data\campaign\PAUSE_PC_EMBED dosyası embedding işçilerini başlatmaz. 5 dilimde veritabanı yükü artar
-# (panel istatistiği/arama yavaşlayabilir); sorun olursa 3'e ya da 1'e inilir.
-if (-not (Test-Path -LiteralPath (Join-Path $root 'data\campaign\PAUSE_PC_EMBED'))) {
-    foreach ($k in 0..4) {
-        if (-not (Test-Running "embed_chunks\.py --loop --shard $k/5")) {
-            Start-Hidden "pc-embed5-$k" "scripts\embed_chunks.py --loop --shard $k/5"
-        }
+# Tek embedding işçisi, düşük öncelikli: toplayıcıları ve bilgisayarı yavaşlatmadan, yeni gelen kararları yavaş yavaş vektörler.
+# Gürültü/yük istenmiyorsa data\campaign\PAUSE_PC_EMBED dosyası embedding işçisini de başlatmaz.
+if (-not (Test-Path -LiteralPath (Join-Path $root 'data\campaign\PAUSE_PC_EMBED')) -and -not (Test-Running 'embed_chunks\.py')) {
+    Start-Hidden 'pc-embed-1' 'scripts\embed_chunks.py --loop'
+    Start-Sleep -Seconds 3
+    Get-Process python -ErrorAction SilentlyContinue | ForEach-Object {
+        $line = (Get-CimInstance Win32_Process -Filter "ProcessId=$($_.Id)").CommandLine
+        if ($line -match 'embed_chunks\.py') { try { $_.PriorityClass = 'BelowNormal' } catch {} }
     }
 }
 
