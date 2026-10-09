@@ -29,6 +29,13 @@ function Start-Hidden([string]$name, [string]$scriptArgs) {
     } | Out-Null
 }
 
+# Boşta kalma uykusu bilgisayarı gece boyunca dondurmuştu (2026-10-08 19:37, "System Idle", ~13 saat): sistemi uyanık tutan
+# gizli işlem. Ekranı açık tutmaz; kapak/güç düğmesi uykusunu engellemez. Duraklatma bayrağı varken de çalışır (zararsız).
+$awake = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'powershell.exe' -and $_.CommandLine -match 'keep_system_awake\.ps1' }
+if (-not $awake) {
+    Start-Process -WindowStyle Hidden -FilePath 'powershell.exe' -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'keep_system_awake.ps1')
+}
+
 if (-not $paused -and -not (Test-Running 'collect_bedesten\.py')) {
     Start-Hidden 'pc-gap-yargitay' 'scripts\collect_bedesten.py --source yargitay --by-chamber --from-year 2026 --to-year 2021'
 }
