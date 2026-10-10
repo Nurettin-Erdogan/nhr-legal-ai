@@ -29,11 +29,19 @@ function Start-Hidden([string]$name, [string]$scriptArgs) {
     } | Out-Null
 }
 
-# PC: Yargıtay seed DOĞRULAMASI (kimlikle doğrudan resmî metin çekimi, liste isteği yok; ~650/sa; sıra: atıf yapılanlar, sonra en yeni).
-# Eksik taraması (2022-2000) Azure'da; ikisi aynı IP kotasını paylaşacağı için PC'de eksik taraması YOK. Kaldığı yerden devam eder
-# (imleç data\campaign\verify-yargitay.json). Emsal toplayıcısı ayrı portalda (emsal.uyap.gov.tr), kotayı etkilemez.
+# PC payı: önce eski yıllar (2011-2000) eksik taraması (Azure 2022-2012'yi tarar; aralıklar çakışmaz); bitince Yargıtay seed DOĞRULAMASI
+# (kimlikle doğrudan çekim, liste isteği yok; ~650/sa; sıra: atıf yapılanlar, sonra en yeni). Biten aylar durum dosyasından tek istek
+# harcamadan atlanır, bu yüzden süreç ölüp yeniden başlasa da kayıp yoktur; doğrulama imleci data\campaign\verify-yargitay.json'dadır.
 if (-not $paused -and -not (Test-Running 'collect_bedesten\.py|verify_seeds\.py')) {
-    Start-Hidden 'pc-verify-yargitay' 'scripts\verify_seeds.py --source yargitay --delay 4.5 --min-delay 4.4 --cooldown 15'
+    $leg = "scripts\collect_bedesten.py --source yargitay --by-chamber"
+    $verify = "scripts\verify_seeds.py --source yargitay --delay 4.5 --min-delay 4.4 --cooldown 15"
+    $out = Join-Path $logs 'pc-gap-yargitay.out.log'
+    $err = Join-Path $logs 'pc-gap-yargitay.err.log'
+    $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }
+    $chain = "cmd.exe /c `"cd /d $root && ($py -X utf8 -u $leg --from-year 2011 --to-year 2000 && $py -X utf8 -u $verify) >> `"$out`" 2>> `"$err`"`""
+    Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+        CommandLine = $chain; CurrentDirectory = $root; ProcessStartupInformation = $startup
+    } | Out-Null
 }
 if (-not $paused -and -not (Test-Running 'collect_emsal\.py')) {
     Start-Hidden 'pc-emsal3' 'scripts\collect_emsal.py --delay 2.0'
