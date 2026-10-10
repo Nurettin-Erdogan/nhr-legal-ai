@@ -29,16 +29,14 @@ function Start-Hidden([string]$name, [string]$scriptArgs) {
     } | Out-Null
 }
 
-# PC payı: önce 2026-2021 eksik taraması; bitince Yargıtay seed DOĞRULAMASI (kimlikle doğrudan çekim, liste isteği yok; ~650/sa).
-# Eski yıllar (2010-2000) eksik taraması Azure'da (zincirinde 2011'den sonra). Biten aylar durum dosyasından tek istek harcamadan
-# atlanır, bu yüzden zincir yeniden başlatılsa da kayıp yoktur; doğrulama imleci data\campaign\verify-yargitay.json'dadır.
-if (-not $paused -and -not (Test-Running 'collect_bedesten\.py|verify_seeds\.py')) {
+# PC payı: önce 2026-2021, bitince Azure'dan devralınan en eski yıllar 2010-2000 (Azure 2020-2011'i tarar). Tek komut zinciri;
+# biten aylar durum dosyasından tek istek harcamadan atlanır, bu yüzden zincir yeniden başlatılsa da kayıp yoktur.
+if (-not $paused -and -not (Test-Running 'collect_bedesten\.py')) {
     $leg = "scripts\collect_bedesten.py --source yargitay --by-chamber"
-    $verify = "scripts\verify_seeds.py --source yargitay --delay 4.5 --min-delay 4.4 --cooldown 15"
     $out = Join-Path $logs 'pc-gap-yargitay.out.log'
     $err = Join-Path $logs 'pc-gap-yargitay.err.log'
     $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }
-    $chain = "cmd.exe /c `"cd /d $root && ($py -X utf8 -u $leg --from-year 2026 --to-year 2021 && $py -X utf8 -u $verify) >> `"$out`" 2>> `"$err`"`""
+    $chain = "cmd.exe /c `"cd /d $root && ($py -X utf8 -u $leg --from-year 2026 --to-year 2021 && $py -X utf8 -u $leg --from-year 2010 --to-year 2000) >> `"$out`" 2>> `"$err`"`""
     Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
         CommandLine = $chain; CurrentDirectory = $root; ProcessStartupInformation = $startup
     } | Out-Null
