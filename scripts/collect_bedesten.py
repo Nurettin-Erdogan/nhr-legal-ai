@@ -287,7 +287,9 @@ class Collector:
         else:
             from_file = set()
         rows = self.connection.execute(
-            "SELECT external_id FROM legal_sources WHERE external_id = ANY(%s) AND is_current",
+            # source_type zorunlu: tekil dizin (source_type, external_id) sütunlarında; onsuz sorgu dizini kullanamayıp 3,8 milyon kaydı tarıyor
+            # (PC'de 7,8 sn, yükte 46 sn; source_type ile 0,03 sn). PC toplayıcısının Azure'dan yavaş olmasının asıl sebebiydi.
+            "SELECT external_id FROM legal_sources WHERE source_type = 'court_decision' AND external_id = ANY(%s) AND is_current",
             ([self.prefix + i for i in ids],),
         ).fetchall()
         return from_file | {row[0][len(self.prefix):] for row in rows}
