@@ -33,7 +33,7 @@ function Start-Hidden([string]$name, [string]$scriptArgs) {
 # Eksik taraması (2022-2000) Azure'da; ikisi aynı IP kotasını paylaşacağı için PC'de eksik taraması YOK. Kaldığı yerden devam eder
 # (imleç data\campaign\verify-yargitay.json). Emsal toplayıcısı ayrı portalda (emsal.uyap.gov.tr), kotayı etkilemez.
 if (-not $paused -and -not (Test-Running 'collect_bedesten\.py|verify_seeds\.py')) {
-    Start-Hidden 'pc-gap-yargitay' 'scripts\verify_seeds.py --source yargitay --delay 4.5 --min-delay 4.4 --cooldown 15'
+    Start-Hidden 'pc-verify-yargitay' 'scripts\verify_seeds.py --source yargitay --delay 4.5 --min-delay 4.4 --cooldown 15'
 }
 if (-not $paused -and -not (Test-Running 'collect_emsal\.py')) {
     Start-Hidden 'pc-emsal3' 'scripts\collect_emsal.py --delay 2.0'
