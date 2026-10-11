@@ -389,6 +389,25 @@ def me(user_id: Annotated[UUID, Depends(current_user_id)]) -> UserResponse:
     return _as_user(row)
 
 
+@router.get("/session")
+def session(user_id: Annotated[UUID | None, Depends(optional_current_user_id)]) -> dict[str, UserResponse | None]:
+    """Oturum var mı? Giriş yapılmamışsa 401 yerine `{"user": null}` döner.
+
+    Açık sayfalar (ana sayfa, fiyat, SSS) her açılışta oturumu yoklar; `/me` giriş yapmamış ziyaretçide 401 verdiği için
+    tarayıcı konsoluna her sayfada hata düşüyordu. Yetki gerektiren uçlar değişmedi: onlar 401 vermeye devam eder.
+    """
+    if user_id is None:
+        return {"user": None}
+    try:
+        with admin_database_connection() as connection:
+            row = connection.execute(_USER_SELECT.format(field="id"), (user_id,)).fetchone()
+    except (psycopg.Error, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail="Kullanıcı bilgisi alınamadı") from exc
+    if not row or row["status"] != "active":
+        return {"user": None}
+    return {"user": _as_user(row)}
+
+
 @router.post("/logout", status_code=204)
 def logout(
     http_request: Request,

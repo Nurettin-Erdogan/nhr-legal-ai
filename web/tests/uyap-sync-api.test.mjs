@@ -13,13 +13,34 @@ function compile(relative, requires = {}) {
 
 const bridge = compile("../src/lib/uyap-bridge.ts", { "@/lib/steady-timer": {} });
 const sync = compile("../src/lib/uyap-sync-all.ts", { "@/lib/uyap-bridge": {}, "@/lib/steady-timer": {} });
+const runReport = compile("../src/lib/uyap-run-report.ts", { "@/lib/uyap-sync-all": sync });
 const api = compile("../src/lib/uyap-sync-api.ts", {
   "@/lib/auth-api": { inMemoryAccessToken: () => "test-token" },
   "@/lib/uyap-sync-all": sync,
   "@/lib/uyap-bridge": bridge,
+  "@/lib/uyap-run-report": runReport,
 });
 const detail = { who: { esas: "2025/1", birim: "Test Mahkemesi" }, tabs: [], complete: true, problems: [] };
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+
+test("full-run API validates identity/revision and authenticated history distinguishes unavailable from empty", async (t) => {
+  const id = "ebc6463a-fcf0-46e3-8893-e94eb7434c72";
+  const reports = [sync.blankReport({ key: "k", esas: "2026/1", birim: "X", yargiTuru: "İcra" })];
+  const checkpoint = runReport.auditCheckpoint(id, 1, false, true, true, { reports, summary: sync.summarize(reports), aborted: false });
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    assert.equal(url, "http://localhost:8766/api/office/uyap/audit-runs");
+    assert.equal(options.credentials, "include");
+    assert.equal(options.headers.Authorization, "Bearer test-token");
+    assert.ok(options.signal instanceof AbortSignal);
+    return options.method === "POST" ? json({ id, revision: 1, snapshot: checkpoint }) : json({ runs: [] });
+  });
+  assert.equal((await api.saveAuditRun(checkpoint)).finished, false);
+  assert.deepEqual(await api.loadAuditRuns(), []);
+  t.mock.restoreAll();
+  t.mock.method(globalThis, "fetch", async () => json({ runs: ["invalid"] }));
+  assert.equal(await api.loadAuditRuns(), null);
+  await assert.rejects(api.saveAuditRun(checkpoint), /doğrulanamadı/);
+});
 
 test("doğrulama kaydı parçalara ayrılır; oturum ve zaman aşımı koruması her istekte vardır", async (t) => {
   const sizes = [];

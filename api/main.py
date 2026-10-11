@@ -25,8 +25,10 @@ from api.legal import router as legal_router, warm_slow_counts
 from api.office import router as office_router
 from api.office_search import router as office_search_router
 from api.execution import router as execution_router
+from api.service_records import router as service_records_router
 from api.uyap_detail import router as uyap_detail_router
 from api.uyap_sync import router as uyap_sync_router
+from api.uyap_runs import router as uyap_runs_router
 from api.office_ai import router as office_ai_router
 from api.office_public import router as office_public_router
 from api.office_trash import router as office_trash_router
@@ -159,6 +161,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Tarayıcı güvenlik başlıkları. API yalnız JSON ve indirilen dosya döndürür: hiçbir yanıt başka sitede çerçevelenmemeli, içerik türü
+# tahmin edilmemeli, adres dış sitelere sızmamalıdır. CSP etkileşimli belge sayfalarına (/docs, /redoc) uygulanmaz (kendi betiklerini
+# yükler). HSTS yalnız çerez "Secure" iken (yani HTTPS yayında) gönderilir; yerel HTTP geliştirmede anlamsızdır.
+_DOC_PATHS = ("/docs", "/redoc", "/openapi.json")
+
+
+@app.middleware("http")
+async def security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    if not request.url.path.startswith(_DOC_PATHS):
+        response.headers.setdefault("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+    if settings.auth_cookie_secure:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
+
+
 app.include_router(legal_router)
 app.include_router(ai_router)
 app.include_router(auth_router)
@@ -168,7 +189,9 @@ app.include_router(conversations_router)
 app.include_router(documents_router)
 app.include_router(office_search_router)
 app.include_router(execution_router)
+app.include_router(service_records_router)
 app.include_router(uyap_sync_router)
+app.include_router(uyap_runs_router)
 app.include_router(uyap_detail_router)
 app.include_router(office_router)
 app.include_router(office_trash_router)

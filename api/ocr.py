@@ -15,6 +15,7 @@ import logging
 import os
 import shutil
 from pathlib import Path
+from time import monotonic
 
 logger = logging.getLogger(__name__)
 
@@ -104,9 +105,22 @@ def _prepare(picture):
 
 
 def _read(engine, picture) -> str:
+    prepared = _prepare(picture)
+    language = "tur+eng" if _has_eng(engine) else "tur"
+    started = monotonic()
     text = engine.image_to_string(
-        _prepare(picture), lang="tur+eng" if _has_eng(engine) else "tur", timeout=PAGE_TIMEOUT_SECONDS
+        prepared, lang=language, timeout=PAGE_TIMEOUT_SECONDS
     )
+    # Kart/fotokopi gibi dağınık alanlarda varsayılan sayfa düzeni boş dönebilir.
+    # Yalnız çok kısa/boş sonuçta bir kez seyrek metin düzeni denenir; toplam
+    # sayfa zaman bütçesi aşılmaz, kaynak görüntü ve OCR uyarısı korunur.
+    remaining = PAGE_TIMEOUT_SECONDS - (monotonic() - started)
+    if len(text.strip()) < 20 and remaining >= 1:
+        alternative = engine.image_to_string(
+            prepared, lang=language, config="--psm 11", timeout=remaining
+        )
+        if len(alternative.strip()) > len(text.strip()):
+            text = alternative
     return "\n".join(line.rstrip() for line in text.splitlines()).strip()
 
 

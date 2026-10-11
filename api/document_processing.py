@@ -4,6 +4,7 @@ import hashlib
 import os
 import re
 import stat
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path, PurePosixPath
@@ -55,12 +56,17 @@ _SUPPORTED_TYPES = {
     ".html": "text/html",
     ".udf": "application/vnd.uyap.udf",
     ".odt": "application/vnd.oasis.opendocument.text",
+    ".xml": "application/xml",
+    ".eyp": "application/vnd.gov.tr.e-yazisma",
 }
 # Arşiv içeriğini aranabilir yapmadaki koruma değerleri (sıkıştırma bombasına karşı). Saklamayı sınırlamazlar: aşan arşiv yine
 # kaydedilir ve indirilebilir, yalnız metni çıkarılmaz. Üye başına oran denetimi (1000x) ayrıca sürer.
 MAX_ARCHIVE_ENTRIES = 2000
 MAX_ARCHIVE_EXPANDED_BYTES = 1024 * 1024 * 1024
 MAX_ARCHIVE_MEMBER_BYTES = 256 * 1024 * 1024
+MAX_ARCHIVE_DEPTH = 4
+MAX_XML_BYTES = 20 * 1024 * 1024
+MAX_XML_OUTPUT_CHARS = 20 * 1024 * 1024
 _IMAGE_TYPES = {
     ".tif": "image/tiff",
     ".tiff": "image/tiff",
@@ -162,6 +168,12 @@ def _extract_pdf(data: bytes, ocr: str = "off") -> tuple[list[ExtractedSection],
         except (OcrUnavailable, OcrTooLarge) as exc:
             ocr_failure = str(exc)
 
+    unread = [number for number in needs_ocr if number not in readable]
+    if readable and unread:
+        reason = ocr_failure or ("OCR çalıştırılmadı" if ocr != "run" else "OCR okunabilir metin üretmedi")
+        raise DocumentProcessingError(
+            f"PDF'in {len(unread)} sayfası okunamadı; belgenin tamamı aranabilir değil: {reason}."
+        )
     if not readable:
         if ocr_failure:
             raise DocumentProcessingError(f"PDF'in metni okunamadı; OCR yapılamadı: {ocr_failure}")
@@ -200,6 +212,10 @@ def _extract_image(data: bytes, ocr: str) -> tuple[list[ExtractedSection], bool]
     if not sections:
         raise DocumentProcessingError(
             "Görüntü OCR ile okundu ama okunabilir metin çıkmadı; belge aranamaz."
+        )
+    if len(sections) != len(pages):
+        raise DocumentProcessingError(
+            "Görüntünün bazı sayfalarında okunabilir OCR metni çıkmadı; tamamı aranabilir değil."
         )
     return sections, True
 
@@ -282,19 +298,100 @@ def _extract_udf(data: bytes) -> list[ExtractedSection]:
     return [ExtractedSection(content=text)]
 
 
-def _process_archive(data: bytes, ocr: str) -> ProcessedDocument:
+def _extract_xml(data: bytes) -> list[ExtractedSection]:
+    """Yapısal UYAP verisini etiket/değer olarak korur; DTD/varlık ve ikili imza okunmaz."""
+    if len(data) > MAX_XML_BYTES:
+        raise DocumentProcessingError("XML içeriği izin verilen boyutu aşıyor.")
+    # UTF-16/32 XML'deki ASCII bildirimleri de yakala; ET harici kaynak okumaz.
+    if re.search(rb"<!\s*(DOCTYPE|ENTITY)", data.replace(b"\x00", b""), re.I):
+        raise DocumentProcessingError("XML güvenli olmayan DTD/varlık bildirimi içeriyor.")
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError as exc:
+        raise DocumentProcessingError("XML içeriği ayrıştırılamadı.") from exc
+    lines: list[str] = []
+    output_chars = 0
+
+    def append_line(line: str) -> None:
+        nonlocal output_chars
+        output_chars += len(line)
+        if output_chars > MAX_XML_OUTPUT_CHARS:
+            raise DocumentProcessingError("XML metin çıktı sınırını aşıyor.")
+        lines.append(line)
+    stack = [(root, "", 0)]
+    visited = 0
+    while stack:
+        node, parent, depth = stack.pop()
+        visited += 1
+        if depth > 64 or visited > 100_000:
+            raise DocumentProcessingError("XML yapı sınırını aşıyor.")
+        if not isinstance(node.tag, str):
+            continue
+        # İmza baytlarını hukuk metni sayma. İmza doğrulaması bu ayrıştırıcının işi değildir.
+        if node.tag.startswith("{http://www.w3.org/2000/09/xmldsig#}"):
+            if node.tail and node.tail.strip():
+                append_line(f"{parent}: {node.tail.strip()}")
+            continue
+        label = node.tag.rsplit("}", 1)[-1]
+        path = f"{parent}/{label}" if parent else label
+        if len(path) > 4096:
+            raise DocumentProcessingError("XML etiket yolu sınırını aşıyor.")
+        for key, value in [("", node.text or ""), *node.attrib.items()]:
+            value = value.strip()
+            if not value:
+                continue
+            if len(value) > 512 and re.fullmatch(r"[A-Za-z0-9+/=\s]+", value) and not re.search(r"\s", value.strip()):
+                raise DocumentProcessingError("XML ikili içerik taşıyor; tamamı metin olarak okunamadı.")
+            append_line(f"{path}{'/@' + key.rsplit('}', 1)[-1] if key else ''}: {value}")
+        if node.tail and node.tail.strip():
+            append_line(f"{parent or label}: {node.tail.strip()}")
+        stack.extend((child, path, depth + 1) for child in reversed(list(node)))
+    if not lines:
+        raise DocumentProcessingError("XML belgesinde işlenebilir metin bulunamadı.")
+    return [ExtractedSection(content="\n".join(lines), section_title="XML etiket/değer verisi")]
+
+
+def detected_document_extension(data: bytes) -> str | None:
+    """Yalnız kesin imzaları tanır; bilinmeyen veriyi PDF varsaymaz."""
+    if data.startswith(b"%PDF-"):
+        return ".pdf"
+    head = data[:4096].lstrip(b"\xef\xbb\xbf \t\r\n")
+    if head.startswith(b"<?xml") or re.match(rb"<dava(?:\s|>)", head):
+        return ".xml"
+    return None
+
+
+@dataclass
+class _ArchiveBudget:
+    entries: int = 0
+    expanded: int = 0
+
+
+def _process_archive(data: bytes, ocr: str, *, extension: str = ".zip",
+                     budget: _ArchiveBudget | None = None, depth: int = 0) -> ProcessedDocument:
     """ZIP'i diske açmadan oku; bir ek okunamazsa tam okunmuş gibi sunma.
 
     Orijinal arşiv tek kaynak olarak korunur. Parçalardaki bölüm başlığı ve metin,
-    hangi ekten geldiğini taşır. İç içe arşiv, şifreleme ve tehlikeli yollar reddedilir.
+    hangi ekten geldiğini taşır. İç içe paketler ortak boyut/sayı/derinlik bütçesiyle okunur.
+    Şifreleme ve tehlikeli yollar reddedilir. EYP imza altyapısı metin belgesi değildir;
+    paketin imzası doğrulanmış sayılmaz.
     """
     chunks: list[ProcessedChunk] = []
     ocr_used = False
+    budget = budget or _ArchiveBudget()
+    if depth > MAX_ARCHIVE_DEPTH:
+        raise DocumentProcessingError("İç içe arşiv derinlik sınırını aşıyor.")
     try:
         with ZipFile(BytesIO(data)) as archive:
             entries = archive.infolist()
-            if len(entries) > MAX_ARCHIVE_ENTRIES or sum(item.file_size for item in entries) > MAX_ARCHIVE_EXPANDED_BYTES:
+            budget.entries += len(entries)
+            budget.expanded += sum(item.file_size for item in entries)
+            if budget.entries > MAX_ARCHIVE_ENTRIES or budget.expanded > MAX_ARCHIVE_EXPANDED_BYTES:
                 raise DocumentProcessingError("ZIP arşivi dosya sayısı veya açılmış boyut sınırını aşıyor.")
+            eyp = extension == ".eyp"
+            if eyp and not ("[Content_Types].xml" in archive.namelist() and
+                            any(name.startswith("UstYazi/") for name in archive.namelist())):
+                raise DocumentProcessingError("EYP paketi üst yazı veya içerik türü tanımı içermiyor.")
             for item in entries:
                 name = item.filename.replace("\\", "/")
                 parts = PurePosixPath(name)
@@ -306,16 +403,36 @@ def _process_archive(data: bytes, ocr: str) -> ProcessedDocument:
                     continue
                 if item.file_size > MAX_ARCHIVE_MEMBER_BYTES or item.file_size > max(1, item.compress_size) * 1000:
                     raise DocumentProcessingError("ZIP içindeki bir belge açılmış boyut sınırını aşıyor.")
-                extension = parts.suffix.lower()
-                if extension == ".zip" or extension not in _SUPPORTED_TYPES and extension not in _IMAGE_TYPES:
+                # Yalnız tanınan EYP paketinin teknik ilişki/özet/imza parçaları;
+                # normal ZIP içindeki imza/uygulama ekleri sessizce atlanmaz.
+                if eyp and (name == "[Content_Types].xml" or name.startswith(("_rels/", "Imzalar/", "Muhur/", "NihaiOzet/", "PaketOzeti/")) or "/_rels/" in name):
+                    continue
+                member_ext = parts.suffix.lower()
+                # OPC core-properties XML uses .psmdcp, only in this exact EYP part.
+                eyp_core = eyp and name.startswith("package/services/metadata/core-properties/") and member_ext == ".psmdcp"
+                if eyp_core:
+                    member_ext = ".xml"
+                if member_ext not in _SUPPORTED_TYPES and member_ext not in _IMAGE_TYPES:
                     raise DocumentProcessingError(f"ZIP eki işlenemedi: {safe_file_name(name)} (desteklenmeyen tür). Arşivin tamamı aranabilir değil.")
                 member = archive.read(item)
-                if extension in (".docx", ".udf", ".odt"):
+                # UYAP bazı paketlerde sıfır bayt ana_evrak.txt yer tutucusu koyar.
+                # İçeriği olan/bozuk başka bir belge bu kuralla atlanmaz.
+                if not member and member_ext == ".txt" and parts.name == "ana_evrak.txt":
+                    continue
+                if member_ext in (".docx", ".udf", ".odt"):
                     with ZipFile(BytesIO(member)) as package:
-                        if sum(entry.file_size for entry in package.infolist()) > MAX_ARCHIVE_MEMBER_BYTES:
+                        package_entries = package.infolist()
+                        package_size = sum(entry.file_size for entry in package_entries)
+                        budget.entries += len(package_entries)
+                        budget.expanded += package_size
+                        if (package_size > MAX_ARCHIVE_MEMBER_BYTES or budget.entries > MAX_ARCHIVE_ENTRIES
+                                or budget.expanded > MAX_ARCHIVE_EXPANDED_BYTES):
                             raise DocumentProcessingError("ZIP içindeki belge paketi açılmış boyut sınırını aşıyor.")
                 try:
-                    processed = process_document(name, member, ocr=ocr)
+                    if member_ext in (".zip", ".eyp"):
+                        processed = _process_archive(member, ocr, extension=member_ext, budget=budget, depth=depth + 1)
+                    else:
+                        processed = process_document(name + ".xml" if eyp_core else name, member, ocr=ocr)
                 except OcrRequired:
                     raise
                 except DocumentProcessingError as exc:
@@ -331,10 +448,10 @@ def _process_archive(data: bytes, ocr: str) -> ProcessedDocument:
         raise DocumentProcessingError("ZIP arşivi okunamadı veya bozuk.") from exc
     if not chunks:
         raise DocumentProcessingError("ZIP arşivinde aranabilir belge bulunamadı.")
-    return ProcessedDocument(".zip", "application/zip", hashlib.sha256(data).hexdigest(), tuple(chunks), ocr_used)
+    return ProcessedDocument(extension, _SUPPORTED_TYPES[extension], hashlib.sha256(data).hexdigest(), tuple(chunks), ocr_used)
 
 
-def process_document(file_name: str, data: bytes, *, ocr: str = "off") -> ProcessedDocument:
+def process_document(file_name: str, data: bytes, *, ocr: str = "off", detect_type: bool = False) -> ProcessedDocument:
     """Belgeden aranabilir parçalar üretir.
 
     `ocr`: "off" (varsayılan; senkron yüklemelerde OCR çalıştırılmaz), "defer" (OCR gerekirse
@@ -344,12 +461,16 @@ def process_document(file_name: str, data: bytes, *, ocr: str = "off") -> Proces
     if ocr not in ("off", "defer", "run"):
         raise ValueError(f"Geçersiz OCR kipi: {ocr}")
     extension = Path(file_name).suffix.lower()
+    # Yalnız UYAP kaynağındaki eski yanlış uzantıları indekslerken açılır.
+    # Genel kullanıcı yüklemesinde sahte PDF denetimi aynen korunur.
+    if detect_type:
+        extension = detected_document_extension(data) or extension
     if extension not in _SUPPORTED_TYPES and extension not in _IMAGE_TYPES:
-        raise DocumentProcessingError("Yalnız PDF, DOCX, UDF, ODT, TXT, HTML, ZIP ve görüntü belgeleri desteklenir.")
+        raise DocumentProcessingError("Yalnız PDF, DOCX, UDF, ODT, TXT, HTML, ZIP ve görüntü belgeleri ile XML/EYP desteklenir.")
     if not data:
         raise DocumentProcessingError("Yüklenen dosya boş.")
-    if extension == ".zip":
-        return _process_archive(data, ocr)
+    if extension in (".zip", ".eyp"):
+        return _process_archive(data, ocr, extension=extension)
 
     ocr_used = False
     if extension in _IMAGE_TYPES:
@@ -369,6 +490,8 @@ def process_document(file_name: str, data: bytes, *, ocr: str = "off") -> Proces
         sections = _extract_udf(data)
     elif extension == ".html":
         sections = _extract_html(data)
+    elif extension == ".xml":
+        sections = _extract_xml(data)
     else:
         if b"\x00" in data[:4096]:
             raise DocumentProcessingError("Dosya uzantısı TXT olsa da içerik metin değil.")

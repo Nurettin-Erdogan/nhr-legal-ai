@@ -230,7 +230,7 @@ def generate_grounded_answer(
     history: Sequence[HistoryTurn] = (),
 ) -> str:
     from api.ai.evidence_selection import (
-        evidence_candidates, selection_instruction, selection_prompt, render_selection,
+        evidence_candidates, include_rule_sentences, selection_instruction, selection_prompt, render_selection,
         preserve_statutory_scope,
     )
 
@@ -245,5 +245,5 @@ def generate_grounded_answer(
     )
     # IDs resolve to the exact source sentences, never to arbitrary model prose.
     # The independent source-support gate is still mandatory downstream.
-    selected = render_selection(raw, evidence)
+    selected = include_rule_sentences(render_selection(raw, evidence), question, contexts, evidence)
     return (preserve_statutory_scope(selected, contexts, question) if selected else '') or "Kaynaklarda yeterli bilgi bulunmuyor."

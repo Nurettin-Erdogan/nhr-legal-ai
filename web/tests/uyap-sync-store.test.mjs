@@ -12,17 +12,20 @@ function compile(relative, requires) {
 }
 
 const liste = { items: [{ key: "k1", esas: "2025/1", birim: "A" }, { key: "k2", esas: "2025/2", birim: "A" }], complete: true };
-const report = (key, outcome = "complete") => ({ key, esas: key, birim: "A", outcome, problems: [] });
+const report = (key, outcome = "complete") => ({ key, esas: key, birim: "A", yargiTuru: "", outcome, problems: [], declared: 0, found: outcome === "complete" ? 1 : 0, stored: outcome === "complete" ? 1 : 0, sent: 0, missing: 0, pulls: 0 });
+const runReport = compile("../src/lib/uyap-run-report.ts", { "@/lib/uyap-sync-all": { summarize: reports => ({ files: reports.length }) } });
 
 /** Sahte orkestratör: her dosyada `gate` açılana kadar bekler (koşu "sürerken" durumu incelemek için). */
-function world(outcomes = {}, saveReport) {
+function world(outcomes = {}, saveReport, saveAudit) {
   const gates = [];
-  const saved = { reports: 0, details: 0 };
+  const saved = { reports: 0, details: 0, checkpoints: [] };
   const store = compile("../src/lib/uyap-sync-store.ts", {
     "@/lib/steady-timer": { keepAwake: () => () => {} },
-    "@/lib/uyap-sync-api": { saveCaseDetail: async () => { saved.details += 1; }, saveSyncReport: async (items) => { saved.reports += items.length; return saveReport ? await saveReport(items) : { saved: items.length, downgraded: [], unmatched: 0 }; } },
+    "@/lib/uyap-run-report": runReport,
+    "@/lib/uyap-sync-api": { saveAuditRun: async checkpoint => { saved.checkpoints.push(checkpoint); return saveAudit ? await saveAudit(checkpoint) : { run: { reports: checkpoint.reports } }; }, saveCaseDetail: async () => { saved.details += 1; }, saveSyncReport: async (items) => { saved.reports += items.length; return saveReport ? await saveReport(items) : { saved: items.length, downgraded: [], unmatched: 0 }; } },
     "@/lib/uyap-sync-all": {
       summarize: (reports) => ({ files: reports.length }),
+      blankReport: d => report(d.key, "pending"),
       toServerItems: (reports) => reports.map((r) => ({ esas: r.esas })),
       syncAll: async (items, options) => {
         const list = options.only ? items.filter((i) => options.only.has(i.key)) : items;
@@ -40,6 +43,30 @@ function world(outcomes = {}, saveReport) {
   return { store, gates, saved };
 }
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+test("run history writes an initial checkpoint and final report including all files", async () => {
+  const { store, gates, saved } = world({ k2: "failed" });
+  const done = store.startSync(liste, undefined, false);
+  await tick(); gates.shift()(); await tick(); gates.shift()(); await done;
+  assert.equal(saved.checkpoints[0].finished, false);
+  assert.deepEqual(saved.checkpoints[0].reports.map(r => r.outcome), ["pending", "pending"]);
+  const final = saved.checkpoints.at(-1);
+  assert.equal(final.finished, true);
+  assert.equal(final.verify_only, true);
+  assert.deepEqual(final.reports.map(r => r.outcome), ["complete", "failed"]);
+  assert.equal(store.getSyncState().savedVersion, 1);
+});
+
+test("history save failure does not silently become a durable success", async () => {
+  const { store, gates } = world({}, undefined, async () => { throw new Error("Tam koşu raporu kaydedilemedi"); });
+  const finished = [];
+  store.onSyncFinished(e => finished.push(e));
+  const done = store.startSync(liste, new Set(["k1"]));
+  await tick(); gates.shift()(); await done;
+  assert.equal(store.getSyncState().running, false);
+  assert.equal(store.getSyncState().saveNote.kind, "warn");
+  assert.equal(finished[0].saveWarning, true);
+});
 
 test("koşu bileşenden bağımsız sürer: sayfadan çıkılıp dönülse de ilerleme ve liste yerindedir", async () => {
   const { store, gates, saved } = world();
@@ -156,6 +183,25 @@ function fakeSession() {
   globalThis.sessionStorage = { getItem: (k) => (data.has(k) ? data.get(k) : null), setItem: (k, v) => data.set(k, String(v)), removeItem: (k) => data.delete(k) };
   return data;
 }
+
+test("account change cancels the old run, clears resume and prevents old reports being written as new owner", async () => {
+  fakeSession();
+  const { store, gates, saved } = world();
+  store.setSyncOwner("alice");
+  const done = store.startSync(liste);
+  await tick();
+  assert.ok(store.readResume());
+  store.setSyncOwner("bob");
+  assert.equal(store.getSyncState().liste, null);
+  assert.equal(store.getSyncState().run, null);
+  assert.equal(store.readResume(), null);
+  gates.shift()();
+  await done;
+  assert.equal(saved.checkpoints.length, 1, "only Alice's initial checkpoint was sent before the account switch");
+  assert.equal(saved.reports, 0);
+  assert.equal(store.getSyncState().run, null);
+  delete globalThis.sessionStorage;
+});
 
 test("sayfa yenilenirse koşu kalan dosyalarla kaldığı yerden sürer; biten ya da durdurulan koşu kendiliğinden başlamaz", async () => {
   fakeSession();

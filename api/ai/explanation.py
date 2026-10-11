@@ -149,6 +149,12 @@ def validate_claims(raw, answer: VerifiedAnswer, question: str):
 def explain_verified_answer(provider, *, question: str, answer: VerifiedAnswer) -> VerifiedAnswer:
     if not answer.grounded:
         return answer
+    # UYAP dosya bilgisinden gelen satırlar yeniden yazılmaz: kişi adı, tutar ve kayıt ifadesi aynen kalmalıdır. Yerel model
+    # "DENEME ALACAK ANONİM ŞİRKETİ"ni "Deneme Alak Anonim Şirketi" diye, UYAP'ın yazdığı bakiyeyi "uygulamada hesaplanan"
+    # diye yeniden yazdı ve denetim (yalnız sayıları karşılaştırır) bunu geçirdi (ölçüldü: 2026-10-10).
+    from api.uyap_record_document import RECORD_AUTHORITY
+    if any(context.authority == RECORD_AUTHORITY for context in answer.contexts):
+        return answer
     # The local checker missed omissions in a real multi-condition statute.
     # Keep enumerated provisions verbatim until a list-coverage evaluator is
     # calibrated; don't let a four-claim summary silently drop eligibility paths.

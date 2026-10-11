@@ -69,6 +69,7 @@ TABLES: dict[str, str] = {
 # Genel CRUD ucundan ERİŞİLEMEYEN (yalnız özel uçlar yazar: doğrulama sonucu istemci tarafından uydurulamasın) ama KVKK dışa aktarımına
 # dahil olan sahip tabloları.
 EXPORT_ONLY_TABLES: dict[str, str] = {
+    "uyap_audit_runs": "office_uyap_audit_runs",
     "uyap_case_sync": "office_uyap_case_sync",
     "uyap_case_detail": "office_uyap_case_detail",
 }
@@ -919,18 +920,22 @@ def search_case_documents(
     limit: int = Query(default=50, ge=1, le=100),
     organized: bool = False,
     summary_only: bool = False,
+    search_in: Literal["metadata", "content"] = "metadata",
     source: Literal["all", "uyap", "manual"] = "all",
     category: Annotated[str, Query(max_length=60)] = "",
     folder: Annotated[str, Query(max_length=1000)] = "",
     order: Literal["recent", "date_desc", "date_asc"] = "recent",
 ) -> dict[str, Any]:
     """Sahibin tüm aktif belgelerinde sunucu tarafı arama ve sayfalama."""
-    if organized or summary_only or source != "all" or category or folder or order != "recent":
+    if organized or summary_only or source != "all" or category or folder or order != "recent" or search_in == "content":
         try:
             with authenticated_database_connection(str(user_id)) as connection:
+                if search_in == "content":
+                    connection.execute("SET LOCAL statement_timeout = '8s'")
                 return organized_documents(
                     connection, user_id, q=q, source=source, category=category,
                     folder=folder, order=order, offset=offset, limit=limit, summary_only=summary_only,
+                    search_in=search_in,
                 )
         except psycopg.Error:
             logger.exception("Kategorili belge listesi yüklenemedi")

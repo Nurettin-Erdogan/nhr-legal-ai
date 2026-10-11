@@ -22,7 +22,10 @@ REGRESSION_QUESTIONS: tuple[EvalQuestion, ...] = (
         "question": "Kıdem tazminatına hak kazanma şartları nelerdir?",
         "expect_source_types": ("legislation", "court_decision"),
         "must_terms": ("kıdem", "tazminat"),
-        "expect_law_no": "4857",
+        # Kıdem tazminatını hâlâ 1475 sayılı Kanun m. 14 düzenler: 4857 m. 120 eski kanunun yalnız bu maddesini
+        # yürürlükte bırakmıştır (korpustaki resmî metinden doğrulandı: 2026-10-08). Eski beklenti (4857) yanlıştı.
+        "expect_law_no": "1475",
+        "expect_article_no": "14",
     },
     {
         "id": "haksiz-fesih",

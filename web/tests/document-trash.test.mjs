@@ -68,11 +68,26 @@ test("trash, restore and permanent delete use the right method, path and credent
   assert.equal(result.redacted_answers, 2);
 });
 
+test("bulk trash posts only validated document ids to the batch endpoint", async (t) => {
+  const second = "22222222-2222-4222-8222-222222222222";
+  const calls = mockFetch(t, ok({ requested: 2, trashed: 2, not_found: 0, retention_days: 30 }));
+
+  const result = await trash.trashDocuments([id, second, id]);
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].init.method, "POST");
+  assert.equal(calls[0].url, "http://test.local/api/office/documents/trash/batch");
+  assert.equal(calls[0].init.headers["Content-Type"], "application/json");
+  assert.deepEqual(JSON.parse(calls[0].init.body), { document_ids: [id, second] });
+  assert.deepEqual(result, { requested: 2, trashed: 2, not_found: 0, retention_days: 30 });
+});
+
 test("a malformed document id never reaches the network", async (t) => {
   const calls = mockFetch(t, ok({}));
   await assert.rejects(trash.trashDocument("../etc/passwd"), /Geçersiz belge kimliği/);
   await assert.rejects(trash.deleteDocumentForever("1; DROP"), /Geçersiz belge kimliği/);
   await assert.rejects(trash.listTrash("bozuk"), /Geçersiz belge kimliği/);
+  await assert.rejects(trash.trashDocuments([id, "bozuk"]), /Geçersiz belge kimliği/);
   assert.equal(calls.length, 0);
 });
 

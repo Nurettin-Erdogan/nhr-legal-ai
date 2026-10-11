@@ -35,6 +35,7 @@ from api.document_processing import DocumentProcessingError, OcrRequired, proces
 logger = logging.getLogger(__name__)
 
 INDEX_ACTION = "office.document_index"
+PARSER_VERSION = 2  # XML/EYP, bounded nested archives, no silently partial PDF text
 # Metni okunup aranabilir yapılan dosyanın üst boyutu: içerik bellekte işlenir (en çok 2 iş parçacığı). Bundan büyük dosya
 # (ör. uzun ses/video kaydı) yine saklanır ve indirilebilir; yalnız metni çıkarılmaz ve açıkça "aranabilir değil" yazılır.
 MAX_INDEXABLE_BYTES = 512 * 1024 * 1024
@@ -94,7 +95,7 @@ def _write_result(
         if source is None:
             return None
         existing = connection.execute(
-            "SELECT id, checksum_sha256, status FROM documents WHERE office_case_document_id = %s",
+            "SELECT id, checksum_sha256, status, metadata FROM documents WHERE office_case_document_id = %s",
             (office_document_id,),
         ).fetchone()
         if (
@@ -103,12 +104,14 @@ def _write_result(
             and status == "ready"
             and existing["status"] == "ready"
             and existing["checksum_sha256"] == checksum
+            and (existing["metadata"] or {}).get("parser_version") == PARSER_VERSION
         ):
             # Başka bir işçi aynı içeriği bizden önce indeksledi.
             return IndexOutcome("unchanged")
 
         # `ocr`: metin OCR ile okundu; okuma hataları olabilir, arayüz bunu belirtir.
-        metadata = Jsonb({"origin": "office_case_document", **({"ocr": True} if ocr else {})})
+        metadata = Jsonb({"origin": "office_case_document", "parser_version": PARSER_VERSION,
+                         **({"ocr": True} if ocr else {})})
         if existing is None:
             document_id = uuid4()
             connection.execute(
@@ -175,12 +178,12 @@ def index_office_document(
     """
     with authenticated_database_connection(str(owner_id)) as connection:
         source = connection.execute(
-            "SELECT file_name, storage_path, mime_type FROM office_case_documents "
+            "SELECT file_name, storage_path, mime_type, source FROM office_case_documents "
             "WHERE id = %s AND deleted_at IS NULL",  # çöpteki belge indekslenmez
             (office_document_id,),
         ).fetchone()
         existing = connection.execute(
-            "SELECT checksum_sha256, status FROM documents WHERE office_case_document_id = %s",
+            "SELECT checksum_sha256, status, metadata FROM documents WHERE office_case_document_id = %s",
             (office_document_id,),
         ).fetchone()
     if source is None:
@@ -207,11 +210,15 @@ def index_office_document(
         and existing is not None
         and existing["status"] == "ready"
         and existing["checksum_sha256"] == checksum
+        and (existing["metadata"] or {}).get("parser_version") == PARSER_VERSION
     ):
         return IndexOutcome("unchanged")
 
     try:
-        processed = process_document(source["file_name"], data, ocr=ocr_mode)
+        from api.uyap_cases import UYAP_SOURCES
+
+        processed = process_document(source["file_name"], data, ocr=ocr_mode,
+                                     detect_type=source["source"] in UYAP_SOURCES)
     except OcrRequired:
         return IndexOutcome("needs_ocr")
     except DocumentProcessingError as exc:
@@ -220,6 +227,7 @@ def index_office_document(
         logger.exception("Büro belgesi ayrıştırılamadı id=%s", office_document_id)
         return _failed(owner_id, office_document_id, common, _GENERIC_FAILURE, checksum, len(data))
 
+    common["mime_type"] = processed.mime_type
     outcome = _write_result(
         owner_id, office_document_id, **common, checksum=checksum, size_bytes=len(data),
         status="ready", error=None, chunks=processed.chunks, force=force, ocr=processed.ocr,

@@ -10,12 +10,14 @@ import type { DosyaListe } from "@/lib/uyap-bridge";
 import { keepAwake } from "@/lib/steady-timer";
 import {
   summarize,
+  blankReport,
   syncAll,
   toServerItems,
   type FileReport,
   type SyncRun,
 } from "@/lib/uyap-sync-all";
-import { saveCaseDetail, saveSyncReport } from "@/lib/uyap-sync-api";
+import { saveCaseDetail, saveSyncReport, saveAuditRun } from "@/lib/uyap-sync-api";
+import { auditCheckpoint } from "@/lib/uyap-run-report";
 
 export interface SyncProgress {
   index: number;
@@ -25,7 +27,7 @@ export interface SyncProgress {
 }
 
 export interface UyapSyncState {
-  /** Son okunan dosya listesi (yalnız tarayıcıda; sunucuya gönderilmez). */
+  /** Ham liste tarayıcıda; başlatılan koşunun dosya numarası/birim/sayaçları rapor geçmişine kaydedilir. */
   liste: DosyaListe | null;
   running: boolean;
   progress: SyncProgress | null;
@@ -59,6 +61,8 @@ const initial: UyapSyncState = {
 
 let state: UyapSyncState = initial;
 let controller: AbortController | null = null;
+let activeOwner: string | null | undefined;
+let scopeGeneration = 0;
 const listeners = new Set<() => void>();
 const finishListeners = new Set<(finished: FinishedRun) => void>();
 
@@ -86,6 +90,20 @@ export function setListe(liste: DosyaListe | null): void {
 
 export const stopSync = (): void => controller?.abort();
 
+/** Logout/account changes cancel the old run and discard its private in-memory UI. */
+export function setSyncOwner(ownerId: string | null): void {
+  if (activeOwner === ownerId) return;
+  const firstBinding = activeOwner === undefined;
+  activeOwner = ownerId;
+  scopeGeneration += 1;
+  controller?.abort();
+  controller = null;
+  // Initial binding may resume only this exact owner's session checkpoint.
+  if (!firstBinding || !readResume()) writeResume(null);
+  state = initial;
+  for (const listener of listeners) listener();
+}
+
 /* ---------- Yarıda kalan koşuyu sürdürme ----------
    Sayfa yenilenir ya da sekme yeniden açılırsa tarayıcı betiği (ve koşu) durur; UYAP sekmesi yalnız o anki dosyayı bitirir. Kullanıcı
    koşuyu zaten onaylamıştı: kalan dosyaların anahtarları oturum deposunda tutulur ve liste yeniden okununca koşu KALDIĞI YERDEN sürer.
@@ -97,7 +115,8 @@ interface ResumeNote {
 }
 function writeResume(note: ResumeNote | null): void {
   try {
-    if (note) sessionStorage.setItem(RESUME_KEY, JSON.stringify(note));
+    if (note)
+      sessionStorage.setItem(RESUME_KEY, JSON.stringify({ ...note, ownerId: activeOwner ?? null }));
     else sessionStorage.removeItem(RESUME_KEY);
   } catch {
     /* depolama yoksa sürdürme özelliği çalışmaz; koşu etkilenmez */
@@ -108,6 +127,7 @@ export function readResume(): ResumeNote | null {
     const raw = JSON.parse(sessionStorage.getItem(RESUME_KEY) ?? "null") as unknown;
     if (!raw || typeof raw !== "object") return null;
     const note = raw as Record<string, unknown>;
+    if (activeOwner !== undefined && (!activeOwner || note.ownerId !== activeOwner)) return null;
     const pending = Array.isArray(note.pending)
       ? note.pending.filter((key): key is string => typeof key === "string")
       : [];
@@ -136,9 +156,36 @@ export function resumeIfInterrupted(liste: DosyaListe): boolean {
 export async function startSync(liste: DosyaListe, only?: Set<string>, pull = true): Promise<void> {
   if (state.running) return;
   const previous = only && state.run ? state.run.reports : [];
-  controller = new AbortController();
+  const runController = new AbortController();
+  controller = runController;
+  const runScope = scopeGeneration;
+  const isCurrent = () => runScope === scopeGeneration;
   const targets = only ? liste.items.filter((item) => only.has(item.key)) : liste.items;
+  if (!targets.length) {
+    controller = null;
+    return;
+  }
   const reports = new Map<number, FileReport>();
+  const runId = crypto.randomUUID();
+  let revision = 0;
+  let historyWarning: string | undefined;
+  const persist = async (run: SyncRun, finished = false) => {
+    if (!isCurrent()) return;
+    try {
+      const saved = await saveAuditRun(
+        auditCheckpoint(runId, ++revision, finished, !pull, liste.complete, run, state.saveNote),
+      );
+      if (!isCurrent()) return;
+      historyWarning = undefined;
+      if (finished) {
+        // Keep live portal keys for explicit retries; history deliberately does not store those keys.
+        run.reports = run.reports.map((r, i) => ({ ...r, ...saved.run.reports[i], key: r.key }));
+        run.summary = summarize(run.reports);
+      }
+    } catch (cause) {
+      historyWarning = cause instanceof Error ? cause.message : "Tam koşu raporu kaydedilemedi.";
+    }
+  };
   set({
     liste,
     running: true,
@@ -151,16 +198,34 @@ export async function startSync(liste: DosyaListe, only?: Set<string>, pull = tr
   const release = keepAwake();
   writeResume({ pull, pending: targets.map((item) => item.key) });
   let result: SyncRun;
+  const emptyRun: SyncRun = {
+    reports: targets.map(blankReport),
+    summary: summarize(targets.map(blankReport)),
+    aborted: false,
+  };
+  await persist(emptyRun);
+  if (!isCurrent()) {
+    release();
+    return;
+  }
   try {
     result = await syncAll(liste.items, {
       only,
       pull,
-      signal: controller.signal,
+      tabId: liste.tabId,
+      signal: runController.signal,
       // Dosya bilgileri (taraflar, safahat, hesap…) her dosyadan hemen sonra kaydedilir: koşu yarıda kalsa da alınanlar kaybolmaz.
       onDetail: async (detail) => {
+        if (!isCurrent()) throw new Error("Hesap değişti; eski koşu durduruldu.");
         return await saveCaseDetail(detail);
       },
+      onCheckpoint: async (checkpoint) => {
+        if (!isCurrent()) return;
+        set({ live: checkpoint.reports });
+        await persist(checkpoint);
+      },
       onProgress: ({ index, total, phase, report }) => {
+        if (!isCurrent()) return;
         // Yeni dosyaya geçildiyse öncekiler bitmiştir: sürdürme kaydında yalnız bu ve sonraki dosyalar kalır.
         if (!reports.has(index))
           writeResume({ pull, pending: targets.slice(index).map((item) => item.key) });
@@ -172,19 +237,16 @@ export async function startSync(liste: DosyaListe, only?: Set<string>, pull = tr
       },
     });
   } catch (cause) {
-    release();
-    controller = null;
-    set({
-      running: false,
-      progress: null,
-      saveNote: {
-        kind: "warn",
-        text: cause instanceof Error ? cause.message : "Aktarım beklenmedik biçimde durdu.",
-      },
-    });
-    return;
+    result = {
+      ...emptyRun,
+      reports: targets.map((d) => state.live.find((r) => r.key === d.key) ?? blankReport(d)),
+      stoppedBecause: cause instanceof Error ? cause.message : "Aktarım beklenmedik biçimde durdu.",
+      aborted: runController.signal.aborted,
+    };
+    result.summary = summarize(result.reports);
   }
   release();
+  if (!isCurrent()) return;
   controller = null;
   writeResume(null); // bitti ya da kullanıcı durdurdu: kendiliğinden yeniden başlamaz
   if (previous.length) {
@@ -210,6 +272,7 @@ export async function startSync(liste: DosyaListe, only?: Set<string>, pull = tr
   if (items.length) {
     try {
       const saved = await saveSyncReport(items);
+      if (!isCurrent()) return;
       if (saved.downgraded.length) {
         const rejected = new Set(saved.downgraded);
         const reports = result.reports.map((report) => {
@@ -229,7 +292,6 @@ export async function startSync(liste: DosyaListe, only?: Set<string>, pull = tr
         set({ run: result });
       }
       set({
-        savedVersion: state.savedVersion + 1,
         saveNote: saved.downgraded.length
           ? {
               kind: "warn",
@@ -251,7 +313,25 @@ export async function startSync(liste: DosyaListe, only?: Set<string>, pull = tr
       });
     }
   }
-  set({ running: false, progress: null });
+  await persist(result, true);
+  if (!isCurrent()) return;
+  set({
+    run: result,
+    running: false,
+    progress: null,
+    savedVersion: state.savedVersion + 1,
+    ...(historyWarning
+      ? { saveNote: { kind: "warn" as const, text: historyWarning } }
+      : {
+          saveNote:
+            state.saveNote?.kind === "warn"
+              ? state.saveNote
+              : {
+                  kind: "ok" as const,
+                  text: `Tam koşu raporu kaydedildi (${result.reports.length} dosya; evraksız ve işlenmeyenler dahil).`,
+                },
+        }),
+  });
   for (const listener of finishListeners)
     listener({ run: result, pull, saveWarning: state.saveNote?.kind === "warn" });
 }

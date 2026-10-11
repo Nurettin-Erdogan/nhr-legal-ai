@@ -10,11 +10,40 @@ from api.ai.rag import RAGContext
 from api.ai.search_plan import plan_search
 from api.ai.passages import is_duration_question, sentence_score
 from api.ai.relevance import question_intent, intent_tsquery, focused_intent_tsquery, relevant_contexts
+from api.ai.seed_tier import seed_tier
 
 _LAW_NO_RE = re.compile(r"(?<!\d)(\d{3,5})(?!\d)")
 _ARTICLE_RE = re.compile(
-    r"madde\s+(\d{1,3}[a-zA-Z]?)|(\d{1,3})\.\s*madd",
+    # "madde 18", "18. madde", ve avukatların kısa yazımı "m. 18" / "m.18" / "md. 18".
+    r"madde\s+(\d{1,3}[a-zA-Z]?)|(\d{1,3})\.\s*madd|(?<![0-9A-Za-zÇĞİÖŞÜçğıöşü])md?\.\s*(\d{1,3})(?!\d)",
     re.IGNORECASE,
+)
+
+# Numarası yazılmadan ADIYLA anılan temel kanunlar ("Anayasanın 36. maddesi", "TBK m. 344", "İİK m. 67"). Bu tablo hukuki
+# içerik değildir; yalnız hangi kanunun maddesinin getirileceğini söyler, madde metni yine korpustaki resmî kayıttan okunur.
+# Her numara 2026-10-08'de korpustaki resmî mevzuat kaydının adıyla karşılaştırılarak doğrulandı (ör. 2709 = TÜRKİYE
+# CUMHURİYETİ ANAYASASI, 4857 = İŞ KANUNU). Belirsiz kısaltmalar bilerek yoktur ("TMK": Medeni Kanun da Terörle Mücadele
+# Kanunu da olabilir). Desenler `normalize` edilmiş (küçük harf) metne uygulanır.
+_NAMED_LAWS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
+    (re.compile(pattern), law_no)
+    for pattern, law_no in (
+        (r"\banayasa(?!\s+mahkeme)", "2709"),
+        (r"(?<!deniz )(?<!basın )(?<!basin )\biş kanunu", "4857"),
+        (r"\bborçlar kanunu|\btbk\b", "6098"),
+        (r"\bmedeni kanun", "4721"),
+        (r"\btürk ceza kanunu|\btck\b", "5237"),
+        (r"\bceza muhakemesi kanunu|\bcmk\b", "5271"),
+        (r"\bhukuk muhakemeleri kanunu|\bhmk\b", "6100"),
+        (r"\bicra (?:ve )?iflas kanunu|\biik\b", "2004"),
+        (r"\bidari yargılama usulü kanunu|\biyuk\b", "2577"),
+        (r"\btürk ticaret kanunu|\bttk\b", "6102"),
+        (r"\btüketicinin korunması hakkında kanun|\btkhk\b", "6502"),
+        (r"\bkişisel verilerin korunması kanunu|\bkvkk\b", "6698"),
+        (r"\bkat mülkiyeti kanunu", "634"),
+        (r"\bkarayolları trafik kanunu", "2918"),
+        (r"\biş mahkemeleri kanunu", "7036"),
+        (r"\bkamu denetçiliği kurumu kanunu", "6328"),
+    )
 )
 _KDK_INTENT_RE = re.compile(r"kamu denetçi|\bkdk\b", re.IGNORECASE)
 _WORD_RE = re.compile(r"[0-9A-Za-zÇĞİÖŞÜçğıöşüâîûÂÎÛ]+")
@@ -570,14 +599,54 @@ DOCUMENT_HYBRID_RETRIEVAL_SQL = _document_hybrid_sql()
 DOCUMENT_CASE_HYBRID_RETRIEVAL_SQL = _document_hybrid_sql(_DOCUMENT_SCOPE_CASE)
 
 
+def named_law_numbers(question: str) -> tuple[str, ...]:
+    """Soruda adıyla geçen temel kanunların numaraları (yazım sırasına göre, yinelenmeden)."""
+    from api.ai.search_plan import normalize
+
+    value = normalize(question)
+    hits = sorted(
+        (match.start(), law_no) for pattern, law_no in _NAMED_LAWS for match in [pattern.search(value)] if match
+    )
+    found: list[str] = []
+    for _, law_no in hits:
+        if law_no not in found:
+            found.append(law_no)
+    return tuple(found)
+
+
 def question_law_numbers(question: str) -> tuple[str, ...]:
-    return tuple(_LAW_NO_RE.findall(question))
+    """Sorudaki kanun numaraları.
+
+    Kanun numarası açıkça yazılmışsa ("4857 sayılı Kanun madde 18") yalnız o kullanılır. Yazılmamışsa ve soru bir MADDE
+    numarası veriyorsa kanun adından çıkarılır: "Anayasanın 36. maddesi" → 2709, "TBK m. 344" → 6098. Madde numarası olmayan
+    soruda ad eşlemesi yapılmaz (konu sorusunu "açık madde sorusu"na çevirmesin). Üç haneli madde numarası tek başına kanun
+    numarası sanılmaz: "TBK 344. madde"de 344 kanun değil maddedir.
+    """
+    numbers = tuple(_LAW_NO_RE.findall(question))
+    articles = question_article_numbers(question)
+    if not articles:
+        return numbers
+    from api.ai.search_plan import normalize
+
+    value = normalize(question)
+
+    def is_explicit(number: str) -> bool:
+        # Madde numarası kanun numarası değildir; yıl gibi görünen sayı ("2023 yılında …") ancak "sayılı" ile yazılmışsa kanundur
+        # (2004 sayılı İcra ve İflas Kanunu gibi).
+        if number in articles:
+            return False
+        year_like = len(number) == 4 and number[:2] in ("19", "20")
+        return not year_like or re.search(rf"(?<!\d){number}\s*sayılı", value) is not None
+
+    if any(is_explicit(number) for number in numbers):
+        return numbers
+    return named_law_numbers(question) or numbers
 
 
 def question_article_numbers(question: str) -> tuple[str, ...]:
     found: list[str] = []
     for match in _ARTICLE_RE.finditer(question):
-        value = match.group(1) or match.group(2)
+        value = match.group(1) or match.group(2) or match.group(3)
         if value:
             found.append(value.lower())
     return tuple(found)
@@ -729,16 +798,39 @@ _LEXICAL_HITS_CALL_RE = re.compile(
 # Tam sıralı sözcük araması soğuk diskte zaman aşımına uğrarsa katmanlı sürüme düşülür: resmî
 # katman yine tam puanlanır, doğrulanmamış toplu katmanda yalnız ilk _TIERED_SEED_CAP eşleşme
 # puanlanır (docs/legal-search-performance.md). Sonuç "partial" işaretlenir.
-_TIERED_RETRY_TIMEOUT = "8s"
+_TIERED_RETRY_TIMEOUT = "4s"
 _TIERED_SEED_CAP = 3000
+# Katmanlı sürüm de yetişmezse yalnız resmî katman (toplu katman atlanır). Ölçüldü (2026-10-10): arkada yoğun veri işi
+# çalışırken toplu katmanın 31 GB'lık dizini bellekte kalamıyor; tek bir aramada dizin taraması 5,6 sn, satır okuması 4,9 sn
+# sürüp 8 sn'lik süreyi aşıyordu, oysa resmî katman aynı sorguda 0,26 sn'de bitiyordu. Cevap yalnız doğrulanmış kaynağa
+# dayandığı için resmî katmanla dönmek, 10 sn bekleyip hiç sonuç alamamaktan iyidir; sonuç "partial" işaretlenir.
+_OFFICIAL_ONLY_TIMEOUT = "4s"
+# Yalnız resmî katmana düşüldüğünde puanlanan en çok eşleşme: yük altında 5 000 parçanın puanlanması da 4 sn'yi aşabiliyor
+# (ölçüldü: 2026-10-10), 1 500 parça ~1,5 sn sürer. Olağan soruda resmî eşleşme bunun altındadır (ölçülen: 222, 636).
+_OFFICIAL_ONLY_CAP = 1500
+# Tam sıralı aramaya verilen ilk süre. Yetişen sorgular 0,2-1,1 sn'de bitiyor; yetişmeyenler 8 sn'lik bütçenin
+# tamamını boşa harcayıp sonra katmanlı sürümden <1 sn'de cevap alıyordu (altı olağan sorunun üçünde ölçüldü:
+# 2026-10-08). Katmanlı sürümde resmî katman yine tam puanlandığı için (5 000 eşleşmeye kadar) erken geçiş cevabın
+# dayandığı doğrulanmış kaynakları değiştirmez; yalnız doğrulanmamış toplu katman örneklenir ve sonuç "partial" olur.
+_FULL_RANKING_FIRST_BUDGET_MS = 2500
 
 
-def _tiered_variant(sql: str, seed_cap: int = _TIERED_SEED_CAP) -> str:
-    """Tam sıralı sözcük araması çağrısını katmanlı sürümle değiştirir."""
+def _tiered_variant(sql: str, seed_cap: int = _TIERED_SEED_CAP, official_cap: int | None = None) -> str:
+    """Tam sıralı sözcük araması çağrısını katmanlı sürümle değiştirir (`official_cap` verilmezse fonksiyonun varsayılanı)."""
+    tail = "" if official_cap is None else f", {int(official_cap)}"
     return _LEXICAL_HITS_CALL_RE.sub(
-        lambda match: f"legal_rag_current_lexical_hits_tiered({match.group(1)}, {int(seed_cap)})",
+        lambda match: f"legal_rag_current_lexical_hits_tiered({match.group(1)}, {int(seed_cap)}{tail})",
         sql,
     )
+
+
+def _capped_budget(budget: str, limit_ms: int) -> str:
+    """Süre bütçesini ("8s", "5200ms") verilen üst sınırla kırpar."""
+    match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(ms|s)\s*", budget)
+    if not match:
+        return budget
+    milliseconds = float(match.group(1)) * (1000 if match.group(2) == "s" else 1)
+    return f"{int(min(milliseconds, limit_ms))}ms"
 
 
 def _run_retrieval(connection: psycopg.Connection, sql: str, params: dict, timeout: str):
@@ -933,28 +1025,44 @@ def retrieve_contexts(
     errors = []
     completed = 0
 
-    def run(name, sql, params, budget):
+    def run(name, sql, params, budget, first_budget_ms=None):
         nonlocal completed
         tick = monotonic()
+        tiered = _tiered_variant(sql)
+        has_tiers = tiered != sql
+        if first_budget_ms is not None and has_tiers:
+            budget = _capped_budget(budget, first_budget_ms)
+        # Sıra: tam sıralı sürüm; yetişmezse katmanlı sürüm (toplu katman örneklenir); o da yetişmezse yalnız resmî katman.
+        # Hepsi düşerse hata sayılır ("kaynak yok" denmez). Her deneme: (sql, süre, durum adı, toplu katmanı sınırlı tarar mı).
+        attempts = [(sql, budget, 'ok', False)]
+        if has_tiers:
+            official_only = _tiered_variant(sql, seed_cap=0, official_cap=_OFFICIAL_ONLY_CAP)
+            if seed_tier.allow():
+                attempts += [(tiered, _TIERED_RETRY_TIMEOUT, 'timeout_then_tiered', True),
+                             (official_only, _OFFICIAL_ONLY_TIMEOUT, 'timeout_then_official', False)]
+            else:
+                # Toplu katman az önce art arda zaman aşımına uğradı (bkz. api.ai.seed_tier): bir süre hiç denenmez.
+                attempts = [(official_only, _OFFICIAL_ONLY_TIMEOUT, 'official_only', False)]
+        failure = None
         try:
-            rows = _execute_retrieval(connection, sql, params, timeout=budget)
-            completed += 1
-            status = 'ok'
-            return rows
-        except psycopg.errors.QueryCanceled as exc:
-            info['partial'] = True
-            status = 'timeout'
-            tiered = _tiered_variant(sql)
-            if tiered != sql:
-                # Soğuk disk: aynı sorgu katmanlı sürümle yeniden denenir; yalnız bu da düşerse hata sayılır.
+            for attempt_sql, timeout, label, samples_seed_tier in attempts:
                 try:
-                    rows = _execute_retrieval(connection, tiered, params, timeout=_TIERED_RETRY_TIMEOUT)
-                    completed += 1
-                    status = 'timeout_then_tiered'
-                    return rows
-                except psycopg.errors.QueryCanceled as retry_exc:
-                    exc = retry_exc
-            errors.append(exc)
+                    rows = _execute_retrieval(connection, attempt_sql, params, timeout=timeout)
+                except psycopg.errors.QueryCanceled as exc:
+                    failure = exc
+                    info['partial'] = True
+                    if samples_seed_tier:
+                        seed_tier.record(False)
+                    continue
+                completed += 1
+                status = label
+                if label != 'ok':
+                    info['partial'] = True
+                if samples_seed_tier:
+                    seed_tier.record(True)
+                return rows
+            status = 'timeout'
+            errors.append(failure)
             return []
         finally:
             info['branches'].append(dict(name=name, status=locals().get('status', 'error'),
@@ -1010,7 +1118,9 @@ def retrieve_contexts(
         elif not sufficient:
             info['partial'] = True
     else:
-        lexical = run('lexical', sql, params, '8s')
+        # Geniş arama: tam sıralı sürüme kısa ilk süre, yetişmezse katmanlı sürüm (bkz. _FULL_RANKING_FIRST_BUDGET_MS).
+        # Maddeye bağlı odaklı aramanın (yukarıda) ölçülmüş ortak süresi değişmez.
+        lexical = run('lexical', sql, params, '8s', _FULL_RANKING_FIRST_BUDGET_MS)
         info['lexical_strategy'] = 'broad'
     candidates = relevant_contexts(question, lexical + semantic)
     unique_candidates = {c.chunk_id: c for c in statute + lexical + semantic}

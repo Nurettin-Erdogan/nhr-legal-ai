@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DEADLINE_RULES, calculateDeadline, formatDateTr, ruleById, startCandidates, weekdayName, type StartCandidate } from "@/lib/deadlines";
 import { loadCaseDetail } from "@/lib/uyap-sync-api";
+import { ServiceRecordCandidates } from "@/components/ServiceRecordCandidates";
 
 /**
  * Dava detayındaki "Süreler" sekmesi: yasal süreyi hesaplar ve takvime işler. Hesap bir YARDIMCIDIR: kuralın dosyaya uyup uymadığı,
@@ -85,6 +86,9 @@ export function DeadlineCalculator({ caseId, onSaved }: { caseId: string; onSave
       <p className="text-xs text-muted-foreground">
         <span className="font-medium">{rule.law}:</span> “{rule.quote}” — süre {rule.amount} {rule.unit}.
       </p>
+
+      {/* Tebliğ mazbatasından okunan günler safahattan daha kesindir (safahat işlem tarihidir); önce onlar sunulur. */}
+      <ServiceRecordCandidates caseId={caseId} onPick={setStart} />
 
       {candidates.length > 0 && (
         <div>

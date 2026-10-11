@@ -57,11 +57,10 @@ def test_pdf_with_only_unreadable_text_is_rejected_with_a_user_visible_reason(mo
     assert "okunamadı" in message and "aranamaz" in message
 
 
-def test_unreadable_pages_are_dropped_but_readable_pages_are_kept(monkeypatch):
+def test_unreadable_pages_are_never_silently_dropped_from_a_mixed_pdf(monkeypatch):
     data = _pdf_with_pages(monkeypatch, [GARBAGE, GOOD])
-    processed = process_document("karisik.pdf", data)
-    assert {chunk.page_number for chunk in processed.chunks} == {2}
-    assert all("/gid" not in chunk.content for chunk in processed.chunks)
+    with pytest.raises(DocumentProcessingError, match="tamamı aranabilir değil"):
+        process_document("karisik.pdf", data)
 
 
 def test_a_normal_pdf_is_unchanged(monkeypatch):

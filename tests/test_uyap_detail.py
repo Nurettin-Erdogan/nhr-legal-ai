@@ -93,6 +93,19 @@ def test_an_empty_table_without_a_zero_count_is_not_a_verified_empty_result():
     assert problems == ["Safahat: boş tablonun sıfır kayıt olduğu doğrulanamadı."]
 
 
+@pytest.mark.parametrize("key,valid", [("tahsilat", True), ("safahat", False)])
+def test_static_reddiyat_evidence_is_scoped_and_persisted(key, valid):
+    table = uyap_detail.DetailTable(title="Reddiyat detayı", headers=[
+        "Makbuz No", "Reddiyat Tarihi", "Reddiyat Nedeni", "Ödenecek Kişi", "Reddiyat Miktar",
+        "Gelir Vergisi", "Damga Vergisi", "Tahsil Harcı", "Cezaevi Harcı", "Suret Harcı",
+        "Başvuru Harcı", "Ödenecek Tutar"], rows=[], declared=0, complete=True,
+        empty_evidence="uyap_static_reddiyat_detail")
+    stored, complete, _ = uyap_detail.verified_tabs([
+        uyap_detail.DetailTab(key=key, tables=[table], complete=True)])
+    assert complete is valid
+    assert stored[0]["tables"][0]["empty_evidence"] == "uyap_static_reddiyat_detail"
+
+
 def _world(db, monkeypatch):  # noqa: F811
     @contextlib.contextmanager
     def as_user(user_id: str):

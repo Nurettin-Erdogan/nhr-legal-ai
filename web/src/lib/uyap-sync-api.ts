@@ -2,10 +2,46 @@
 import { inMemoryAccessToken } from "@/lib/auth-api";
 import { reconcileSaved, type SavedSync, type ServerSyncItem } from "@/lib/uyap-sync-all";
 import { parseDetail, type DosyaDetail } from "@/lib/uyap-bridge";
+import { parseAuditRun, type AuditCheckpoint, type StoredAuditRun } from "@/lib/uyap-run-report";
 
 const BASE = (import.meta.env?.VITE_API_URL ?? "http://localhost:8766").replace(/\/$/, "");
 const CHUNK = 200;
 const SAVE_TIMEOUT_MS = 60_000;
+
+export async function saveAuditRun(checkpoint: AuditCheckpoint): Promise<StoredAuditRun> {
+  const response = await postBounded("/api/office/uyap/audit-runs", checkpoint, 15000);
+  if (!response.ok)
+    throw new Error(
+      response.status === 401
+        ? "Oturumunuz sona ermiş; tam koşu raporu kaydedilemedi."
+        : "Tam koşu raporu kaydedilemedi; sonucun kalıcı kaydı doğrulanamadı.",
+    );
+  const parsed = parseAuditRun(await response.json().catch(() => null));
+  if (!parsed || parsed.id !== checkpoint.id || parsed.revision !== checkpoint.revision)
+    throw new Error("Tam koşu raporunun kayıt yanıtı doğrulanamadı.");
+  return parsed;
+}
+
+/** Authenticated, bounded history; null means unavailable, [] means no previous run. */
+export async function loadAuditRuns(signal?: AbortSignal): Promise<StoredAuditRun[] | null> {
+  try {
+    const response = await fetch(`${BASE}/api/office/uyap/audit-runs`, {
+      cache: "no-store",
+      credentials: "include",
+      headers: headers(false),
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(SAVE_TIMEOUT_MS)])
+        : AbortSignal.timeout(SAVE_TIMEOUT_MS),
+    });
+    if (!response.ok) return null;
+    const body = await response.json();
+    if (!Array.isArray(body?.runs)) return null;
+    const runs = body.runs.slice(0, 5).map(parseAuditRun);
+    return runs.every((r: StoredAuditRun | null) => r !== null) ? runs : null;
+  } catch {
+    return null;
+  }
+}
 
 const headers = (json: boolean): Record<string, string> => {
   const token = inMemoryAccessToken();
@@ -16,14 +52,18 @@ const headers = (json: boolean): Record<string, string> => {
 };
 
 /** Ağ yanıt vermese de aktarım/kayıt durumu sonsuza kadar çalışıyor görünmesin. */
-async function postBounded(path: string, body: unknown): Promise<Response> {
+async function postBounded(
+  path: string,
+  body: unknown,
+  timeoutMs = SAVE_TIMEOUT_MS,
+): Promise<Response> {
   try {
     return await fetch(`${BASE}${path}`, {
       method: "POST",
       credentials: "include",
       headers: headers(true),
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(SAVE_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch {
     throw new Error(

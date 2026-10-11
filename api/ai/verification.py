@@ -91,9 +91,10 @@ def verify_answer(answer: str, contexts: list[RAGContext], *, question: str = ""
             unsupported.append('Genel mevzuat yanıtı getirilen birincil mevzuat kaynağına dayanmıyor.')
     if question:
         from api.ai.relevance import document_hint, passage_relevant
-        from api.ai.authority import primary_legislation_markers
+        from api.ai.authority import on_statute_topic, primary_legislation_markers, topic_statute_terms
         primary = primary_legislation_markers(question, list(cited_contexts))
         related_primary = {i for i in primary if passage_relevant(question, cited_contexts[i-1].content)}
+        topic = topic_statute_terms(question, list(cited_contexts))
         # A real citation is necessary, but an unrelated quotation is not an answer.
         for line in text.splitlines():
             markers = {int(i) for i in _MARKER_PATTERN.findall(line)}
@@ -107,7 +108,12 @@ def verify_answer(answer: str, contexts: list[RAGContext], *, question: str = ""
                 for m in markers
             )
             hint = ' '.join(document_hint(cited_contexts[m - 1]) for m in sorted(markers)) if document_only else ''
-            if (markers and not statutory_qualification
+            # Sorunun konusunu düzenleyen resmî maddenin cümlesi soru sözcüklerini taşımayabilir; maddenin konu
+            # sözcüğünü taşıyorsa alakalıdır (bkz. authority.topic_statute_terms). Kaynak-destek denetimi yine zorunludur.
+            topic_statute = bool(markers) and all(
+                m in topic and on_statute_topic(line, topic[m]) for m in markers
+            )
+            if (markers and not statutory_qualification and not topic_statute
                     and not passage_relevant(question, line, source_type='document' if document_only else None,
                                              document_hint=hint)):
                 unsupported.append(line)

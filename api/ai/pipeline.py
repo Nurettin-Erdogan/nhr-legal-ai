@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from time import monotonic
 from typing import Any
 from uuid import UUID
@@ -58,6 +58,7 @@ from api.config import get_settings
 from api.db import authenticated_database_connection, database_connection
 from api.ai import verification_queue
 from api.schemas import AIAnswerRequest, AIAnswerResponse, AICitation
+from api.uyap_record_document import record_contexts
 
 logger = logging.getLogger(__name__)
 
@@ -394,6 +395,10 @@ def persist_answer(
         return None, None
 
 
+# Bir soruda UYAP dosya bilgisi belgesinden en çok bu kadar bölüm öne alınır; evraklar da aday kalsın.
+UYAP_RECORD_SECTION_LIMIT = 3
+
+
 def _interleave(first: list[RAGContext], second: list[RAGContext]) -> list[RAGContext]:
     """İki listeyi, kendi sıralarını bozmadan birer birer birleştirir (ilk öğe `first` listesinden)."""
     merged: list[RAGContext] = []
@@ -448,6 +453,7 @@ def _retrieve(
     embedding_model: str,
     question: str | None = None,
     diagnostics: dict | None = None,
+    statutes_on_timeout: bool = False,
 ) -> list[RAGContext]:
     search_question = question or request.question
     if request.project_id is not None or request.case_id is not None:
@@ -472,7 +478,24 @@ def _retrieve(
                 query_embedding=query_embedding,
                 embedding_model=embedding_model,
             )
+            if request.case_id is not None:
+                # UYAP'tan çekilen dosya bilgileri (taraflar, dosya hesabı, sorgular, safahat) evrak değildir ama dosyanın
+                # parçasıdır: soruyla ilgili bölümleri kullanıcının belgeleri arasına, en başa eklenir. "Borçlu kim?",
+                # "Bakiye borç ne kadar?" gibi soruların cevabı evrak metninde değil bu kayıtlardadır.
+                record = record_contexts(connection, user_id=user_id, case_id=request.case_id, question=search_question)
+                if record:
+                    # Belge araması sırayı Decimal olarak döndürür.
+                    top = max((float(context.rank) for context in document_contexts), default=0.0)
+                    record = [replace(context, rank=top + 1.0) for context in record[:UYAP_RECORD_SECTION_LIMIT]]
+                    document_contexts = [*record, *document_contexts]
+                if diagnostics is not None:
+                    diagnostics["uyap_record_sections"] = len(record)
             legal_assessment = asks_for_legal_assessment(search_question)
+            if request.case_id is not None and record and not legal_assessment:
+                # Sorunun karşılığı dosyanın UYAP kaydında var ve hukuki değerlendirme istenmiyor: başka davaların kararlarına
+                # bakılmaz. "Takip kesinleşti mi?" sorusuna, dosyadaki "Kesinleşme bilgisi girildi: …" kaydı dururken ilgisiz
+                # bir kararın genel cümleleriyle cevap veriliyordu (ölçüldü: 2026-10-10).
+                file_only = True
             named: list[RAGContext] = []
             if request.case_id is not None:
                 named = documents_named_in(search_question, document_contexts)
@@ -530,15 +553,24 @@ def _retrieve(
             ]
             return _interleave(own, others)[:top_k]
     with database_connection() as connection:
-        contexts = retrieve_contexts(
-            connection,
-            question=search_question,
-            top_k=top_k,
-            query_embedding=query_embedding,
-            embedding_model=embedding_model,
-            as_of=request.as_of,
-            diagnostics=diagnostics,
-        )
+        timed_out: psycopg.errors.QueryCanceled | None = None
+        try:
+            contexts = retrieve_contexts(
+                connection,
+                question=search_question,
+                top_k=top_k,
+                query_embedding=query_embedding,
+                embedding_model=embedding_model,
+                as_of=request.as_of,
+                diagnostics=diagnostics,
+            )
+        except psycopg.errors.QueryCanceled as exc:
+            # Karar araması yoğun diskte ikinci denemede de zaman aşımına uğrayabilir (ölçüldü: 2026-10-08, art arda dört
+            # deneme). Konunun resmî maddesi ayrı ve hızlı okunur; o varsa kullanıcı "kaynaklar aranamadı" hatası yerine
+            # kanun maddesine dayanan cevabı alır ve aramanın eksik kaldığı açıkça bildirilir (partial).
+            if not statutes_on_timeout or request.as_of is not None:
+                raise
+            timed_out, contexts = exc, []
         if request.as_of is None:
             # Genel soruda da konuya uyan resmî madde adayların başına eklenir. Sözcük araması "işe iade davası açma
             # süresi" sorusuna yalnız 2015-2016 kararlarını getiriyordu; o kararlar arabuluculuk zorunluluğundan önceki
@@ -550,6 +582,12 @@ def _retrieve(
                 contexts = [*statutes, *(context for context in contexts if context.chunk_id not in known)]
                 if diagnostics is not None:
                     diagnostics["topic_statutes"] = len({context.source_id for context in statutes})
+        if timed_out is not None:
+            if not contexts:
+                raise timed_out
+            if diagnostics is not None:
+                diagnostics["partial"] = True
+                diagnostics["decision_search"] = "timeout"
         return contexts
 
 
@@ -559,7 +597,8 @@ async def _retrieve_with_warm_retry(request: AIAnswerRequest, **kwargs: Any) -> 
     bıraktığından yeniden deneme çoğunlukla geçer; ikinci başarısızlık gerçek hata sayılır."""
     for attempt in (1, 2):
         try:
-            return await asyncio.to_thread(_retrieve, request, **kwargs)
+            # Son denemede karar araması yine düşerse konunun resmî maddesiyle yetinilir (bkz. _retrieve).
+            return await asyncio.to_thread(_retrieve, request, statutes_on_timeout=attempt == 2, **kwargs)
         except psycopg.errors.QueryCanceled:
             if attempt == 2:
                 raise

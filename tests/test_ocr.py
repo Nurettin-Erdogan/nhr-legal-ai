@@ -102,6 +102,59 @@ def test_a_normal_pdf_never_triggers_ocr(monkeypatch, ocr_calls):
     assert ocr_calls["pdf"] == []
 
 
+@pytest.mark.parametrize("mode", ["off", "run"])
+def test_mixed_pdf_never_silently_drops_unreadable_pages(monkeypatch, mode):
+    data = _pdf(monkeypatch, [(GOOD, False), ("", True)])
+    monkeypatch.setattr(document_processing, "ocr_pdf_pages", lambda data, pages: {2: "~~"})
+    with pytest.raises(DocumentProcessingError, match="tamamı aranabilir değil"):
+        process_document("karisik.pdf", data, ocr=mode)
+
+
+def test_multipage_image_never_silently_drops_a_failed_ocr_page(monkeypatch):
+    monkeypatch.setattr(document_processing, "ocr_image_pages", lambda data: [(1, GOOD), (2, "~~")])
+    with pytest.raises(DocumentProcessingError, match="tamamı aranabilir değil"):
+        process_document("tarama.tif", b"image", ocr="run")
+
+
+@pytest.mark.parametrize("initial,expected_calls", [("", 2), (GOOD, 1)])
+def test_sparse_layout_fallback_only_retries_short_text_with_remaining_budget(monkeypatch, initial, expected_calls):
+    from types import SimpleNamespace
+
+    calls = []
+    times = iter([10.0, 12.0])
+    monkeypatch.setattr(ocr, "monotonic", lambda: next(times))
+    monkeypatch.setattr(ocr, "_prepare", lambda image: image)
+    monkeypatch.setattr(ocr, "_has_eng", lambda engine: True)
+
+    def read(image, **kwargs):
+        calls.append(kwargs)
+        return initial if len(calls) == 1 else GOOD
+
+    assert ocr._read(SimpleNamespace(image_to_string=read), object()) == (initial or GOOD)
+    assert len(calls) == expected_calls
+    if expected_calls == 2:
+        assert calls[1]["config"] == "--psm 11"
+        assert calls[1]["timeout"] == ocr.PAGE_TIMEOUT_SECONDS - 2
+        assert calls[1]["lang"] == "tur+eng"
+
+
+def test_sparse_layout_fallback_does_not_restart_an_exhausted_timeout(monkeypatch):
+    from types import SimpleNamespace
+
+    calls = []
+    times = iter([0.0, float(ocr.PAGE_TIMEOUT_SECONDS)])
+    monkeypatch.setattr(ocr, "monotonic", lambda: next(times))
+    monkeypatch.setattr(ocr, "_prepare", lambda image: image)
+    monkeypatch.setattr(ocr, "_has_eng", lambda engine: False)
+
+    def read(image, **kwargs):
+        calls.append(kwargs)
+        return ""
+
+    assert ocr._read(SimpleNamespace(image_to_string=read), object()) == ""
+    assert len(calls) == 1
+
+
 def test_ocr_output_that_is_still_garbage_is_not_indexed(monkeypatch):
     monkeypatch.setattr(document_processing, "ocr_pdf_pages", lambda data, pages: {n: "~~ // ## 1 2" for n in pages})
     data = _pdf(monkeypatch, [("", True)])

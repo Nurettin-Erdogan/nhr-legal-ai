@@ -65,6 +65,8 @@ GENERIC_QUESTION_WORDS = frozenset((
     # "olmalı" her metindeki "olması/olmak/olmadığı" ile eşleşir: "İhtar süresi kaç gün olmalı?" sorusuna, içinde yalnız
     # "süre" ve "olması" geçen temyiz harcı muhtırası cümlesi "alakalı" sayılıp cevap oldu (ölçüldü: 2026-10-06).
     'olmalı', 'olmalıdır', 'olmak', 'olması', 'olacak', 'olarak', 'olan',
+    # Kişi soran soru sözcüğü cevap satırında geçmez ("Alacaklı kimdir?" → "Alacaklı: …").
+    'kimdir', 'kimler', 'kimlerdir',
 ))
 
 

@@ -32,7 +32,7 @@ USER_TABLES = (
     "users", "roles", "user_roles", "auth_google_identities", "activity_logs",
     "clients", "projects", "project_members", "documents", "document_chunks", "conversations", "messages", "citations", "saved_legal_sources",
     "office_ai_outputs", "office_basvurular", "office_calendar_events", "office_call_settings", "office_calls", "office_case_documents",
-    "office_cases", "office_clients", "office_feedback", "office_legal_documents", "office_project_notes", "office_projects", "office_reminders",
+    "office_cases", "office_clients", "office_feedback", "office_legal_documents", "office_project_notes", "office_projects", "office_reminders", "office_uyap_audit_runs",
     "office_risk_analyses", "office_tasks", "office_uyap_ingest_tokens", "office_uyap_sync_runs",
 )
 CORPUS_TABLES = (

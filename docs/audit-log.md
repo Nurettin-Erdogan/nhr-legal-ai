@@ -44,9 +44,16 @@ mantıksal özetler (parça sayısı, `grounded`, atıf sayısı).
 
 ## Bilinen sınırlar
 
-* **IP adresi doğrudan bağlanan istemcinindir.** `X-Forwarded-For` bilinçli olarak okunmaz; güvenilen
-  bir ters vekil tanımlanmadan istemci günlüğe istediği IP'yi yazdırabilirdi. Uygulama bir vekilin
-  arkasında çalışacaksa vekil adresi yazılır; güvenilen vekil desteği eklenmelidir.
+* **IP adresi sunucunun çözdüğü istemci adresidir** (ölçüldü: 2026-10-08; önceki "başlık hiç okunmaz" notu
+  yanlıştı). uvicorn varsayılan ayarıyla `X-Forwarded-For` başlığını yalnız **bu makineden** (`127.0.0.1`)
+  gelen istekte okur ve sağdan başlayarak güvenilmeyen ilk adresi alır; doğrudan bağlanan istemcinin yazdığı
+  başlık yok sayılır. Giriş deneme sınırı da aynı adresi kullanır. Yayında dikkat edilecekler:
+  * Ters vekil **aynı makinedeyse** ek ayar gerekmez, ama vekil gerçek adresi başlığa **eklemeli ya da üzerine
+    yazmalıdır** (nginx: `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`). Başlığı olduğu gibi
+    geçiren bir vekil, istemcinin adres uydurmasına ve deneme sınırını aşmasına izin verir.
+  * Vekil **başka bir makine ya da kapsayıcıdaysa** API `FORWARDED_ALLOW_IPS=<vekil adresi>` ile başlatılmalıdır;
+    yoksa bütün kullanıcılar vekilin adresiyle görünür ve IP başına deneme sınırı herkes için ortak dolar.
+  * Davranış `tests/test_client_ip_trust.py` ile sabitlenmiştir.
 * **Okuma olayları kaydedilmez** (belge/sohbet görüntüleme, arama). Yalnız yazma, kimlik doğrulama ve
   AI cevabı vardır.
 * **Saklama süresi ve arşivleme tanımlı değildir.** Tablo büyür; KVKK saklama politikası netleşince

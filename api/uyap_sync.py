@@ -139,6 +139,26 @@ def save_sync_report(
     return {"saved": saved, "results": results}
 
 
+def _current(row: dict[str, Any]) -> dict[str, Any]:
+    """Doğrulama kaydını şimdiki evrak sayısıyla karşılaştırır.
+
+    Kayıt, doğrulama anının fotoğrafıdır; sonradan evrak silinirse (çöp, hesap temizliği, yeniden aktarım öncesi sıfırlama)
+    kendiliğinden değişmez. Gerçek hesapta 9 dosya, evrakları silindikten sonra da "110 evrak, eksiksiz" görünüyordu
+    (ölçüldü: 2026-10-10). UYAP ağacında bulunan sayıdan az evrak kayıtlıysa dosya eksiksiz gösterilmez; eksik sayısı
+    şimdiki farktır ve ne olduğu `problems` içinde yazar. Saklanan kayıt değiştirilmez; bir sonraki doğrulama onu yeniler.
+    """
+    current = int(row.pop("current_documents") or 0)
+    removed = max(0, int(row["server_documents"] or 0) - current)
+    row["removed_since"] = removed
+    if removed and current < int(row["found_count"] or 0):
+        note = f"Bu doğrulamadan sonra {removed} evrak silinmiş; şu an {current} evrak kayıtlı. UYAP'tan yeniden aktarın."
+        row.update(
+            complete=False, server_documents=current, missing_count=int(row["found_count"]) - current,
+            problems=[note, *(row["problems"] or [])][:MAX_PROBLEMS],
+        )
+    return row
+
+
 @router.get("/sync-status")
 def sync_status(user_id: Annotated[UUID, Depends(current_user_id)]) -> dict[str, Any]:
     """Sahibin UYAP dosyalarının son doğrulama durumu (en yeni önce)."""
@@ -147,11 +167,16 @@ def sync_status(user_id: Annotated[UUID, Depends(current_user_id)]) -> dict[str,
             rows = connection.execute(
                 "SELECT s.case_id, coalesce(c.esas_no, c.case_no) AS esas, c.court AS birim, s.yargi_turu, s.dosya_turu, "
                 "s.dosya_durumu, s.taraf_rolu, s.acilis, s.declared_count, s.found_count, s.missing_count, "
-                "s.server_documents, s.complete, s.problems, s.checked_at "
+                "s.server_documents, s.complete, s.problems, s.checked_at, "
+                # Şu an kayıtlı UYAP evrakı (`_server_documents` ile aynı sayım kuralı).
+                "(SELECT count(DISTINCT coalesce(d.uyap_evrak_key, d.id::text)) FROM office_case_documents d "
+                " WHERE d.owner_id = s.owner_id AND d.case_id = s.case_id AND d.deleted_at IS NULL AND d.source = ANY(%s)) "
+                "AS current_documents "
                 "FROM office_uyap_case_sync s JOIN office_cases c ON c.id = s.case_id "
                 "WHERE s.owner_id = %s ORDER BY s.checked_at DESC, s.case_id LIMIT 2000",
-                (user_id,),
+                (list(UYAP_SOURCES), user_id),
             ).fetchall()
+            rows = [_current(row) for row in rows]
     except psycopg.Error as exc:
         logger.exception("UYAP eşitleme durumu okunamadı")
         raise HTTPException(status_code=503, detail="Eşitleme durumu okunamadı") from exc

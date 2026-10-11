@@ -14,6 +14,13 @@ export interface FileBrowserDocument {
   created_at: string;
   category: string;
   folder_key: string;
+  content_match?: {
+    before: string;
+    match: string;
+    after: string;
+    page_number: number | null;
+    section_title: string | null;
+  } | null;
 }
 
 export interface FileBrowserFolder {
@@ -36,12 +43,20 @@ export interface FileBrowserFilters {
   category: string;
   folder: string;
   order: string;
+  search_in?: "metadata" | "content";
+}
+export interface ContentSearchCoverage {
+  total: number;
+  ready: number;
+  pending: number;
+  failed: number;
 }
 export interface FileBrowserResult {
   rows: FileBrowserDocument[];
   total: number;
   folders: FileBrowserFolder[];
   categories: FileBrowserCategory[];
+  content_coverage?: ContentSearchCoverage;
 }
 
 export async function listFileBrowser(
@@ -52,6 +67,7 @@ export async function listFileBrowser(
 ): Promise<FileBrowserResult> {
   const query = new URLSearchParams({
     ...filters,
+    search_in: filters.search_in ?? "metadata",
     organized: "true",
     summary_only: String(summaryOnly),
     offset: String(offset),

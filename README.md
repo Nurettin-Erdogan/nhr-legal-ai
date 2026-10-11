@@ -69,6 +69,24 @@ Uygulama `http://localhost:3000`, API dokümantasyonu
 kullanacaksa `web/.env.local.example` dosyasını `.env.local` adıyla kopyalayıp
 değeri değiştirin.
 
+### Windows'ta otomatik yerel başlatma
+
+Bu bilgisayardaki geliştirme kurulumu için `scripts/install_local_services_task.ps1`
+Windows oturumu açıldığında ve ardından beş dakikada bir eksik servisleri
+başlatan `JurisAI Local Services` görevini kurar:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\install_local_services_task.ps1
+```
+
+Görev Docker Desktop/PostgreSQL, API (`8766`), web (`3000`), Ollama ve salt-okunur
+korpus ekranını (`3010`) açar. Zaten çalışan servisi yeniden başlatmaz. UYAP'a
+giriş yapmaz, korpus toplama veya ingestion başlatmaz. Docker Desktop geç açılırsa
+sonraki kontrol turunda veritabanını yeniden dener. Durum günlüğü
+`data/logs/local-services.log` dosyasındadır. Görevi kaldırmak için
+`Unregister-ScheduledTask -TaskName 'JurisAI Local Services' -Confirm:$false`
+komutunu çalıştırın; bu komut çalışan servisleri kapatmaz.
+
 ## Qwen kaynaklı cevaplar (yerel Ollama)
 
 Ollama'yı yerel makinede başlatın ve sohbet ile embedding modellerini yükleyin:

@@ -29,12 +29,12 @@ def test_archive_rejects_unsafe_paths_without_extracting_to_disk(name):
         processing.process_document("ek.zip", zip_bytes([(name, "Belge.")]))
 
 
-def test_symlink_encryption_nested_archive_and_broken_zip_are_rejected():
+def test_symlink_encryption_and_broken_zip_are_rejected():
     link = ZipInfo("link.txt")
     link.external_attr = (stat.S_IFLNK | 0o777) << 16
     with pytest.raises(processing.DocumentProcessingError, match="güvenli olmayan"):
         processing.process_document("ek.zip", zip_bytes([(link, "target")]))
-    for name, data in [("nested.zip", zip_bytes([("a.txt", "Metin")])), ("broken.pdf", b"not a pdf")]:
+    for name, data in [("broken.pdf", b"not a pdf")]:
         with pytest.raises(processing.DocumentProcessingError):
             processing.process_document("ek.zip", zip_bytes([(name, data)]))
     with pytest.raises(processing.DocumentProcessingError, match="bozuk"):
@@ -66,3 +66,53 @@ def test_archive_limits_are_checked_before_members_are_processed(monkeypatch):
 def test_ocr_is_deferred_for_the_whole_archive_not_silently_skipped():
     with pytest.raises(processing.OcrRequired):
         processing.process_document("ek.zip", zip_bytes([("a.txt", "Metin"), ("image.png", b"image")]), ocr="defer")
+
+
+def test_nested_archives_preserve_provenance_and_share_entry_budget(monkeypatch):
+    data = zip_bytes([("nested.zip", zip_bytes([("beyan.txt", "Örnek beyan içeriği.")]))])
+    result = processing.process_document("ek.zip", data)
+    assert result.chunks[0].section_title == "nested.zip / beyan.txt"
+    assert "Örnek beyan" in result.chunks[0].content
+    monkeypatch.setattr(processing, "MAX_ARCHIVE_ENTRIES", 1)
+    with pytest.raises(processing.DocumentProcessingError, match="sınır"):
+        processing.process_document("ek.zip", data)
+
+
+def test_nested_archives_share_depth_and_expanded_size_limits(monkeypatch):
+    inner = zip_bytes([("a.txt", "Aranabilir örnek içerik.")])
+    outer = zip_bytes([("nested.zip", inner)])
+    monkeypatch.setattr(processing, "MAX_ARCHIVE_EXPANDED_BYTES", len(inner))
+    with pytest.raises(processing.DocumentProcessingError, match="sınır"):
+        processing.process_document("ek.zip", outer)
+    monkeypatch.setattr(processing, "MAX_ARCHIVE_EXPANDED_BYTES", 100000)
+    monkeypatch.setattr(processing, "MAX_ARCHIVE_DEPTH", 0)
+    with pytest.raises(processing.DocumentProcessingError, match="derinlik"):
+        processing.process_document("ek.zip", outer)
+
+
+def test_nested_archive_cannot_hide_unsafe_path():
+    with pytest.raises(processing.DocumentProcessingError, match="güvenli olmayan"):
+        processing.process_document("ek.zip", zip_bytes([("nested.zip", zip_bytes([("../a.txt", "Metin")]))]))
+
+
+def test_only_exact_empty_uyap_placeholder_is_skipped_and_never_counts_as_text():
+    result = processing.process_document("ek.zip", zip_bytes([("ana_evrak.txt", b""), ("ek.txt", "Gerçek ek içeriği.")]))
+    assert len(result.chunks) == 1 and result.chunks[0].section_title == "ek.txt"
+    for entries in [[("ana_evrak.txt", b"")], [("other.txt", b""), ("ek.txt", "Metin")]]:
+        with pytest.raises(processing.DocumentProcessingError):
+            processing.process_document("ek.zip", zip_bytes(entries))
+
+
+def test_eyp_reads_body_metadata_and_attachments_but_not_signature_bytes():
+    entries = [("[Content_Types].xml", "<Types/>"), ("UstYazi/metin.txt", "Üst yazı metni."),
+               ("Ustveri/Ustveri.xml", "<belge><konu>Örnek konu</konu></belge>"),
+               ("Imzalar/ImzaCades.imz", b"signature"), ("Ekler/ek.txt", "Ek belge metni."),
+               ("Muhur/MuhurCades.imz", b"signature"),
+               ("package/services/metadata/core-properties/test.psmdcp", "<properties><title>Test konu</title></properties>")]
+    result = processing.process_document("belge.eyp", zip_bytes(entries))
+    assert result.extension == ".eyp" and len(result.chunks) == 4
+    assert all("signature" not in chunk.content for chunk in result.chunks)
+    with pytest.raises(processing.DocumentProcessingError, match="desteklenmeyen"):
+        processing.process_document("belge.zip", zip_bytes([entries[1], entries[3]]))
+    with pytest.raises(processing.DocumentProcessingError, match="üst yazı"):
+        processing.process_document("belge.eyp", zip_bytes([("a.txt", "Metin")]))

@@ -156,7 +156,8 @@ export const UyapSyncAll = ({ liste, disabled, onRunningChange }: Props) => {
         <h3 className="font-medium text-sm">Tüm dosyaları aktar</h3>
         {!running && !run && status && status.summary.files > 0 && (
           <Badge variant="outline" data-testid="uyap-sync-status">
-            Önceki kayıtlı evrak denetimi: {status.summary.complete}/{status.summary.files} dosya
+            Önceki kayıtlı evrak denetimi: {status.summary.complete}/{status.summary.files} evraklı
+            dosya
             {status.summary.missing > 0 ? ` · ${status.summary.missing} evrak eksik` : ""}
           </Badge>
         )}

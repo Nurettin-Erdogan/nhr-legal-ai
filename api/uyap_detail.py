@@ -12,7 +12,7 @@ açılır: dosya bilgileri evraksız dosyada da kaybolmaz. Aynı kimlikte birden
 from __future__ import annotations
 
 import logging
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 import psycopg
@@ -46,6 +46,7 @@ class DetailTable(BaseModel):
     rows: list[list[str]] = Field(default_factory=list)
     declared: int | None = Field(default=None, ge=0, le=100_000_000)
     complete: bool = False
+    empty_evidence: Literal["uyap_static_reddiyat_detail"] | None = None
 
     @field_validator("headers")
     @classmethod
@@ -90,6 +91,15 @@ def verified_tabs(tabs: list[DetailTab]) -> tuple[list[dict[str, Any]], bool, li
         for table in tab.tables:
             matches = table.declared is None or len(table.rows) == table.declared
             has_result = bool(table.rows) or table.declared == 0
+            if table.empty_evidence:
+                # Sadece ölçülmüş, statik reddiyat detay şeması; diğer belirsiz boş
+                # tablolar bu istisna ile eksiksiz ilan edilemez.
+                headers = [header.casefold() for header in table.headers]
+                valid_evidence = (tab.key == "tahsilat" and table.title == "Reddiyat detayı"
+                                  and not table.rows and table.declared == 0 and len(headers) == 12
+                                  and headers[:3] == ["makbuz no", "reddiyat tarihi", "reddiyat nedeni"]
+                                  and headers[-1] == "ödenecek tutar")
+                has_result = has_result and valid_evidence
             if not matches:
                 problems.append(f"{tab.label or tab.key}{' / ' + table.title if table.title else ''}: "
                                 f"UYAP {table.declared} kayıt yazıyor, {len(table.rows)} kayıt alındı.")
@@ -97,7 +107,8 @@ def verified_tabs(tabs: list[DetailTab]) -> tuple[list[dict[str, Any]], bool, li
                 problems.append(f"{tab.label or tab.key}: boş tablonun sıfır kayıt olduğu doğrulanamadı.")
             tab_complete = tab_complete and matches and has_result and table.complete
             tables.append({"title": table.title, "headers": table.headers, "rows": table.rows,
-                           "declared": table.declared, "complete": matches and has_result and table.complete})
+                           "declared": table.declared, "complete": matches and has_result and table.complete,
+                           **({"empty_evidence": table.empty_evidence} if table.empty_evidence else {})})
         stored.append({"key": tab.key, "label": tab.label, "pairs": [pair.model_dump() for pair in tab.pairs],
                        "tables": tables, "complete": tab_complete})
     return stored, bool(stored) and all(tab["complete"] for tab in stored), problems

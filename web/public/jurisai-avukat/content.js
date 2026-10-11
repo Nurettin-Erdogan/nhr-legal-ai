@@ -1204,11 +1204,28 @@
     return { ok: true, items };
   }
 
+  // Başarıda aralık, işlem BİTTİKTEN sonra yeniden eklenmez: yakalama/indirme/yükleme
+  // süresi de iki evrağın başlangıçları arasındaki güvenli aralığın parçasıdır. Hata
+  // geri çekilmesi tam beklenir; eşzamanlı UYAP isteği başlatılmaz.
+  function pullPauseMs(gap, baseGap, usedDirect, succeeded, elapsedMs, hasNext) {
+    if (!hasNext) return 0;
+    if (!succeeded || gap !== baseGap) return gap;
+    const interval = usedDirect ? Math.min(gap, 500) : gap;
+    return Math.max(0, interval - Math.max(0, elapsedMs));
+  }
+
+  function pullItemOnlyError(outcome) {
+    // İndirme kesintisi ve doğrulama reddi, iç içe hata mesajında önizleme
+    // reddinden söz edilse bile kalıcı evrak hatası değildir.
+    if (outcome?.retryable || outcome?.code === "UYAP_VALIDATION_FAILED") return false;
+    return /Desteklenmeyen dosya türü|önizlemede vermiyor|çok büyük|sınırını aşıyor|zaten/i.test(outcome?.error || "");
+  }
+
   /**
    * Seçilen evrakları sırayla çeker: tıkla → UYAP'ın önizleme isteğini yakala → indir → JurisAI'ya yükle ya da diske kaydet.
    * `progress` verilirse her adımda güncellenir (JurisAI sayfası oradan izler). `pulling`i çağıran kurar ve kaldırır.
    */
-  async function runPull(selected, mode, who, { progress = null } = {}) {
+  async function runPull(selected, mode, who, { progress = null, jobId = "" } = {}) {
     const toDisk = mode === "disk";
     const stats = { sent: 0, duplicates: 0, sameContent: 0, failed: 0, known: 0, errors: [] };
     const spent = { clicks: 0, items: 0, capture: 0, download: 0, upload: 0, pause: 0 }; // ms; özet satırında ortalama gösterilir
@@ -1216,10 +1233,11 @@
       if (progress) Object.assign(progress, patch, { stats: { ...stats, errors: [...stats.errors] } });
     };
     // Anahtar/adres denetimi seçimden SONRA ve yalnız JurisAI'ya aktarırken yapılır (bilgisayara indirme anahtar istemez).
-    const begin = await chrome.runtime.sendMessage({ type: "JURISAI_PULL_BEGIN", mode });
+    const begin = await chrome.runtime.sendMessage({ type: "JURISAI_PULL_BEGIN", mode, jobId });
     if (!begin?.ok) return { ok: false, error: begin?.error || "Ayarlar eksik" };
+    if (pulling.stop) await chrome.runtime.sendMessage({ type: "JURISAI_PULL_CANCEL", jobId });
     let todo = selected; // evrak sayısı sınırı yok: hız (evrak başına birkaç sn), "Çekmeyi durdur" ve ardışık hata sınırı korur
-    if (!toDisk) {
+    if (!toDisk && !pulling.stop) {
       // JurisAI'da zaten olan evraklara hiç tıklanmaz: yarıda kalan çekme sürdürülür, yeniden deneme hızlanır.
       toast("Daha önce aktarılanlar kontrol ediliyor…");
       report({ phase: "Daha önce aktarılanlar kontrol ediliyor" });
@@ -1237,6 +1255,7 @@
     const baseGap = begin.gapMs || 1500;
     let gap = baseGap; // hata görülürse iki katına çıkar (en çok 20 sn), başarıda yavaşça normale döner
     for (let index = 0; index < todo.length && !pulling.stop; index += 1) {
+      const itemStartedAt = performance.now();
       const item = todo[index];
       toast(`Evrak ${index + 1}/${todo.length} çekiliyor…`);
       report({ done: index, current: item.title });
@@ -1248,8 +1267,8 @@
         birim: who.birim,
         klasorYolu: item.folders.join(" / "),
       };
-      const itemOnlyError = (text) => /Desteklenmeyen dosya türü|önizlemede vermiyor|çok büyük|sınırını aşıyor|zaten/i.test(text || "");
       await chrome.runtime.sendMessage({ type: "JURISAI_PULL_ARM", evrakId: item.id });
+      if (pulling.stop) break;
       // Hızlı yol: evrağın adresi sayfanın kendi bilgilerinden kurulur, tıklama ve ön izlemenin yüklenmesi beklenmez
       // (canlıda evrak başına ~2,2 sn yakalama + 1,5 sn bekleme → ~0,5 sn). Adres kurulamaz ya da belge gelmezse tıklama yoluna dönülür.
       const direct = directViewUrl(item.span);
@@ -1257,17 +1276,21 @@
       let usedDirect = false;
       if (direct) {
         outcome = await chrome.runtime.sendMessage({ type: "JURISAI_PULL_FETCH", mode, direct, meta });
-        usedDirect = !!outcome?.ok || itemOnlyError(outcome?.error);
+        usedDirect = !!outcome?.ok || pullItemOnlyError(outcome);
       }
+      if (outcome?.code === "UYAP_CANCELLED") { pulling.stop = true; break; }
+      if (!usedDirect && pulling.stop) break;
       if (!usedDirect) {
         await chrome.runtime.sendMessage({ type: "JURISAI_PULL_ARM", evrakId: item.id });
+        if (pulling.stop) break;
         const clickedAt = Date.now();
         realClick(item.span);
         let status = {};
         const captured = await waitUntil(async () => {
           status = (await chrome.runtime.sendMessage({ type: "JURISAI_PULL_STATUS" })) || {};
-          return status.captured;
+          return pulling.stop || status.captured;
         }, 10000);
+        if (pulling.stop) break;
         // Yalnız önizleme sayfası (viewer.jsp) görüldüyse gerçek belge isteğinin düşmesi için kısa süre tanı.
         if (captured && !status.exact) await sleep(600);
         status = (await chrome.runtime.sendMessage({ type: "JURISAI_PULL_STATUS" })) || status;
@@ -1275,6 +1298,7 @@
         spent.clicks += 1;
         const directError = outcome?.error;
         outcome = {
+          ...outcome,
           ok: false,
           error:
             directError ||
@@ -1286,6 +1310,8 @@
         };
         if (captured) outcome = await chrome.runtime.sendMessage({ type: "JURISAI_PULL_FETCH", mode, meta });
       }
+      // Kullanıcı iptali evrak/oturum hatası değildir; yeniden deneme ve hata sayacı yok.
+      if (outcome?.code === "UYAP_CANCELLED") { pulling.stop = true; break; }
       if (outcome?.ms) {
         spent.items += 1;
         spent.download += outcome.ms.download || 0;
@@ -1301,7 +1327,7 @@
         stats.failed += 1;
         // Evrağın kendisine özgü ret (tür desteklenmiyor, UYAP ön izlemede vermiyor) oturum/portal sorunu değildir: art arda gelse de
         // aktarım durdurulmaz ve yavaşlatılmaz. Canlıda art arda 5 .zip eki 350 evraklık aktarımı 114. evrakta kesmişti.
-        const itemOnly = itemOnlyError(outcome?.error);
+        const itemOnly = pullItemOnlyError(outcome);
         if (!itemOnly) consecutiveFailures += 1;
         if (stats.errors.length < 5) stats.errors.push(`${item.title.slice(0, 90)}: ${outcome?.error || "bilinmeyen hata"}`);
         if (!itemOnly) gap = Math.min(20000, gap * 2); // UYAP bizi sınırlıyor olabilir: yavaşla
@@ -1309,9 +1335,10 @@
       report({ done: index + 1 });
       if (consecutiveFailures >= 5) break; // oturum kapanmış ya da portal yanıt vermiyor olabilir
       // Tıklamasız yolda sayfa ön izleme yüklemez (evrak başına tek istek): hata yokken kısa bekleme yeter; hata görülünce `gap` büyür.
-      const pause = usedDirect && gap === baseGap ? Math.min(gap, 500) : gap;
+      const pause = pullPauseMs(gap, baseGap, usedDirect, !!outcome?.ok, performance.now() - itemStartedAt,
+        index + 1 < todo.length && !pulling.stop);
       spent.pause += pause;
-      await sleep(pause);
+      if (pause > 0) await chrome.runtime.sendMessage({ type: "JURISAI_PULL_WAIT", ms: pause, jobId });
     }
     const timing = spent.items
       ? {
@@ -1340,6 +1367,7 @@
   }
 
   async function pullDosya(preferred = "upload") {
+    if (recoveryBusy()) return { ok: false, code: "busy", error: "UYAP sayfası toparlanıyor; bitince tekrar dene." };
     if (pulling) return { ok: false, error: "Çekme zaten sürüyor" };
     const dialog = activeRoot();
     if (!dialog) return { ok: false, error: "Açık bir dosya penceresi yok: UYAP'ta dosyayı aç, Evrak sekmesine geç." };
@@ -1612,6 +1640,9 @@
     return true;
   }
   let listing = false;
+  let recoveryUntil = 0;
+  let recoveryMenuOpened = false;
+  const recoveryBusy = () => Date.now() < recoveryUntil;
   /** Çıkış bağlantısı açılır menüde gizli olabilir (innerText'e girmez): gerçek portalın karşılama sayfasında giriş yapılmışken
       "giriş yapılmamış" denmesinin nedeni buydu (2026-10-05). Bağlantının kendisi DOM'da aranır. */
   function hasLogoutLink() {
@@ -1620,7 +1651,7 @@
     );
   }
   async function listDosyalar() {
-    if (listing || pulling) return { ok: false, code: "busy", error: "UYAP'ta bir listeleme veya aktarım sürüyor; bitince yeniden dene." };
+    if (listing || pulling || recoveryBusy()) return { ok: false, code: "busy", error: "UYAP'ta bir listeleme veya aktarım sürüyor; bitince yeniden dene." };
     listing = true;
     try { return await readDosyalar(); }
     finally { listing = false; }
@@ -1664,7 +1695,7 @@
     };
   }
   async function openDosyaByKey(key, type) {
-    if (listing) return { ok: false, code: "busy", error: "Dosya listesi taranıyor; bitince tekrar dene." };
+    if (listing || recoveryBusy()) return { ok: false, code: "busy", error: "Dosya listesi taranıyor veya toparlanıyor; bitince tekrar dene." };
     const row = await findDosyaRow(key, type);
     if (!row) return { ok: false, code: "stale", error: "UYAP'taki liste değişmiş: dosyaları yeniden listele." };
     if (pulling) return { ok: false, code: "busy", error: "Bir çekme zaten sürüyor." };
@@ -1879,8 +1910,30 @@
         settled = await settleTable(table);
       }
     }
-    const declared = declaredTableRows(table);
+    let declared = declaredTableRows(table);
     let result = readDetailTable(table);
+    // Vatandaş Portalı statik reddiyat detaylarını ana tabloyla birlikte gizli DIV'lerde
+    // üretir; DataTables sayacı yoktur. Yalnız eşleşen Detay düğmesi + tam başlık şeması
+    // + kararlı ve yüklenmeyen tbody bu özel boş sonuç için kanıttır. Genel boş tablo
+    // hâlâ belirsizdir; Detay düğmesine (ve ödeme/işlem düğmelerine) basılmaz.
+    let emptyEvidence;
+    const detailId = /^tahsilatDetay(\d+)$/.exec(table.parentElement?.id || "");
+    const pane = table.closest("#dosya_tahsilat_reddiyat_bilgileri_tab");
+    const detailButton = detailId && pane && [...pane.querySelectorAll("input[type='button']")]
+      .find((button) => button.id === `makbuzDetayGoster${detailId[1]}` && trLower(button.value) === "detay");
+    const headers = result.headers.map(trLower);
+    if (declared === null && !result.rows.length && !wrapper && detailButton &&
+        headers.length === 12 && headers[0] === "makbuz no" && headers[1] === "reddiyat tarihi" &&
+        headers[2] === "reddiyat nedeni" && headers[11] === "ödenecek tutar" && table.querySelector("tbody")) {
+      await sleep(1000);
+      result = readDetailTable(table);
+      if (table.isConnected && !detailLoading(pane) && !detailLoading(table) && !result.rows.length &&
+          result.headers.map(trLower).join("|") === headers.join("|")) {
+        declared = 0;
+        settled = true;
+        emptyEvidence = "uyap_static_reddiyat_detail";
+      }
+    }
     const signature = () => readDetailTable(table).rows.map((row) => row.join("\u0001")).join("\n");
     if (declared !== null && result.rows.length < declared) {
       // Sayfa boyutu "Tümü" olmadı: sayfa sayfa gez (her sayfa ayrı okunur, tekrar eden sayfa durdurur).
@@ -1905,7 +1958,7 @@
     const complete = settled && (declared === null ? result.rows.length > 0 : result.rows.length === declared);
     if (!settled) problems.push(`${label}: tablo yüklemesi veya kayıt sayısı doğrulanamadı.`);
     else if (!complete) problems.push(`${label}: UYAP ${declared ?? "belirsiz"} kayıt yazıyor, ${result.rows.length} okundu.`);
-    return { ...result, declared, complete };
+    return { ...result, declared, complete, ...(emptyEvidence ? { empty_evidence: emptyEvidence } : {}) };
   }
   /** İki sütunlu "etiket: değer" tablosu (dosya bilgileri, dosya hesabı). Düğme taşıyan satır (ör. "Borç Öde") okunmaz. */
   function readPairs(pane) {
@@ -1982,10 +2035,11 @@
     let complete = true;
     for (const table of pane.querySelectorAll("table")) {
       if (!table.querySelector("thead th")) continue; // etiket/değer tablosu yukarıda okundu
-      const title = tableTitle(table);
+      const title = /^tahsilatDetay\d+$/.test(table.parentElement?.id || "") ? "Reddiyat detayı" : tableTitle(table);
       const read = await readAllDetailRows(table, problems, `${textOf(link)}${title ? ` / ${title}` : ""}`);
       if (!read.complete) complete = false;
-      tables.push({ title, headers: read.headers, rows: read.rows, declared: read.declared, complete: read.complete });
+      tables.push({ title, headers: read.headers, rows: read.rows, declared: read.declared, complete: read.complete,
+        ...(read.empty_evidence ? { empty_evidence: read.empty_evidence } : {}) });
     }
     if (!pairs.length && !tables.length) {
       if (explicitEmptyDetail(pane)) tables.push({ title: "", headers: [], rows: [], declared: 0, complete: true });
@@ -2026,7 +2080,7 @@
     return { tabs, problems: problems.slice(0, 12), complete: tabs.length > 0 && tabs.every((tab) => tab.complete) };
   }
   function startDetailJob(key, type) {
-    if (listing) return { ok: false, code: "busy", error: "Dosya listesi taranıyor; bitince tekrar dene." };
+    if (listing || recoveryBusy()) return { ok: false, code: "busy", error: "Dosya listesi taranıyor veya toparlanıyor; bitince tekrar dene." };
     if (pulling) return { ok: false, code: "busy", error: "UYAP sekmesinde bir işlem sürüyor; bitince tekrar dene." };
     if (!key && !activeRoot()) return { ok: false, code: "no_dialog", error: "UYAP'ta açık bir dosya yok." };
     const job = { id: newJobId(), kind: "detail", state: "running", phase: "Dosya açılıyor", startedAt: Date.now() };
@@ -2051,7 +2105,7 @@
     return { ok: true, jobId: job.id };
   }
   function startTreeJob(key, type) {
-    if (listing) return { ok: false, code: "busy", error: "Dosya listesi taranıyor; bitince tekrar dene." };
+    if (listing || recoveryBusy()) return { ok: false, code: "busy", error: "Dosya listesi taranıyor veya toparlanıyor; bitince tekrar dene." };
     if (pulling) return { ok: false, code: "busy", error: "UYAP sekmesinde bir işlem sürüyor; bitince tekrar dene." };
     if (!key && !activeRoot()) return { ok: false, code: "no_dialog", error: "UYAP'ta açık bir dosya yok." };
     const job = { id: newJobId(), kind: "tree", state: "running", phase: "Dosya açılıyor", startedAt: Date.now() };
@@ -2083,7 +2137,7 @@
     return { ok: true, jobId: job.id };
   }
   function startPullJob(ids, mode) {
-    if (pulling) return { ok: false, code: "busy", error: "UYAP sekmesinde bir işlem sürüyor; bitince tekrar dene." };
+    if (pulling || listing || recoveryBusy()) return { ok: false, code: "busy", error: "UYAP sekmesinde bir işlem sürüyor; bitince tekrar dene." };
     if (!bridge.tree) return { ok: false, code: "no_tree", error: "Önce evrakları listele." };
     const wanted = new Set(Array.isArray(ids) ? ids.map(String) : []);
     const items = bridge.tree.items.filter((item) => wanted.has(item.id));
@@ -2095,7 +2149,7 @@
     bridge.job = job;
     bridge.run = run;
     pulling = { stop: false };
-    runPull(items, run.mode, bridge.tree.who, { progress: run })
+    runPull(items, run.mode, bridge.tree.who, { progress: run, jobId: job.id })
       .then((result) => {
         run.result = result;
         Object.assign(job, result.ok ? { state: "done", phase: run.phase || "Bitti" } : { state: "error", error: result.error }, { finishedAt: Date.now() });
@@ -2103,9 +2157,39 @@
       .catch((error) => Object.assign(job, { state: "error", error: error.message || "bilinmeyen hata", finishedAt: Date.now() }))
       .finally(() => {
         pulling = null;
-        chrome.runtime.sendMessage({ type: "JURISAI_PULL_END" }).catch(() => {});
+        chrome.runtime.sendMessage({ type: "JURISAI_PULL_END", jobId: job.id }).catch(() => {});
       });
     return { ok: true, jobId: job.id, total: items.length };
+  }
+  function loginRequiredForRecovery() {
+    return !hasLogoutLink() && /giriş yap|giriş seçenekleri|e-?devlet ile giriş|e-?imza ile giriş/.test(trLower((document.body?.innerText || "").slice(0, 8000)));
+  }
+  function prepareReadRecovery(jobId) {
+    const job = bridge.job;
+    if (listing || pulling || recoveryBusy()) return { ok: false, code: "busy", error: "Süren iş otomatik yenilenemez." };
+    if (!job || job.id !== jobId || job.state !== "error" || !["tree", "detail"].includes(job.kind) ||
+        !["open_failed", "no_tree", "query_failed", "cannot_close"].includes(job.code) || Date.now() - job.finishedAt > 120000)
+      return { ok: false, code: "recovery_refused", error: "Yalnız yeni başarısız salt okunur iş toparlanabilir." };
+    if (loginRequiredForRecovery()) return { ok: false, code: "login_required", error: "UYAP oturumu kapanmış; tekrar giriş yap." };
+    if (!dosyaQueryForm() && !dosyaRows().length) return { ok: false, code: "no_list", error: "Dosya listesi doğrulanamadı; sayfa yenilenmedi." };
+    // Be deliberately conservative: never discard an open editor, credentials,
+    // selected file or user-entered text (ordinary blank table filters are harmless).
+    const editing = [...document.querySelectorAll("input,textarea,[contenteditable='true']")].some(el =>
+      visibleElement(el) && (el === document.activeElement || el.matches("textarea,[contenteditable='true'],input[type='password'],input[type='file']") ||
+        (!el.matches("input[type='button'],input[type='submit'],input[type='checkbox'],input[type='radio'],input[type='hidden']") && !!String(el.value || "").trim())));
+    if (editing) return { ok: false, code: "editing", error: "Açık giriş/düzenleme alanı var; sayfa otomatik yenilenmedi." };
+    recoveryUntil = Date.now() + 5000;
+    return { ok: true };
+  }
+  function recoveryReady() {
+    if (loginRequiredForRecovery()) return { ok: false, code: "login_required", error: "UYAP oturumu kapanmış; tekrar giriş yap." };
+    if (listing || pulling) return { ok: false, code: "busy", error: "UYAP'ta başka işlem başladı; toparlanma durdu." };
+    if (dosyaQueryForm() || dosyaRows().length) return { ok: true };
+    if (!recoveryMenuOpened && hasLogoutLink()) {
+      recoveryMenuOpened = true;
+      openDosyaSorgulamaMenu();
+    }
+    return { ok: false, code: "navigating", error: "Dosya Sorgulama sayfası bekleniyor." };
   }
   function jobStatus(jobId, withTree, withDetail) {
     if (!bridge.job || bridge.job.id !== jobId) return { ok: false, code: "unknown_job", error: "Bu iş bu sekmede yok." };
@@ -2125,7 +2209,7 @@
   }
   /** Bu sekmede o an süren iş (JurisAI sayfası yenilendiğinde ya da yeniden açıldığında süren aktarıma yeniden bağlanabilsin). */
   function currentJob() {
-    const out = { ok: true, busy: !!(listing || pulling), listing: !!listing, job: null };
+    const out = { ok: true, busy: !!(listing || pulling || recoveryBusy()), listing: !!listing, job: null };
     if (bridge.job && bridge.job.state === "running") {
       out.job = { ...bridge.job };
       if (bridge.job.kind === "pull" && bridge.run) out.run = JSON.parse(JSON.stringify(bridge.run));
@@ -2134,8 +2218,14 @@
   }
   function stopJob(jobId) {
     if (!pulling || !bridge.job || bridge.job.id !== jobId) return { ok: false, code: "idle", error: "Süren işlem yok." };
-    pulling.stop = true;
+    stopPull();
     return { ok: true };
+  }
+  function stopPull() {
+    if (!pulling) return;
+    pulling.stop = true;
+    const jobId = bridge.job?.kind === "pull" && bridge.job.state === "running" ? bridge.job.id : "";
+    chrome.runtime.sendMessage({ type: "JURISAI_PULL_CANCEL", jobId }).catch(() => {});
   }
   function showCasePicker(targets) {
     document.querySelector(".jurisai-case-picker")?.remove();
@@ -2210,6 +2300,7 @@
 
   /** Doğrudan indirme denemesi: ilk iki evrağı normal yoldan alır, ikincisini kurulan adresle karşılaştırır (hiçbir belge saklanmaz). */
   async function probeDirect() {
+    if (recoveryBusy()) return { ok: false, code: "busy", error: "UYAP sayfası toparlanıyor; bitince tekrar dene." };
     const dialog = activeRoot();
     if (!dialog) return { ok: false, error: "Açık bir dosya penceresi yok." };
     if (pulling) return { ok: false, error: "Bir çekme zaten sürüyor." };
@@ -2245,6 +2336,7 @@
 
   /** Dosya listesindeki satır düğmesi: dosyayı açar, Evrak sekmesine geçer ve evrak seçim penceresini gösterir. */
   async function openCaseAndChoose(openButton) {
+    if (recoveryBusy()) return toast("UYAP sayfası toparlanıyor; bitince tekrar dene.", "info");
     if (pulling) return toast("Bir çekme zaten sürüyor.", "info");
     toast("Dosya açılıyor…");
     openButton.click();
@@ -2393,10 +2485,18 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     // Kayıt yalnız üst çerçevede tutulur; iç çerçeveler (ön izleme iframe'i vb.) "kayıt yok" yanıtıyla araya girmesin.
     if (
-      /^JURISAI_(RECORD_(START|STOP)|PULL_(DOSYA|STOP|PROBE|IDS)|LIST_DOSYALAR|OPEN_DOSYA|TREE|DETAIL|JOB_STATUS|CURRENT_JOB|BRIDGE_STOP)$/.test(message?.type || "") &&
+      /^JURISAI_(RECORD_(START|STOP)|PULL_(DOSYA|STOP|PROBE|IDS)|LIST_DOSYALAR|OPEN_DOSYA|TREE|DETAIL|PREPARE_RECOVERY|RECOVERY_READY|JOB_STATUS|CURRENT_JOB|BRIDGE_STOP)$/.test(message?.type || "") &&
       window !== window.top
     )
       return false;
+    if (message?.type === "JURISAI_PREPARE_RECOVERY") {
+      sendResponse(prepareReadRecovery(String(message.jobId || "")));
+      return false;
+    }
+    if (message?.type === "JURISAI_RECOVERY_READY") {
+      sendResponse(recoveryReady());
+      return false;
+    }
     if (message?.type === "JURISAI_TREE") {
       sendResponse(startTreeJob(String(message.key || ""), String(message.yargiTuru || "")));
       return true;
@@ -2446,7 +2546,7 @@
       return true;
     }
     if (message?.type === "JURISAI_PULL_STOP") {
-      if (pulling) pulling.stop = true;
+      stopPull();
       sendResponse({ ok: true, running: !!pulling });
       return true;
     }

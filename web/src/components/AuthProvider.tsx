@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { currentUser, inMemoryAccessToken, logout, type AuthUser } from "@/lib/auth-api";
+import { setSyncOwner } from "@/lib/uyap-sync-store";
 
 type Role = "admin" | "lawyer" | "intern" | "secretary";
 
@@ -38,6 +39,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [loading, setLoading] = useState(true);
 
   const applyUser = (nextUser: AuthUser | null) => {
+    setSyncOwner(nextUser?.id ?? null);
     setUser(nextUser);
     setSession(nextUser ? { access_token: inMemoryAccessToken(), user: nextUser } : null);
     if (!nextUser) {

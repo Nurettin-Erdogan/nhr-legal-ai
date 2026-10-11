@@ -15,6 +15,7 @@ import {
   startDetailJob,
   startPullJob,
   startTreeJob,
+  recoverReadJob,
   stopJob,
   waitForJob,
   type BridgeDosya,
@@ -70,10 +71,15 @@ export interface FileReport {
 }
 
 export interface SyncBridge {
-  startTree(key: string, yargiTuru: string): Promise<BridgeReply<{ jobId: string; tabId: number }>>;
+  startTree(
+    key: string,
+    yargiTuru: string,
+    tabId?: number,
+  ): Promise<BridgeReply<{ jobId: string; tabId: number }>>;
   startDetail(
     key: string,
     yargiTuru: string,
+    tabId?: number,
   ): Promise<BridgeReply<{ jobId: string; tabId: number }>>;
   startPull(
     tabId: number,
@@ -85,12 +91,14 @@ export interface SyncBridge {
     options: WaitOptions,
   ): Promise<{ ok: true; status: JobStatus } | BridgeFailure>;
   stop(tabId: number, jobId: string): Promise<unknown>;
+  recoverRead?(tabId: number, jobId: string): Promise<BridgeReply<{ tabId: number }>>;
   sleep(ms: number): Promise<void>;
 }
 
 export const defaultBridge: SyncBridge = {
-  startTree: (key, yargiTuru) => startTreeJob(key, yargiTuru),
-  startDetail: (key, yargiTuru) => startDetailJob(key, yargiTuru),
+  startTree: (key, yargiTuru, tabId) => startTreeJob(key, yargiTuru, tabId),
+  startDetail: (key, yargiTuru, tabId) => startDetailJob(key, yargiTuru, tabId),
+  recoverRead: recoverReadJob,
   startPull: (tabId, ids) => startPullJob(tabId, ids, "upload"),
   wait: (tabId, jobId, options) => waitForJob(tabId, jobId, options),
   stop: (tabId, jobId) => stopJob(tabId, jobId),
@@ -123,6 +131,7 @@ const MAX_CONSECUTIVE_FAILURES = 3;
 const MAX_PROBLEMS = 6;
 export const MAX_READ_RETRIES = 2;
 const TRANSIENT_READ_CODES = new Set(["query_failed", "no_tree", "open_failed"]);
+const RECOVERABLE_READ_CODES = new Set([...TRANSIENT_READ_CODES, "cannot_close"]);
 
 export function blankReport(dosya: BridgeDosya): FileReport {
   return {
@@ -178,6 +187,7 @@ interface ReadTree {
   tree?: TreeResult;
   failure?: BridgeFailure;
   tabId?: number;
+  jobId?: string;
 }
 
 async function readTreeOnce(
@@ -185,11 +195,12 @@ async function readTreeOnce(
   bridge: SyncBridge,
   signal: AbortSignal | undefined,
   onPhase: (text: string) => void,
+  tabId?: number,
 ): Promise<ReadTree> {
   let started: BridgeReply<{ jobId: string; tabId: number }> | undefined;
   for (let attempt = 0; attempt < BUSY_MAX_TRIES; attempt += 1) {
     if (signal?.aborted) return { failure: { ok: false, code: "aborted", error: "İptal edildi." } };
-    started = await bridge.startTree(dosya.key, dosya.yargiTuru);
+    started = await bridge.startTree(dosya.key, dosya.yargiTuru, tabId);
     if (started.ok || started.code !== "busy") break;
     onPhase("UYAP başka bir işi bitirmeyi bekliyor");
     await bridge.sleep(BUSY_RETRY_MS);
@@ -216,6 +227,7 @@ async function readTreeOnce(
         error: status.job.error || "Evrak ağacı okunamadı.",
       },
       tabId: started.tabId,
+      jobId: started.jobId,
     };
   return { tree: status.tree, tabId: started.tabId };
 }
@@ -225,9 +237,34 @@ async function readTree(
   bridge: SyncBridge,
   signal: AbortSignal | undefined,
   onPhase: (text: string) => void,
+  budget: { remaining: number },
+  pinnedTabId?: number,
 ): Promise<ReadTree> {
+  let recovered = false;
   for (let attempt = 0; ; attempt += 1) {
-    const result = await readTreeOnce(dosya, bridge, signal, onPhase);
+    const result = await readTreeOnce(dosya, bridge, signal, onPhase, pinnedTabId);
+    pinnedTabId = result.tabId ?? pinnedTabId;
+    if (
+      !signal?.aborted &&
+      result.failure?.code &&
+      RECOVERABLE_READ_CODES.has(result.failure.code) &&
+      (attempt >= MAX_READ_RETRIES || !TRANSIENT_READ_CODES.has(result.failure.code)) &&
+      !recovered &&
+      budget.remaining > 0 &&
+      bridge.recoverRead &&
+      result.tabId !== undefined &&
+      result.jobId
+    ) {
+      recovered = true;
+      budget.remaining -= 1;
+      onPhase("Takılan UYAP sayfası güvenli biçimde toparlanıyor");
+      const recovery = await bridge.recoverRead(result.tabId, result.jobId);
+      if (signal?.aborted)
+        return { failure: { ok: false, code: "aborted", error: "İptal edildi." } };
+      if (!recovery.ok) return { ...result, failure: recovery };
+      // A reload is not success: reopen the same case on the same tab and prove its tree again.
+      return readTreeOnce(dosya, bridge, signal, onPhase, result.tabId);
+    }
     if (
       signal?.aborted ||
       !result.failure?.code ||
@@ -281,9 +318,11 @@ async function pullIds(
 export interface SyncOptions {
   bridge?: SyncBridge;
   signal?: AbortSignal;
+  /** Listeyi veren sekmeye sabitlenir; başka bir açık UYAP oturumuna geçilmez. */
+  tabId?: number;
   /**
    * false ise hiçbir evrak aktarılmaz: yalnız UYAP ağacı okunur ve sunucudaki kayıtla karşılaştırılır ("yalnız denetle").
-   * Eksik evrak bulunursa dosya "eksik" raporlanır; UYAP'ta ve JurisAI'da hiçbir şey değişmez.
+   * Eksik evrak bulunursa dosya "eksik" raporlanır; belge yüklenmez. Denetim raporu ve okunmuş dosya bilgileri kaydedilebilir.
    */
   pull?: boolean;
   /** false ise evrak dışı dosya bilgileri okunmaz (varsayılan: okunur; evraklar bittikten sonra, salt okunur). */
@@ -295,6 +334,10 @@ export interface SyncOptions {
   ) => Promise<void | { complete: boolean }> | void | { complete: boolean };
   /** Her adımda çağrılır: hangi dosyada, ne yapıldığı ve o ana kadarki dosya raporu. */
   onProgress?: (event: { index: number; total: number; phase: string; report: FileReport }) => void;
+  /** Awaited after each file, including failures. Remaining files stay explicitly pending. */
+  onCheckpoint?: (run: SyncRun) => Promise<void>;
+  /** Shared bounded budget: at most two safe read-only page recoveries in a full run. */
+  recoveryBudget?: { remaining: number };
 }
 
 /**
@@ -305,13 +348,14 @@ export async function syncDosya(
   dosya: BridgeDosya,
   options: SyncOptions & { index?: number; total?: number } = {},
 ): Promise<{ report: FileReport; fatal?: BridgeFailure }> {
+  options = { ...options, recoveryBudget: options.recoveryBudget ?? { remaining: 1 } };
   const result = await syncEvraks(dosya, options);
   if (options.detail === false) {
     result.report.detail = { state: "skipped", tabs: 0, problems: [], saved: false };
     return result;
   }
   if (result.fatal || options.signal?.aborted) return result;
-  const fatal = await readDetail(dosya, result.report, options);
+  const fatal = await readDetail(dosya, result.report, options, result.tabId ?? options.tabId);
   return fatal ? { report: result.report, fatal } : result;
 }
 
@@ -320,6 +364,7 @@ async function readDetail(
   dosya: BridgeDosya,
   report: FileReport,
   options: SyncOptions & { index?: number; total?: number },
+  pinnedTabId?: number,
 ): Promise<BridgeFailure | undefined> {
   const bridge = options.bridge ?? defaultBridge;
   const emit = (phase: string) =>
@@ -337,7 +382,7 @@ async function readDetail(
   let started: BridgeReply<{ jobId: string; tabId: number }> | undefined;
   for (let attempt = 0; attempt < BUSY_MAX_TRIES; attempt += 1) {
     if (options.signal?.aborted) return failed("İptal edildi.");
-    started = await bridge.startDetail(dosya.key, dosya.yargiTuru);
+    started = await bridge.startDetail(dosya.key, dosya.yargiTuru, pinnedTabId);
     if (started.ok || started.code !== "busy") break;
     emit("UYAP başka bir işi bitirmeyi bekliyor");
     await bridge.sleep(BUSY_RETRY_MS);
@@ -355,6 +400,21 @@ async function readDetail(
     return failed(finished.error, finished);
   }
   const { status } = finished;
+  if (
+    status.job.state === "error" &&
+    status.job.code &&
+    RECOVERABLE_READ_CODES.has(status.job.code) &&
+    !options.signal?.aborted &&
+    bridge.recoverRead &&
+    (options.recoveryBudget?.remaining ?? 0) > 0
+  ) {
+    options.recoveryBudget!.remaining -= 1;
+    emit("Dosya bilgileri için UYAP sayfası güvenli biçimde toparlanıyor");
+    const recovery = await bridge.recoverRead(started.tabId, started.jobId);
+    if (options.signal?.aborted) return failed("İptal edildi.");
+    if (!recovery.ok) return failed(recovery.error, recovery);
+    return readDetail(dosya, report, options, started.tabId);
+  }
   if (status.job.state === "error" || !status.detail)
     return failed(status.job.error || "Dosya bilgileri okunamadı.", {
       ok: false,
@@ -395,7 +455,7 @@ async function readDetail(
 async function syncEvraks(
   dosya: BridgeDosya,
   options: SyncOptions & { index?: number; total?: number } = {},
-): Promise<{ report: FileReport; fatal?: BridgeFailure }> {
+): Promise<{ report: FileReport; fatal?: BridgeFailure; tabId?: number }> {
   const bridge = options.bridge ?? defaultBridge;
   const report = blankReport(dosya);
   const emit = (phase: string) =>
@@ -405,10 +465,17 @@ async function syncEvraks(
       phase,
       report: { ...report, problems: [...report.problems] },
     });
-  const fail = (failure: BridgeFailure): { report: FileReport; fatal?: BridgeFailure } => {
+  let pinnedTabId = options.tabId;
+  const fail = (
+    failure: BridgeFailure,
+  ): { report: FileReport; fatal?: BridgeFailure; tabId?: number } => {
     report.outcome = "failed";
     addProblem(report, failure.error);
-    return { report, fatal: failure.code && FATAL_CODES.has(failure.code) ? failure : undefined };
+    return {
+      report,
+      fatal: failure.code && FATAL_CODES.has(failure.code) ? failure : undefined,
+      tabId: pinnedTabId,
+    };
   };
 
   let lastTree: TreeResult | undefined;
@@ -420,7 +487,15 @@ async function syncEvraks(
         ? "Evrak ağacı okunuyor"
         : "Aktarım sunucudan doğrulanıyor",
     );
-    const read = await readTree(dosya, bridge, options.signal, emit);
+    const read = await readTree(
+      dosya,
+      bridge,
+      options.signal,
+      emit,
+      options.recoveryBudget ?? { remaining: 1 },
+      pinnedTabId,
+    );
+    pinnedTabId = read.tabId ?? pinnedTabId;
     if (!lastTree && read.failure?.code === "empty_tree") {
       // UYAP "dosyaya ait evrak bilgisi bulunamadı" diyor (ör. kapatılmış eski icra dosyası): hata değil, evraksız dosya.
       // Geçici bir boş yanıt "evrak yok" diye yazılmasın: aynı yanıt ikinci okumada da gelirse kabul edilir.
@@ -429,7 +504,7 @@ async function syncEvraks(
         continue;
       }
       report.outcome = "empty";
-      return { report };
+      return { report, tabId: pinnedTabId };
     }
     if (!read.tree || read.tabId === undefined) {
       // Son doğrulama okunamadıysa önceki ağaçtaki durum kesin değildir: "eksiksiz" denemez.
@@ -476,7 +551,7 @@ async function syncEvraks(
   if (report.missing > 0)
     addProblem(report, `${report.missing} evrak JurisAI'da kayıtlı görünmüyor.`);
   report.outcome = report.missing === 0 && structural.length === 0 ? "complete" : "incomplete";
-  return { report };
+  return { report, tabId: pinnedTabId };
 }
 
 export interface SyncSummary {
@@ -558,6 +633,7 @@ export async function syncAll(
 ): Promise<SyncRun> {
   const bridge = options.bridge ?? defaultBridge;
   const list = options.only ? dosyalar.filter((dosya) => options.only?.has(dosya.key)) : dosyalar;
+  const recoveryBudget = options.recoveryBudget ?? { remaining: 2 };
   const reports = list.map(blankReport);
   let stoppedBecause: string | undefined;
   let aborted = false;
@@ -567,8 +643,19 @@ export async function syncAll(
       aborted = true;
       break;
     }
-    const result = await syncDosya(list[index], { ...options, bridge, index, total: list.length });
+    const result = await syncDosya(list[index], {
+      ...options,
+      bridge,
+      recoveryBudget,
+      index,
+      total: list.length,
+    });
     reports[index] = result.report;
+    await options.onCheckpoint?.({
+      reports: [...reports],
+      summary: summarize(reports),
+      aborted: !!options.signal?.aborted,
+    });
     if (options.signal?.aborted) {
       aborted = true;
       break;
@@ -596,7 +683,9 @@ export function reportText(run: SyncRun): string {
     `Dosya bilgileri (taraflar, safahat, hesap…): ${s.detailComplete} eksiksiz, ${s.detailPartial} eksik, ${s.detailFailed} okunamadı; ${s.detailSaved} dosya JurisAI'a kaydedildi.`,
   ];
   const fullyChecked = run.reports.filter(fullyVerified).length;
-  lines.push(`Evrakları ve dosya bilgileri birlikte doğrulanıp kaydedilen: ${fullyChecked}/${s.files} dosya.`);
+  lines.push(
+    `Evrakları ve dosya bilgileri birlikte doğrulanıp kaydedilen: ${fullyChecked}/${s.files} dosya.`,
+  );
   if (s.failed || s.pending)
     lines.push(
       "Okunamayan/işlenmeyen dosyaların evrak sayısı bilinmiyor; 0 sayısı bu dosyaların boş olduğunu göstermez.",

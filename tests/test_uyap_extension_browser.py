@@ -39,6 +39,7 @@ EXTENSION_DIR = Path(
 TOKEN = "jsai_" + "a" * 44
 BASE = "https://avukat.uyap.gov.tr"
 CASE_TITLE = "Dava Dosyası 2025/412 Esas - İstanbul 5. İş Mahkemesi"
+KEP_HTML = "<html><body>KEP İletisi: kurum@banka.com.tr<br>Konu: Cevap<br>Tarih: 01.01.2025</body></html>"
 
 
 def _pdf(tag: str) -> bytes:
@@ -275,7 +276,12 @@ class _UyapHandler(BaseHTTPRequestHandler):
             return self._send(200, page.encode(), "text/html; charset=utf-8")
         if path == "/main/jsp/view_document_brd.uyap":
             evrak_id = query.split("evrakId=")[-1].split("&")[0].removeprefix("ENC")
-            if evrak_id in ("109", "110", "111", "112"):
+            if evrak_id in ("113", "114"):
+                type(self).kep_requests = getattr(type(self), "kep_requests", 0) + 1
+                body = KEP_HTML if evrak_id == "113" else KEP_HTML.replace('</body>', '<form><input type="password"></form></body>')
+                # Gerçek UYAP HTML evrağı application/download diye de sunar.
+                return self._send(200, body.encode(), "application/download")
+            if evrak_id in ("109", "110", "111", "112", "115", "116"):
                 message = "Görüntülemek istediğiniz evrakın boyutu çok büyük! Lütfen evrakı sisteminize kaydederek görüntüleyiniz."
                 return self._send(200, message.encode(), "text/plain; charset=utf-8")
             if evrak_id in ("107", "108"):
@@ -308,8 +314,10 @@ class _UyapHandler(BaseHTTPRequestHandler):
             # Gerçek portalda ölçüldü (2026-10-05): "Kaydet" (downloadDoc) ön izlemenin eşi olan bu adresi aynı evrakId/dosyaId/
             # yargiTuru ile, `mimeType` OLMADAN ister; ön izlemenin "boyutu çok büyük" dediği evrak buradan gerçek dosyasıyla gelir.
             evrak_id = query.split("evrakId=")[-1].split("&")[0].removeprefix("ENC")
-            if evrak_id not in ("109", "110", "111", "112") or "mimeType=" in query:
+            if evrak_id not in ("109", "110", "111", "112", "115", "116") or "mimeType=" in query:
                 return self._send(404, b"yok", "text/plain")
+            if evrak_id in ("115", "116"):
+                return self._resumable_attachment(evrak_id)
             if evrak_id in ("110", "111", "112"):
                 return self._big_attachment(evrak_id)
             data = b"\xff\xd8\xff\xe0\x00\x10JFIF" + b"fake-jpeg-109" * 40
@@ -341,6 +349,30 @@ class _UyapHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _resumable_attachment(self, evrak_id):
+        """Kesilen gerçek HTTPS yanıtı: yalnız aynı güçlü ETag ile devam eden 206 birleştirilebilir."""
+        data = b"PK\x03\x04" + b"resume-fixture" * 100_000
+        ranged = self.headers.get("Range")
+        seen = getattr(type(self), "resume_requests", [])
+        type(self).resume_requests = [*seen, (evrak_id, ranged, self.headers.get("If-Range"))]
+        start = int(ranged.removeprefix("bytes=").removesuffix("-")) if ranged else 0
+        self.send_response(206 if ranged else 200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Disposition", 'attachment; filename="resumed.zip"')
+        self.send_header("ETag", '"changed"' if ranged and evrak_id == "116" else '"same-v1"')
+        self.send_header("Content-Length", str(len(data) - start))
+        if ranged:
+            self.send_header("Content-Range", f"bytes {start}-{len(data) - 1}/{len(data)}")
+        self.end_headers()
+        try:
+            self.wfile.write(data[start:] if ranged else data[:100_000])
+            self.wfile.flush()
+            if not ranged:
+                time.sleep(0.2)  # Chrome başlıkları ve öneki okusun; ardından gerçek gövde kesintisi.
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass  # ETag değişince istemci gövdeyi iptal eder.
+        self.close_connection = True
 
     def _big_attachment(self, evrak_id):
         """Gerçek portalda ölçüldü (2026-10-06): büyük ekler "Kaydet" adresinden parça parça (chunked) gelir, ilk bayt 10-18 sn sonra,
@@ -827,6 +859,64 @@ def test_only_recognized_uyap_receipt_html_is_accepted(lab):
     assert result == [True, False, False, "Vekalet Pulu Makbuzu.html"]
 
 
+def test_download_names_preserve_xml_zip_and_never_assume_unknown_is_pdf(lab):
+    result = lab.worker.evaluate("""() => [
+      fileNameFor({evrakAdi:'Ek.pdf'}, 'application/xml'),
+      fileNameFor({evrakAdi:'Ek', fileExt:'xml'}, 'application/download'),
+      fileNameFor({evrakAdi:'Ek.zip'}, 'application/zip'),
+      fileNameFor({evrakAdi:'Ek'}, 'application/zip'),
+      fileNameFor({evrakAdi:'Ek'}, 'application/download'),
+      fileNameFor({evrakAdi:'Ek', fileExt:'../exe'}, 'application/download'),
+      fileNameFor({evrakAdi:'x'.repeat(180)+'.pdf'}, 'application/pdf').endsWith('.pdf')
+    ]""")
+    assert result == ['Ek.xml', 'Ek.xml', 'Ek.zip', 'Ek.zip', 'Ek.bin', 'Ek.bin', True]
+
+
+def test_download_sniffs_generic_xml_and_rejects_disguised_html_login(lab):
+    result = lab.worker.evaluate("""async () => {
+      const original = globalThis.fetch;
+      try {
+        globalThis.fetch = async () => new Response('<?xml version="1.0"?><dava><konu>Test</konu></dava>',
+          {headers:{'Content-Type':'application/download'}});
+        const xml = await fetchDocument('https://vatandas.uyap.gov.tr/test', 5000);
+        globalThis.fetch = async () => new Response('<html><body>Oturumunuz sona erdi</body></html>',
+          {headers:{'Content-Type':'application/download'}});
+        let rejected = false;
+        try { await fetchDocument('https://vatandas.uyap.gov.tr/test', 5000); }
+        catch (error) { rejected = !!error.notDocument; }
+        return [xml.type, fileNameFor({evrakAdi:'yanlis.pdf'}, xml.type), rejected];
+      } finally { globalThis.fetch = original; }
+    }""")
+    assert result == ['application/xml', 'yanlis.xml', True]
+
+
+def test_validation_error_page_is_not_uploaded_or_retried_with_the_same_url(lab):
+    lab.configure()
+    result = lab.worker.evaluate("""async () => {
+      const original = globalThis.fetch;
+      let calls = 0;
+      try {
+        pull = null;
+        globalThis.fetch = async (url, options) => {
+          if (!new URL(url).hostname.endsWith('uyap.gov.tr')) return original(url, options);
+          calls++;
+          return new Response('<html><head><title>UYAP</title></head><body><h1>Hata Oluştu</h1>' +
+            '<b>Hata Mesajı:</b>Doğrulama hatası.Lütfen tekrar deneyiniz.</body></html>',
+            {headers:{'Content-Type':'application/download'}});
+        };
+        const result = await handlePullFetch({evrakTuru:'Ek', evrakAdi:'Ek 41'}, 'upload',
+          'https://vatandas.uyap.gov.tr/main/jsp/view_document_brd.uyap?evrakId=ENC41');
+        return {result, calls};
+      } finally { globalThis.fetch = original; }
+    }""")
+    assert result["calls"] == 1
+    assert result["result"]["ok"] is False
+    assert result["result"]["code"] == "UYAP_VALIDATION_FAILED"
+    assert "Doğrulama hatası" in result["result"]["error"]
+    assert "oturum kapanmış olabilir" not in result["result"]["error"]
+    assert lab.uploads == []
+
+
 def test_turkish_legacy_encoded_receipt_is_recognized(lab):
     accepted = lab.worker.evaluate("""async () => {
       // Windows-1254: ASCII text plus uppercase Ğ at byte 0xD0.
@@ -851,6 +941,81 @@ def test_receipt_response_is_downloaded_but_login_page_is_not(lab):
       return [receipt.type, receipt.blob.size > 30, fileNameFor(meta, receipt.type), rejected];
     }""")
     assert result == ["text/html", True, "Vekalet Pulu Makbuzu.html", True]
+
+
+def test_a_real_kep_document_is_uploaded_once_without_save_fallback_or_retry(lab):
+    lab.configure()
+    _UyapHandler.kep_requests = 0
+    result = lab.worker.evaluate("""async () => {
+      pull = null;
+      return await handlePullFetch({ evrakId:'113', evrakTuru:'89/1 Haciz İhbarnamesi Cevabı',
+        evrakAdi:'KEP Cevabı', dosyaEsasNo:'2024/2000', birim:'Test Mahkemesi' }, 'upload',
+        'https://vatandas.uyap.gov.tr/main/jsp/view_document_brd.uyap?evrakId=ENC113');
+    }""")
+    assert result["ok"] and not result["ms"]["retried"] and not result["ms"]["viaSave"], result
+    assert _UyapHandler.kep_requests == 1
+    [upload] = lab.uploads
+    assert upload["file"]["name"].endswith('.html')
+    assert upload["file"]["data"] == KEP_HTML.encode()  # özgün baytlar, dönüştürülmüş/kesilmiş metin değil
+
+
+@pytest.mark.parametrize("active", [False, True])
+def test_a_kep_attachment_named_only_ek_requires_passive_document_html(lab, active):
+    lab.configure()
+    _UyapHandler.kep_requests = 0
+    result = lab.worker.evaluate("""async (active) => {
+      pull = null;
+      return await handlePullFetch({ evrakId: active ? '114' : '113', evrakTuru:'Ek', evrakAdi:'Ek 1',
+        dosyaEsasNo:'2024/269672', birim:'Test Mahkemesi' }, 'upload',
+        'https://vatandas.uyap.gov.tr/main/jsp/view_document_brd.uyap?evrakId=ENC' + (active ? '114' : '113'));
+    }""", active)
+    assert _UyapHandler.kep_requests == 1
+    if active:
+        assert not result["ok"] and 'belge yerine sayfa' in result["error"], result
+        assert lab.uploads == []
+    else:
+        assert result["ok"] and not result["ms"]["retried"] and not result["ms"]["viaSave"], result
+        [upload] = lab.uploads
+        assert upload["file"]["name"] == 'Ek 1.html'
+        assert upload["file"]["data"] == KEP_HTML.encode()
+
+
+def test_a_receipt_named_only_ek_is_uploaded_without_save_fallback_or_retry(lab):
+    lab.configure()
+    result = lab.worker.evaluate("""async () => {
+      pull = null;
+      return await handlePullFetch({ evrakId:'107', evrakTuru:'Ek', evrakAdi:'Ek 75',
+        dosyaEsasNo:'2024/2000', birim:'Test Mahkemesi' }, 'upload',
+        'https://vatandas.uyap.gov.tr/main/jsp/view_document_brd.uyap?evrakId=ENC107');
+    }""")
+    assert result["ok"] and not result["ms"]["retried"] and not result["ms"]["viaSave"], result
+    [upload] = lab.uploads
+    assert upload["file"]["name"] == 'Ek 75.html'
+    assert upload["file"]["data"] == '<html><body>VEKALET PULU MAKBUZU T.C. ADALET BAKANLIĞI Makbuz No 123</body></html>'.encode()
+
+
+def test_a_login_page_with_receipt_markers_named_ek_is_never_uploaded(lab):
+    lab.configure()
+    result = lab.worker.evaluate("""async () => {
+      pull = null;
+      return await handlePullFetch({ evrakId:'108', evrakTuru:'Ek', evrakAdi:'Ek 75',
+        dosyaEsasNo:'2024/2000', birim:'Test Mahkemesi' }, 'upload',
+        'https://vatandas.uyap.gov.tr/main/jsp/view_document_brd.uyap?evrakId=ENC108');
+    }""")
+    assert not result["ok"] and 'belge yerine sayfa' in result["error"], result
+    assert lab.uploads == []
+
+
+def test_a_login_page_with_kep_markers_is_never_uploaded(lab):
+    lab.configure()
+    result = lab.worker.evaluate("""async () => {
+      pull = null;
+      return await handlePullFetch({ evrakId:'114', evrakTuru:'89/1 Haciz İhbarnamesi Cevabı',
+        evrakAdi:'KEP Cevabı', dosyaEsasNo:'2024/2000', birim:'Test Mahkemesi' }, 'upload',
+        'https://vatandas.uyap.gov.tr/main/jsp/view_document_brd.uyap?evrakId=ENC114');
+    }""")
+    assert not result["ok"] and 'belge yerine sayfa' in result["error"], result
+    assert lab.uploads == []
 
 
 def test_oversized_uyap_preview_is_not_mistaken_for_a_document(lab):
@@ -1591,6 +1756,29 @@ def test_a_save_download_that_uyap_cuts_off_says_so(lab):
     page.close()
 
 
+@pytest.mark.parametrize("changed", [False, True])
+def test_an_interrupted_https_stream_resumes_only_the_same_document(lab, changed):
+    lab.configure(throttleMs=500)
+    _UyapHandler.resume_requests = []
+    evrak_id = "116" if changed else "115"
+    result = lab.worker.evaluate("""async (id) => {
+      pull = null;
+      return await handlePullFetch({ evrakId: id, evrakTuru: 'Ek', evrakAdi: 'Ek 41',
+        dosyaEsasNo: '2024/124', birim: 'Test Mahkemesi' }, 'upload',
+        'https://vatandas.uyap.gov.tr/main/jsp/view_document_brd.uyap?evrakId=ENC' + id);
+    }""", evrak_id)
+    requests = _UyapHandler.resume_requests
+    assert requests == [(evrak_id, None, None), (evrak_id, "bytes=100000-", '"same-v1"')], result
+    if changed:
+        assert result["ok"] is False and "parçalar birleştirilmedi" in result["error"], result
+        assert lab.uploads == []
+    else:
+        assert result["ok"] is True, result
+        [upload] = lab.uploads
+        assert upload["file"]["data"] == b"PK\x03\x04" + b"resume-fixture" * 100_000
+        assert upload["file"]["name"].endswith(".zip")
+
+
 def test_the_save_address_is_derived_only_from_known_preview_addresses(lab):
     derived = lab.worker.evaluate("""() => [
       downloadUrlFor('https://vatandas.uyap.gov.tr/main/jsp/view_document_brd.uyap?mimeType=&evrakId=a%2Bb%40c&dosyaId=d%2Fe&yargiTuru=1'),
@@ -1817,6 +2005,12 @@ def test_main_evraks_only_button_unchecks_the_attachments(lab):
 def test_the_summary_reports_where_the_time_goes(lab):
     lab.configure(throttleMs=500)
     page = lab.open("/vatandas/dosya-agaci")
+    page.evaluate("""() => {
+      window.transferClicks = [];
+      document.addEventListener('click', event => {
+        if (event.target.matches('span.file')) window.transferClicks.push(performance.now());
+      });
+    }""")
     _start_pull(lab)
     page.wait_for_selector(".jurisai-chooser", timeout=30000)
     page.click("#jurisai-pick-upload")
@@ -1824,7 +2018,10 @@ def test_the_summary_reports_where_the_time_goes(lab):
     result = _finish_pull(lab)
 
     timing = result["timing"]
-    assert timing["items"] == 4 and timing["pause"] >= 1500, timing  # her evrak için en az 1,5 sn bekleme
+    assert timing["items"] == 4 and 0 <= timing["pause"] < 1500, timing  # işlem süresi aralığa dahil, son evrak beklemez
+    starts = page.evaluate("() => window.transferClicks")
+    assert len(starts) == 4
+    assert all(b - a >= 1400 for a, b in zip(starts, starts[1:])), starts  # tıklama yolu en az 1,5 sn aralık (mesaj gecikmesi toleransı)
     assert timing["capture"] > 0 and timing["download"] >= 0 and timing["upload"] >= 0
     assert "evrak başına ort.: yakalama" in result["summary"]
     page.close()
@@ -1940,7 +2137,9 @@ def test_the_jurisai_page_can_open_a_dosya_and_the_evrak_chooser_appears_in_the_
     lab.configure(throttleMs=500)
     uyap = lab.open("/vatandas/dosya-listesi")
     web = _jurisai_page(lab)
-    key = web.evaluate("() => window.ask('LIST_DOSYALAR')")["items"][0]["key"]
+    listed = web.evaluate("() => window.ask('LIST_DOSYALAR')")
+    assert listed.get("ok") and listed.get("items"), listed
+    key = listed["items"][0]["key"]
     reply = web.evaluate("(key) => window.ask('OPEN_DOSYA', { key })", key)
     assert reply["ok"], reply
     uyap.wait_for_selector(".jurisai-chooser", timeout=60000)
@@ -2030,7 +2229,9 @@ def _read_tree(lab):
     """Sahte dosya listesini açar, ilk dosyanın ağacını JurisAI sayfasından okur. (uyap, web, tab_id, tree) döner."""
     uyap = lab.open("/vatandas/dosya-listesi")
     web = _jurisai_page(lab)
-    key = web.evaluate("() => window.ask('LIST_DOSYALAR')")["items"][0]["key"]
+    listed = web.evaluate("() => window.ask('LIST_DOSYALAR')")
+    assert listed.get("ok") and listed.get("items"), listed
+    key = listed["items"][0]["key"]
     started = web.evaluate("(key) => window.ask('TREE', { key })", key)
     assert started["ok"] and isinstance(started["tabId"], int), started
     done = _poll_job(web, started["tabId"], started["jobId"], with_tree=True)
@@ -2069,6 +2270,109 @@ def test_the_jurisai_page_starts_an_aktarim_and_follows_its_progress(lab):
     uyap.close()
 
 
+def test_live_download_bytes_reach_only_the_matching_bridge_job(lab):
+    """Gerçek içerik betiği BEGIN'e jobId ekler; çalışan köprü yalnız o işe MB ilerlemesi döndürür."""
+    lab.configure(throttleMs=500)
+    uyap, web, tab_id, tree = _read_tree(lab)
+    target = next(item["id"] for item in tree["items"] if _legacy(item["id"]) == "101")
+    lab.worker.evaluate("""() => {
+      globalThis.__progressFetchOriginal = globalThis.fetch;
+      globalThis.fetch = async (url, options) => {
+        const u = new URL(url);
+        if (u.hostname.endsWith('uyap.gov.tr') && u.searchParams.get('evrakId') === 'ENC101') {
+          let sent = 0;
+          return new Response(new ReadableStream({
+            async pull(controller) {
+              await new Promise(resolve => setTimeout(resolve, 350));
+              if (sent++ === 8) controller.close();
+              else controller.enqueue(new TextEncoder().encode('%PDF-1.7 synthetic-progress\\n'));
+            },
+          }), {headers:{'Content-Type':'application/pdf'}});
+        }
+        return globalThis.__progressFetchOriginal(url, options);
+      };
+    }""")
+    try:
+        pull = _ask(web, "PULL_IDS", {"tabId": tab_id, "ids": [target], "mode": "upload"})
+        assert pull["ok"] is True, pull
+        phases = []
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            status = _ask(web, "JOB_STATUS", {"tabId": tab_id, "jobId": pull["jobId"]})
+            assert status["ok"] is True, status
+            phases.append(status.get("run", {}).get("phase", ""))
+            if status["job"]["state"] != "running":
+                break
+            time.sleep(0.15)
+        assert any("İndiriliyor:" in phase and "toplam boyut bildirilmedi" in phase for phase in phases), phases
+        assert status["job"]["state"] == "done", status
+        assert status["run"]["stats"]["sent"] == 1 and status["run"]["stats"]["failed"] == 0, status
+        assert not status["run"]["phase"].startswith("İndiriliyor:"), status
+        assert len(lab.uploads) == 1
+    finally:
+        lab.worker.evaluate("""() => {
+          globalThis.fetch = globalThis.__progressFetchOriginal;
+          delete globalThis.__progressFetchOriginal;
+        }""")
+        web.close()
+        uyap.close()
+
+
+def test_a_transient_direct_save_failure_falls_back_to_a_fresh_normal_click(lab):
+    """Önizleme reddi geçici Kaydet hatasını örtmez; yalnız bir normal tıklama, tek tam belge yüklemesi."""
+    lab.configure(throttleMs=500)
+    uyap, web, tab_id, tree = _read_tree(lab)
+    target = next(item["id"] for item in tree["items"] if _legacy(item["id"]) == "101")
+    uyap.evaluate("""() => {
+      // Canlı portalın inline menü bilgisinin yapısı: üretimdeki directViewUrl bunu okur.
+      const script = document.createElement('script');
+      script.textContent = "var dosyaId='synthetic-case'; // evrakSolClickMenu .contextMenu('1'";
+      document.body.appendChild(script);
+      window.__freshClicks = 0;
+      document.querySelector('span.file[evrak_id="101"]').addEventListener('click', () => window.__freshClicks++);
+    }""")
+    lab.worker.evaluate("""() => {
+      globalThis.__fallbackFetchOriginal = globalThis.fetch;
+      globalThis.__fallbackRequests = [];
+      globalThis.fetch = async (url, options) => {
+        const u = new URL(url);
+        if (u.hostname.endsWith('uyap.gov.tr') && ['101', 'ENC101'].includes(u.searchParams.get('evrakId'))) {
+          globalThis.__fallbackRequests.push({path: u.pathname, id: u.searchParams.get('evrakId')});
+          if (u.searchParams.get('evrakId') === '101' && u.pathname.includes('view_document')) {
+            return new Response('Evrakın boyutu çok büyük. Evrakı sisteminize kaydederek açınız.',
+              {headers:{'Content-Type':'text/plain; charset=utf-8'}});
+          }
+          if (u.searchParams.get('evrakId') === '101' && u.pathname.includes('download_document')) {
+            throw Object.assign(new Error('synthetic direct save interruption'), {name:'AbortError'});
+          }
+        }
+        return globalThis.__fallbackFetchOriginal(url, options);
+      };
+    }""")
+    try:
+        pull = _ask(web, "PULL_IDS", {"tabId": tab_id, "ids": [target], "mode": "upload"})
+        assert pull["ok"] is True, pull
+        done = _poll_job(web, tab_id, pull["jobId"])
+        assert done["job"]["state"] == "done", done
+        assert done["run"]["stats"]["sent"] == 1 and done["run"]["stats"]["failed"] == 0, done
+        assert uyap.evaluate("window.__freshClicks") == 1
+        requests = lab.worker.evaluate("globalThis.__fallbackRequests")
+        assert requests == [
+            {"path": "/main/jsp/view_document_brd.uyap", "id": "101"},
+            {"path": "/main/jsp/download_document_brd.uyap", "id": "101"},
+            {"path": "/main/jsp/view_document_brd.uyap", "id": "ENC101"},
+        ], requests
+        assert len(lab.uploads) == 1 and _legacy(lab.uploads[0]["fields"]["evrakId"]) == "101"
+    finally:
+        lab.worker.evaluate("""() => {
+          globalThis.fetch = globalThis.__fallbackFetchOriginal;
+          delete globalThis.__fallbackFetchOriginal;
+          delete globalThis.__fallbackRequests;
+        }""")
+        web.close()
+        uyap.close()
+
+
 def test_evraks_already_in_jurisai_are_skipped_when_the_jurisai_page_starts_an_aktarim(lab):
     lab.configure(throttleMs=500)
     _ApiHandler.known_ids.append("101")
@@ -2093,6 +2397,135 @@ def test_a_running_aktarim_can_be_stopped_from_the_jurisai_page(lab):
     assert done["run"]["result"]["stopped"] is True and len(lab.uploads) < 4, done["run"]
     web.close()
     uyap.close()
+
+
+@pytest.mark.parametrize("stage", ["known", "headers", "body", "upload"])
+@pytest.mark.parametrize("stop_via", ["bridge", "popup"])
+def test_stop_aborts_the_active_request_without_retry_upload_or_error_count(lab, stage, stop_via):
+    """Durdur, 45/120 sn zaman aşımını beklemez; indirmeyi/yüklemeyi iptal eder, yeni evrak başlatmaz."""
+    lab.configure(throttleMs=500)
+    uyap, web, tab_id, tree = _read_tree(lab)
+    target = next(item["id"] for item in tree["items"] if _legacy(item["id"]) == "101")
+    lab.worker.evaluate("""stage => {
+      globalThis.__cancelOriginalFetch = globalThis.fetch;
+      globalThis.__cancelRequests = 0;
+      globalThis.__cancelStarted = false;
+      globalThis.__cancelAborted = false;
+      globalThis.fetch = async (url, options) => {
+        const u = new URL(url);
+        const isUyap = u.hostname.endsWith('uyap.gov.tr') && /view_document/.test(u.pathname);
+        const isApi = ['localhost', '127.0.0.1'].includes(u.hostname);
+        const isUpload = isApi && u.pathname.endsWith('/upload');
+        const isKnown = isApi && u.pathname.endsWith('/known');
+        if (isUyap || isUpload || (stage === 'known' && isKnown)) globalThis.__cancelRequests++;
+        if ((stage === 'known' && isKnown) || (stage === 'upload' && isUpload) ||
+            (['headers', 'body'].includes(stage) && isUyap)) {
+          globalThis.__cancelStarted = true;
+          if (stage === 'body') return new Response(new ReadableStream({
+            start(controller) {
+              options.signal.addEventListener('abort', () => {
+                globalThis.__cancelAborted = true;
+                controller.error(new DOMException('cancelled', 'AbortError'));
+              }, {once:true});
+              controller.enqueue(new TextEncoder().encode('PK synthetic partial ZIP'));
+            },
+          }), {headers:{'Content-Type':'application/zip', 'ETag':'"synthetic-version"'}});
+          return new Promise((resolve, reject) => options.signal.addEventListener('abort', () => {
+            globalThis.__cancelAborted = true;
+            reject(new DOMException('cancelled', 'AbortError'));
+          }, {once:true}));
+        }
+        return globalThis.__cancelOriginalFetch(url, options);
+      };
+    }""", stage)
+    try:
+        pull = _ask(web, "PULL_IDS", {"tabId": tab_id, "ids": [target], "mode": "upload"})
+        assert pull["ok"], pull
+        deadline = time.monotonic() + 15
+        while not lab.worker.evaluate("globalThis.__cancelStarted"):
+            assert time.monotonic() < deadline, "the active transfer did not reach the expected phase"
+            time.sleep(0.05)
+        started = time.monotonic()
+        if stop_via == "bridge":
+            stopped = _ask(web, "STOP_JOB", {"tabId": tab_id, "jobId": pull["jobId"]})
+        else:
+            stopped = lab.worker.evaluate("id => chrome.tabs.sendMessage(id, {type:'JURISAI_PULL_STOP'}, {frameId:0})", tab_id)
+        assert stopped["ok"], stopped
+        done = _poll_job(web, tab_id, pull["jobId"], timeout=8)
+        assert time.monotonic() - started < 5, done
+        result = done["run"]["result"]
+        assert done["job"]["state"] == "done" and result["stopped"] is True, done
+        assert result["failed"] == result["sent"] == 0, result
+        assert lab.uploads == []
+        assert lab.worker.evaluate("globalThis.__cancelAborted") is True
+        assert lab.worker.evaluate("globalThis.__cancelRequests") == (2 if stage == "upload" else 1)
+        assert lab.worker.evaluate("pullRun === null") is True
+    finally:
+        lab.worker.evaluate("""() => {
+          globalThis.fetch = globalThis.__cancelOriginalFetch;
+          delete globalThis.__cancelOriginalFetch;
+        }""")
+        web.close()
+        uyap.close()
+
+
+@pytest.mark.parametrize("navigation", ["iframe", "reload", "close"])
+def test_an_active_transfer_is_cancelled_on_tab_loss_but_not_on_preview_iframe_load(lab, navigation):
+    lab.configure(throttleMs=500)
+    uyap, web, tab_id, tree = _read_tree(lab)
+    target = next(item["id"] for item in tree["items"] if _legacy(item["id"]) == "101")
+    lab.worker.evaluate("""() => {
+      globalThis.__lifeOriginalFetch = globalThis.fetch;
+      globalThis.__lifeStarted = false;
+      globalThis.__lifeAborted = false;
+      globalThis.fetch = async (url, options) => {
+        const u = new URL(url);
+        if (u.hostname.endsWith('uyap.gov.tr') && /view_document/.test(u.pathname)) {
+          globalThis.__lifeStarted = true;
+          return new Promise((resolve, reject) => options.signal.addEventListener('abort', () => {
+            globalThis.__lifeAborted = true;
+            reject(new DOMException('cancelled', 'AbortError'));
+          }, {once:true}));
+        }
+        return globalThis.__lifeOriginalFetch(url, options);
+      };
+    }""")
+    try:
+        pull = _ask(web, "PULL_IDS", {"tabId": tab_id, "ids": [target], "mode": "upload"})
+        assert pull["ok"], pull
+        deadline = time.monotonic() + 15
+        while not lab.worker.evaluate("globalThis.__lifeStarted"):
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        if navigation == "iframe":
+            uyap.evaluate("""() => {
+              const frame = document.createElement('iframe'); frame.id = 'lifecycle-preview';
+              frame.src = location.origin + '/giris'; document.body.appendChild(frame);
+            }""")
+            uyap.frame_locator('#lifecycle-preview').locator('body').wait_for()
+            uyap.wait_for_timeout(400)
+            assert lab.worker.evaluate("globalThis.__lifeAborted") is False
+            assert lab.worker.evaluate("pullRun !== null") is True
+            assert _ask(web, "STOP_JOB", {"tabId": tab_id, "jobId": pull["jobId"]})["ok"]
+            assert _poll_job(web, tab_id, pull["jobId"], timeout=8)["run"]["result"]["stopped"]
+        else:
+            if navigation == "reload":
+                uyap.reload()
+            else:
+                uyap.close()
+            deadline = time.monotonic() + 5
+            while not lab.worker.evaluate("globalThis.__lifeAborted && pullRun === null"):
+                assert time.monotonic() < deadline, "orphaned transfer was not cancelled"
+                time.sleep(0.05)
+        assert lab.uploads == []
+    finally:
+        lab.worker.evaluate("""() => {
+          globalThis.fetch = globalThis.__lifeOriginalFetch;
+          delete globalThis.__lifeOriginalFetch;
+        }""")
+        web.close()
+        if not uyap.is_closed():
+            uyap.close()
 
 
 def test_bridge_job_commands_refuse_bad_input_and_non_uyap_tabs(lab):
@@ -2518,6 +2951,52 @@ def test_a_wrong_case_modal_is_never_accepted_as_the_requested_case(lab):
     assert done.get("tree") is None and lab.uploads == []
 
 
+def test_safe_read_recovery_refuses_wrong_job_and_editing_then_reloads_the_exact_tab(lab):
+    """A real reload clears a swallowed modal handler; it is not an upload or a successful verification by itself."""
+    lab.configure(throttleMs=500)
+    uyap = lab.open("/vatandas/dosya-sorgulama-gercek")
+    web = _jurisai_page(lab)
+    try:
+        item = _by_esas(_real_list(web), "2024/124")
+        uyap.evaluate("window.openModal = () => {}")
+        started = _ask(web, "TREE", {"key": item["key"], "yargiTuru": item["yargiTuru"]})
+        done = _poll_job(web, started["tabId"], started["jobId"], with_tree=True)
+        assert done["job"]["code"] == "open_failed", done
+        before = uyap.evaluate("performance.timeOrigin")
+        payload = {"tabId": started["tabId"], "jobId": started["jobId"]}
+        assert _ask(web, "RECOVER_READ", payload | {"jobId": "wrong-job"})["code"] == "recovery_refused"
+        uyap.evaluate("document.body.insertAdjacentHTML('beforeend', '<textarea id=editing>draft</textarea>')")
+        assert _ask(web, "RECOVER_READ", payload)["code"] == "editing"
+        assert uyap.evaluate("performance.timeOrigin") == before
+        uyap.evaluate("document.querySelector('#editing').remove()")
+        # Pause between approval and reload: manual buttons / update checks must
+        # see the recovery lock too, not start a new pull in that narrow window.
+        locked = lab.worker.evaluate("""async payload => {
+          const ask = message => chrome.tabs.sendMessage(payload.tabId, message, { frameId: 0 });
+          const prepared = await ask({ type: 'JURISAI_PREPARE_RECOVERY', jobId: payload.jobId });
+          const current = await ask({ type: 'JURISAI_CURRENT_JOB' });
+          const replies = [];
+          for (const type of ['JURISAI_PULL_DOSYA', 'JURISAI_PULL_PROBE', 'JURISAI_OPEN_DOSYA'])
+            replies.push(await ask({ type, key: payload.key, yargiTuru: payload.yargiTuru }));
+          return { prepared, current, replies };
+        }""", payload | {"key": item["key"], "yargiTuru": item["yargiTuru"]})
+        assert locked["prepared"]["ok"] and locked["current"]["busy"], locked
+        assert all(not reply["ok"] and reply["code"] == "busy" for reply in locked["replies"]), locked
+        assert uyap.evaluate("performance.timeOrigin") == before and lab.uploads == []
+        uyap.wait_for_timeout(5100)
+        recovered = _ask(web, "RECOVER_READ", payload)
+        assert recovered["ok"] and recovered["tabId"] == started["tabId"], recovered
+        assert uyap.evaluate("performance.timeOrigin") != before
+        assert _ask(web, "RECOVER_READ", payload)["code"] == "recovery_limited"
+        # Reopen by the same durable case identity after reload; no UI state is assumed to survive it.
+        tab_id, tree = _real_tree(web, item)
+        assert tab_id == started["tabId"] and tree["who"]["esas"] == item["esas"]
+        assert lab.uploads == []
+    finally:
+        web.close()
+        uyap.close()
+
+
 @pytest.mark.parametrize("mode", ["swallowed", "stale-active"])
 def test_evrak_tab_recovers_from_a_swallowed_click_or_stale_active_marker(lab, mode):
     lab.configure(throttleMs=500)
@@ -2807,6 +3286,35 @@ def test_a_detail_pane_that_never_loads_is_not_reported_as_complete_empty_data(l
     assert any("boş sonuç doğrulanamadı" in problem for problem in detail["problems"])
     assert _tab(detail, "safahat")["complete"] is True
     assert uyap.evaluate("() => window.__forbidden") == []
+    web.close()
+    uyap.close()
+
+
+@pytest.mark.parametrize("paired", [True, False])
+def test_only_paired_static_reddiyat_helper_has_structural_empty_evidence(lab, paired):
+    lab.configure(throttleMs=500)
+    uyap = lab.open('/vatandas/dosya-sorgulama-detay')
+    web = _jurisai_page(lab)
+    uyap.evaluate("""paired => {
+      const original = window.__onOpenDetail;
+      window.__onOpenDetail = row => {
+        original(row);
+        const pane = document.getElementById('dosya_tahsilat_reddiyat_bilgileri_tab');
+        const headers = ['Makbuz No','Reddiyat Tarihi','Reddiyat Nedeni','Ödenecek Kişi','Reddiyat Miktar',
+          'Gelir Vergisi','Damga Vergisi','Tahsil Harcı','Cezaevi Harcı','Suret Harcı','Başvuru Harcı','Ödenecek Tutar'];
+        pane.insertAdjacentHTML('beforeend', (paired ? '<input type="button" id="makbuzDetayGoster123" value="Detay" onclick="window.__forbidden.push(1)">' : '') +
+          '<div id="tahsilatDetay123" style="display:none"><table><thead><tr>' +
+          headers.map(header => '<th>'+header+'</th>').join('') + '</tr></thead><tbody></tbody></table></div>');
+      };
+    }""", paired)
+    _, done = _detail(web, _by_esas(_real_list(web), '2022/112'))
+    tab = _tab(done['detail'], 'tahsilat')
+    helper = next(table for table in tab['tables'] if table['title'] == 'Reddiyat detayı')
+    assert helper['complete'] is paired
+    assert (helper.get('empty_evidence') == 'uyap_static_reddiyat_detail') is paired
+    assert helper['declared'] == (0 if paired else None)
+    assert uyap.evaluate('() => window.__forbidden') == []
+    assert lab.uploads == []
     web.close()
     uyap.close()
 

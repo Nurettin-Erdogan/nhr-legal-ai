@@ -62,9 +62,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
+/** Oturumdaki kullanıcı; giriş yapılmamışsa null. `/session` giriş yapmamış ziyaretçide 401 vermez (konsola hata düşmez). */
 export async function currentUser(): Promise<AuthUser | null> {
   try {
-    return await request<AuthUser>("/api/auth/me");
+    return (await request<{ user: AuthUser | null }>("/api/auth/session")).user ?? null;
   } catch (error) {
     if (error instanceof Error && "status" in error && error.status === 401) return null;
     throw error;

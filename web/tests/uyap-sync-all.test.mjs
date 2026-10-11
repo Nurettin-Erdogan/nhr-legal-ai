@@ -19,6 +19,62 @@ const sync = compile("../src/lib/uyap-sync-all.ts", {
 
 const dosya = (n, extra = {}) => ({ key: `k${n}`, esas: `2025/${n}`, birim: "Ankara İcra Dairesi", yargiTuru: "İcra", role: "", tur: "", acilis: "", durum: "", cells: [], ...extra });
 
+test("stuck read is recovered once on the same tab, then freshly verified without uploading", async () => {
+  const world = { k1: { ids: ["a"], treeFails: 9 } };
+  const bridge = fakeBridge(world);
+  bridge.stored.set("k1", new Set(["a"]));
+  const recoveries = [], pins = [];
+  const start = bridge.startTree;
+  bridge.startTree = (key, type, tab) => { pins.push(tab); return start(key, type); };
+  bridge.recoverRead = async (tab, job) => { recoveries.push([tab, job]); world.k1.treeFails = 0; return { ok: true, tabId: tab }; };
+  const { report } = await sync.syncDosya(dosya(1), { bridge, pull: false });
+  assert.equal(report.outcome, "complete");
+  assert.equal(recoveries.length, 1);
+  assert.deepEqual(pins, [undefined, 1, 1, 1]);
+  assert.deepEqual(bridge.calls.pulls, []);
+});
+test("recovery budget is bounded across the whole run; a reload alone never proves success", async () => {
+  const bridge = fakeBridge({ k1: { ids: [], treeFails: 99 }, k2: { ids: [], treeFails: 99 }, k3: { ids: [], treeFails: 99 } });
+  let recoveries = 0;
+  bridge.recoverRead = async tab => { recoveries++; return { ok: true, tabId: tab }; };
+  const result = await sync.syncAll([1, 2, 3].map(n => dosya(n)), { bridge, pull: false, detail: false });
+  assert.equal(recoveries, 2);
+  assert.equal(result.summary.failed, 3);
+  assert.equal(result.summary.complete, 0);
+});
+
+test("the full run pins every first tree and detail read to the listing tab", async () => {
+  const bridge = fakeBridge({ k1: { ids: ["a"] }, k2: { ids: ["b"], treeFails: 3 } });
+  bridge.stored.set("k1", new Set(["a"]));
+  const pins = [];
+  for (const method of ["startTree", "startDetail"]) {
+    const original = bridge[method];
+    bridge[method] = async (key, type, tabId) => {
+      pins.push([method, key, tabId]);
+      const result = await original(key, type);
+      return result.ok ? { ...result, tabId } : result;
+    };
+  }
+  await sync.syncAll([dosya(1), dosya(2)], { bridge, tabId: 37, pull: false });
+  assert.ok(pins.some(([kind, key]) => kind === "startTree" && key === "k2"));
+  assert.ok(pins.some(([kind, key]) => kind === "startDetail" && key === "k2"));
+  assert.ok(pins.every(([, , tabId]) => tabId === 37));
+});
+test("login loss, unknown jobs, stale identity and cancellation are never auto-reloaded", async () => {
+  for (const code of ["login_required", "unknown_job", "stale", "aborted"]) {
+    const bridge = fakeBridge({ k1: { ids: [], startError: code } });
+    bridge.recoverRead = () => { throw new Error("unsafe recovery"); };
+    const result = await sync.syncDosya(dosya(1), { bridge, detail: false });
+    assert.equal(result.report.outcome, "failed");
+  }
+});
+test("checkpoints include failed and pending files before a fatal stop", async () => {
+  const bridge = fakeBridge({ k1: { ids: [], startError: "login_required" }, k2: { ids: [] } });
+  const checkpoints = [];
+  await sync.syncAll([1, 2].map(n => dosya(n)), { bridge, onCheckpoint: async r => checkpoints.push(r) });
+  assert.deepEqual(checkpoints[0].reports.map(r => r.outcome), ["failed", "pending"]);
+});
+
 /**
  * Sahte UYAP + JurisAI sunucusu. `world[key]` = { ids, declared, lose: Set (gönderilse de sunucuya yazılmayan evraklar),
  * gap: ağaç tutarsızlığı, failPull: aktarım işi hatası }.
@@ -179,6 +235,9 @@ test("bir tablo UYAP'ın sayısından az gelirse dosya bilgileri 'eksik' yazıl�
   assert.deepEqual([report.detail.state, report.detail.saved], ["partial", true]);
   assert.deepEqual(saved, [false]);
   assert.match(report.detail.problems[0], /UYAP 2 kayıt yazıyor, 1 okundu/);
+  const text = sync.reportText({ reports: [report], summary: sync.summarize([report]) });
+  assert.match(text, /1 dosyada evraklar eksiksiz/);
+  assert.match(text, /birlikte doğrulanıp kaydedilen: 0\/1 dosya/);
 });
 
 test("kaydetme hatası evrak sonucunu bozmaz ve dosya bilgisi 'kaydedilemedi' diye yazılır", async () => {

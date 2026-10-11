@@ -1,4 +1,66 @@
-# Yerel Qwen / DeepSeek karşılaştırması — 27.09.2026
+# Yerel model karşılaştırmaları
+
+## 09.10.2026: bu donanımda daha güçlü bir yerel model var mı?
+
+**Sonuç: hayır.** RTX 3050 6 GB ekran kartına tam sığan en büyük güncel model zaten kullanılan `qwen3.5:4b`. Denenen üç
+seçeneğin hiçbiri onu geçmedi; üretim modeli değiştirilmedi.
+
+| Seçenek | Kaynak cümlesi seçimi (15 etiketli soru) | Uçtan uca (20 soru) | Süre | Karar |
+|---|---|---|---|---|
+| `qwen3.5:4b`, düşünme kapalı (**mevcut**) | 13/15 tam, 16/18 etiket cümlesi; karışık sırada 12/15, 15/18 | 20/20 kaynaklı, 19/20 beklenen kanun | seçim 2,2 sn; cevap ortanca 12 sn, en uzun 24 sn | kalır |
+| `qwen3.5:4b`, düşünme açık | ilk 3 soruda geçerli seçim **yok** (2 048 belirteçlik düşünce, cevap gelmeden kesildi) | ölçülmedi | soru başına 50-55 sn | kullanılamaz |
+| `deepseek-r1:8b` (5,2 GB; kartta %70'i) | 15 soruyu 19 dakikada bitiremedi | ölçülmedi | — | kullanılamaz |
+| `qwen3.5:9b` (5,6 GB dosya; bellekte 6,25 GB, kartta %57'si) | 14/15 tam, 17/18; karışık sırada 12/15, 15/18 | **18/20** kaynaklı, **16/20** beklenen kanun | seçim 5-6 sn; cevap ortanca 21 sn, en uzun 50 sn | geçilmedi (silindi) |
+
+Okuma:
+
+- Daha büyük model yalnız seçim adımında bir soru fazla tutturdu, ama karta sığmadığı için her model çağrısı ~2,5 kat
+  yavaşladı ve uçtan uca **daha kötü** çıktı (iki soru "yeterli bilgi yok" ile bitti, cevap süresi iki katına çıktı).
+- İki model de aynı zor soruyu kaçırıyor: "haksız fesihte hangi tazminatlar" sorusunda İş Kanunu m. 17'deki ihbar tazminatı
+  cümlesini ("Bildirim şartına uymayan taraf … tazminat ödemek zorundadır") seçmiyorlar. Cümleyi tek başına sorunca da
+  (aşağıda) "hayır" diyorlar: bu, hukuk bilgisi gerektiren bir eşleme ve küçük modelde yok.
+- **Tek tek sorma** (her kanun cümlesi için "bu cümle soruyu yanıtlayan bir kural koyuyor mu?"): `qwen3.5:4b` ile 18 etiket
+  cümlesinin 15'ine "evet", etiket olmayan 72 cümlenin 23'üne de "evet" (soru başına 2,3 sn ek). Liste seçiminden iyi
+  değil; uygulamaya alınmadı.
+- Ollama kütüphanesindeki güncel modellerin çoğu 27B ve üstü ya da bulut modelidir (bakıldı: 09.10.2026). 9B sınıfı karta
+  tam sığmıyor (`qwen3.5:9b` ile ölçüldü; `nimble`, `ornith` 9B denenmedi, aynı sınırı yaşarlar). 3-4B sınıfındaki başka
+  adaylar (`tev1:4b`, `granite4.2:3b`) **ölçülmedi**.
+
+Yerel modelle devam kararı (09.10.2026) üzerine, modelin kaçırdığı asıl kural cümlesi konu tablosundan güvenceye alındı
+(`docs/assistant-answer-quality.md`, "asıl kural cümlesi güvencesi"); bu adımla aynı 15 soruda uygulamanın cevabı 15/15'e
+çıktı. Bu, modelin değil tablonun kapsamıdır: yukarıdaki model karşılaştırması o adım **olmadan** yapılmıştır.
+
+Demek ki cevap kalitesinde belirgin sıçrama için ya **daha büyük ekran kartı** (27B sınıfı model ~17-20 GB ister; kod
+değişmez, yalnız `AI_MODEL` değişir) ya da **bulut modeli** gerekir. Bulut, müvekkil verisi bakımından bir KVKK kararıdır
+(`docs/yayin-plani.md`); sağlayıcı katmanı ayrı tutulduğu için eklenmesi küçük iştir ama karar verilmeden yazılmadı.
+
+### Yöntem
+
+`scripts/bench_selection_models.py`: 15 soru için uygulamanın gerçek adayları bir kez dondurulur (arama + konu maddesi +
+aday cümleler + uygulamadaki istemin aynısı); her model aynı istemi alır. Etiket, cevabı taşıyan kanun cümlesinin ayırt
+edici parçasıdır ve korpustaki resmî metinden yazılmıştır (18 cümle; ör. işe iade: m. 18'in ilk cümlesi + m. 20'nin
+arabulucu cümlesi). "Karışık sıra": aynı adaylar sabit tohumla karıştırılıp yeniden numaralanır; model cümleyi yerinden
+değil içeriğinden bulmalıdır. Sıcaklık 0, bağlam 4 096 (düşünmede 8 192), çağrı başına en çok 150 sn.
+
+Sınırlar: 15 soru azdır ve çoğu iş hukukudur; etiketleri tek kişi yazdı; seçim adımı ölçülür, açıklama metninin
+okunabilirliği ölçülmez. Ölçüm sırasında embedding işçisi ve veri çekimi çalışıyordu. Uçtan uca 20 soruda `qwen3.5:4b`
+sonuçları bir gün önceki koşudandır (aynı kod, daha sıcak disk).
+
+Ölçüm tuzağı: iki süreç aynı modeli farklı bağlam boyuyla çağırırsa Ollama modeli her çağrıda yeniden yükler (50-70 sn);
+durdurulan bir komut zincirinin sıradaki halkası kendiliğinden başlayıp ölçümü böyle bozdu.
+
+Bu ölçüm sırasında konu tablosunda iki boşluk bulundu ve kapatıldı: "yıllık ücretli **izne**" (ünlü düşmesi) ve "iş
+uyuşmazlıklarında arabulucu" soruları tabloyla eşleşmiyordu (`tests/test_statute_hint_topics.py`).
+
+```powershell
+.\.venv\Scripts\python.exe scripts/bench_selection_models.py freeze
+.\.venv\Scripts\python.exe scripts/bench_selection_models.py run qwen3.5:4b nothink qwen4b
+.\.venv\Scripts\python.exe scripts/bench_selection_models.py run qwen3.5:4b nothink qwen4b shuffle
+```
+
+Ham sonuçlar yerelde `data/benchmarks/selection-models-20261009/` altındadır (korpus metni içerir, depoya girmez).
+
+## 27.09.2026: Qwen / DeepSeek
 
 ## Sonuç
 

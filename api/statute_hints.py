@@ -6,8 +6,8 @@ içindeki aynı ilke). Güvence iki katmandır:
 * **Kaynak yine korpustur.** Bir ipucu ancak o madde korpusta resmî doğrulanmış ve güncel olarak bulunuyorsa listelenir; madde adı
   ve bağlantısı veritabanından gelir, bu dosyadan değil. Madde korpusta yoksa satır hiç gösterilmez.
 * **Metin denetimi.** Her ipucu, getirilen madde metninde bulunması gereken sözcüklerle (`expect`) gelir; metin bu sözcükleri
-  içermiyorsa (numara kaymış, madde değişmiş) ipucu atılır. Tablodaki her satır 2026-10-05'te korpustaki resmî metne karşı
-  bu denetimle doğrulandı; `scripts/verify_statute_hints.py` aynı denetimi istendiğinde tekrarlar.
+  içermiyorsa (numara kaymış, madde değişmiş) ipucu atılır. Tablodaki her satır korpustaki resmî metne karşı bu denetimle
+  doğrulandı (ilk tablo 2026-10-05, eklenen konular 2026-10-08); `scripts/verify_statute_hints.py` aynı denetimi istendiğinde tekrarlar.
 
 Liste her zaman "otomatik öneri; uygunluğunu avukat kontrol etmelidir" diye sunulur. Tabloda olmayan konular için öneri yapılmaz.
 """
@@ -26,6 +26,10 @@ class Hint:
     article_no: str
     # Madde metninde (küçük harf, Türkçe katlanmamış) bulunması gereken sözcük köklerinden en az biri.
     expect: tuple[str, ...]
+    # Maddenin, bu konunun ASIL KURALINI koyan cümlesinin ayırt edici parçası; resmî metinde aynen geçer
+    # (`scripts/verify_statute_hints.py` denetler). Model o maddeden başka bir cümle seçip bunu atlarsa cevaba bu cümle de eklenir
+    # (bkz. `api.ai.evidence_selection.include_rule_sentences`). Boşsa böyle bir güvence yoktur.
+    anchor: str = ""
 
 
 @dataclass(frozen=True)
@@ -38,29 +42,44 @@ class Topic:
     unless: tuple[str, ...] = ()
 
 
-def _h(law: str, article: str, *expect: str) -> Hint:
-    return Hint(law, article, tuple(expect))
+def _h(law: str, article: str, *expect: str, anchor: str = "") -> Hint:
+    return Hint(law, article, tuple(expect), anchor)
 
 
 TOPICS: tuple[Topic, ...] = (
     Topic("kira_temerrut", (("kira", "kiracı"), ("ödenme", "ödeme", "temerrüt", "tahliye", "borc")),
-          (_h("6098", "315", "temerrüd", "ifa etmez"), _h("6098", "352", "ihtar", "tahliye")), unless=("artış", "artır", "tüfe")),
+          (_h("6098", "315", "temerrüd", "ifa etmez", anchor="yazılı olarak bir süre verip"), _h("6098", "352", "ihtar", "tahliye")), unless=("artış", "artır", "tüfe")),
     Topic("kira_icra_tahliye", (("kira", "kiracı"), ("ödeme emri", "icra", "takip")), (_h("2004", "269", "kira", "ödeme emri"),)),
     Topic("kira_artis", (("kira",), ("artış", "artır", "tüfe", "tespit")), (_h("6098", "344", "tüketici fiyat"), _h("6098", "345", "kira bedeli"))),
     Topic("kira_ihtiyac", (("kira", "kiracı"), ("ihtiyaç", "gereksinim", "yeniden inşa", "imar")), (_h("6098", "350", "gereksinim"), _h("6098", "351", "edinen"))),
-    Topic("kidem", (("kıdem",), ("tazminat",)), (_h("1475", "14", "kıdem tazminat"),)),
-    Topic("ihbar", (("ihbar tazminat", "bildirim süre", "ihbar öneli"),), (_h("4857", "17", "bildirim"),)),
-    Topic("fazla_calisma", (("fazla mesai", "fazla çalışma", "fazla sürelerle"),), (_h("4857", "41", "fazla çalışma"),)),
-    Topic("yillik_izin", (("yıllık izin", "yıllık ücretli izin"),), (_h("4857", "53", "yıllık ücretli izin"), _h("4857", "59", "izin ücret"))),
-    Topic("ise_iade", (("işe iade", "geçersiz fesih", "feshin geçersiz", "geçerli sebep", "geçerli neden"),),
-          (_h("4857", "18", "geçerli"), _h("4857", "20", "fesih bildirim"), _h("4857", "21", "işe başlat"))),
+    Topic("kidem", (("kıdem",), ("tazminat",)), (_h("1475", "14", "kıdem tazminat", anchor="her geçen tam yıl için işverence işçiye 30 günlük ücreti tutarında kıdem tazminatı ödenir"),)),
+    Topic("ihbar", (("ihbar tazminat", "bildirim süre", "ihbar öneli"),), (_h("4857", "17", "bildirim", anchor="Bildirim şartına uymayan taraf"),)),
+    Topic("fazla_calisma", (("fazla mesai", "fazla çalışma", "fazla sürelerle"),), (_h("4857", "41", "fazla çalışma", anchor="yüzde elli yükseltilmesi suretiyle ödenir"),)),
+    # "izin" ek alınca ünlüsü düşer ("izne", "izni"): iki yazılış da aranır.
+    Topic("yillik_izin", (("yıllık izin", "yıllık ücretli izin", "yıllık izn", "yıllık ücretli izn"),),
+          (_h("4857", "53", "yıllık ücretli izin", anchor="en az bir yıl çalışmış olan işçilere"), _h("4857", "59", "izin ücret"))),
+    # Daha özel konu önce gelir: boru hattı ilk iki ipucunu kullanır. "Geçersiz feshin sonuçları" sorusunda m. 21 öne geçmelidir.
+    # "fesh" kökü "fesih/feshin/feshi/feshedilme" yazımlarının hepsini kapsar (ünlü düşmesi).
+    Topic("gecersiz_fesih_sonuc", (("geçersiz fesh", "geçersiz fesih", "feshin geçersiz", "işe başlatma", "işe başlatıl"),
+                                   ("sonuç", "tazminat", "boşta geçen", "işe başlat", "ücret")),
+          (_h("4857", "21", "işe başlat", anchor="işe başlatmak zorundadır"),)),
+    Topic("ise_iade", (("işe iade", "geçersiz fesih", "geçersiz fesh", "feshin geçersiz", "geçerli sebep", "geçerli neden"),),
+          (_h("4857", "18", "geçerli", anchor="geçerli bir sebebe dayanmak zorundadır"),
+           _h("4857", "20", "fesih bildirim", anchor="arabulucuya başvurmak zorundadır"),
+           _h("4857", "21", "işe başlat", anchor="işe başlatmak zorundadır"))),
+    Topic("haksiz_fesih_tazminat", (("haksız fesih", "haksız fesh", "haksız olarak fesh", "haksız şekilde fesh"),
+                                    ("işçi", "iş sözleşme", "iş akd", "hizmet akd", "işveren")),
+          (_h("4857", "17", "bildirim", anchor="Bildirim şartına uymayan taraf"), _h("1475", "14", "kıdem tazminat", anchor="her geçen tam yıl için işverence işçiye 30 günlük ücreti tutarında kıdem tazminatı ödenir"))),
+    Topic("esit_davranma", (("eşit davranma", "eşit işlem borc", "ayrımcılık tazminat"),), (_h("4857", "5", "ayrım yapılamaz", "eşit davranma", anchor="ayrım yapılamaz"),)),
+    Topic("is_arabuluculuk", (("arabulucu",), ("işçi", "işe iade", "işveren", "iş mahkeme", "işçilik", "iş uyuşmazl", "iş davas", "iş hukuk")),
+          (_h("7036", "3", "arabulucu", anchor="arabulucuya başvurulmuş olması dava şartıdır"),)),
     Topic("hakli_fesih_isci", (("işçi",), ("haklı neden", "haklı sebep", "derhal fesih")), (_h("4857", "24", "işçinin haklı"),)),
     Topic("hakli_fesih_isveren", (("işveren",), ("haklı neden", "haklı sebep", "derhal fesih", "devamsızlık", "mazeretsiz")), (_h("4857", "25", "işverenin haklı"),)),
-    Topic("bosanma", (("boşan",),), (_h("4721", "166", "evlilik birliği"),)),
+    Topic("bosanma", (("boşan",),), (_h("4721", "166", "evlilik birliği", anchor="eşlerden her biri boşanma davası açabilir"),)),
     Topic("bosanma_tazminat", (("boşan",), ("tazminat",)), (_h("4721", "174", "tazminat"),)),
     Topic("nafaka", (("nafaka",),), (_h("4721", "169", "geçici önlem", "geçim"), _h("4721", "175", "yoksulluğa"), _h("4721", "182", "çocu"))),
     Topic("velayet", (("velayet", "velâyet"),), (_h("4721", "182", "çocu"), _h("4721", "336", "velâyet", "velayet"))),
-    Topic("tuketici_ayipli_mal", (("ayıplı mal", "ayıplı ürün", "ayıplı araç"),), (_h("6502", "8", "ayıplı mal"), _h("6502", "11", "seçimlik"))),
+    Topic("tuketici_ayipli_mal", (("ayıplı mal", "ayıplı ürün", "ayıplı araç"),), (_h("6502", "8", "ayıplı mal"), _h("6502", "11", "seçimlik", anchor="Malın ayıplı olduğunun anlaşılması durumunda tüketici"))),
     Topic("tuketici_ayipli_hizmet", (("ayıplı hizmet",),), (_h("6502", "13", "ayıplı hizmet"), _h("6502", "15", "seçimlik"))),
     Topic("satis_ayip", (("ayıp",), ("satış", "satıcı", "alıcı")), (_h("6098", "219", "ayıp"), _h("6098", "227", "seçimlik"))),
     Topic("haksiz_fiil", (("haksız fiil", "trafik kaza", "maddi tazminat", "manevi tazminat", "yaralan"),),
@@ -80,6 +99,12 @@ TOPICS: tuple[Topic, ...] = (
     Topic("idari_iptal", (("iptal davası",), ("idari", "idare", "danıştay")), (_h("2577", "7", "dava açma süresi"),)),
     Topic("tam_yargi", (("tam yargı",),), (_h("2577", "12", "tam yargı"), _h("2577", "13", "idari eylem"))),
     Topic("aidat", (("aidat", "ortak gider", "kat malik"),), (_h("634", "20", "gider"),)),
+    Topic("idari_istinaf", (("istinaf",), ("idari", "idare mahkeme", "vergi mahkeme", "bölge idare", "danıştay")), (_h("2577", "45", "istinaf", anchor="İdare ve vergi mahkemelerinin kararlarına karşı"),)),
+    Topic("idari_temyiz", (("temyiz",), ("idari", "idare mahkeme", "vergi mahkeme", "bölge idare", "danıştay")), (_h("2577", "46", "temyiz"),)),
+    Topic("kdk_basvuru", (("kamu denetçi", "ombudsman"), ("başvur", "şikayet")), (_h("6328", "17", "başvur", anchor="Kuruma başvuruda bulunulabilmesi için"),)),
+    # 6216 sayılı Kanun (başvuru süresi ve usulü: m. 45-47) korpusta yok (2026-10-08); bulunan tek resmî dayanak Anayasa m. 148'dir.
+    Topic("aym_bireysel_basvuru", (("bireysel başvuru",),), (_h("2709", "148", "bireysel başvuru"),)),
+    Topic("adil_yargilanma", (("adil yargılanma", "hak arama hürriyet", "hak arama özgürlü"),), (_h("2709", "36", "adil yargılanma"),)),
 )
 
 MAX_HINTS = 6

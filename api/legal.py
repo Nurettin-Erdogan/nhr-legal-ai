@@ -16,6 +16,7 @@ from fastapi import Path as PathParam
 from psycopg.errors import QueryCanceled
 from starlette.concurrency import run_in_threadpool
 
+from api.ai.seed_tier import seed_tier
 from api.ai.turkish_text import restore_turkish
 from api.db import database_connection
 from api.schemas import (
@@ -52,12 +53,30 @@ _stats_refreshing = False
 # Public-corpus search results are not user-specific, so repeats are served from
 # memory. Common-word queries can still need 15+ s on ~10M chunks, hence 45 s.
 _SEARCH_TIMEOUT = "45s"
-# Tam sıralı arama bu sürede bitmezse (soğuk diskte yaygın sözcükler) sınırlı adaylı sürüme
-# geçilir; toplam en kötü durum ~15 + 20 sn, arayüzün 50 sn bütçesi içinde.
-_SEARCH_FULL_TIMEOUT = "15s"
+# Katmanlı arama bu sürede bitmezse (soğuk disk) yalnız resmî katmanın küçük bir örneğiyle yeniden denenir; ilk
+# denemenin okuduğu sayfalar önbellekte kaldığından ikinci deneme çoğunlukla hemen döner (ölçüldü: 0,2 sn). Yedeğin
+# süresi yine de uzun tutulur: API yeni açıldığında arka plandaki sayım/ısınma sorguları diski meşgul eder ve ilk
+# arama iki denemede de 10 sn'yi aşabiliyor (ölçüldü: 2026-10-08).
+# İlk deneme 10 sn idi; 4 sn'ye indirildi (2026-10-10): arkada yoğun veri işi çalışırken toplu katmanın 31 GB'lık dizini
+# bellekte kalamıyor, on iki aramanın onu 10 sn'yi doldurup ancak ondan sonra resmî katmana düşüyordu (ortanca 11 sn).
+# Resmî katman ilk denemede zaten okunmuş olduğundan yedek hemen döner; olağan yükte katmanlı arama 0,9-3,1 sn'de bitiyor
+# (ölçüldü: 2026-10-08), yani 4 sn onu kesmez. Toplam en kötü durum ~4 + 20 sn, arayüzün 50 sn bütçesi içinde.
+_SEARCH_FULL_TIMEOUT = "4s"
 _SEARCH_BOUNDED_TIMEOUT = "20s"
-# Katmanlı aramada doğrulanmamış toplu katmandan puanlanan en çok eşleşme sayısı.
-_SEARCH_SEED_CAP = 5000
+# Katmanlı aramada doğrulanmamış toplu katmandan puanlanan en çok eşleşme sayısı. Örnek zaten rastgeledir (tablo
+# sırasındaki ilk eşleşmeler); 5000 yerine 3000, soğuk aramada okunan sayfayı ~%40 azaltır (ölçüldü: 2026-10-08).
+_SEARCH_SEED_CAP = 3000
+# Resmî katmanda puanlanan en çok eşleşme sayısı. Olağan (çok sözcüklü) aramada eşleşme bunun altındadır ve katman
+# tam puanlanır; yaygın tek sözcükte ("tazminat": 492 bin resmî parça) hepsini puanlamak 35 sn sürüp 504 veriyordu.
+# Sınır aşılırsa sonuç "kısmi" işaretlenir (bkz. migration 050, docs/legal-search-performance.md).
+_SEARCH_OFFICIAL_CAP = 5000
+# Zaman aşımı yedeği: toplu katman atlanır, resmî katmandan daha küçük bir örnek puanlanır.
+_SEARCH_FALLBACK_OFFICIAL_CAP = 1500
+# Toplu katman atlandığında resmî sonuç sayfayı doldurmuyorsa (ölçülen örnekler: 2, 4, 7 sonuç) kullanıcı neredeyse boş bir
+# liste görür; o durumda toplu katman daha uzun süreyle bir kez daha denenir. Sayfa doluysa beklenmez. Soğuk önbellekte
+# katmanlı arama 4-12 sn sürüyor (ölçüldü: 2026-10-10, bakım sonrası); önceki deneme sayfaları ısıttığı için ikinci
+# deneme çoğunlukla yetişir.
+_SEARCH_SPARSE_SEED_TIMEOUT = "10s"
 # VEYA yedeğinde resmî katmandan puanlanan en çok eşleşme sayısı.
 _SEARCH_OR_CANDIDATES = 10000
 _SEARCH_WORK_MEM = "64MB"
@@ -226,11 +245,11 @@ LIMIT %(limit)s OFFSET %(offset)s
 """
 
 
-# Katmanlı arama: resmî parçalar (kısmi GIN dizini) tam puanlanır, doğrulanmamış toplu katmanda
-# yalnız ilk %(seed_cap)s eşleşme puanlanır; sınır aşıldıysa sonuç "kısmi" işaretlenir.
+# Katmanlı arama: resmî parçalar (kısmi GIN dizini) en çok %(official_cap)s eşleşmeye kadar tam puanlanır,
+# doğrulanmamış toplu katmanda yalnız ilk %(seed_cap)s eşleşme puanlanır; bir sınır aşıldıysa sonuç "kısmi" işaretlenir.
 _CURRENT_SEARCH_SQL = _current_search_sql(
     "legal_rag_current_lexical_hits_tiered("
-    "search_query.value, %(candidate_limit)s, %(seed_cap)s)",
+    "search_query.value, %(candidate_limit)s, %(seed_cap)s, %(official_cap)s)",
     "(SELECT COALESCE(bool_or(hits.capped), false) FROM hits)",
     "hits.chunk_id, hits.rank, hits.capped",
 )
@@ -928,6 +947,7 @@ def search_legal_sources(
         "as_of": as_of,
         "candidate_limit": max(_SEARCH_MIN_CANDIDATES, (offset + limit) * 10),
         "seed_cap": _SEARCH_SEED_CAP,
+        "official_cap": _SEARCH_OFFICIAL_CAP,
         "or_candidates": _SEARCH_OR_CANDIDATES,
     }
     sql = _HISTORICAL_SEARCH_SQL if as_of is not None else _CURRENT_SEARCH_SQL
@@ -967,15 +987,42 @@ def search_legal_sources(
 
     bounded = as_of is None  # sınırlı aday sürümü yalnız güncel aramada var
     try:
+        skipped_seed_tier = False
         try:
-            rows = run(" & ", sql, _SEARCH_FULL_TIMEOUT if bounded else _SEARCH_TIMEOUT)
+            if bounded and not seed_tier.allow():
+                # Toplu katman az önce art arda zaman aşımına uğradı (bkz. api.ai.seed_tier): bir süre hiç denenmez, arama
+                # doğrudan resmî katmanla döner; sonuç "kısmi" işaretlenir.
+                # Sigorta açıksa disk yük altındadır: resmî katmandan da küçük örnek puanlanır (5 000 parçanın puanlanması
+                # o sırada 4 sn'yi aşıp ikinci bir denemeye yol açıyordu; ölçüldü: 2026-10-10).
+                rows = run(
+                    " & ", sql, _SEARCH_BOUNDED_TIMEOUT,
+                    {"seed_cap": 0, "official_cap": _SEARCH_FALLBACK_OFFICIAL_CAP},
+                )
+                skipped_seed_tier = True
+            else:
+                rows = run(" & ", sql, _SEARCH_FULL_TIMEOUT if bounded else _SEARCH_TIMEOUT)
+                if bounded:
+                    seed_tier.record(True)
         except QueryCanceled:
             if not bounded:
                 raise
-            # Soğuk diskte doğrulanmamış toplu katman yetişmedi: yalnız resmî katman (küçük dizin,
-            # tam puanlı) döner; toplu katmanda eşleşme varsa sonuç "kısmi" işaretlenir.
+            if seed_tier.allow():
+                seed_tier.record(False)
+            # Soğuk diskte katmanlı arama yetişmedi: toplu katman atlanır, resmî katmandan daha küçük bir örnek
+            # puanlanır; sonuç her zaman "kısmi" işaretlenir.
             logger.warning("Katmanlı arama zaman aşımı, yalnız resmî katman: %r", query)
-            rows = run(" & ", sql, _SEARCH_BOUNDED_TIMEOUT, {"seed_cap": 0})
+            rows = run(
+                " & ", sql, _SEARCH_BOUNDED_TIMEOUT,
+                {"seed_cap": 0, "official_cap": _SEARCH_FALLBACK_OFFICIAL_CAP},
+            )
+            skipped_seed_tier = True
+        if skipped_seed_tier and (int(rows[0]["total"]) if rows else 0) < offset + limit:
+            # Resmî sonuç sayfayı doldurmuyor: doğrulanmamış katman olmadan liste neredeyse boş kalır, bu yüzden beklenir.
+            try:
+                rows = run(" & ", sql, _SEARCH_SPARSE_SEED_TIMEOUT)
+                seed_tier.record(True)
+            except QueryCanceled:
+                logger.warning("Az sonuçlu aramada toplu katman yine yetişmedi: %r", query)
         if not rows:
             try:
                 rows = (

@@ -8,6 +8,7 @@ from uuid import UUID
 
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 
 from api.audit import AuditContext
 from api.auth.routes import current_user_id
@@ -17,12 +18,19 @@ from api.document_trash import (
     list_trash,
     restore_document,
     trash_document,
+    trash_documents,
 )
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/office/documents", tags=["office-trash"])
 
 _NOT_FOUND = "Belge bulunamadı veya erişim yetkiniz yok"
+
+
+class BatchTrashRequest(BaseModel):
+    """Açık filtrede seçilmiş belgeler; sınır tek seferdeki güvenli UI işlemi içindir."""
+
+    document_ids: list[UUID] = Field(min_length=1, max_length=2000)
 
 
 def _unavailable(exc: psycopg.Error) -> HTTPException:
@@ -40,6 +48,27 @@ def trash_list(
     except psycopg.Error as exc:
         raise _unavailable(exc) from exc
     return {"retention_days": RETENTION_DAYS, "documents": documents}
+
+
+@router.post("/trash/batch")
+def trash_batch(
+    body: BatchTrashRequest,
+    user_id: Annotated[UUID, Depends(current_user_id)],
+    request: Request,
+) -> dict[str, Any]:
+    """Seçili aktif belgeleri geri alınabilir biçimde tek seferde çöpe taşır."""
+    requested = list(dict.fromkeys(body.document_ids))
+    try:
+        moved = trash_documents(user_id, requested, AuditContext.from_request(request))
+    except psycopg.Error as exc:
+        raise _unavailable(exc) from exc
+    return {
+        "requested": len(requested),
+        "trashed": len(moved),
+        # Başka kullanıcının belgesi, olmayan kayıt ve zaten çöptekiler ayırt edilmez.
+        "not_found": len(requested) - len(moved),
+        "retention_days": RETENTION_DAYS,
+    }
 
 
 @router.post("/{document_id}/trash")

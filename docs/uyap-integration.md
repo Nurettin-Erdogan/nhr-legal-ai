@@ -653,3 +653,309 @@ bu turda da başlatılamadı; aşağıdaki düzeltmeler sentetik portalda doğru
   Tüm tarayıcı paketinin yeniden geçtiği veya canlı UYAP'ın düzeldiği iddia edilmez.
 * Ayrı grupta başarısız tür sorgusunun doğru hata koduyla bildirilmesi, tam liste/sayfa taraması ve eşzamanlı listeleme
   izolasyonu **4/4 geçti**. Web testleri **265/265** geçti; paket/kaynak eşleşmesi de bu teste dahil.
+
+### Bilgi sekmeleri: sıfır yükseklik ve doğrulanmış boş tablo (2026-10-07, v2.26.19)
+
+Kullanıcının son canlı denetimi: 21 dosya işlendi, 19 evraklı/2 evraksız dosyada 1.380 evrak kayıtla eşleşti;
+yeni evrak gönderilmedi. Dosya bilgileri yalnız 2 dosyada tam, 19 dosyada eksikti. Tekrarlayan uyarılar
+`Safahat: sekme açılmadı`, `Dosya Hesabı: sekme açılmadı`; bir dosyada tahsilat tablosu sıfır satırlı ama belirsizdi.
+
+* Sekme açılma denetimindeki `getBoundingClientRect().height > 0` koşulu kaldırıldı: float/absolute çocuklar,
+  sıfır yüksekliğe taşan içerik ve `display:contents` gibi düzenlerde açık pane sıfır boyutlu olabilir.
+  Yerine pane ve dosya penceresine kadarki bütün üst öğelerin `display`, `visibility`, `hidden` durumu denetlenir.
+  Portalın CSS'i değiştirilmez; gizli bir üst öğenin içindeki pane veya `aria-busy` yüklemesi başarı sayılmaz.
+* Evrak sekmesinin görünürlük denetimi de aynı kurala alındı. Evrak kimliği/dosya eşleşmesi gevşetilmedi.
+* UYAP'ın açık boş-sonuç mesajını taşıyan `td.dataTables_empty`, başka veri satırı ve yükleme yoksa `declared: 0`
+  olarak gönderilir. Pozitif kayıt sayısı varsa bu değer korunur; yalnız boş DOM veya belirsiz tablo sıfır kabul edilmez.
+  Sunucunun eksiksizlik denetimleri değiştirilmedi.
+* Raporda `EVRAKLAR EKSİKSİZ` ile genel başarı ayrıldı; evrakları ve dosya bilgileri birlikte doğrulanıp kaydedilen
+  dosya sayısı ayrıca yazılır. Önceki kayıt sayacı, güncel koşu/sonuç varken gösterilmez; gösterildiğinde önceki denetim diye etiketlenir.
+* Eski kodda dört yeni Chromium senaryosunun üçü başarısız, yüklemesi süren boş tablo negatif kontrolü başarılıydı.
+  İki başarısız test canlı rapordaki aynı sekme-açılmadı uyarılarını üretti; üçüncüsü boş tablo sayısının belirsiz gönderildiğini gösterdi.
+  Bu, kod kusurunu kanıtlar; gerçek portalın o andaki DOM'u görülmeden canlı hatanın tek nedeni olduğu iddia edilmez.
+* Düzeltme sonrası tek Chromium grubunda **12/12 geçti**: sıfır yükseklik, gizli üst öğe, açık boş sonuç, yüklenen tablo,
+  sekme hedefi/yutulan tıklama, bilgi tablosu sayfalama, eksik kayıt sayısı ve evrak sekmesine geçiş regresyonları.
+  Bu koşuda diğer 96 tarayıcı testi seçilmedi; tüm tarayıcı paketinin geçtiği söylenmez.
+* Web **266/266**, TypeScript/ESLint/sözdizimi ve üretim derlemesi geçti. Genel yerel pytest **1.148 geçti, 331 atlandı**;
+  tarayıcı testleri bu genel koşuda kapalı, izole DB ve dış servis gerektiren testler atlandı. İki bağımlılık deprecation uyarısı var.
+* Sunulan manifest **2.26.19**, API/web HTTP **200**. Canlı Chrome araçları başlatılamadığı için bu turda canlı belge aktarımı
+  veya 21 dosyanın bilgi sekmelerinin tekrar denetimi yapılamadı. Yayına hazır kabulü verilmedi.
+* Korpus senkronizasyonu başlatılmadı. Önceden durdurulmuş PC collectors görevi yeniden etkin (`Ready`) bulundu ve önceki durdurma
+  talebine göre tekrar `Disabled` yapıldı; Azure corpus sync `Disabled` kaldı. UYAP belgeleri silinmedi/değiştirilmedi.
+
+### Tür tespiti ve statik reddiyat detayı (2026-10-08, v2.26.20)
+
+* Bilinmeyen indirme türü artık PDF varsayılmaz. XML yanıtı XML adıyla,
+  ham ZIP ZIP adıyla saklanır; tanınmayan tür `.bin` olur ve desteklenmiyorsa
+  sunucu açıkça reddeder. Uzun dosya adlarında uzantı korunur. Küçük içerik
+  başlığı XML/PDF ve HTML için kontrol edilir; genel indirme MIME'ı altındaki
+  HTML giriş/hata sayfası da belge olarak yüklenmez. HTML makbuz istisnası dar
+  alan denetimleriyle korunur.
+* Önceden yanlış PDF adıyla saklanan UYAP XML'leri yalnız UYAP kaynağına özel,
+  kesin içerik imzasıyla indekslenebilir. Genel yüklemede sahte PDF kabul
+  edilmez. Orijinal dosya baytları/adı ve SHA-256 korunur; türetilmiş indeksin
+  MIME'ı gerçek türü gösterir.
+* XML metni etiket/değer ve nitelik yollarıyla aranabilir. DTD/varlıklar,
+  aşırı boyut/derinlik/düğüm/çıktı ve ikili gömülü içerik reddedilir.
+  EYP'nin üst yazısı, ekleri ve XML üst verisi okunur; bilinen imza/özet/ilişki
+  parçaları hukuk metni sayılmaz. **Elektronik imza doğrulanmış sayılmaz.**
+* İç içe ZIP/EYP ortak dosya sayısı, açılmış toplam boyut ve derinlik bütçesiyle
+  işlenir. Yol geçişi, sembolik bağlantı, şifreleme ve desteklenmeyen ekler
+  reddedilir. Yalnız sıfır bayt `ana_evrak.txt` UYAP yer tutucusu atlanabilir;
+  tek başına bu yer tutucusu arşivi aranabilir yapmaz.
+* Karma PDF veya çok sayfalı görüntüde bir sayfanın okunamaması artık sessizce
+  atlanmaz. OCR hatası/sınırı belgenin tamamını aranabilir ilan ettirmez.
+  OCR çıktısı yine hataya açık olarak işaretlenir; eksiksiz indeks, hukuken
+  veya karakter karakter doğrulanmış metin anlamına gelmez. Pypdf'nin CFF
+  yazı tipi çözümü için `fonttools` bağımlılığı eklendi.
+* İndeks önbelleği ayrıştırıcı sürümünü taşır. Eski ayrıştırıcı kaydı, belge
+  yeniden indekslenirken yalnız aynı SHA-256'ya dayanarak atlanmaz.
+* Varsayılan OCR düzeninin çok kısa/boş sonuç verdiği taramalarda bir kez
+  seyrek metin düzeni (`--psm 11`) denenir; aynı sayfanın kalan zaman bütçesi
+  kullanılır. Kaynak görüntü değiştirilmez, OCR uyarısı kaldırılmaz. Bu,
+  metnin karakter karakter doğruluğuna veya her taramanın okunabileceğine
+  ilişkin garanti değildir.
+* Gerçek 2020/364 penceresinde statik gizli reddiyat yardımcı tabloları
+  gözlendi. Yalnız `tahsilatDetayN` + eşleşen `makbuzDetayGosterN` Detay düğmesi,
+  12 sütunlu bilinen şema, kararlı boş tbody ve yükleme olmaması birlikte
+  doğrulanırsa sıfır sonuç kabul edilir. `empty_evidence` kayıtla saklanır;
+  sunucu da sekme/şema/sıfır koşullarını denetler. Diğer belirsiz boş tablolar
+  eksik kalır. Detay/ödeme/evrak gönderme düğmelerine basılmaz; dolu yardımcı
+  tablolar korunur ve “Reddiyat detayı” olarak adlandırılır.
+* Önceki saklı sayaç “evraklı dosya” diye etiketlenir: 19 evraklı ve iki
+  evraksız dosya, toplam 21 dosya eder. Önceki rapor güncel denetim değildir.
+
+Canlı düzeltme ve test kanıtları: [8 Ekim denetim kaydı](uyap-audit-20261008.md).
+v2.26.20'nin sentetik testleri, kullanıcı Chrome'unda güncel sürümle yapılacak
+son 21 dosyalık kabul denetiminin yerine geçmez.
+
+### Güvenli toparlanma ve tam koşu geçmişi (2026-10-09, v2.26.21)
+
+* `TREE` / `DETAIL` denemeleri artık ilk yanıt veren sekmeye sabitlenir.
+  Geçici salt okunur hata devam ederse `RECOVER_READ`, yalnız aynı sekmenin
+  son iki dakika içinde hata vermiş aynı işini toparlayabilir. Aktarım işi,
+  giriş sayfası, değişmiş dosya kimliği/liste, bilinmeyen iş ve kullanıcı
+  iptali otomatik yenileme gerekçesi değildir.
+* İçerik betiği aktif iş ve görünür giriş/düzenleme alanı kontrolünden sonra
+  yenilemeyi onaylar. Arka plan yalnız doğrulanmış UYAP sekmesini, adresi
+  değişmediyse yeniler; yeni URL almaz, giriş yapmaz, ödeme/gönderim işlemi
+  çalıştırmaz. Dakikada bir ve toplu koşuda en fazla iki toparlanma vardır.
+  Yenileme başarı sayılmaz: aynı dosya tekrar açılıp ağacı yeniden okunur.
+* `POST/GET /api/office/uyap/audit-runs`, tüm dosyaları içeren başlangıç ve
+  dosya-sonu kontrol noktalarını, ardından değiştirilemez son raporu saklar.
+  Evraksız, okunamayan ve işlenmeyen dosyalar da dahil edilir. Kesilmiş koşu
+  `finished=false` kalır; hiç okunmayan dosyanın sıfır sayacı "evrak yok"
+  anlamına gelmez. Sayaçlar tarihli gözlemdir, bugünkü portal durumu değildir.
+* Migration `051_uyap_audit_runs.sql` / sıfır kurulum `052_uyap_audit_runs.sql`:
+  kullanıcıya bağlı `office_uyap_audit_runs`; runtime + RLS, uygulamada UUID,
+  artan revizyon ve bitmiş kaydı eski kontrol noktasıyla ezmeme koruması.
+  Sunucudaki evrak sayısı ve bilgi kaydı bildirilen başarıya ek denetimdir;
+  tek başına evrak sayısı aynı kimliklerin eşleştiğinin kanıtı değildir.
+* Sadece dosya numarası/birim/yargı türü, sayılar, kısa uyarılar ve bilgi
+  sekmelerinin durumları saklanır. Ham liste hücreleri, geçici portal
+  anahtarları, bağlantı anahtarı, belge içeriği ve bilgi tabloları saklanmaz.
+  Listeleme tek başına rapor göndermez; kullanıcı toplu denetim/aktarım
+  başlattığında bu üst veriler kaydedilir. Arayüz bunu açıkça bildirir.
+* Son beş koşu eklenti/UYAP oturumu olmadan açılır-kapanır geçmişte okunur.
+  API `Cache-Control: no-store` kullanır. Hesap değişince önceki koşu iptal
+  edilir; bellek/sürdürme kaydı temizlenir ve eski koşu yeni hesaba yazamaz.
+  Geçmiş KVKK dışa aktarmaya, hesap purge akışına ve kullanıcı yedeğine dahil.
+  Bu sürüm tarihli raporları otomatik silmez; ticari saklama süresi kararı
+  uygulamanın genel veri saklama politikasında ayrıca belirlenmelidir.
+
+9 Ekim v2.26.20 canlı denetimi 21 dosya / 1.382 evrak için başarılıydı.
+v2.26.21'in otomatik toparlanması sentetik Chromium'da ayrıca sınandı;
+bu, yeni sürümün gerçek portaldaki son kabul koşusunun yerine geçmez.
+Test ayrıntıları ve canlı erişim kısıtı [denetim kaydındadır](uyap-audit-20261008.md).
+
+### Son çekim kilidi (2026-10-09, v2.26.22)
+
+Toplu koşu ilk dosyadan itibaren listeyi veren UYAP sekmesine sabitlenir;
+sekme kimliği yalnız tarayıcı belleğinde tutulur. Toparlanma onayı ile
+yenileme arasındaki kısa kilit sırasında elle çekim, dosya açma ve indirme
+probu da reddedilir. Meşgul durumunu sorgulayan güncelleme akışı kilidi görür.
+v2.26.21'in tamamlanan 113 testlik Chromium regresyonundan sonra bu dar
+güvenlik değişikliği yapıldı; v2.26.22'de ilgili altı Chromium senaryosu
+yeniden geçti. Yeni sürümün gerçek portal kabulü henüz tamamlanmadı.
+
+### Ölçüme dayalı aktarım hızlandırması (2026-10-10, v2.26.23)
+
+* Başarılı aktarımda yakalama/indirme/yükleme süresi de iki evrağın
+  başlangıçları arasındaki aralığa sayılır; işlem bittikten sonra aynı
+  sabit bekleme yeniden eklenmez. Tıklamalı yolun en az 1.500 ms, doğrudan
+  yolun en az 500 ms aralığı korunur. Aktarımlar hâlâ sıralıdır. Hata
+  sonrası büyüyen bekleme tam uygulanır; son evrakta gereksiz bekleme yoktur.
+* Ağaçtaki uygun evrak türüyle eşleşen üç bilinen pasif KEP HTML şablonu
+  gerçek belge olarak alınır. Paket/ileti şablonu adres + konu + tarih
+  alanlarını gerektirir; alan içermeyen kısa PTT bildiriminde tam metin
+  eşleşmesi gerekir. Etkin içerik ve giriş/oturum/yetki/hata belirtileri
+  reddedilir; keyfi HTML kabul edilmez. UTF-8 geçerliyse başka kodlamayla
+  ikinci kez yorumlanmaz; yalnız geçersiz UTF-8 için Windows-1254 denenir.
+  Özgün belge baytları değiştirilmeden yüklenir. Bu şablon tanıma, belgenin
+  hukuki doğruluğu veya elektronik imza doğrulaması değildir.
+* Yedekteki 105 HTML belge, içerikleri test deposuna kopyalanmadan yerelde
+  sınandı: 29 makbuz ve 76 KEP belgesinin tamamı tanındı. Anonim negatif
+  örnekler giriş/hata sayfalarının belgeye dönüşmediğini sınar. Gerçek
+  Chromium testinde KEP belgesi tek indirme/tek yüklemeyle, baytları
+  korunarak aktarıldı; tıklama aralığı ayrıca ölçüldü.
+* 100 adet 700 ms'lik doğrudan işlemin deterministik zamanlama modeli,
+  eski 120 sn yerine 70 sn hesaplar. **Bu, gerçek UYAP hız ölçümü değildir.**
+  UYAP'ın veri göndermeyi durdurduğu büyük ZIP indirmeleri ve bazı dosya
+  açma/toparlanma hataları bu değişiklikle çözülmüş sayılmaz. Zaman aşımı,
+  dosya kimliği, RLS, aynı evrağı atlama ve son doğrulama korumaları değişmedi.
+* 10 Ekim temiz aktarımı 967 belgede eksik bitti; bu hız düzeltmesi o
+  koşuyu geriye dönük başarılı yapmaz. Canlı Chrome son kontrolde v2.26.22
+  çalıştırıyordu. v2.26.23 ile kalanları çekme ve son tam denetim yapılmadan
+  canlı kabul veya yüzde cinsinden hız kazancı ilan edilmez.
+
+### Ek adıyla gelen makbuzlar (2026-10-10, v2.26.24)
+
+Canlı v2.26.23 testinde 2025/197080 dosyasının 15 eksik KEP evrakı
+kaydedildi; dosya 108'den 123 belgeye, toplam 967'den 982 belgeye çıktı.
+982 belgenin fiziksel bütünlüğü ve hazır indeksleri doğrulandı. Bu, tüm
+21 dosyanın yeniden eksiksiz çekildiği veya ölçülmüş bir hız kazancı demek
+değildir. Toplu koşu büyük ZIP akışındaki durma ve Ek adlı makbuzların
+reddi görüldükten sonra durduruldu; kayıtlı belgeler korunuyor.
+
+v2.26.24, türü tam `Ek` ve adı tam `Ek` / `Ek <sayı>` olan makbuz eklerini
+de dar makbuz tanıyıcısına alır. Makbuz başlığı, kurum ve alan eşleşmeleri,
+pasif HTML, giriş/hata reddi ve 1 MB sınırı aynen gereklidir. Bilinmeyen
+HTML kabul edilmez; belge baytları değiştirilmez. Yetkiler ve ZIP indirme
+akışı değişmedi. Yeni paket için 312 Node testi ve seçili 8 Chromium testi
+geçti; canlı tarayıcı bağlantısı kesildiğinden makbuz düzeltmesinin son
+canlı kabulü bekliyor. Büyük ZIP veri akışı sorunu ayrıca çözülmelidir.
+
+### Kesintili indirme toparlanması (2026-10-10, v2.26.25)
+
+v2.26.24 canlıda beş Ek adlı makbuz ve 38 KEP'i daha aktardı; toplam
+1025 belge / hazır indeks fiziksel boyut ve SHA-256 ile doğrulandı.
+2024/124 büyük Ek 41 ZIP'i 49,1 MB'dan sonra durdu; 2024/269672'de bir
+KEP iletisi yalnız Ek 1 adıyla geldiği için reddedildi. Bu istisnalar
+ve kalan dosyalar tamamlanmadan tüm aktarım başarılı sayılmaz.
+
+v2.26.25 önbelleksiz indirir; sıkıştırılmamış Content-Length varsa alınan
+baytlarla tutarlılığını denetler. Güçlü ETag bulunan kesik akışlarda en
+fazla iki kez Range / If-Range denenir. Devam yanıtı 206 ve aynı güçlü
+ETag, URL, MIME, doğru Content-Range/boy ile eşleşmezse birleştirilmez.
+ETag olmayan/sıkıştırılmış akışta devam yoktur; sınırlı tam yeniden deneme
+korunur. Canlı ZIP'te UYAP'ın Range desteği henüz doğrulanmamıştır.
+
+Yalnız indirme boyunca 20 sn aralıklı yerel Chrome API çağrısı boşta
+çalışan kapanma riskini azaltır; iş sonunda temizlenir. Normal 45 sn
+ayarında 8 MB geldikten sonra hareketsizlik payı 120 sn olur; ilk yanıt,
+küçük evrak, özel kısa ayar ve iki saat toplam sınır korunur. Kontrolsüz
+paralellik eklenmez. Ek adlı KEP'ler de yalnız dar metadata ve mevcut
+pasif KEP şablonu/alan doğrulamalarını birlikte geçerse kabul edilir.
+
+336 Node ve seçili 11 Chromium testi, typecheck, üretim build'i, sözdizimi ve paket
+eşleşmesi geçti. API/arşiv/rapor regresyonunda 30 geçti, 10 DB testi
+bağlantı olmadığı için atlandı. Yeni paketin canlı büyük ZIP / Ek 1
+kabulü ve 21 dosyanın son tam denetimi bekliyor. Ayrıntılı tarihlenmiş
+kanıt ve sınırlamalar: [denetim kaydı](uyap-audit-20261008.md).
+
+### Güncel canlı kabul durumu (2026-10-10 16:15, v2.26.25)
+
+Mevcut 1025 belge silinmeden 356 yeni evrak daha başarıyla aktarıldı.
+Son tam **yalnız denetim** 21 dosyanın tamamını okudu: **18 evraklı dosya
+eksiksiz, 2 evraksız, 1 evrak eksik, 0 okuma hatası, 0 işlenmeyen**.
+**1382 bulunan evrağın 1381'i kayıtlı**; denetimde yeni belge gönderilmedi.
+Taraflar/safahat/hesap/tahsilat gibi dosya bilgileri **21/21 eksiksiz
+okunup kaydedildi**. RLS kapsamındaki fiziksel dosya, boyut, SHA-256,
+UYAP kimliği, dava bağlantısı ve mükerrerlik denetiminde hata yok;
+1381 indeks `ready`.
+
+Tek açık aktarım sorunu, 2024/124'ün ilişkili 2022/608 Talimat Dosyasındaki
+`Gelen Talimat İsteği Yazısı 28/12/2022 / Ek 41` büyük ZIP'idir. v2.26.25
+canlı denemesi 22,5 MB'dan sonra 120 sn veri gelmemesiyle başarısız oldu;
+kesik belge kaydedilmedi. Güçlü ETag/Range desteği ve doğal UYAP Kaydet
+indirmesinin sonucu henüz doğrulanmadı; kök neden kesin olarak UYAP'a ya
+da eklentiye atfedilemez. Daha uzun bekleme/heartbeat değişikliğinin bu
+belgeyi çözdüğü iddia edilmez. **Yayın kabulü hâlâ bekliyor.**
+
+Tam izole Chromium regresyonu 121/121, güncel Node regresyonu 348/348,
+typecheck ve üretim build'i geçti. Genişletilmiş UYAP/belge/arşiv/içerik
+arama Python koşusu 84 geçti, 42 DB testi bağlantı tanımlı olmadığı için
+atlandı. Canlı kanıt ve koşu ayrıntıları [denetim kaydındadır](uyap-audit-20261008.md).
+
+### Doğrulama reddi ve canlı indirme ilerlemesi (2026-10-10, v2.26.26)
+
+Dar UYAP `Hata Oluştu / Hata Mesajı / Doğrulama hatası` yanıtı
+`UYAP_VALIDATION_FAILED` olarak ayrılır; aynı reddedilmiş adres ve ondan
+türetilen Kaydet adresi boşuna tekrar denenmez. Kullanıcıdan dosyayı
+yeniden açıp evrakı yeniden seçmesi istenir; bu yanıt tek başına oturum
+kapanması diye yorumlanmaz. Hata sayfası makbuz/KEP istisnasıyla alınamaz.
+
+İndirme ilerlemesi alınan/toplam MB, bilinmeyen toplam boyut, son veriden
+beri geçen süre ve doğrulanmış sürdürme sayısını gösterir. Yalnız aynı
+sekme ve aynı çalışan aktarım işine iletilir; URL, ETag, çerez, bağlantı
+anahtarı veya belge içeriği iletilmez. Yeni izin eklenmedi.
+
+**Güncel canlı kabul hâlâ başarısız:** v2.26.26 ile tek eksik Ek 41
+19,4 MB'dan sonra 120 sn veri gelmemesiyle durdu; kesik dosya yüklenmedi.
+17:12 RLS kontrolünde 1381 kayıt / hazır indeks korundu. Doğal UYAP
+Kaydet denemesinde 45 sn içinde tamamlanma olayı alınamadı; bu durum
+tek başına doğal indirmenin başarısız olduğunu kanıtlamaz. Kök neden
+UYAP, ağ veya eklenti olarak kesinleştirilmedi; yayın kabulü verilmedi.
+
+Yerel doğrulama: 360 Node testi, seçili 9 Chromium regresyonu ve ayrı
+bir uçtan uca canlı-iş-ilerlemesi Chromium testi geçti. Son iki sayı tam
+Chromium suite'i değildir. Ayrıntılar ve ekran kanıtları
+[denetim kaydında](uyap-audit-20261008.md).
+
+### Geçici indirme hatasında taze yakalamaya dönüş (2026-10-10, v2.26.27)
+
+Doğrudan önizlemenin “çok büyük” reddinden sonraki geçici Kaydet kesintisi
+artık sarmalayıcı hata mesajı nedeniyle kalıcı evrak reddi sayılmaz.
+Worker geçici hata niteliğini korur; içerik betiği bu niteliğe öncelik
+vererek bir normal UI tıklamasıyla taze istek yakalar. Taze yakalama
+başarısız olursa da geçici hata/backoff niteliği korunur. Kaydet'teki
+ikincil kalıcı hata, asıl HTML/giriş sayfası hatasını gizlemez.
+Doğrulama reddinde aynı adresin tekrar edilmemesi ve eksik baytların
+yüklenmemesi kuralları değişmedi; yeni izin veya uç nokta eklenmedi.
+
+366 Node testi ve yeni tıklama akışı dahil tam **124/124 izole Chromium
+testi** geçti (1246,44 sn).
+
+**10 Ekim 20:27 canlı kabul sonucu: başarısız.** Kullanıcının
+güncellemesinden sonra v2.26.27 doğrulandı; yalnız eksik Ek 41 aktarıma
+seçildi. Yeniden deneme yolu işletildi, üç denemede sırasıyla 18,4 / 28,4 /
+33,7 MB geldi; sonuncusu 120 sn yeni veri gelmeyince **0 aktarım / 1 hata**
+ile bitti. Toplam boyut bildirilmedi. Mevcut **1381 belge / hazır indeks**
+korundu; fiziksel bütünlük ve mükerrerlik kontrollerinde hata yok.
+Belge silinmedi, anahtar yenilenmedi. Büyük ZIP'in tamamlandığı, 1382/1382
+başarı veya yayın hazırlığı iddia edilmez. Son tam denetim 16:15 tarihli
+rapordur; tek evrak denemesi onu yeni tam denetim yapmaz. Kesintinin
+UYAP/ağ/eklenti kaynağı henüz kesinleşmedi; yanıt/bağlantı düzeyinde
+karşılaştırmalı tanı gerekir. Ekran kanıtı ve ayrıntılar
+[denetim kaydında](uyap-audit-20261008.md).
+
+### Etkin isteği durdurma ve iş izolasyonu (2026-10-10, v2.26.28)
+
+“Durdur” artık yalnız sıradaki evrakı engellemez: aynı işin devam eden
+UYAP indirmesini, kayıtlı evrak sorgusunu, JurisAI yükleme isteğini ve
+yeniden deneme/evraklar arası beklemeyi iptal eder. Kullanıcı iptali
+`UYAP_CANCELLED` olarak ayrılır; evrak hatasına veya yeniden denemeye
+dönüşmez. Başka sekme, iframe veya eski işin END/CANCEL mesajı aktif
+işin iptal denetleyicisini silemez. Aynı anda ikinci aktarım başlatılmaz;
+sekme kapanması/gezinmesi sahipsiz ağ isteğini sonlandırır. Yeni izin yok.
+
+Yükleme iptalinden önce sunucu kaydı tamamlamış olabilir; iptal daha önce
+kaydedilen belgeyi geri almaz. Sonraki kayıtlı-evrak sorgusu/denetim
+gerçek durumu belirler. Kesik indirme yüklenmez ve belge silinmez.
+
+374 Node testi, tip kontrolü, üretim derlemesi, UYAP TypeScript lint'i ve
+tam **132/132 Chromium regresyonu** geçti (21 dk 55 sn). Sonradan eklenen
+3 sekme/iframe yaşam döngüsü testi ayrıca aynı kaynaklarla geçti: toplam
+135 farklı Chromium senaryosu. Ayrı ve geçici PostgreSQL/pgvector test
+veritabanındaki genel koşu 1621 geçti; yalnız boş test korpusunda olmayan
+bir mevzuat kaydı ile o koşuda opt-in kapalı olan Chromium testleri atlandı.
+Chromium yukarıdaki ayrı koşuda çalıştırıldı. Toplam **2130 farklı test
+geçti**; bir korpus testi veri olmadığı için atlandı. Web'in sunduğu
+v2.26.28 ZIP'inin SHA-256'sı test edilen yerel pakete eşit.
+
+**Bu sürüm büyük Ek 41'in kesilmesini çözdü iddiası taşımaz.** 20:52 RLS
+kontrolü hâlâ 1381 kayıt/hazır indeks, 2024/124 için 349 evrak gösteriyor;
+fiziksel dosya, boyut, SHA-256, kimlik, dava bağı ve mükerrerlik kontrolleri
+hatasız. Son tam canlı denetim 16:15'teki 1382/1381 sonucudur. Canlı
+tarayıcı kontrolü kesildiğinden yeni doğal-indirme karşılaştırması
+doğrulanamadı; yayın kabulü verilmedi.

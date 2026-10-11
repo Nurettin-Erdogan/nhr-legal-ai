@@ -7,6 +7,7 @@ import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/components/AuthProvider";
 import { UyapDosyalarim } from "@/components/UyapDosyalarim";
+import { UyapRunHistory } from "@/components/UyapRunHistory";
 import { UyapCaseLinks } from "@/components/UyapCaseLinks";
 import { setExtensionKey } from "@/lib/uyap-bridge";
 import { supabase } from "@/integrations/supabase/client";
@@ -57,9 +58,7 @@ const UyapConnect = () => {
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [result, setResult] = useState<ImportResult | null>(
-    null,
-  );
+  const [result, setResult] = useState<ImportResult | null>(null);
   const [opened, setOpened] = useState(false);
   // Düz anahtar yalnız oluşturulduğu anda bu oturumda bellektedir; sunucuda yalnız özeti saklanır.
   const [token, setToken] = useState<string | null>(null);
@@ -170,7 +169,8 @@ const UyapConnect = () => {
             .eq("id", run.id);
         }
         setResult(res);
-        if (res.failed) toast.warning(`${res.inserted} belge aktarıldı, ${res.failed} belge aktarılmadı`);
+        if (res.failed)
+          toast.warning(`${res.inserted} belge aktarıldı, ${res.failed} belge aktarılmadı`);
         else toast.success(`${res.inserted} belge JurisAI'ya aktarıldı`);
       } catch (e) {
         const message = e instanceof Error ? e.message : "Aktarım başarısız";
@@ -198,6 +198,7 @@ const UyapConnect = () => {
       subtitle="UYAP'ta kendi oturumunu aç; belgeleri JurisAI hesabına sen onaylayarak aktar."
     >
       <UyapDosyalarim />
+      <UyapRunHistory />
       <UyapCaseLinks />
 
       {/* Tarayıcı eklentisi */}
@@ -368,7 +369,8 @@ const UyapConnect = () => {
               {busy ? "Belgeler işleniyor..." : "Dosyaları buraya bırak veya seç"}
             </p>
             <p className="text-xs text-muted-foreground">
-              UYAP arşivi (.zip / .eyp) veya tek tek belgeler (.pdf, .udf, .odt, .docx, .html, .tif, .jpg)
+              UYAP arşivi (.zip / .eyp) veya tek tek belgeler (.pdf, .udf, .odt, .docx, .html, .tif,
+              .jpg)
             </p>
           </div>
 
@@ -388,9 +390,17 @@ const UyapConnect = () => {
           {busy && <Progress value={progress} />}
 
           {result && (
-            <div className={`rounded-lg border p-3 text-xs space-y-2 ${result.failed ? "border-amber-500/30 bg-amber-500/5" : "border-emerald-500/30 bg-emerald-500/5"}`}>
-              <div className={`flex items-center gap-2 font-semibold ${result.failed ? "text-amber-700 dark:text-amber-400" : "text-emerald-700 dark:text-emerald-400"}`}>
-                {result.failed ? <AlertTriangle className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
+            <div
+              className={`rounded-lg border p-3 text-xs space-y-2 ${result.failed ? "border-amber-500/30 bg-amber-500/5" : "border-emerald-500/30 bg-emerald-500/5"}`}
+            >
+              <div
+                className={`flex items-center gap-2 font-semibold ${result.failed ? "text-amber-700 dark:text-amber-400" : "text-emerald-700 dark:text-emerald-400"}`}
+              >
+                {result.failed ? (
+                  <AlertTriangle className="h-4 w-4" />
+                ) : (
+                  <CheckCircle2 className="h-4 w-4" />
+                )}
                 {result.failed ? "Aktarım kısmen tamamlandı" : "Aktarım tamamlandı"}
               </div>
               <div className="flex flex-wrap gap-2">
@@ -399,7 +409,11 @@ const UyapConnect = () => {
                 <Badge variant="outline">Atlanan: {result.skipped}</Badge>
                 {result.failed > 0 && <Badge variant="destructive">Hatalı: {result.failed}</Badge>}
               </div>
-              {result.errors.map((error) => <p key={error} className="text-destructive">{error}</p>)}
+              {result.errors.map((error) => (
+                <p key={error} className="text-destructive">
+                  {error}
+                </p>
+              ))}
               <p className="text-muted-foreground">
                 Belgeler dosya no · birim · tarih · tür bilgisiyle kaydedildi. Dava kapsamlı AI
                 aramasında kullanmak için belgeyi ilgili davaya ayrıca bağla.

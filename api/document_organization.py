@@ -13,6 +13,8 @@ from uuid import UUID
 
 from fastapi import HTTPException
 
+from api.document_content_search import MATCH_JOIN, content_pattern, match_excerpt, search_coverage
+
 CATEGORIES = {
     "financial": "Makbuz ve mali belgeler",
     "representation": "Vekâlet ve yetki belgeleri",
@@ -70,28 +72,37 @@ def parse_folder(value: str) -> tuple[str, str | None, str | None]:
 def organized_documents(
     connection: Any, owner: UUID, *, q: str, source: str, category: str,
     folder: str, order: str, offset: int, limit: int, summary_only: bool = False,
+    search_in: str = "metadata",
 ) -> dict[str, Any]:
     if category and category not in CATEGORIES:
         raise HTTPException(status_code=422, detail="Geçersiz belge kategorisi")
     selected_folder = parse_folder(folder) if folder else None
+    if search_in not in ("metadata", "content"):
+        raise HTTPException(status_code=422, detail="Geçersiz arama kapsamı")
+    content_search = search_in == "content"
+    if content_search and q.strip() and len(q.strip()) < 2:
+        raise HTTPException(status_code=422, detail="İçerik araması için en az 2 karakter yazın")
     term = q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     pattern = f"%{term}%"
     # RLS'e ek açık sahiplik ve aktif-belge filtresi: sayımlar da yalnız sahibinindir.
+    join = MATCH_JOIN if content_search and q.strip() else ""
+    hit_columns = "hit.content AS match_content, hit.page_number, hit.section_title," if join else ""
+    match_where = "TRUE" if content_search else """(
+        file_name ILIKE %s ESCAPE '\\' OR uyap_file_no ILIKE %s ESCAPE '\\'
+        OR uyap_birim ILIKE %s ESCAPE '\\' OR doc_type ILIKE %s ESCAPE '\\')"""
     cte = """WITH matched AS (
         SELECT id, file_name, storage_path, size_bytes, source, uyap_file_no, uyap_birim,
-               doc_type, doc_date, case_id, created_at,
+               doc_type, doc_date, case_id, created_at, """ + hit_columns + """
                NULLIF(btrim(uyap_file_no), '') AS folder_no,
                NULLIF(btrim(uyap_birim), '') AS folder_birim,
                CASE WHEN source IN ('uyap', 'uyap-avukat-eklentisi', 'uyap-extension') THEN 'uyap' ELSE 'manual' END AS origin,
                regexp_replace(translate(lower(COALESCE(NULLIF(btrim(doc_type), ''),
                    regexp_replace(regexp_replace(file_name, '^[0-9a-f]{12,64}[-_]', '', 'i'), '[.][^.]+$', ''))),
                    'çğıöşüİ', 'cgiosui'), '[^a-z0-9.]', '', 'g') AS kind
-        FROM office_case_documents
-        WHERE owner_id = %s AND deleted_at IS NULL AND
-            (file_name ILIKE %s ESCAPE '\\' OR uyap_file_no ILIKE %s ESCAPE '\\'
-             OR uyap_birim ILIKE %s ESCAPE '\\' OR doc_type ILIKE %s ESCAPE '\\')
+        FROM office_case_documents """ + join + """
+        WHERE owner_id = %s AND deleted_at IS NULL AND """ + match_where + """
     ), categorized AS (SELECT *, """ + _CATEGORY_SQL + " AS category FROM matched) "
-    params: list[Any] = [owner, pattern, pattern, pattern, pattern]
+    params: list[Any] = ([content_pattern(q), owner] if join else [owner]) if content_search else [owner, pattern, pattern, pattern, pattern]
     base_where = "TRUE"
     if source != "all":
         base_where += " AND origin = %s"
@@ -133,15 +144,25 @@ def organized_documents(
     }[order]
     rows = [] if summary_only else connection.execute(
         cte + "SELECT id, file_name, storage_path, size_bytes, source, uyap_file_no, uyap_birim, "
-        "doc_type, doc_date, case_id, created_at, category, origin, folder_no, folder_birim "
+        "doc_type, doc_date, case_id, created_at, category, origin, folder_no, folder_birim " +
+        (", match_content, page_number, section_title " if join else "") +
         "FROM categorized WHERE " + where + " ORDER BY " + sorting + " LIMIT %s OFFSET %s",
         (*params, limit, offset),
     ).fetchall()
     for row in rows:
         row["folder_key"] = folder_key(row.pop("origin"), row.pop("folder_no"), row.pop("folder_birim"))
+        if join:
+            row["content_match"] = match_excerpt(
+                row.pop("match_content"), q, page_number=row.pop("page_number"),
+                section_title=row.pop("section_title"),
+            )
     return {
         "rows": rows, "total": total, "folders": list(folders.values()),
         "categories": [{"id": key, "label": label, "count": counts[key]}
                        for key, label in CATEGORIES.items() if counts.get(key)],
         "matched_total": sum(counts.values()),
+        **({"content_coverage": search_coverage(
+            connection, owner, source=source, category=category,
+            selected_folder=selected_folder, category_sql=_CATEGORY_SQL,
+        )} if content_search else {}),
     }

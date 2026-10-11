@@ -109,6 +109,30 @@ def test_udf_is_indexed_privately_for_its_owner(world):
     assert "kıdem tazminatı" in _chunks(connection, derived["id"])[0]["content"]
 
 
+@pytest.mark.parametrize("source,expected", [("uyap", "ready"), ("manual", "failed")])
+def test_misnamed_xml_is_recovered_only_for_uyap_documents(world, source, expected):
+    connection, alice, _, files, _ = world
+    office_id = _office_doc(connection, alice, files, name="yanlis.pdf",
+                           data=b'<?xml version="1.0"?><dava><konu>Ornek konu metni</konu></dava>')
+    connection.execute("UPDATE office_case_documents SET source=%s WHERE id=%s", (source, office_id))
+    outcome = indexing.index_office_document(alice, office_id)
+    assert outcome.status == expected
+    derived = _derived(connection, office_id)
+    if expected == "ready":
+        assert "Ornek konu metni" in _chunks(connection, derived["id"])[0]["content"]
+        assert connection.execute("SELECT mime_type FROM documents WHERE id=%s", (derived["id"],)).fetchone()["mime_type"] == "application/xml"
+
+
+def test_old_parser_cache_is_reprocessed_even_when_source_checksum_matches(world):
+    connection, alice, _, files, _ = world
+    office_id = _office_doc(connection, alice, files, data=_udf())
+    assert indexing.index_office_document(alice, office_id).status == "ready"
+    connection.execute("RESET ROLE")
+    connection.execute("UPDATE documents SET metadata='{}'::jsonb WHERE office_case_document_id=%s", (office_id,))
+    assert indexing.index_office_document(alice, office_id).status == "ready"
+    assert indexing.index_office_document(alice, office_id).status == "unchanged"
+
+
 def test_unchanged_content_is_not_reprocessed_and_changed_content_replaces_chunks(world):
     connection, alice, _, files, _ = world
     office_id = _office_doc(connection, alice, files, data=_udf())

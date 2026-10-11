@@ -76,12 +76,20 @@ export function permanentDeleteWarning(
   return lines.join("\n\n");
 }
 
-async function call<T>(path: string, method: "GET" | "POST" | "DELETE"): Promise<T> {
+async function call<T>(
+  path: string,
+  method: "GET" | "POST" | "DELETE",
+  body?: Record<string, unknown>,
+): Promise<T> {
   const token = inMemoryAccessToken();
   const response = await fetch(`${API_BASE_URL}/api/office/documents${path}`, {
     method,
     credentials: "include",
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(body ? { "Content-Type": "application/json" } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
   });
   if (!response.ok) {
     let detail = `Sunucu isteği başarısız oldu (${response.status}).`;
@@ -104,6 +112,20 @@ function checked(id: string): string {
 // `async`: geçersiz kimlik de senkron fırlatma değil, söz reddi olur (çağıranlar `.catch` bekler).
 export async function trashDocument(id: string) {
   return call<{ trashed: boolean }>(`/${checked(id)}/trash`, "POST");
+}
+
+export interface BatchTrashResult {
+  requested: number;
+  trashed: number;
+  not_found: number;
+  retention_days: number;
+}
+
+/** Görünür filtre sonucundaki seçili belgeleri geri alınabilir biçimde çöpe taşır. */
+export async function trashDocuments(ids: string[]): Promise<BatchTrashResult> {
+  const document_ids = [...new Set(ids.map(checked))];
+  if (!document_ids.length) throw new Error("Çöpe taşınacak belge seçilmedi.");
+  return call<BatchTrashResult>("/trash/batch", "POST", { document_ids });
 }
 
 export async function restoreDocument(id: string) {

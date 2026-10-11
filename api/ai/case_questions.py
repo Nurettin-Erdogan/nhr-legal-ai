@@ -27,6 +27,9 @@ _FILE_FACT_MARKERS = (
     "vekaletnamede", "raporunda", "dilekçesinde",
     # Kişiye/kayda özgü bilgi yalnız dosyada bulunur; başka bir davanın kararındaki numara ya da adres cevap olamaz.
     "telefon", "adresi ne", "kimlik no", "tc no", "iban", "ıban", "e-posta", "eposta", "doğum tarihi", "plaka", "kimdir",
+    # UYAP dosya bilgisinde duran kayıtlar (safahat, dosya hesabı, sorgular): cevabı yalnız bu dosyanın kaydındadır.
+    "safahat", "uyap", "tahsilat yapıl", "reddiyat", "bakiye borç", "dosya hesab", "sorgu", "son işlem", "en son",
+    "dosya durumu", "takip türü", "takip yolu",
 )
 # Hukuki değerlendirme ya da mevzuat/içtihat isteyen sorular: belge + hukuk kaynağı birlikte aranır.
 _LAW_MARKERS = (

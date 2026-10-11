@@ -42,7 +42,7 @@ Cevap üretimi tek kilitle sıraya sokuluyor (`_generation_lock`): **aynı anda 
 **Altyapı**
 1. Barındırma kararı (bkz. 5). Alan adı + HTTPS sertifikası.
 2. Web'i Node sunucu hedefiyle derle; API ve web için servis tanımı (Docker ya da systemd), otomatik yeniden başlatma.
-3. Ortam değişkenleri: `AUTH_COOKIE_SECURE=true`, `CORS_ORIGINS` = gerçek adres, `JWT_SECRET` yeni ve rastgele, `ALLOW_REGISTRATION` kapalı/davetli, veritabanı parolaları yenilenmiş, `.env` depoda değil.
+3. Ortam değişkenleri: `AUTH_COOKIE_SECURE=true`, `CORS_ORIGINS` = gerçek adres, `JWT_SECRET` yeni ve rastgele, `ALLOW_REGISTRATION` kapalı/davetli, veritabanı parolaları yenilenmiş, `.env` depoda değil. Ters vekil (HTTPS) kurulurken istemci adresi: vekil `X-Forwarded-For` başlığına gerçek adresi eklemeli; vekil başka makinedeyse `FORWARDED_ALLOW_IPS` ayarlanmalı (ayrıntı: `docs/audit-log.md`, "Bilinen sınırlar"). Yanlış kurulursa giriş deneme sınırı ya herkes için ortak dolar ya da aşılabilir.
 4. Belge deposu: yerel disk yerine yedeklenen bir birim ya da nesne depolama; kullanıcı başına kota. **Yükleme boyutu sınırı kaldırıldı (2026-10-06, kullanıcı kararı)**: dosyalar diske akıtılır, bu yüzden disk doluluğu izlenmeli (madde 6) ve ortak sunucuda gerekirse `MAX_UPLOAD_BYTES` ile üst sınır konabilir.
 5. Yedekleme: 213 GB'ı `pg_dump` ile almak pratik değil. B/C seçeneğinde günlük dökümü + belgelerin ayrı yedeği; **geri yükleme en az bir kez denenmeli**.
 6. İzleme: sağlık kontrolü, hata günlüğü, disk/RAM uyarısı, model sunucusu açık mı.
@@ -53,6 +53,12 @@ Cevap üretimi tek kilitle sıraya sokuluyor (`_generation_lock`): **aynı anda 
 9. Aydınlatma metni, gizlilik politikası, kullanım şartları, veri saklama süreleri; müvekkil verisi işlenmesi için avukatın kendi aydınlatma yükümlülüğü hatırlatması (eklenti ayarında var).
 10. Dışarıdan bağımsız temel güvenlik taraması (oturum, yetki izolasyonu testleri zaten var; dış sızma testi yok).
 11. Yapay zekâ **yerelde** kalıyorsa müvekkil verisi sunucudan çıkmaz. Bulut modele geçilirse bu bir KVKK kararıdır (yurt dışı aktarım) ve ayrıca değerlendirilmelidir.
+    **Karar (2026-10-09):** şimdilik yerel modelle devam; yayına yakın bulut modeline geçilecek. Bu dizüstünde daha güçlü yerel model
+    çalışmıyor (ölçüm: `docs/local-model-comparison.md`). Geçişte yapılacaklar: sağlayıcı seçimi ve sözleşmesindeki saklama/eğitim
+    koşullarının teyidi; KVKK m. 9 değerlendirmesi ve avukata gösterilecek bilgilendirme; buluta yalnız soru + kamuya açık kaynak
+    parçaları (dava belgeleri sohbeti yerelde); varsayılan kapalı büro ayarı; gönderim öncesi TC kimlik no/telefon/IBAN maskesi; denetim
+    kaydı; bulut erişilemezse yerel modele dönüş; açmadan önce aynı 15 + 20 soruyla yan yana ölçüm (`scripts/bench_selection_models.py`,
+    `scripts/eval_live_answers.py`). Ücretsiz katmanlar gerçek kullanım için uygun değil (sınır + gönderilen metnin eğitimde kullanılabilmesi).
 
 **Ürün**
 12. 3-5 avukatla kapalı pilot: gerçek sorular, gerçek belgeler, bir hafta; hata ve beğenmeme listesi.

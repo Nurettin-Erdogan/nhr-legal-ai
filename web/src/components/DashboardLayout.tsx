@@ -232,7 +232,9 @@ export const DashboardLayout = ({
       )}
 
       <div className="flex min-w-0 flex-1 flex-col lg:ml-64">
-        <header className="sticky top-0 z-20 flex h-16 items-center justify-between gap-4 border-b border-border bg-background/90 px-4 backdrop-blur-xl lg:px-8">
+        {/* Telefonda sayfa düğmeleri ("Listeye Dön", "Yenile") üst çubuğa sığmıyor, sayfa yana taşıyordu (390 px'te 109 px;
+            ölçüldü: 2026-10-09). Dar ekranda düğmeler çubuğun ikinci satırına iner; geniş ekranda düzen değişmez. */}
+        <header className="sticky top-0 z-20 flex min-h-16 flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border bg-background/90 px-4 py-2 backdrop-blur-xl sm:flex-nowrap sm:py-0 lg:px-8">
           <button
             className="rounded-lg p-2 hover:bg-muted lg:hidden"
             onClick={() => setMobileOpen(true)}
@@ -245,8 +247,12 @@ export const DashboardLayout = ({
             {subtitle && <p className="truncate text-xs text-muted-foreground">{subtitle}</p>}
           </div>
           <GlobalSearch />
+          {actions && (
+            <div className="order-last flex w-full flex-wrap items-center gap-2 sm:order-none sm:w-auto sm:shrink-0 sm:flex-nowrap" data-testid="page-actions">
+              {actions}
+            </div>
+          )}
           <div className="flex shrink-0 items-center gap-2">
-            {actions}
             <ReminderBell />
             <ThemeToggle />
             <DropdownMenu>

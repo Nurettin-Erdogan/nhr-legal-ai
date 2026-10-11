@@ -23,7 +23,7 @@ def main() -> int:
 
     load_dotenv(Path(__file__).resolve().parents[1] / ".env")
     sys.stdout.reconfigure(encoding="utf-8")
-    bad = 0
+    bad = anchors = 0
     with psycopg.connect(os.environ["DATABASE_ADMIN_URL"], row_factory=dict_row) as connection:
         connection.execute("SET TRANSACTION READ ONLY")
         for topic in statute_hints.TOPICS:
@@ -35,8 +35,18 @@ def main() -> int:
                     continue
                 ok = statute_hints.text_matches(hint, row["content"] or "")
                 bad += not ok
-                head = " ".join((row["content"] or "").split())[:110]
+                flat = " ".join((row["content"] or "").split())
+                head = flat[:110]
                 print(f"{'OK        ' if ok else 'UYUŞMUYOR '} {topic.name}: {row['law_name'][:30]} ({hint.law_no}) m.{hint.article_no} | {head}")
+                # Asıl kural cümlesinin parçası resmî metinde aynen ve tek yerde geçmelidir (iki cümleye uyarsa hangisi olduğu belirsizdir).
+                if hint.anchor:
+                    times = flat.count(hint.anchor)
+                    if times != 1:
+                        bad += 1
+                        print(f"ÇAPA {'YOK' if times == 0 else str(times) + ' KEZ'}   {topic.name}: {hint.law_no}/{hint.article_no} | {hint.anchor!r}")
+                    else:
+                        anchors += 1
+    print(f"asıl kural cümlesi doğrulanan ipucu: {anchors}")
     print(f"sorunlu satır: {bad}")
     return 1 if bad else 0
 

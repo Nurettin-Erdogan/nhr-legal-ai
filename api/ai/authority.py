@@ -33,3 +33,33 @@ def answer_uses_primary_basis(question, cited_contexts, available_contexts):
     return bool(cited_contexts) and all(
         c.chunk_id in primary_ids or c.source_type == 'document' for c in cited_contexts
     )
+
+
+def topic_statute_terms(question, contexts):
+    """Sorunun konusunu düzenleyen maddeler: işaret → o maddenin konu sözcükleri (`api.statute_hints`).
+
+    Kanun cümlesi çoğu zaman sorunun sözcüklerini taşımaz: "haksız fesihte hangi tazminat istenir?" sorusunun cevabı
+    olan "Bildirim şartına uymayan taraf … tazminat ödemek zorundadır" cümlesinde ne "haksız" ne "fesih" geçer. Sözcük
+    örtüşmesine bakan alaka süzgeci bu cümleyi eliyor, cevap yalnız mahkeme kararlarına dayanıyordu (ölçüldü: 2026-10-08).
+    Burada yeni bir güven kaynağı yoktur: madde numarası elle doğrulanmış sabit tablodan, metin resmî doğrulanmış
+    korpustan gelir; cümle yine aynen alıntılanır ve kaynak-destek denetiminden geçer. İçtihat isteyen soruda uygulanmaz.
+    """
+    if case_law_requested(question):
+        return {}
+    from api import statute_hints
+    wanted = {(hint.law_no, hint.article_no): hint.expect for hint in statute_hints.suggest(question)}
+    if not wanted:
+        return {}
+    return {
+        marker: wanted[(context.law_no, context.article_no)]
+        for marker, context in enumerate(contexts, 1)
+        if context.source_type == 'legislation' and context.verification == 'official'
+        and (context.law_no, context.article_no) in wanted
+    }
+
+
+def on_statute_topic(text, terms):
+    """Cümle, maddenin konu sözcüklerinden birini taşıyor mu (maddenin başka konudaki fıkraları aday olmaz)."""
+    from api.ai.search_plan import normalize
+    value = normalize(text)
+    return any(normalize(term) in value for term in terms)

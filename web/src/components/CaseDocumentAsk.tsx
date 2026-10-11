@@ -15,10 +15,16 @@ const EXAMPLES = [
   "Bilirkişi raporunda hangi tutarlar hesaplanmış?",
   "Dilekçede hangi talepler yer alıyor?",
   "Duruşma hangi tarihte yapılacak?",
+  // UYAP'tan çekilen dosya bilgilerinden (taraflar, dosya hesabı, sorgular, safahat) cevaplananlar:
+  "Borçlu kim?",
+  "Bakiye borç ne kadar?",
+  "En son hangi işlem yapıldı?",
+  "Araç sorgusunun sonucu ne?",
 ];
 
 const INTRO =
-  "Sorular bu davaya bağlı belgelerde ve hukuk kaynaklarında aranır. Belgelerdeki ifadeler " +
+  "Sorular bu davaya bağlı belgelerde, UYAP'tan çekilen dosya bilgilerinde (taraflar, dosya hesabı, sorgular, safahat) " +
+  "ve hukuk kaynaklarında aranır. Belgelerdeki ve UYAP kayıtlarındaki ifadeler " +
   '"kullanıcı belgesi" olarak etiketlenir; resmî kaynak olarak sunulmaz.';
 
 const STATUS_POLL_MS = 5000;

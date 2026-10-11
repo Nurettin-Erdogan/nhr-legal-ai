@@ -90,7 +90,7 @@ def test_matching_statute_survives_independent_lexical_timeout(monkeypatch):
     monkeypatch.setattr(retrieval, '_execute_retrieval', execute)
     result = retrieval.retrieve_contexts(object(), question='İtirazın iptali davası süresi nedir?', top_k=6)
     assert result == [context]  # successful primary retrieval survives
-    assert len(calls) == 3  # ilişkili madde + sözcük + katmanlı yeniden deneme
+    assert len(calls) == 4  # ilişkili madde + sözcük + katmanlı yeniden deneme + yalnız resmî katman denemesi
     assert calls[1][2]['timeout'] == '8s'
     assert '_tiered(' in calls[2][0]
     assert calls[0][2]['timeout'] == '3s'

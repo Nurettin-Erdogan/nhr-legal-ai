@@ -10,6 +10,7 @@ const tabs = [
   "Özet",
   "Evraklar",
   "UYAP Bilgileri",
+  "İcra Özeti",
   "Süreler",
   "Belgelerle Sor",
   "Belge Kıyasla",
@@ -60,6 +61,7 @@ export function CaseDetailView({
   documentCompare,
   caseSummary,
   uyapDetail,
+  executionBreakdown,
   deadlines,
   documentTrash,
   onTrash,
@@ -81,6 +83,8 @@ export function CaseDetailView({
   caseSummary?: ReactNode;
   /** "UYAP Bilgileri" sekmesinin içeriği (taraflar, safahat, dosya hesabı, tahsilat/reddiyat). */
   uyapDetail?: ReactNode;
+  /** "İcra Özeti" sekmesinin içeriği (haciz ihbarnamesi cevapları ve makbuz dökümü); yalnız icra dosyasında verilir. */
+  executionBreakdown?: ReactNode;
   /** "Süreler" sekmesinin içeriği (yasal süre hesabı ve takvime ekleme). */
   deadlines?: ReactNode;
   /** Evraklar sekmesinin altındaki çöp kutusu bölümü. */
@@ -97,7 +101,12 @@ export function CaseDetailView({
   const [tab, setTab] = useState<Tab>(initialTab);
   const c = data.record;
   // Telefon/çağrı hizmeti bağlı değilken "Aramalar" sekmesi boş bir söz olur: yalnız gerçek arama kaydı varsa gösterilir.
-  const visibleTabs = tabs.filter((name) => name !== "Aramalar" || data.calls.rows.length > 0 || tab === "Aramalar");
+  const visibleTabs = tabs.filter(
+    (name) =>
+      (name !== "Aramalar" || data.calls.rows.length > 0 || tab === "Aramalar") &&
+      // "İcra Özeti" yalnız icra dairesi/mahkemesi dosyasında anlamlıdır; başka davada boş bir sekme gösterilmez.
+      (name !== "İcra Özeti" || Boolean(executionBreakdown)),
+  );
   const fields = [
     ["Dosya numarası", c.case_no],
     ["Esas numarası", c.esas_no],
@@ -160,6 +169,7 @@ export function CaseDetailView({
             UYAP dosya bilgileri bu görünümde kullanılamıyor.
           </p>
         ))}
+      {tab === "İcra Özeti" && executionBreakdown}
       {tab === "Süreler" &&
         (deadlines ?? (
           <p className="text-sm text-muted-foreground">

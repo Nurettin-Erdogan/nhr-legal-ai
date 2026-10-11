@@ -77,3 +77,21 @@ def session_revocation_disabled_by_default(request, monkeypatch):
         monkeypatch.setattr(routes, "_sessions_valid_after", lambda user_id: 0)
     yield
     routes._sessions_valid_after_cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def closed_seed_tier_breaker():
+    # Sigorta süreç belleğindedir: zaman aşımı deneyen bir test onu açık bırakırsa sonraki testlerin arama sırası değişir.
+    from api.ai.seed_tier import seed_tier
+
+    seed_tier.reset()
+    yield
+    seed_tier.reset()
+
+
+@pytest.fixture(autouse=True)
+def no_implicit_uyap_record(request, monkeypatch):
+    # Dava sohbeti UYAP dosya bilgisi belgesini veritabanından okur; sahte bağlantıyla çalışan pipeline testleri buna
+    # girmemeli. Gerçek davranış tests/test_uyap_record_document.py içinde, test veritabanıyla sınanır.
+    if request.module.__name__.rsplit(".", 1)[-1] != "test_uyap_record_document":
+        monkeypatch.setattr("api.ai.pipeline.record_contexts", lambda *args, **kwargs: [])

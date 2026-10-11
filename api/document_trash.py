@@ -61,6 +61,31 @@ def trash_document(owner_id: UUID, document_id: UUID, audit: AuditContext | None
     return bool(moved)
 
 
+def trash_documents(
+    owner_id: UUID, document_ids: list[UUID], audit: AuditContext | None = None
+) -> list[UUID]:
+    """Bir kullanıcının birden çok aktif belgesini tek işlemde çöpe taşır.
+
+    İstemcinin gönderdiği liste güvenilir kabul edilmez: RLS ve ``deleted_at IS NULL``
+    koşulu hem başka kullanıcıya ait hem de zaten çöpteki kayıtları sonuçtan çıkarır.
+    Her taşınan belge, tekli silmeyle aynı denetim olayıyla kayda geçer. Böylece
+    arayüzdeki "tümünü seç" işlemi ağda yüzlerce ayrı istek üretmeden çalışır.
+    """
+    unique_ids = list(dict.fromkeys(document_ids))
+    if not unique_ids:
+        return []
+    with authenticated_database_connection(str(owner_id)) as connection:
+        rows = connection.execute(
+            "UPDATE office_case_documents SET deleted_at = now() "
+            "WHERE id = ANY(%s) AND deleted_at IS NULL RETURNING id",
+            (unique_ids,),
+        ).fetchall()
+        moved = [row["id"] for row in rows]
+        for document_id in moved:
+            _audit(connection, ACTION_TRASH, owner_id, document_id, audit, batch=True)
+    return moved
+
+
 def restore_document(owner_id: UUID, document_id: UUID, audit: AuditContext | None = None) -> bool:
     """Belgeyi çöpten geri alır. Çöpte değilse ya da erişilemiyorsa False."""
     with authenticated_database_connection(str(owner_id)) as connection:

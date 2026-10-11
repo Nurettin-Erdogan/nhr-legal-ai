@@ -43,6 +43,8 @@ export interface ExtensionStatus {
 
 export interface DosyaListe {
   items: BridgeDosya[];
+  /** Listenin okunduğu UYAP sekmesi: koşu başka bir açık hesap/sekme seçmez. Sunucuya kaydedilmez. */
+  tabId?: number;
   /** Her yargı türünde bulunan dosya sayısı (sorgulanan türlerin tamamı, boş olanlar dahil). */
   types: { label: string; count: number }[];
   errors: string[];
@@ -61,6 +63,7 @@ export type BridgeCommand =
   | "SET_KEY"
   | "TREE"
   | "DETAIL"
+  | "RECOVER_READ"
   | "JOB_STATUS"
   | "CURRENT_JOB"
   | "PULL_IDS"
@@ -173,6 +176,9 @@ export function parseDosyaListe(raw: unknown): DosyaListe {
   if (invalid) errors.push(`${invalid} dosya satırı okunamadı; liste eksik olabilir.`);
   return {
     items,
+    ...(typeof source.tabId === "number" && Number.isSafeInteger(source.tabId) && source.tabId >= 0
+      ? { tabId: source.tabId }
+      : {}),
     types,
     errors,
     complete: source.complete === true && errors.length === 0,
@@ -633,14 +639,15 @@ const treeStarts = new Map<string, Promise<BridgeReply<{ jobId: string; tabId: n
 export function startTreeJob(
   key: string,
   yargiTuru = "",
+  tabId?: number,
 ): Promise<BridgeReply<{ jobId: string; tabId: number }>> {
   // React StrictMode geliştirmede effect'i yeniden kurar. Aynı anda iki TREE
   // yollamak ilk işi yetim bırakıp ikinci çağrıya busy döndürür; aynı dosyanın
   // devam eden başlatma yanıtını paylaş, sonraki açık yeniden taramayı engelleme.
-  const identity = JSON.stringify([key, yargiTuru]);
+  const identity = JSON.stringify([key, yargiTuru, tabId]);
   const existing = treeStarts.get(identity);
   if (existing) return existing;
-  const pending = requestTreeJob(key, yargiTuru).finally(() => treeStarts.delete(identity));
+  const pending = requestTreeJob(key, yargiTuru, tabId).finally(() => treeStarts.delete(identity));
   treeStarts.set(identity, pending);
   return pending;
 }
@@ -648,10 +655,11 @@ export function startTreeJob(
 async function requestTreeJob(
   key: string,
   yargiTuru: string,
+  tabId?: number,
 ): Promise<BridgeReply<{ jobId: string; tabId: number }>> {
   const reply = await bridgeRequest<{ jobId?: unknown; tabId?: unknown }>(
     "TREE",
-    { key, yargiTuru },
+    { key, yargiTuru, ...(tabId === undefined ? {} : { tabId }) },
     30000,
   );
   if (!reply.ok) return reply;
@@ -668,10 +676,11 @@ async function requestTreeJob(
 export async function startDetailJob(
   key: string,
   yargiTuru = "",
+  tabId?: number,
 ): Promise<BridgeReply<{ jobId: string; tabId: number }>> {
   const reply = await bridgeRequest<{ jobId?: unknown; tabId?: unknown }>(
     "DETAIL",
-    { key, yargiTuru },
+    { key, yargiTuru, ...(tabId === undefined ? {} : { tabId }) },
     30000,
   );
   if (!reply.ok) return reply;
@@ -682,6 +691,18 @@ export async function startDetailJob(
         "Eklenti beklenmeyen bir yanıt verdi: eklentiyi yenile (sürüm 2.26.14 veya üstü gerekir).",
     };
   return { ok: true, jobId: reply.jobId, tabId: reply.tabId };
+}
+
+/** Only the extension can authorize reloading the exact failed read-only job's tab. */
+export async function recoverReadJob(
+  tabId: number,
+  jobId: string,
+): Promise<BridgeReply<{ tabId: number }>> {
+  const reply = await bridgeRequest<{ tabId?: unknown }>("RECOVER_READ", { tabId, jobId }, 55000);
+  if (!reply.ok) return reply;
+  return reply.tabId === tabId
+    ? { ok: true, tabId }
+    : { ok: false, code: "recovery_refused", error: "Toparlanan UYAP sekmesi doğrulanamadı." };
 }
 
 export async function fetchJobStatus(

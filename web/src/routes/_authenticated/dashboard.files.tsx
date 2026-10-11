@@ -3,6 +3,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { useSearchParam } from "@/lib/router-compat";
 import { DocumentTrash } from "@/components/DocumentTrash";
+import { ContentMatchExcerpt } from "@/components/ContentMatchExcerpt";
 import { FileUploadDialog } from "@/components/FileUploadDialog";
 import { UyapSyncDialog } from "@/components/UyapSyncDialog";
 import {
@@ -13,6 +14,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { supabase } from "@/integrations/supabase/client";
@@ -22,8 +33,10 @@ import {
   type FileBrowserDocument as DocRow,
   type FileBrowserFolder as DocumentFolder,
   type FileBrowserCategory as DocumentCategory,
+  type ContentSearchCoverage,
+  type FileBrowserFilters,
 } from "@/lib/file-browser";
-import { restoreDocument, trashDocument } from "@/lib/document-trash";
+import { restoreDocument, trashDocument, trashDocuments } from "@/lib/document-trash";
 import { linkCaseDocument } from "@/lib/case-documents";
 import { humanSize, isUyapSource } from "@/lib/uyap";
 import { toast } from "sonner";
@@ -80,6 +93,8 @@ const Files = () => {
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
+  const [searchIn, setSearchIn] = useState<"metadata" | "content">("metadata");
+  const [contentCoverage, setContentCoverage] = useState<ContentSearchCoverage | null>(null);
   const [total, setTotal] = useState(0);
   const [loadError, setLoadError] = useState("");
   const [source, setSource] = useState("all");
@@ -94,12 +109,30 @@ const Files = () => {
   const requestId = useRef(0);
   const listRequest = useRef<AbortController | null>(null);
   const folderRequests = useRef(new Map<string, AbortController>());
+  const selectionRequest = useRef<AbortController | null>(null);
+  const selectionRequestId = useRef(0);
   const [linkingDoc, setLinkingDoc] = useState<DocRow | null>(null);
   const [cases, setCases] = useState<CaseChoice[]>([]);
   const [chosenCaseId, setChosenCaseId] = useState("");
   const [linkError, setLinkError] = useState("");
   const [linkBusy, setLinkBusy] = useState(false);
   const [trashKey, setTrashKey] = useState(0);
+  const [selectedDocumentIds, setSelectedDocumentIds] = useState<Set<string>>(() => new Set());
+  const [selectingAll, setSelectingAll] = useState(false);
+  const [batchTrashBusy, setBatchTrashBusy] = useState(false);
+  const [confirmingBatchTrash, setConfirmingBatchTrash] = useState(false);
+
+  const fileBrowserFilters = useMemo<FileBrowserFilters>(
+    () => ({
+      q: searchIn === "content" && searchTerm.length < 2 ? "" : searchTerm,
+      search_in: searchIn,
+      source,
+      category,
+      folder,
+      order,
+    }),
+    [searchTerm, searchIn, source, category, folder, order],
+  );
 
   const load = useCallback(async () => {
     const currentRequest = ++requestId.current;
@@ -111,11 +144,10 @@ const Files = () => {
     setFolderContents({});
     setLoading(true);
     setLoadError("");
-    const filters = { q: searchTerm, source, category, folder, order };
     const [documents, r] = await Promise.all([
       (grouped
-        ? listFileBrowser(filters, controller.signal, true)
-        : loadAllFileBrowserDocuments(filters, controller.signal)
+        ? listFileBrowser(fileBrowserFilters, controller.signal, true)
+        : loadAllFileBrowserDocuments(fileBrowserFilters, controller.signal)
       ).catch((error) => ({
         error: error instanceof Error ? error.message : "Belge listesi yüklenemedi",
       })),
@@ -129,6 +161,7 @@ const Files = () => {
     ]);
     if (currentRequest !== requestId.current) return;
     if ("error" in documents) {
+      setContentCoverage(null);
       setLoadError(documents.error);
       setDocs([]);
       setTotal(0);
@@ -141,6 +174,7 @@ const Files = () => {
       !Array.isArray(documents.categories)
     ) {
       setLoadError("Belge listesi beklenmeyen biçimde döndü");
+      setContentCoverage(null);
       setDocs([]);
       setTotal(0);
       setFolders([]);
@@ -150,11 +184,18 @@ const Files = () => {
       setTotal(documents.total);
       setFolders(documents.folders);
       setCategories(documents.categories);
+      setContentCoverage(documents.content_coverage ?? null);
+      if (searchIn === "content" && searchTerm.length >= 2)
+        setOpenedFolders(
+          new Set(
+            documents.folders.filter((item) => item.matching_count > 0).map((item) => item.key),
+          ),
+        );
     }
     if (r.error) toast.error(r.error.message);
     setRuns((r.data ?? []) as SyncRow[]);
     setLoading(false);
-  }, [grouped, searchTerm, source, category, folder, order]);
+  }, [grouped, fileBrowserFilters]);
 
   const documentGroups = useMemo(() => {
     if (!grouped) return [{ key: "all", folder: undefined, docs }];
@@ -176,7 +217,7 @@ const Files = () => {
       setFolderContents((previous) => ({ ...previous, [key]: { rows: [], loading: true } }));
       try {
         const result = await loadAllFileBrowserDocuments(
-          { q: searchTerm, source, category, folder: key, order },
+          { ...fileBrowserFilters, folder: key },
           controller.signal,
         );
         if (generation === requestId.current && !controller.signal.aborted)
@@ -198,7 +239,7 @@ const Files = () => {
         if (folderRequests.current.get(key) === controller) folderRequests.current.delete(key);
       }
     },
-    [searchTerm, source, category, order],
+    [fileBrowserFilters],
   );
 
   useEffect(() => {
@@ -210,6 +251,7 @@ const Files = () => {
   useEffect(
     () => () => {
       listRequest.current?.abort();
+      selectionRequest.current?.abort();
       for (const request of folderRequests.current.values()) request.abort();
       requestId.current++;
     },
@@ -230,6 +272,15 @@ const Files = () => {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Seçim yalnız mevcut arama/filtre sonucu içindir. Filtre değiştiğinde eski görünmeyen
+  // belgeleri yanlışlıkla toplu silmeye katmamak için temizlenir.
+  useEffect(() => {
+    selectionRequest.current?.abort();
+    selectionRequest.current = null;
+    selectionRequestId.current++;
+    setSelectedDocumentIds(new Set());
+  }, [fileBrowserFilters]);
 
   const download = async (row: DocRow) => {
     const { data, error } = await supabase.storage
@@ -260,6 +311,11 @@ const Files = () => {
       },
     });
     setDocs((prev) => prev.filter((d) => d.id !== row.id));
+    setSelectedDocumentIds((previous) => {
+      const next = new Set(previous);
+      next.delete(row.id);
+      return next;
+    });
     setTotal((count) => Math.max(0, count - 1));
     setTrashKey((n) => n + 1);
     void load();
@@ -291,6 +347,64 @@ const Files = () => {
       setLinkError(error instanceof Error ? error.message : "Belge bağlanamadı");
     } finally {
       setLinkBusy(false);
+    }
+  };
+
+  const toggleDocumentSelection = (documentId: string) => {
+    setSelectedDocumentIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(documentId)) next.delete(documentId);
+      else next.add(documentId);
+      return next;
+    });
+  };
+
+  const selectAllFiltered = async () => {
+    if (!total) return;
+    const currentRequest = ++selectionRequestId.current;
+    selectionRequest.current?.abort();
+    const controller = new AbortController();
+    selectionRequest.current = controller;
+    setSelectingAll(true);
+    try {
+      const result = await loadAllFileBrowserDocuments(fileBrowserFilters, controller.signal);
+      if (currentRequest !== selectionRequestId.current || controller.signal.aborted) return;
+      setSelectedDocumentIds(new Set(result.rows.map((item) => item.id)));
+    } catch (error) {
+      if (currentRequest === selectionRequestId.current && !controller.signal.aborted)
+        toast.error(error instanceof Error ? error.message : "Belgeler seçilemedi");
+    } finally {
+      if (currentRequest === selectionRequestId.current) setSelectingAll(false);
+      if (selectionRequest.current === controller) selectionRequest.current = null;
+    }
+  };
+
+  const moveSelectedToTrash = async () => {
+    const ids = [...selectedDocumentIds];
+    if (!ids.length) return;
+    setBatchTrashBusy(true);
+    try {
+      // Sunucuda tek bir isteğin limiti vardır. Büyük arşivler de seçilebilsin diye
+      // küçük, sıralı gruplar kullanılır; her grup RLS ve denetim kaydından geçer.
+      let moved = 0;
+      let unavailable = 0;
+      for (let index = 0; index < ids.length; index += 500) {
+        const result = await trashDocuments(ids.slice(index, index + 500));
+        moved += result.trashed;
+        unavailable += result.not_found;
+      }
+      if (moved) {
+        toast.success(`${moved} belge çöp kutusuna taşındı. 30 gün içinde geri alabilirsin.`);
+        setTrashKey((value) => value + 1);
+      }
+      if (unavailable) toast.warning(`${unavailable} belge artık aktif listede değildi.`);
+      setSelectedDocumentIds(new Set());
+      setConfirmingBatchTrash(false);
+      await load();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Belgeler çöp kutusuna taşınamadı");
+    } finally {
+      setBatchTrashBusy(false);
     }
   };
 
@@ -333,18 +447,69 @@ const Files = () => {
         </div>
       )}
 
+      <div className="mb-3 flex flex-wrap gap-2" role="group" aria-label="Arama kapsamı">
+        <Button
+          size="sm"
+          variant={searchIn === "metadata" ? "default" : "outline"}
+          aria-pressed={searchIn === "metadata"}
+          onClick={() => setSearchIn("metadata")}
+        >
+          Belge adı ve dosya bilgileri
+        </Button>
+        <Button
+          size="sm"
+          variant={searchIn === "content" ? "default" : "outline"}
+          aria-pressed={searchIn === "content"}
+          onClick={() => setSearchIn("content")}
+        >
+          Belge içeriğinde ara
+        </Button>
+      </div>
       <div className="mb-3 max-w-lg relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
         <input
           value={q}
-          aria-label="Belgelerde ara"
+          aria-label={searchIn === "content" ? "Belge içeriğinde ara" : "Belgelerde ara"}
+          maxLength={100}
           onChange={(e) => {
             setQ(e.target.value);
           }}
-          placeholder="Tüm belgelerde ad, dosya no, birim veya tür ara..."
+          placeholder={
+            searchIn === "content"
+              ? "Belgede geçen kelime veya ifadeyi yaz…"
+              : "Tüm belgelerde ad, dosya no, birim veya tür ara..."
+          }
           className="w-full h-11 pl-10 pr-4 rounded-lg bg-card border border-border focus:border-primary/50 outline-none text-sm transition"
         />
       </div>
+
+      {searchIn === "content" && (
+        <div
+          className="mb-4 rounded-lg border border-border bg-card p-3 text-xs space-y-2"
+          aria-live="polite"
+        >
+          <p>
+            En az 2 karakter yazın. Yazdığınız ifade, işlenmiş belgelerin tüm metin parçalarında
+            aranır; büyük/küçük harf ve satır sonları dikkate alınmaz. Her belgenin ilk eşleşmesi
+            gösterilir. Bu bir AI yorumu değildir.
+          </p>
+          {contentCoverage && !loading && !loadError && (
+            <>
+              <p>
+                {contentCoverage.total} belgenin {contentCoverage.ready} tanesi içerikten aranabilir
+                · {total} belge listelendi.
+              </p>
+              {contentCoverage.ready < contentCoverage.total && (
+                <p className="text-amber-600 dark:text-amber-400">
+                  {contentCoverage.pending} işleniyor / OCR bekliyor / henüz işlenmedi ·{" "}
+                  {contentCoverage.failed} okunamadı. Bu belgelerin içeriği sonuçlara dahil
+                  değildir; sonuç bulunmaması tüm arşivde olmadığı anlamına gelmez.
+                </p>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       <div className="mb-6 rounded-2xl border border-border bg-card p-4 space-y-4">
         <div className="flex flex-wrap items-center gap-2">
@@ -471,6 +636,46 @@ const Files = () => {
       </div>
 
       <div className="rounded-2xl bg-card border border-border overflow-hidden">
+        {!loading && !loadError && total > 0 && (
+          <div
+            className="flex flex-wrap items-center gap-2 border-b border-border bg-secondary/20 px-4 py-3"
+            aria-label="Belge toplu işlemleri"
+          >
+            <span className="mr-auto text-sm font-medium">
+              {selectedDocumentIds.size ? `${selectedDocumentIds.size} belge seçili` : "Belge seç"}
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={selectingAll || selectedDocumentIds.size === total}
+              onClick={() => void selectAllFiltered()}
+            >
+              {selectingAll ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : null}
+              Tümünü seç ({total})
+            </Button>
+            {selectedDocumentIds.size > 0 && (
+              <>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={batchTrashBusy}
+                  onClick={() => setSelectedDocumentIds(new Set())}
+                >
+                  Seçimi kaldır
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={batchTrashBusy}
+                  onClick={() => setConfirmingBatchTrash(true)}
+                >
+                  <Trash2 className="mr-1 h-4 w-4" />
+                  Seçilenleri sil
+                </Button>
+              </>
+            )}
+          </div>
+        )}
         {loading ? (
           <div className="p-10 flex justify-center text-muted-foreground">
             <Loader2 className="h-5 w-5 animate-spin" />
@@ -597,6 +802,13 @@ const Files = () => {
                         >
                           <td className="px-6 py-4">
                             <div className="flex items-center gap-3">
+                              <input
+                                type="checkbox"
+                                className="h-4 w-4 shrink-0 accent-primary"
+                                aria-label={`${d.file_name} belgesini seç`}
+                                checked={selectedDocumentIds.has(d.id)}
+                                onChange={() => toggleDocumentSelection(d.id)}
+                              />
                               <div className="h-9 w-9 rounded-lg bg-secondary flex items-center justify-center shrink-0">
                                 <FileText className="h-4 w-4 text-primary" />
                               </div>
@@ -611,6 +823,9 @@ const Files = () => {
                                   {humanSize(d.size_bytes)} ·{" "}
                                   {new Date(d.created_at).toLocaleDateString("tr-TR")}
                                 </div>
+                                {searchIn === "content" && (
+                                  <ContentMatchExcerpt match={d.content_match} />
+                                )}
                               </div>
                             </div>
                           </td>
@@ -679,6 +894,36 @@ const Files = () => {
         )}
       </div>
       <DocumentTrash refreshKey={trashKey} onChanged={() => void load()} />
+      <AlertDialog
+        open={confirmingBatchTrash}
+        onOpenChange={(open) => {
+          if (!batchTrashBusy) setConfirmingBatchTrash(open);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {selectedDocumentIds.size} belge çöp kutusuna taşınsın mı?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Belgeler arama ve dosya listesinden kaldırılır; 30 gün boyunca çöp kutusundan geri
+              alınabilir. Kalıcı silme yapılmaz.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={batchTrashBusy}>Vazgeç</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={batchTrashBusy || selectedDocumentIds.size === 0}
+              onClick={(event) => {
+                event.preventDefault();
+                void moveSelectedToTrash();
+              }}
+            >
+              {batchTrashBusy ? "Taşınıyor…" : "Çöp kutusuna taşı"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <Dialog
         open={!!linkingDoc}
         onOpenChange={(open) => {

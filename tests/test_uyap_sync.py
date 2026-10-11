@@ -146,3 +146,23 @@ def test_another_users_file_is_neither_written_nor_listed(db, monkeypatch):  # n
     assert [row["case_id"] for row in status["files"]] == [mine]
     assert status["summary"] == {"files": 1, "complete": 1, "missing": 0}
     assert (status["files"][0]["esas"], status["files"][0]["birim"]) == ("2025/148157", COURT)
+
+
+@needs_db
+def test_a_complete_record_is_not_trusted_after_its_documents_are_removed(db, monkeypatch):  # noqa: F811
+    world = _world(db, monkeypatch)
+    emptied = _case(world, world.alice, documents=3)
+    kept = _case(world, world.alice, number="2025/2", documents=3)
+    _report(world, world.alice)
+    _report(world, world.alice, esas="2025/2")
+    world.become(None)
+    world.connection.execute("DELETE FROM office_case_documents WHERE case_id = %s", (emptied,))
+
+    status = uyap_sync.sync_status(world.alice)
+
+    rows = {row["case_id"]: row for row in status["files"]}
+    assert (rows[emptied]["complete"], rows[emptied]["missing_count"], rows[emptied]["server_documents"], rows[emptied]["removed_since"]) == (False, 3, 0, 3)
+    assert "3 evrak silinmiş" in rows[emptied]["problems"][0]
+    assert (rows[kept]["complete"], rows[kept]["missing_count"], rows[kept]["removed_since"]) == (True, 0, 0)
+    assert status["summary"] == {"files": 2, "complete": 1, "missing": 3}
+    assert _row(world, emptied)["complete"] is True  # saklanan kayıt değişmez; sonraki doğrulama yeniler

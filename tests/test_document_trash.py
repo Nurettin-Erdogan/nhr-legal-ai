@@ -123,6 +123,27 @@ def test_trash_and_restore_are_idempotent_and_owner_scoped(lab):
     assert trash.restore_document(alice, office_id) is False  # zaten çöpte değil
 
 
+def test_batch_trash_is_owner_scoped_and_deduplicates_requested_ids(lab):
+    connection, alice, bob, files, _ = lab
+    first = _indexed(connection, alice, files, name="birinci.txt")
+    second = _indexed(connection, alice, files, name="ikinci.txt")
+    other = _indexed(connection, bob, files, name="baska-kullanici.txt")
+
+    moved = trash.trash_documents(alice, [first, second, first, other])
+
+    assert set(moved) == {first, second}
+    assert _count(
+        connection,
+        "SELECT count(*) AS n FROM office_case_documents WHERE id = ANY(%s) AND deleted_at IS NOT NULL",
+        [first, second],
+    ) == 2
+    assert _count(
+        connection,
+        "SELECT count(*) AS n FROM office_case_documents WHERE id = %s AND deleted_at IS NULL",
+        other,
+    ) == 1
+
+
 def test_listing_shows_only_the_owners_trash_with_days_left_and_cited_answers(lab):
     connection, alice, bob, files, _ = lab
     case_id = _case(connection, alice)
@@ -341,6 +362,32 @@ def test_http_flow_trash_list_restore_and_two_step_permanent_delete(client):
         "id": str(office_id), "deleted": True, "redacted_answers": 1,
     }
     assert http.delete(f"/api/office/documents/{office_id}").status_code == 404  # artık yok
+
+
+def test_http_batch_trash_is_reversible_and_does_not_expose_other_users(client):
+    http, current, (connection, alice, bob, files, _) = client
+    first = _indexed(connection, alice, files, name="birinci.txt")
+    second = _indexed(connection, alice, files, name="ikinci.txt")
+    other = _indexed(connection, bob, files, name="baska.txt")
+
+    response = http.post(
+        "/api/office/documents/trash/batch",
+        json={"document_ids": [str(first), str(second), str(first), str(other)]},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "requested": 3,
+        "trashed": 2,
+        "not_found": 1,
+        "retention_days": trash.RETENTION_DAYS,
+    }
+    assert {row["file_name"] for row in trash.list_trash(alice)} == {"birinci.txt", "ikinci.txt"}
+    assert _count(
+        connection,
+        "SELECT count(*) AS n FROM office_case_documents WHERE id = %s AND deleted_at IS NULL",
+        other,
+    ) == 1
 
 
 def test_http_other_users_documents_look_like_they_do_not_exist(client):

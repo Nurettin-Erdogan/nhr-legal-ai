@@ -35,10 +35,47 @@ CMK/İİK/İş K. kurallarında "kendi süre/tatil hükmünü kontrol edin" uyar
 
 Dinî bayram tarihleri (2025-2027) Diyanet takvimine göre elle girildi; resmî takvimle teyit edilmelidir (`HOLIDAY_YEARS`, `RELIGIOUS`).
 
+## Tebliğ mazbatasından başlangıç adayı (2026-10-10)
+
+`api/service_records.py` (`GET /api/office/cases/{case_id}/service-records`), `web/src/lib/service-records.ts`,
+`web/src/components/ServiceRecordCandidates.tsx` (Süreler sekmesinde, safahat önerilerinin üstünde).
+
+Safahat tarihi işlem tarihidir; tebliğ gününü **mazbata** yazar. Davanın e-tebliğ mazbatalarındaki satırlar okunur (iki tarih
+yazımı vardır: `03/09/2026 10:15` ve `2026-09-03 10:15:07`):
+
+| Satır (mazbatada yazdığı gibi) | Okunan |
+| --- | --- |
+| "… UETS tarafından teslim alındı." | UETS'in teslim aldığı an |
+| "… tebligat alanına (hesabına) başarılı bir şekilde konuldu." | **Muhatabın hesabına ulaştığı gün** |
+| "Tebligat, alıcısı tarafından açıldı." | Açıldığı an (varsa) |
+| "… mevzuat gereği belirlenen süre sonunda otomatik olarak …" | Mazbatanın yazdığı "yapılmış sayıldı" günü |
+
+- **Yapılmış sayılma günü iki yoldan gelir:** mazbatanın kendi satırı ve hesap (hesaba ulaşma + 5 gün). Tutuyorlarsa tek aday
+  sunulur; tutmuyorlarsa **ikisi de** uyarıyla sunulur, biri sessizce seçilmez.
+- **Hesap kuralı sabit iddia değildir.** Cümle ("Elektronik yolla tebligat, muhatabın elektronik adresine ulaştığı tarihi
+  izleyen beşinci günün sonunda yapılmış sayılır.") korpustaki resmî doğrulanmış Tebligat Kanunu kaydında aynen bulunuyorsa
+  uygulanır; bulunmuyorsa gün hesaplanmaz ve arayüz bunu söyler. Atıf kaydın madde numarasından değil metindeki başlıktan
+  okunur: korpusta 7201 m. 7 kaydı m. 7 ile m. 7/a'yı birlikte taşır, kural "Madde 7/a" başlığının altındadır.
+- Gün hafta sonuna ya da tatile rastlıyorsa bu **söylenir, gün kaydırılmaz** (uygulamayı avukat değerlendirir).
+- Aday seçmek yalnız "süre başlangıcı" kutusunu doldurur; hiçbir süre kendiliğinden başlatılmaz.
+- Kâğıt mazbata taranmış belgedir, OCR metninden tarih güvenle okunamaz: "tarihi okunamadı" diye **sayılır**, uydurulmaz.
+  Yanıt yalnız dava sahibine verilir; başkasının davası ile olmayan dava aynı 404'ü alır.
+
+Gerçek tarayıcıda (uydurma mazbatalarla) doğrulandı: tutan kayıt tek aday, tutmayan kayıt iki aday + uyarı, Cumartesi'ye
+rastlayan gün uyarılı; adaya tıklayınca tarih doluyor ve HMK 345 ile son gün doğru hesaplanıyor (08.09.2026 → 22.09.2026).
+
+Gerçek veride (2026-10-10, 25 dava, yalnız sayılar): 176 tebliğ evrakının 79'u e-tebliğ mazbatası olarak okundu; **79'unun
+79'unda** mazbatanın yazdığı gün, hesaba ulaşma gününden tam 5 gün sonraydı (hesapla tutuyor). 58'inde "açıldı" satırı da var.
+Kalan 97 evrak kâğıt mazbata ya da giden zarftır ("Kapalı Tebligat") ve tarih okunmaz.
+
+Sınırlar: mazbatada hangi evrakın tebliğ edildiği ("BU ZARFTA … VARDIR") yazdığı gibi gösterilir, türü yorumlanmaz. Kâğıt
+tebligatta tebliğ günü okunmaz. Aktarım o gün yarıda kaldığı için (968 evrak) hesaptaki mazbataların tamamı ölçülmedi.
+
 ## Dosya durum özeti
 
 `UYAP Bilgileri` sekmesinin başında `web/src/lib/uyap-case-summary.ts`: dosya bilgileri, UYAP'ın yazdığı Toplam Alacak / Yatan Para / Bakiye Borç,
 tahsilat-reddiyat özeti, taraf sayısı ve rol dağılımı, safahat kayıt sayısı + ilk/son tarih + son 5 kayıt + en sık işlem türleri. Yalnız UYAP'ın
 yazdığı metin ve kayıt **sayıları** kullanılır; aşama tahmini, tutar toplama ya da yorum yoktur.
 
-Testler: `web/tests/deadlines.test.mjs`, `web/tests/uyap-detail-view.test.mjs`; gerçek tarayıcı denetimi: `.local/check_sureler.py`.
+Testler: `web/tests/deadlines.test.mjs`, `web/tests/uyap-detail-view.test.mjs`, `tests/test_service_records.py`,
+`web/tests/service-records.test.mjs`; gerçek tarayıcı denetimi: `.local/check_sureler.py`, `.local/check_teblig_adaylari.py`.

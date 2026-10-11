@@ -8,6 +8,8 @@ import { CaseDocumentCompare } from "@/components/CaseDocumentCompare";
 import { CaseDocumentSummary } from "@/components/CaseDocumentSummary";
 import { UyapCaseDetail } from "@/components/UyapCaseDetail";
 import { DeadlineCalculator } from "@/components/DeadlineCalculator";
+import { ExecutionBreakdown } from "@/components/ExecutionBreakdown";
+import { isExecutionCourt } from "@/lib/execution-breakdown";
 import { CaseNotesEditor, CaseTaskComposer } from "@/components/CaseQuickActions";
 import { DocumentTrash } from "@/components/DocumentTrash";
 import { trashDocument } from "@/lib/document-trash";
@@ -18,9 +20,10 @@ import { db } from "@/lib/db";
 import { ArrowLeft, RefreshCw } from "lucide-react";
 
 /** Adresteki "?tab=…" değeri (genel aramadan gelen bağlantı) hangi sekmeyi açar. */
-const TAB_BY_PARAM: Record<string, "Evraklar" | "Görevler" | "Notlar" | "Takvim" | "UYAP Bilgileri" | "Süreler"> = {
+const TAB_BY_PARAM: Record<string, "Evraklar" | "Görevler" | "Notlar" | "Takvim" | "UYAP Bilgileri" | "İcra Özeti" | "Süreler"> = {
   evraklar: "Evraklar",
   uyap: "UYAP Bilgileri",
+  icra: "İcra Özeti",
   sureler: "Süreler",
   gorevler: "Görevler",
   notlar: "Notlar",
@@ -160,11 +163,19 @@ const CaseDetail = () => {
             onDownload={download}
             downloading={downloading}
             downloadError={downloadError}
-            initialTab={savedCase === id ? "Evraklar" : (TAB_BY_PARAM[urlTab] ?? "Özet")}
+            initialTab={
+              savedCase === id
+                ? "Evraklar"
+                : // Adres "?tab=icra" dese de icra dosyası olmayan davada o sekme yoktur.
+                  TAB_BY_PARAM[urlTab] === "İcra Özeti" && !isExecutionCourt(data.record.court)
+                  ? "Özet"
+                  : (TAB_BY_PARAM[urlTab] ?? "Özet")
+            }
             documentAsk={<CaseDocumentAsk key={id} caseId={id} />}
             documentCompare={<CaseDocumentCompare key={id} caseId={id} />}
             caseSummary={<CaseDocumentSummary key={id} caseId={id} />}
             uyapDetail={<UyapCaseDetail key={id} caseId={id} />}
+            executionBreakdown={isExecutionCourt(data.record.court) ? <ExecutionBreakdown key={id} caseId={id} /> : undefined}
             deadlines={<DeadlineCalculator key={id} caseId={id} onSaved={() => setRevision((n) => n + 1)} />}
             notesEditor={<CaseNotesEditor key={id} caseId={id} initial={data.record.notes} onSaved={() => setRevision((n) => n + 1)} />}
             taskComposer={<CaseTaskComposer key={id} caseId={id} onSaved={() => setRevision((n) => n + 1)} />}

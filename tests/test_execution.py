@@ -142,7 +142,7 @@ def test_uyap_status_and_last_verification_are_passed_through_uninterpreted():
     ]
     files = {item["case_id"]: item for item in execution.build_files(rows, {})}
     assert files[verified]["uyap"] == {"durum": "Kapalı ( 27.06.2025 )", "tur": "İcra Dosyası", "rol": "Alacaklı", "acilis": "23.09.2025 09:00:00",
-                                       "complete": True, "missing": 0, "checked_at": checked}
+                                       "complete": True, "missing": 0, "checked_at": checked, "recorded_documents": None, "removed_since": 0}
     assert files[unverified]["uyap"]["complete"] is False and files[unverified]["uyap"]["missing"] == 3
     summary = execution.summarize(list(files.values()))
     assert (summary["verified_complete"], summary["never_verified"]) == (1, 0)

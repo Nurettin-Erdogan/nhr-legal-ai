@@ -18,7 +18,13 @@ import {
 } from "@/lib/uyap-bridge";
 import { UyapDosyaPanel } from "@/components/UyapDosyaPanel";
 import { UyapSyncAll } from "@/components/UyapSyncAll";
-import { getSyncState, readResume, resumeIfInterrupted, setListe, subscribeSync } from "@/lib/uyap-sync-store";
+import {
+  getSyncState,
+  readResume,
+  resumeIfInterrupted,
+  setListe,
+  subscribeSync,
+} from "@/lib/uyap-sync-store";
 import { toast } from "sonner";
 import { ExternalLink, FolderOpen, Loader2, RefreshCw, ShieldCheck } from "lucide-react";
 
@@ -38,7 +44,11 @@ export const UyapDosyalarim = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<{ message: string; code?: string } | null>(null);
   // Liste depoda durur: başka sayfaya geçip dönünce yeniden taramak gerekmez.
-  const liste = useSyncExternalStore(subscribeSync, () => getSyncState().liste, () => getSyncState().liste);
+  const liste = useSyncExternalStore(
+    subscribeSync,
+    () => getSyncState().liste,
+    () => getSyncState().liste,
+  );
   const [filter, setFilter] = useState("");
   const [opening, setOpening] = useState<string | null>(null);
   const [panel, setPanel] = useState<BridgeDosya | null>(null);
@@ -81,13 +91,13 @@ export const UyapDosyalarim = () => {
     }
     setListe(result.liste);
     setListPage(0);
-    if (resumeIfInterrupted(result.liste)) toast.success("Yarıda kalan aktarım kaldığı yerden sürüyor.");
+    if (resumeIfInterrupted(result.liste))
+      toast.success("Yarıda kalan aktarım kaldığı yerden sürüyor.");
   };
 
   // Sayfa yenilendiyse ve yarıda kalmış bir koşu varsa liste kendiliğinden okunur (koşu oradan sürer).
   useEffect(() => {
     if (!getSyncState().running && !getSyncState().liste && readResume()) void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const open = async (item: BridgeDosya) => {
@@ -115,35 +125,39 @@ export const UyapDosyalarim = () => {
     let tries = 0;
     let stopped = false;
     let busy = false; // tam liste ~10 sn sürebilir: yoklamalar üst üste binmesin
-    const timer = setInterval(async () => {
-      if (busy) return;
-      tries += 1;
-      if (waitingForJob) {
-        // Süren aktarım saatler sürebilir: vazgeçilmez; ilerleme gösterilir, iş bitince liste okunur.
+    const timer = setInterval(
+      async () => {
+        if (busy) return;
+        tries += 1;
+        if (waitingForJob) {
+          // Süren aktarım saatler sürebilir: vazgeçilmez; ilerleme gösterilir, iş bitince liste okunur.
+          busy = true;
+          const job = await currentJob();
+          busy = false;
+          if (stopped) return;
+          setRemote(job);
+          if (job?.busy) return;
+        } else if (tries > WAIT_MAX_TRIES) {
+          clearInterval(timer);
+          if (!stopped) setGaveUp(true);
+          return;
+        }
         busy = true;
-        const job = await currentJob();
+        const result = await listUyapDosyalari();
         busy = false;
         if (stopped) return;
-        setRemote(job);
-        if (job?.busy) return;
-      } else if (tries > WAIT_MAX_TRIES) {
-        clearInterval(timer);
-        if (!stopped) setGaveUp(true);
-        return;
-      }
-      busy = true;
-      const result = await listUyapDosyalari();
-      busy = false;
-      if (stopped) return;
-      if (result.ok) {
-        clearInterval(timer);
-        setError(null);
-        setRemote(null);
-        setListe(result.liste);
-        // Sayfa yenilenmeden önce süren "Tüm dosyaları aktar" koşusu varsa kaldığı yerden sürer.
-        if (resumeIfInterrupted(result.liste)) toast.success("Yarıda kalan aktarım kaldığı yerden sürüyor.");
-      }
-    }, waitingForJob ? 2000 : WAIT_INTERVAL_MS);
+        if (result.ok) {
+          clearInterval(timer);
+          setError(null);
+          setRemote(null);
+          setListe(result.liste);
+          // Sayfa yenilenmeden önce süren "Tüm dosyaları aktar" koşusu varsa kaldığı yerden sürer.
+          if (resumeIfInterrupted(result.liste))
+            toast.success("Yarıda kalan aktarım kaldığı yerden sürüyor.");
+        }
+      },
+      waitingForJob ? 2000 : WAIT_INTERVAL_MS,
+    );
     return () => {
       stopped = true;
       clearInterval(timer);
@@ -208,7 +222,8 @@ export const UyapDosyalarim = () => {
           {extension.error && (
             <p className="mt-1" role="status">
               Bağlantı kontrolü: {extension.error}
-              {extension.code === "timeout" && " Bu sonuç eklentinin kurulu olmadığını kanıtlamaz; köprüden süre içinde yanıt alınamadı."}
+              {extension.code === "timeout" &&
+                " Bu sonuç eklentinin kurulu olmadığını kanıtlamaz; köprüden süre içinde yanıt alınamadı."}
             </p>
           )}
           <p className="text-muted-foreground mt-1">
@@ -283,9 +298,16 @@ export const UyapDosyalarim = () => {
                   ? `Evrak aktarılıyor: ${remoteRun.done}/${remoteRun.total}${remoteRun.current ? ` · ${remoteRun.current}` : ""}`
                   : remoteJob?.phase || "UYAP sekmesindeki işlem bekleniyor…"}
               </p>
-              {remoteRun && remoteRun.total > 0 && <Progress value={Math.round((remoteRun.done / remoteRun.total) * 100)} />}
+              {remoteRun && remoteRun.total > 0 && (
+                <Progress value={Math.round((remoteRun.done / remoteRun.total) * 100)} />
+              )}
               {remoteJob?.kind === "pull" && (
-                <Button size="sm" variant="outline" onClick={() => void stopRemote()} data-testid="uyap-remote-stop">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void stopRemote()}
+                  data-testid="uyap-remote-stop"
+                >
                   Aktarımı durdur
                 </Button>
               )}
@@ -464,9 +486,12 @@ export const UyapDosyalarim = () => {
 
       <p className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
         <ShieldCheck className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-        Dosya listesi bu sayfada, tarayıcında tutulur. Evraklar yalnız sen başlatınca aktarılır: tek dosyada hangilerinin
-        aktarılacağını seçersin, "Tüm dosyaları aktar" ise onayından sonra hepsini aktarır. Aktarılan dosyanın numarası, birimi ve
-        UYAP listesindeki durumu dava kaydına yazılır.
+        Ham dosya listesi tarayıcında tutulur. Başlattığın toplu denetim/aktarımın dosya numarası,
+        birimi, sayaçları ve uyarıları rapor geçmişi için hesabına kaydedilir; evraksız, okunamayan
+        ve işlenmeyen dosyalar da raporda kalır. Evraklar yalnız sen başlatınca aktarılır: tek
+        dosyada hangilerinin aktarılacağını seçersin, "Tüm dosyaları aktar" ise onayından sonra
+        hepsini aktarır. Aktarılan dosyanın numarası, birimi ve UYAP listesindeki durumu dava
+        kaydına yazılır.
       </p>
     </section>
   );

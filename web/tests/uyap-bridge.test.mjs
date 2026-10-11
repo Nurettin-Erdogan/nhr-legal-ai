@@ -375,6 +375,12 @@ test("transfer completion is not reported for failures, missing counters or stop
   assert.equal(bridge.pullOutcome({ ...run, result: { stopped: true } }), 'stopped');
 });
 
+test("the list preserves only a valid portal tab identity", () => {
+  assert.equal(bridge.parseDosyaListe({ tabId: 37 }).tabId, 37);
+  for (const tabId of [-1, 1.5, "37", null, Infinity, Number.MAX_SAFE_INTEGER + 1])
+    assert.equal(bridge.parseDosyaListe({ tabId }).tabId, undefined);
+});
+
 test("oversized selection is refused instead of silently dropping the remaining evidence", async () => {
   const fake = fakeWindow(() => assert.fail('must not start a truncated upload'));
   const result = await bridge.startPullJob(1, Array.from({ length: 5001 }, (_, i) => String(i)));

@@ -66,8 +66,10 @@ class AuditContext:
 
     @classmethod
     def from_request(cls, request: Request) -> "AuditContext":
-        # `X-Forwarded-For` bilinçli olarak okunmaz: güvenilen bir ters vekil yapılandırılmadan
-        # istemci bu başlıkla günlüğe istediği IP'yi yazdırabilir.
+        # `X-Forwarded-For` burada yorumlanmaz; güven kararı sunucu katmanında verilir. uvicorn başlığı yalnız güvenilen
+        # vekilden (varsayılan: bu makine; başka adres için `FORWARDED_ALLOW_IPS`) gelen istekte okur ve
+        # `request.client`'ı ona göre kurar. Doğrudan bağlanan istemcinin yazdığı başlık yok sayılır
+        # (tests/test_client_ip_trust.py, docs/audit-log.md).
         host = request.client.host if request.client else None
         return cls(
             request_id=uuid4(),
