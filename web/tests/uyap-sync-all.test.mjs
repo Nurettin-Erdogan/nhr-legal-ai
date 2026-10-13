@@ -182,7 +182,9 @@ test("UYAP'ın evrak yok dediği dosya hata ya da eksik sayılmaz ve koşuyu dur
   assert.deepEqual([run.summary.complete, run.summary.empty, run.summary.failed, run.summary.allComplete], [1, 4, 0, true]);
   assert.deepEqual(run.reports[1].problems, []);
   assert.equal(bridge.calls.trees, 2 + 4 * (1 + sync.EMPTY_CONFIRM_READS), "boş yanıt kabul edilmeden önce yeniden okunur");
-  assert.deepEqual(sync.toServerItems(run.reports, dosyalar).map((item) => item.esas), ["2025/1"], "evraksız dosyanın dava kaydı yoktur; sunucuya gönderilmez");
+  // Evraksız dosya da 0 evrak ve eksiksiz olarak bildirilir: yoksa her liste yenilemede "çekilmemiş" görünürdü.
+  assert.deepEqual(sync.toServerItems(run.reports, dosyalar).map((item) => [item.esas, item.found, item.complete]),
+    [["2025/1", 1, true], ["2025/2", 0, true], ["2025/3", 0, true], ["2025/4", 0, true], ["2025/5", 0, true]]);
   assert.ok(sync.reportText(run).includes("EVRAK YOK · 2025/2"));
 });
 
@@ -508,4 +510,83 @@ test("sunucunun eksiksiz saymadığı dosya ayrıca bildirilir", () => {
   assert.deepEqual(sync.reconcileSaved(items, null), { saved: 0, downgraded: [], unmatched: 3 });
   assert.deepEqual(sync.reconcileSaved(items, { saved: 3, results: [{ status: "saved", esas: "WRONG", complete: true }] }), { saved: 0, downgraded: [], unmatched: 3 });
   assert.deepEqual(sync.reconcileSaved(items, { results: [{ status: "saved", complete: true }] }), { saved: 0, downgraded: [], unmatched: 3 });
+});
+
+test("when the UYAP page reloads mid-run the list is read again and the remaining files continue under their new keys", async () => {
+  // k2 ve k3'ün eski anahtarları geçersiz ("liste değişmiş"); yeniden listeleme aynı dosyaları n2/n3 anahtarlarıyla verir.
+  const world = { k1: { ids: ["a"] }, k2: { ids: [], startError: "stale" }, k3: { ids: [], startError: "stale" }, n2: { ids: ["b"] }, n3: { ids: ["c"] } };
+  const bridge = fakeBridge(world);
+  let relists = 0;
+  bridge.relist = async () => { relists += 1; return [dosya(1), { ...dosya(2), key: "n2" }, { ...dosya(3), key: "n3" }]; };
+  const run = await sync.syncAll([1, 2, 3].map((n) => dosya(n)), { bridge, detail: false });
+
+  assert.deepEqual(run.reports.map((r) => r.outcome), ["complete", "complete", "complete"]);
+  assert.equal(run.stoppedBecause, undefined);
+  assert.equal(relists, 1, "liste bir kez yeniden okunur; üçüncü dosya yeni anahtarıyla doğrudan açılır");
+  assert.deepEqual(run.reports.map((r) => r.key), ["k1", "k2", "k3"], "raporlar sayfadaki satırlarla eşleşen özgün anahtarı taşır");
+});
+
+test("re-listing is bounded and a file missing from the new list still fails honestly", async () => {
+  const world = { k1: { ids: [], startError: "stale" }, k2: { ids: [], startError: "stale" }, k3: { ids: [], startError: "stale" } };
+  const bridge = fakeBridge(world);
+  let relists = 0;
+  bridge.relist = async () => { relists += 1; return []; }; // yeni listede hiçbiri yok
+  const run = await sync.syncAll([1, 2, 3].map((n) => dosya(n)), { bridge, detail: false });
+
+  assert.equal(relists, 2 + 3, "dosya başına iki yeniden listeleme + üç toparlanma denemesi; sonra dürüstçe durur");
+  assert.deepEqual(run.reports.map((r) => r.outcome), ["failed", "failed", "failed"]);
+  assert.match(run.stoppedBecause, /Üst üste 3 dosya/);
+});
+
+test("three files failing in a row no longer end the run: it waits, re-reads the list and retries them", async () => {
+  // UYAP bir süre yanıt vermiyor (üç dosya açılamıyor); bekleyip liste yeniden okununca düzeliyor.
+  const world = { k1: { ids: ["a"] }, k2: { ids: ["b"], startError: "query_failed" }, k3: { ids: ["c"], startError: "query_failed" }, k4: { ids: ["d"], startError: "query_failed" }, k5: { ids: ["e"] } };
+  const bridge = fakeBridge(world);
+  let relists = 0;
+  bridge.relist = async () => { relists += 1; for (const key of ["k2", "k3", "k4"]) delete world[key].startError; return [1, 2, 3, 4, 5].map((n) => dosya(n)); };
+  const phases = [];
+  const run = await sync.syncAll([1, 2, 3, 4, 5].map((n) => dosya(n)), { bridge, detail: false, onProgress: (event) => phases.push(event.phase) });
+
+  assert.deepEqual(run.reports.map((r) => r.outcome), ["complete", "complete", "complete", "complete", "complete"]);
+  assert.equal(run.stoppedBecause, undefined);
+  assert.equal(relists, 1);
+  assert.ok(phases.some((phase) => /beklenip dosya listesi yeniden okunacak/.test(phase)));
+});
+
+test("if the list cannot be read after waiting the session is gone and the run stops with the reason", async () => {
+  const world = { k1: { ids: [], startError: "query_failed" }, k2: { ids: [], startError: "query_failed" }, k3: { ids: [], startError: "query_failed" }, k4: { ids: ["d"] } };
+  const bridge = fakeBridge(world);
+  bridge.relist = async () => null;
+  const run = await sync.syncAll([1, 2, 3, 4].map((n) => dosya(n)), { bridge, detail: false });
+
+  assert.match(run.stoppedBecause, /Üst üste 3 dosya/);
+  assert.deepEqual(run.reports.map((r) => r.outcome), ["failed", "failed", "failed", "pending"]);
+});
+
+test("when the session is lost the run waits for a new login and then continues from the same file", async () => {
+  // k2 açılırken oturum kapanmış (ölümcül hata); liste ancak üçüncü yoklamada (kullanıcı giriş yapınca) okunabiliyor.
+  const world = { k1: { ids: ["a"] }, k2: { ids: ["b"], startError: "login_required" }, k3: { ids: ["c"] } };
+  const bridge = fakeBridge(world);
+  let polls = 0;
+  bridge.relist = async () => { polls += 1; if (polls < 3) return null; delete world.k2.startError; return [1, 2, 3].map((n) => dosya(n)); };
+  const phases = [];
+  const run = await sync.syncAll([1, 2, 3].map((n) => dosya(n)), { bridge, detail: false, onProgress: (event) => phases.push(event.phase) });
+
+  assert.deepEqual(run.reports.map((r) => r.outcome), ["complete", "complete", "complete"]);
+  assert.equal(run.stoppedBecause, undefined);
+  assert.equal(polls, 3);
+  assert.ok(phases.includes(sync.LOGIN_WAIT_PHASE), "kullanıcıya yeniden giriş yapması açıkça söylenir");
+});
+
+test("waiting for a login ends when the user stops the run, and nothing is reported as transferred", async () => {
+  const world = { k1: { ids: [], startError: "login_required" }, k2: { ids: ["b"] } };
+  const bridge = fakeBridge(world);
+  const controller = new AbortController();
+  let polls = 0;
+  bridge.relist = async () => { polls += 1; if (polls === 2) controller.abort(); return null; };
+  const run = await sync.syncAll([1, 2].map((n) => dosya(n)), { bridge, detail: false, signal: controller.signal });
+
+  assert.equal(polls, 2);
+  assert.deepEqual(run.reports.map((r) => r.outcome), ["failed", "pending"]);
+  assert.equal(run.summary.complete, 0);
 });

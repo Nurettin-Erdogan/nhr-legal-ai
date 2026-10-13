@@ -500,6 +500,7 @@ class _Lab:
             "apiUrl": f"http://127.0.0.1:{self.api_port}/api/public/v1/documents/upload",
             "apiKey": TOKEN,
             "throttleMs": 500,
+            "retryWaitMs": 200,  # takılan evrakın aynı koşudaki yeniden denemesi testte beklemesin
             "autoSync": False,
             "saveLocal": False,
             **overrides,
@@ -2357,7 +2358,11 @@ def test_a_transient_direct_save_failure_falls_back_to_a_fresh_normal_click(lab)
         assert done["run"]["stats"]["sent"] == 1 and done["run"]["stats"]["failed"] == 0, done
         assert uyap.evaluate("window.__freshClicks") == 1
         requests = lab.worker.evaluate("globalThis.__fallbackRequests")
+        # İlk (hızlı) geçişte takılan evrak beklemeden sona bırakılır; ikinci denemede doğrudan yol yeniden denenir,
+        # yine kesilince normal tıklamaya dönülür. Tek tıklama ve tek tam yükleme değişmez.
         assert requests == [
+            {"path": "/main/jsp/view_document_brd.uyap", "id": "101"},
+            {"path": "/main/jsp/download_document_brd.uyap", "id": "101"},
             {"path": "/main/jsp/view_document_brd.uyap", "id": "101"},
             {"path": "/main/jsp/download_document_brd.uyap", "id": "101"},
             {"path": "/main/jsp/view_document_brd.uyap", "id": "ENC101"},

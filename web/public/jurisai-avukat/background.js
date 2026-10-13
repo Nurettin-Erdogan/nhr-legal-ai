@@ -19,6 +19,8 @@ const DEFAULTS = {
   apiKey: "",
   throttleMs: 1500,
   timeoutMs: 45000,
+  // Takılan evrak aynı koşuda yeniden denenmeden önceki bekleme (2. denemede 2 katı, 3. denemede 4 katı).
+  retryWaitMs: 15000,
   autoSync: false,
   saveLocal: false,
 };
@@ -87,6 +89,7 @@ const SITE_HOST_RE = /(^|\.)(uyap|adalet)\.gov\.tr$/i;
 /* Belge boyutu sınırı yoktur: indirilen parçalar bellekte biriktirilmez, tarayıcının Blob deposuna katılır (büyük ekler
    diske taşar) ve JurisAI'a aynı Blob'dan akıtılarak yüklenir. */
 const BLOB_FOLD_BYTES = 8 * 1024 * 1024;
+const LARGE_IDLE_BYTES = 1024 * 1024;
 /** Bir indirmenin toplam üst süresi (yalnız bir güvenlik ağı): asıl zaman aşımı "veri gelmeden geçen süre"dir ve akan indirmeyi
     kesmez (UYAP büyük ekleri ~1 MB/sn verir; 2 saat ≈ 7 GB). */
 const MAX_DOWNLOAD_MS = 2 * 60 * 60 * 1000;
@@ -305,9 +308,10 @@ async function readUyapDocument(url, timeoutMs, onProgress = null, signal = null
   const keepAlive = typeof chrome !== "undefined" && chrome.runtime?.getPlatformInfo
     ? setInterval(() => { chrome.runtime.getPlatformInfo().catch(() => {}); }, 20000) : null;
   // Büyük eklerde UYAP bazen uzun ara verir. İlk yanıt ve küçük evrak aynı sınırda;
-  // 8 MB geldikten sonra normal 45 sn ayarında yalnız hareketsizlik payı 120 sn olur.
+  // 1 MB geldikten sonra normal 45 sn ayarında yalnız hareketsizlik payı 120 sn olur.
   // Özel kısa test/kullanıcı ayarı büyütülmez; toplam iki saatlik güvenlik ağı değişmez.
-  const idleLimit = () => bytes >= BLOB_FOLD_BYTES && timeoutMs >= DEFAULTS.timeoutMs ? Math.max(timeoutMs, 120000) : timeoutMs;
+  // Eşik 1 MB: gerçek aktarımda büyük ekler 3-7 MB geldikten sonra 45 sn'lik sınıra takılıp baştan başlıyordu (2026-10-11).
+  const idleLimit = () => bytes >= LARGE_IDLE_BYTES && timeoutMs >= DEFAULTS.timeoutMs ? Math.max(timeoutMs, 120000) : timeoutMs;
   // Zaman aşımı veri geldikçe yeniden kurulur; yalnız "timeoutMs boyunca hiç veri gelmedi" ya da toplam üst süre kesintisidir.
   let timer;
   const arm = () => {
@@ -681,7 +685,9 @@ async function checkForUpdate() {
     const remote = (await response.json()).version;
     const current = chrome.runtime.getManifest().version;
     const { updateTried } = await chrome.storage.local.get("updateTried");
-    const busy = !!pullRun || !!pull || !!(await recordingState());
+    // "Tüm dosyaları aktar" dosyalar arasında kısa süre boşta görünür (`pullRun` dosya başınadır). O aralıkta kendini
+    // yeniden yükleyen eklenti süren toplu aktarımı keserdi; son UYAP komutundan sonra 10 dakika güncelleme beklenir.
+    const busy = !!pullRun || !!pull || Date.now() - lastUyapWorkAt < UPDATE_QUIET_MS || !!(await recordingState());
     const decision = decideUpdate({ remote, current, tried: updateTried, busy });
     await chrome.storage.local.set({
       updateState: { stale: decision === "stale", remote: decision === "none" ? "" : remote, current },
@@ -813,6 +819,7 @@ async function recoverReadTab(tabId, jobId) {
 }
 
 async function handleBridge(type, payload) {
+  if (type !== "BRIDGE_PING") lastUyapWorkAt = Date.now();
   switch (type) {
     case "BRIDGE_PING": {
       const settings = await getSettings();
@@ -1102,6 +1109,8 @@ async function saveToFolder(blob, contentType, meta, signal = null) {
    JurisAI'ya yüklenir. Adres bellekte tutulur; kaydedilmez, günlüğe yazılmaz, içerik betiğine verilmez. */
 let pull = null; // { tabId, expectedEvrakId, url }
 let pullRun = null; // Etkin kullanıcı çekimi; evrak kimliği sunucuda tekilleştirilir.
+let lastUyapWorkAt = 0; // son köprü/çekim komutunun zamanı (yalnız bellekte)
+const UPDATE_QUIET_MS = 10 * 60 * 1000;
 
 // Başka sekme/iş eski bir END veya STOP ile etkin aktarımı iptal edemez.
 function ownsPullRun(sender, jobId = pullRun?.jobId) {
@@ -1220,7 +1229,10 @@ function transferPhase(transfer) {
     (transfer.resumes > 0 ? ` · sürdürme ${transfer.resumes}/2` : "");
 }
 
-async function handlePullFetch(meta, mode = "upload", direct = "") {
+/** `quick`: ilk geçiş. Takılan evrak içeride beklenip yeniden denenmez, hareketsizlik sınırı kısadır (30 sn); evrak hemen
+    "geçici hata" ile döner ve çağıran onu dosyanın sonundaki yeniden deneme turuna bırakır. Böylece birkaç büyük ek, arkasındaki
+    yüzlerce küçük evrakı dakikalarca bekletmez (gerçek aktarımda iki büyük ek 10 dakika boyunca sırayı tuttu; 2026-10-12). */
+async function handlePullFetch(meta, mode = "upload", direct = "", quick = false) {
   const run = pullRun;
   const signal = run?.controller?.signal;
   try {
@@ -1230,7 +1242,7 @@ async function handlePullFetch(meta, mode = "upload", direct = "") {
     const viaDirect = !captured && !!acceptedDirectUrl(direct); // tıklamasız yol: başarısızsa beklemeden döner, çağıran tıklama yolunu dener
     const target = captured || acceptedDirectUrl(direct);
     if (!target) throw new Error("UYAP evrak adresi yakalanamadı");
-    const timeout = Number(settings.timeoutMs) || DEFAULTS.timeoutMs;
+    const timeout = quick ? Math.min(30000, Number(settings.timeoutMs) || DEFAULTS.timeoutMs) : Number(settings.timeoutMs) || DEFAULTS.timeoutMs;
     const startedAt = Date.now();
     let retried = false;
     let viaSave = false;
@@ -1261,13 +1273,13 @@ async function handlePullFetch(meta, mode = "upload", direct = "") {
           viaSave = true;
         } catch (saveError) {
           if (saveError.freshRequestRequired || saveError.code === "UYAP_CANCELLED") throw saveError;
-          if (isTransientPullError(saveError) && !viaDirect) {
+          if (isTransientPullError(saveError) && !viaDirect && !quick) {
             // UYAP "Kaydet" akışını yarıda kesti: bir kez bekleyip aynı adresi yeniden dene.
             retried = true;
             await pullWait(8000, signal);
             fetched = await fetchCurrent(saveUrl, timeout, meta);
             viaSave = true;
-          } else if (!transient || viaDirect) {
+          } else if (!transient || viaDirect || quick) {
             // Kaydet'in asıl hata türünü koru: geçici indirme kesintisi,
             // mesajdaki "önizlemede vermiyor" yüzünden kalıcı ret sayılmamalı.
             // Doğrudan yolun çağıranı bu durumda normal tıklamayla taze istek yakalar.
@@ -1281,7 +1293,7 @@ async function handlePullFetch(meta, mode = "upload", direct = "") {
             fetched = await fetchCurrent(target, timeout, meta);
           }
         }
-      } else if (transient && !viaDirect) {
+      } else if (transient && !viaDirect && !quick) {
         // Geçici olabilir (yoğunluk, hazırlanıyor): bir kez bekleyip aynı adresi yeniden dene.
         retried = true;
         await pullWait(8000, signal);
@@ -1383,7 +1395,7 @@ async function runDirectProbe(attrIds) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (/^JURISAI_PULL_(?:BEGIN|ARM|STATUS|FETCH|CANCEL|WAIT|END)$/.test(message?.type || "") &&
+  if (/^JURISAI_PULL_(?:BEGIN|ARM|STATUS|FETCH|FETCH_START|FETCH_POLL|CANCEL|WAIT|END)$/.test(message?.type || "") &&
       (!Number.isInteger(sender.tab?.id) || !UYAP_HOST.test(sender.url || sender.tab?.url || ""))) {
     sendResponse({ ok: false, code: "wrong_source", error: "Bu kaynaktan çekim komutu kabul edilmez." });
     return false;
@@ -1420,7 +1432,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (pullRun) return sendResponse({ ok: false, code: "busy", error: "Başka bir evrak aktarımı sürüyor; önce durdurun." });
         pullRun = { tabId: sender.tab.id, frameId: sender.frameId || 0,
           jobId: textArg(message.jobId, 64), controller: new AbortController() };
-        sendResponse({ ok: true, gapMs: Math.max(1500, Number(settings.throttleMs) || DEFAULTS.throttleMs) });
+        sendResponse({ ok: true, gapMs: Math.max(1500, Number(settings.throttleMs) || DEFAULTS.throttleMs),
+          retryWaitMs: Math.max(0, Math.min(120000, Number(settings.retryWaitMs ?? 15000) || 0)) });
       });
       return true;
     case "JURISAI_PULL_ARM":
@@ -1441,6 +1454,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (!ownsPullRun(sender)) { sendResponse({ ok: false, code: "wrong_job" }); return false; }
       handlePullFetch(message.meta || {}, message.mode, message.direct || "").then(sendResponse);
       return true;
+    // Uzun indirme tek bir mesajın cevabı olarak BEKLETİLMEZ. Chrome, cevabı 5 dakikayı aşan olayın servis çalışanını
+    // kapatır; çalışan yeniden başlayınca `pullRun` (yalnız bellekte) kaybolur ve sıradaki her evrak "wrong_job" alır.
+    // Gerçek aktarımda (2026-10-11) takılan tek bir büyük ekten sonra art arda dört evrak böyle düştü ve dosyanın kalan
+    // 232 evrakı hiç denenmedi. İş burada başlatılır, sonuç kısa yoklamalarla (FETCH_POLL) alınır; her olay kısadır.
+    case "JURISAI_PULL_FETCH_START": {
+      if (!ownsPullRun(sender)) { sendResponse({ ok: false, code: "wrong_job" }); return false; }
+      const run = pullRun;
+      if (run.fetch && !run.fetch.done) { sendResponse({ ok: false, code: "busy", error: "Önceki evrak hâlâ indiriliyor." }); return false; }
+      const job = (run.fetch = { done: false, result: null });
+      handlePullFetch(message.meta || {}, message.mode, message.direct || "", message.quick === true)
+        .then((result) => { job.result = result; }, (error) => { job.result = { ok: false, error: error?.message || "Evrak aktarılamadı", retryable: true }; })
+        .finally(() => { job.done = true; });
+      sendResponse({ ok: true, started: true });
+      return false;
+    }
+    case "JURISAI_PULL_FETCH_POLL": {
+      if (!ownsPullRun(sender)) { sendResponse({ ok: false, code: "wrong_job" }); return false; }
+      const job = pullRun.fetch;
+      if (!job) { sendResponse({ ok: false, code: "no_fetch", error: "Bekleyen evrak indirmesi yok.", retryable: true }); return false; }
+      if (!job.done) { sendResponse({ ok: true, pending: true }); return false; }
+      pullRun.fetch = null;
+      sendResponse(job.result);
+      return false;
+    }
     case "JURISAI_MENU": {
       // UYAP yan menüsü `menuButtonClick("<sayı>")` işlevini çağırır; işlev sayfanın kendi dünyasındadır, içerik betiği (yalıtılmış dünya)
       // çağıramaz. Yalnız UYAP sekmesinden gelen, yalnız sayısal kimlik kabul edilir.
@@ -1480,6 +1517,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: true });
       return false;
     case "JURISAI_PULL_END":
+      lastUyapWorkAt = Date.now();
       if (ownsPullRun(sender, textArg(message.jobId, 64))) {
         pullRun.controller.abort();
         pullRun = null;

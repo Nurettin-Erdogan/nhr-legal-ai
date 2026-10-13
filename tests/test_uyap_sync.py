@@ -166,3 +166,16 @@ def test_a_complete_record_is_not_trusted_after_its_documents_are_removed(db, mo
     assert (rows[kept]["complete"], rows[kept]["missing_count"], rows[kept]["removed_since"]) == (True, 0, 0)
     assert status["summary"] == {"files": 2, "complete": 1, "missing": 3}
     assert _row(world, emptied)["complete"] is True  # saklanan kayıt değişmez; sonraki doğrulama yeniler
+
+
+@needs_db
+def test_a_file_uyap_reports_as_empty_is_recorded_complete_with_zero_documents(db, monkeypatch):  # noqa: F811
+    # Evraksız dosya da bildirilir; yoksa UYAP sayfasındaki "çekilmeyen dosyalar" listesinde hep kalırdı.
+    world = _world(db, monkeypatch)
+    case_id = _case(world, world.alice, documents=0)
+
+    result = _report(world, world.alice, found=0, declared=0)
+
+    assert result["results"][0]["complete"] is True and result["results"][0]["server_documents"] == 0
+    assert (_row(world, case_id)["complete"], _row(world, case_id)["found_count"]) == (True, 0)
+    assert uyap_sync.sync_status(world.alice)["files"][0]["complete"] is True

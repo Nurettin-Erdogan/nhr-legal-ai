@@ -1214,6 +1214,33 @@
     return Math.max(0, interval - Math.max(0, elapsedMs));
   }
 
+  /**
+   * Bir evrakı indirtir ve sonucunu kısa yoklamalarla bekler (uzun indirme tek mesajın cevabı olarak bekletilmez; bkz.
+   * background.js `JURISAI_PULL_FETCH_START`). Servis çalışanı yeniden başlamış ve aktarımı unutmuşsa (`wrong_job`)
+   * `rebegin` ile aynı iş yeniden tanıtılır ve evrak BİR kez daha denenir; evrak sessizce atlanmaz.
+   */
+  async function pullFetch(payload, rebegin) {
+    const send = (message) => chrome.runtime.sendMessage(message).catch(() => null);
+    const lost = { ok: false, code: "worker_restarted", retryable: true,
+      error: "Eklenti aktarım sırasında yeniden başladı; evrak alınamadı (yeniden denenecek)." };
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      let started = await send({ type: "JURISAI_PULL_FETCH_START", ...payload });
+      if (started?.code === "wrong_job" && (await rebegin())) started = await send({ type: "JURISAI_PULL_FETCH_START", ...payload });
+      if (!started?.started) return started?.error ? started : lost;
+      let silent = 0;
+      while (true) {
+        await sleep(700);
+        const answer = await send({ type: "JURISAI_PULL_FETCH_POLL" });
+        if (answer?.pending) { silent = 0; continue; }
+        if (answer && answer.code !== "wrong_job" && answer.code !== "no_fetch") return answer;
+        // Yanıt yok ya da çalışan işi tanımıyor: birkaç yoklama bekle, sürerse evrakı baştan dene.
+        if (answer || (silent += 1) >= 5) break;
+      }
+      if (pulling?.stop || !(await rebegin())) return lost;
+    }
+    return lost;
+  }
+
   function pullItemOnlyError(outcome) {
     // İndirme kesintisi ve doğrulama reddi, iç içe hata mesajında önizleme
     // reddinden söz edilse bile kalıcı evrak hatası değildir.
@@ -1235,7 +1262,26 @@
     // Anahtar/adres denetimi seçimden SONRA ve yalnız JurisAI'ya aktarırken yapılır (bilgisayara indirme anahtar istemez).
     const begin = await chrome.runtime.sendMessage({ type: "JURISAI_PULL_BEGIN", mode, jobId });
     if (!begin?.ok) return { ok: false, error: begin?.error || "Ayarlar eksik" };
+    // Servis çalışanı yeniden başlayıp aktarımı unutursa aynı iş kimliğiyle yeniden tanıtılır (bkz. pullFetch).
+    const rebegin = async () => {
+      if (pulling.stop) return false;
+      const again = await chrome.runtime.sendMessage({ type: "JURISAI_PULL_BEGIN", mode, jobId }).catch(() => null);
+      return !!again?.ok;
+    };
     if (pulling.stop) await chrome.runtime.sendMessage({ type: "JURISAI_PULL_CANCEL", jobId });
+    // Oturumu canlı tutma. Evraklar tıklamasız yoldan (arka planda) indirilirken UYAP SAYFASINDA hiçbir etkinlik olmaz;
+    // UYAP böyle bir sayfayı ~30 dakikada oturumdan atar. Gerçek sınamada 350 evraklık dosya 33. dakikada, aktarım sürerken
+    // oturum kapandığı için yarıda kaldı (ölçüldü: 2026-10-12). Aktarım sürdüğü sürece dakikada bir, sayfada kullanıcı
+    // etkinliği olayı üretilir ve sayfanın kendi adresi salt okunur istenir (oturumu sunucu tarafında da tazeler).
+    // Yalnız bu aktarım boyunca çalışır; form doldurmaz, hiçbir şeye tıklamaz, veri göndermez.
+    const keepSessionAlive = () => {
+      try {
+        for (const type of ["mousemove", "keydown", "scroll"])
+          document.dispatchEvent(new Event(type, { bubbles: true }));
+        fetch(location.href, { credentials: "include", cache: "no-store" }).catch(() => {});
+      } catch (_) { /* sayfa kapanıyorsa sessizce geç */ }
+    };
+    const keepAliveTimer = setInterval(keepSessionAlive, 60000);
     let todo = selected; // evrak sayısı sınırı yok: hız (evrak başına birkaç sn), "Çekmeyi durdur" ve ardışık hata sınırı korur
     if (!toDisk && !pulling.stop) {
       // JurisAI'da zaten olan evraklara hiç tıklanmaz: yarıda kalan çekme sürdürülür, yeniden deneme hızlanır.
@@ -1254,11 +1300,39 @@
     let consecutiveFailures = 0;
     const baseGap = begin.gapMs || 1500;
     let gap = baseGap; // hata görülürse iki katına çıkar (en çok 20 sn), başarıda yavaşça normale döner
-    for (let index = 0; index < todo.length && !pulling.stop; index += 1) {
+    // Takılan evrak aynı koşuda yeniden denenir. UYAP büyük ekleri bazen ortasında keser ya da dakikalarca veri göndermez;
+    // aynı ek birkaç dakika sonra çoğu kez iner (gerçek aktarımda takılan beş büyük ekten dördü ikinci denemede indi, biri
+    // inmedi ve kullanıcının düğmeye yeniden basması gerekti; ölçüldü: 2026-10-11). Dosyanın bütün evrakları bittikten sonra
+    // yalnız geçici hatayla kalanlar, araya bekleme konarak en çok `PULL_ROUNDS - 1` kez daha denenir; kalıcı ret (tür
+    // desteklenmiyor vb.) ve oturum kaybı (art arda 5 hata) yeniden denenmez.
+    const PULL_ROUNDS = 3;
+    const failedLines = new Map(); // evrak kimliği → son hata satırı (sonradan inen evrak listeden çıkar)
+    let queue = todo;
+    let abandoned = false;
+    // Oturum süresi dolunca UYAP evrak yerine kendi "Hata Oluştu … Güvenli Çıkış" sayfasını (ya da giriş sayfasını) döndürür.
+    // Bu, evrağa özgü bir hata değildir: art arda iki evrakta görülürse dosyanın kalan yüzlerce evrakı tek tek denenmez;
+    // aktarım "oturum kapandı" koduyla hemen biter ve sayfa kullanıcıdan yeniden giriş ister (gerçek aktarımda oturumu
+    // dolmuş bir koşu 350 evraklık dosyada böyle sürüp gitti; 2026-10-13).
+    let sessionPages = 0;
+    let sessionLost = false;
+    for (let round = 0; round < PULL_ROUNDS && queue.length && !pulling.stop && !abandoned; round += 1) {
+    const again = [];
+    const quick = round === 0; // ilk geçiş hızlıdır: takılan evrak bekletilmez, sonraki tura bırakılır
+    const doneBefore = todo.length - queue.length;
+    if (round > 0) {
+      report({ phase: `Takılan ${queue.length} evrak yeniden deneniyor (${round + 1}. deneme)`, current: "" });
+      toast(`Takılan ${queue.length} evrak yeniden deneniyor…`);
+      const retryWait = Number.isFinite(begin.retryWaitMs) ? begin.retryWaitMs : 15000;
+      for (let waited = 0; waited < retryWait * 2 * round && !pulling.stop; waited += Math.min(15000, retryWait))
+        await chrome.runtime.sendMessage({ type: "JURISAI_PULL_WAIT", ms: Math.min(15000, retryWait), jobId });
+      consecutiveFailures = 0;
+      gap = baseGap;
+    }
+    for (let index = 0; index < queue.length && !pulling.stop; index += 1) {
       const itemStartedAt = performance.now();
-      const item = todo[index];
-      toast(`Evrak ${index + 1}/${todo.length} çekiliyor…`);
-      report({ done: index, current: item.title });
+      const item = queue[index];
+      toast(`Evrak ${doneBefore + index + 1}/${todo.length} çekiliyor…`);
+      report({ done: doneBefore + index, current: item.title });
       const meta = {
         evrakAdi: item.title,
         evrakId: item.id,
@@ -1275,8 +1349,9 @@
       let outcome = null;
       let usedDirect = false;
       if (direct) {
-        outcome = await chrome.runtime.sendMessage({ type: "JURISAI_PULL_FETCH", mode, direct, meta });
-        usedDirect = !!outcome?.ok || pullItemOnlyError(outcome);
+        outcome = await pullFetch({ mode, direct, meta, quick }, rebegin);
+        // İlk geçişte geçici hata alan evrak tıklama yoluyla hemen yeniden denenmez; dosyanın sonundaki tura kalır.
+        usedDirect = !!outcome?.ok || pullItemOnlyError(outcome) || (quick && !!outcome?.retryable);
       }
       if (outcome?.code === "UYAP_CANCELLED") { pulling.stop = true; break; }
       if (!usedDirect && pulling.stop) break;
@@ -1308,7 +1383,7 @@
                 : "tıklamadan sonra sayfa hiç istek yapmadı; ön izleme açık mı?"
             })`,
         };
-        if (captured) outcome = await chrome.runtime.sendMessage({ type: "JURISAI_PULL_FETCH", mode, meta });
+        if (captured) outcome = await pullFetch({ mode, meta, quick }, rebegin);
       }
       // Kullanıcı iptali evrak/oturum hatası değildir; yeniden deneme ve hata sayacı yok.
       if (outcome?.code === "UYAP_CANCELLED") { pulling.stop = true; break; }
@@ -1323,23 +1398,32 @@
         if (outcome.sameContent) stats.sameContent += 1;
         else if (outcome.duplicate) stats.duplicates += 1;
         else stats.sent += 1; // aktarılan ya da (bilgisayara indirme kipinde) kaydedilen
+        if (failedLines.delete(item.id)) stats.failed -= 1; // önceki denemede takılmıştı, şimdi indi
+        sessionPages = 0;
       } else {
-        stats.failed += 1;
+        if (!failedLines.has(item.id)) stats.failed += 1;
         // Evrağın kendisine özgü ret (tür desteklenmiyor, UYAP ön izlemede vermiyor) oturum/portal sorunu değildir: art arda gelse de
         // aktarım durdurulmaz ve yavaşlatılmaz. Canlıda art arda 5 .zip eki 350 evraklık aktarımı 114. evrakta kesmişti.
         const itemOnly = pullItemOnlyError(outcome);
         if (!itemOnly) consecutiveFailures += 1;
-        if (stats.errors.length < 5) stats.errors.push(`${item.title.slice(0, 90)}: ${outcome?.error || "bilinmeyen hata"}`);
+        sessionPages = /Hata Oluştu|oturum kapanmış olabilir/i.test(outcome?.error || "") ? sessionPages + 1 : 0;
+        if (sessionPages >= 2) sessionLost = true;
+        failedLines.set(item.id, `${item.title.slice(0, 90)}: ${outcome?.error || "eklenti yanıt vermedi"}`);
+        if (!itemOnly && round + 1 < PULL_ROUNDS) again.push(item);
         if (!itemOnly) gap = Math.min(20000, gap * 2); // UYAP bizi sınırlıyor olabilir: yavaşla
       }
-      report({ done: index + 1 });
-      if (consecutiveFailures >= 5) break; // oturum kapanmış ya da portal yanıt vermiyor olabilir
+      stats.errors = [...failedLines.values()].slice(0, 5);
+      report({ done: doneBefore + index + 1 });
+      if (sessionLost || consecutiveFailures >= 5) { abandoned = true; break; } // oturum kapanmış ya da portal yanıt vermiyor olabilir
       // Tıklamasız yolda sayfa ön izleme yüklemez (evrak başına tek istek): hata yokken kısa bekleme yeter; hata görülünce `gap` büyür.
       const pause = pullPauseMs(gap, baseGap, usedDirect, !!outcome?.ok, performance.now() - itemStartedAt,
-        index + 1 < todo.length && !pulling.stop);
+        index + 1 < queue.length && !pulling.stop);
       spent.pause += pause;
       if (pause > 0) await chrome.runtime.sendMessage({ type: "JURISAI_PULL_WAIT", ms: pause, jobId });
     }
+    queue = again;
+    }
+    clearInterval(keepAliveTimer);
     const timing = spent.items
       ? {
           items: spent.items,
@@ -1363,6 +1447,9 @@
         : "");
     toast(summary, stats.failed ? "error" : "success");
     report({ phase: pulling.stop ? "Durduruldu" : "Bitti", current: "" });
+    if (sessionLost && !pulling.stop)
+      return { ok: false, code: "login_required", ...stats, chosen: todo.length, mode,
+        error: "UYAP oturumu kapanmış görünüyor (evrak yerine hata/giriş sayfası döndü). UYAP sekmesinde yeniden giriş yap; aktarılanlar yeniden çekilmez." };
     return { ok: true, ...stats, chosen: todo.length, mode, stopped: pulling.stop, timing, summary };
   }
 
@@ -2152,7 +2239,7 @@
     runPull(items, run.mode, bridge.tree.who, { progress: run, jobId: job.id })
       .then((result) => {
         run.result = result;
-        Object.assign(job, result.ok ? { state: "done", phase: run.phase || "Bitti" } : { state: "error", error: result.error }, { finishedAt: Date.now() });
+        Object.assign(job, result.ok ? { state: "done", phase: run.phase || "Bitti" } : { state: "error", error: result.error, ...(result.code ? { code: result.code } : {}) }, { finishedAt: Date.now() });
       })
       .catch((error) => Object.assign(job, { state: "error", error: error.message || "bilinmeyen hata", finishedAt: Date.now() }))
       .finally(() => {

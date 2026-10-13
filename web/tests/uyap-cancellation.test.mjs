@@ -82,3 +82,47 @@ test('non-UYAP sources cannot begin, cancel, arm or end a transfer', async () =>
   }
   assert.equal(h.context.pullRun, null);
 });
+
+// Uzun indirme tek mesajın cevabı olarak bekletilmez: Chrome 5 dakikayı aşan olayın servis çalışanını kapatır ve
+// bellekteki aktarım kaydı kaybolur (gerçek aktarımda takılan bir büyük ekten sonra 232 evrak hiç denenmedi).
+function pollHarness(fetchImpl) {
+  const h = harness();
+  h.context.handlePullFetch = fetchImpl;
+  return h;
+}
+
+test('a download is started and polled instead of holding one message open', async () => {
+  let finish;
+  const h = pollHarness(() => new Promise(resolve => { finish = resolve; }));
+  await h.send('JURISAI_PULL_BEGIN', {jobId: 'job-1'});
+  assert.deepEqual(JSON.parse(JSON.stringify(await h.send('JURISAI_PULL_FETCH_START', {meta: {evrakId: '1'}}))), {ok: true, started: true});
+  assert.equal((await h.send('JURISAI_PULL_FETCH_POLL')).pending, true);
+  assert.equal((await h.send('JURISAI_PULL_FETCH_START', {meta: {evrakId: '2'}})).code, 'busy'); // aynı anda ikinci indirme yok
+  finish({ok: true, duplicate: false});
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal((await h.send('JURISAI_PULL_FETCH_POLL')).ok, true);
+  assert.equal((await h.send('JURISAI_PULL_FETCH_POLL')).code, 'no_fetch'); // sonuç bir kez verilir
+  assert.equal((await h.send('JURISAI_PULL_FETCH_START', {meta: {evrakId: '2'}})).started, true);
+});
+
+test('a failed download reports its reason through the poll and a restarted worker says so', async () => {
+  const h = pollHarness(async () => { throw new Error('UYAP indirmeyi yarıda kesti'); });
+  await h.send('JURISAI_PULL_BEGIN', {jobId: 'job-1'});
+  await h.send('JURISAI_PULL_FETCH_START', {});
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const failed = await h.send('JURISAI_PULL_FETCH_POLL');
+  assert.equal(failed.ok, false);
+  assert.match(failed.error, /yarıda kesti/);
+  // Çalışan yeniden başlamış gibi: aktarım kaydı yok. İçerik betiği bunu görüp işi yeniden tanıtır.
+  h.context.pullRun = null;
+  assert.equal((await h.send('JURISAI_PULL_FETCH_POLL')).code, 'wrong_job');
+  assert.equal((await h.send('JURISAI_PULL_FETCH_START', {})).code, 'wrong_job');
+  assert.equal((await h.send('JURISAI_PULL_BEGIN', {jobId: 'job-1'})).ok, true);
+  assert.equal((await h.send('JURISAI_PULL_FETCH_START', {})).started, true);
+});
+
+test('the polling commands are refused from non-UYAP sources too', async () => {
+  const h = harness();
+  for (const type of ['FETCH_START', 'FETCH_POLL'])
+    assert.equal((await h.send(`JURISAI_PULL_${type}`, {}, {url: 'http://localhost:3000/'})).code, 'wrong_source');
+});

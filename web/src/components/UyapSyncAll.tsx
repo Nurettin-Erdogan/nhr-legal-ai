@@ -1,5 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
+import { cn } from "@/lib/utils";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -27,6 +28,7 @@ import {
   fullyVerified,
   reportText,
   retryKeysFor,
+  unpulledFiles,
   summarize,
   type FileOutcome,
 } from "@/lib/uyap-sync-all";
@@ -129,6 +131,11 @@ export const UyapSyncAll = ({ liste, disabled, onRunningChange }: Props) => {
     }
   };
 
+  // Çekilmeyen dosyalar: listede olup JurisAI'a eksiksiz aktarıldığı doğrulanmamış olanlar. Sunucudaki doğrulama kayıtları
+  // okunamadıysa liste sunulmaz; "hepsi çekilmiş" diye varsayılmaz.
+  const unpulled = status ? unpulledFiles(liste.items, status.files) : null;
+  const [showUnpulled, setShowUnpulled] = useState(false);
+
   const shown = run ? run.reports : live;
   const summary = run ? run.summary : summarize(live);
   const retryKeys = run
@@ -185,6 +192,17 @@ export const UyapSyncAll = ({ liste, disabled, onRunningChange }: Props) => {
           >
             Tüm dosyaları aktar ({liste.items.length} dosya)
           </Button>
+          {unpulled && (
+            <Button
+              variant="outline"
+              onClick={() => setShowUnpulled((open) => !open)}
+              aria-expanded={showUnpulled}
+              data-testid="uyap-sync-unpulled-toggle"
+              title="Listede olup JurisAI'a eksiksiz aktarıldığı doğrulanmamış dosyalar (UYAP yeniden okunmaz; anında gösterilir)"
+            >
+              Çekilmeyen dosyalar ({unpulled.length})
+            </Button>
+          )}
           <Button
             variant="outline"
             onClick={() => void start(undefined, false)}
@@ -209,6 +227,39 @@ export const UyapSyncAll = ({ liste, disabled, onRunningChange }: Props) => {
             <Button variant="ghost" onClick={() => void copy()}>
               <ClipboardCopy className="h-4 w-4 mr-2" /> Raporu kopyala
             </Button>
+          )}
+        </div>
+      )}
+
+      {!running && showUnpulled && unpulled && (
+        <div className="rounded-lg border border-border p-3 text-sm" data-testid="uyap-sync-unpulled">
+          {unpulled.length === 0 ? (
+            <p className="text-muted-foreground">
+              Listedeki {liste.items.length} dosyanın hepsi JurisAI'a eksiksiz aktarılmış görünüyor. Bu, son doğrulamaya göredir:
+              o günden sonra UYAP'ta eklenen evrak burada görünmez; onu yalnız "Tüm dosyaları aktar" ya da "Yalnız denetle" gösterir.
+            </p>
+          ) : (
+            <>
+              <ul className="divide-y divide-border">
+                {unpulled.map((file) => (
+                  <li key={file.key} className="flex flex-wrap items-baseline justify-between gap-x-4 py-1.5">
+                    <span>
+                      <span className="font-medium">{file.esas}</span>
+                      <span className="text-muted-foreground"> · {file.birim}</span>
+                    </span>
+                    <span className="text-xs text-amber-700 dark:text-amber-300">{file.reason}</span>
+                  </li>
+                ))}
+              </ul>
+              <Button
+                className="mt-3"
+                onClick={() => setConfirming(new Set(unpulled.map((file) => file.key)))}
+                disabled={disabled}
+                data-testid="uyap-sync-unpulled-start"
+              >
+                Bu {unpulled.length} dosyayı aktar
+              </Button>
+            </>
           )}
         </div>
       )}
@@ -321,7 +372,18 @@ export const UyapSyncAll = ({ liste, disabled, onRunningChange }: Props) => {
                     ? report.detail.problems
                     : []),
                 ].length > 0 && (
-                  <ul className="mt-1 list-disc pl-4 text-xs text-amber-700 dark:text-amber-300">
+                  // Dosya sonunda eksiksiz doğrulandıysa bu satırlar sorun değildir: aktarım sırasında takılıp yeniden
+                  // denenince inen evrakların kaydıdır. Uyarı renginde gösterilmez ve öyle olduğu yazılır.
+                  <ul
+                    className={cn(
+                      "mt-1 list-disc pl-4 text-xs",
+                      report.outcome === "complete" ? "text-muted-foreground" : "text-amber-700 dark:text-amber-300",
+                    )}
+                    data-testid="uyap-sync-problems"
+                  >
+                    {report.outcome === "complete" && (
+                      <li className="list-none -ml-4">Aktarım sırasında takılıp yeniden denenenler (hepsi sonunda aktarıldı):</li>
+                    )}
                     {[
                       ...report.problems,
                       ...(report.detail &&

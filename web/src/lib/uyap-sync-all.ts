@@ -16,6 +16,7 @@ import {
   startPullJob,
   startTreeJob,
   recoverReadJob,
+  listUyapDosyalari,
   stopJob,
   waitForJob,
   type BridgeDosya,
@@ -92,6 +93,8 @@ export interface SyncBridge {
   ): Promise<{ ok: true; status: JobStatus } | BridgeFailure>;
   stop(tabId: number, jobId: string): Promise<unknown>;
   recoverRead?(tabId: number, jobId: string): Promise<BridgeReply<{ tabId: number }>>;
+  /** UYAP dosya listesini yeniden okur (sayfa yenilendiyse satır anahtarları değişir); okunamazsa null. */
+  relist?(): Promise<BridgeDosya[] | null>;
   sleep(ms: number): Promise<void>;
 }
 
@@ -99,6 +102,10 @@ export const defaultBridge: SyncBridge = {
   startTree: (key, yargiTuru, tabId) => startTreeJob(key, yargiTuru, tabId),
   startDetail: (key, yargiTuru, tabId) => startDetailJob(key, yargiTuru, tabId),
   recoverRead: recoverReadJob,
+  relist: async () => {
+    const listed = await listUyapDosyalari();
+    return listed.ok ? listed.liste.items : null;
+  },
   startPull: (tabId, ids) => startPullJob(tabId, ids, "upload"),
   wait: (tabId, jobId, options) => waitForJob(tabId, jobId, options),
   stop: (tabId, jobId) => stopJob(tabId, jobId),
@@ -127,6 +134,14 @@ const TREE_WAIT_MS = 45 * 60 * 1000;
 const PULL_WAIT_MS = 4 * 60 * 60 * 1000;
 const DETAIL_WAIT_MS = 30 * 60 * 1000;
 const FILE_PAUSE_MS = 1500;
+/** Üst üste hatadan sonra koşu bırakılmadan önce kaç kez beklenip yeniden denenir ve her seferinde ne kadar beklenir. */
+const HEAL_ATTEMPTS = 3;
+const HEAL_WAIT_MS = 60000;
+/** Oturum kapanınca koşu durmaz: yeniden giriş bu kadar süre beklenir (yoklama aralığı × deneme sayısı = 30 dakika). */
+const LOGIN_POLL_MS = 20000;
+const LOGIN_WAIT_ATTEMPTS = 90;
+export const LOGIN_WAIT_PHASE =
+  "UYAP oturumu kapanmış görünüyor: UYAP sekmesinde yeniden giriş yapın. Giriş yapınca aktarım kaldığı dosyadan kendiliğinden devam edecek (30 dakika beklenir).";
 const MAX_CONSECUTIVE_FAILURES = 3;
 const MAX_PROBLEMS = 6;
 export const MAX_READ_RETRIES = 2;
@@ -347,7 +362,7 @@ export interface SyncOptions {
 export async function syncDosya(
   dosya: BridgeDosya,
   options: SyncOptions & { index?: number; total?: number } = {},
-): Promise<{ report: FileReport; fatal?: BridgeFailure }> {
+): Promise<{ report: FileReport; fatal?: BridgeFailure; code?: string }> {
   options = { ...options, recoveryBudget: options.recoveryBudget ?? { remaining: 1 } };
   const result = await syncEvraks(dosya, options);
   if (options.detail === false) {
@@ -468,13 +483,14 @@ async function syncEvraks(
   let pinnedTabId = options.tabId;
   const fail = (
     failure: BridgeFailure,
-  ): { report: FileReport; fatal?: BridgeFailure; tabId?: number } => {
+  ): { report: FileReport; fatal?: BridgeFailure; tabId?: number; code?: string } => {
     report.outcome = "failed";
     addProblem(report, failure.error);
     return {
       report,
       fatal: failure.code && FATAL_CODES.has(failure.code) ? failure : undefined,
       tabId: pinnedTabId,
+      code: failure.code,
     };
   };
 
@@ -618,6 +634,48 @@ export function fullyVerified(report: FileReport): boolean {
   );
 }
 
+/** Sunucudaki son doğrulama kaydının "çekilmeyen dosyalar" listesi için gereken alanları. */
+export interface VerifiedFile {
+  esas: string | null;
+  birim: string | null;
+  complete: boolean;
+  missing_count?: number;
+}
+
+export interface UnpulledFile {
+  key: string;
+  esas: string;
+  birim: string;
+  /** Neden çekilmemiş sayıldığı: hiç aktarılmamış ya da son doğrulamada eksik evrak var. */
+  reason: string;
+}
+
+// Sunucudaki dosya kimliği kuralıyla aynı (api/uyap_cases.py): esas no boşluksuz, birim "İ/ı" katlanmış ve küçük harf.
+const fileIdentity = (esas: string | null, birim: string | null): string =>
+  `${(esas ?? "").replace(/\s+/g, "")}|${(birim ?? "").normalize("NFC").replace(/İ/g, "I").replace(/ı/g, "i").toLowerCase().replace(/\s+/g, " ").trim()}`;
+
+/**
+ * UYAP listesindeki dosyalardan JurisAI'a eksiksiz aktarıldığı doğrulanMAMIŞ olanlar: hiç doğrulama kaydı olmayan ya da son
+ * doğrulamada eksiği kalan dosyalar. Yalnız sunucudaki kayda bakar; UYAP'ı okumaz, bu yüzden anında hesaplanır. Eksiksiz
+ * doğrulanmış bir dosyaya sonradan UYAP'ta yeni evrak eklendiyse burada görünmez (bunu yalnız dosyayı yeniden okumak gösterir).
+ */
+export function unpulledFiles(items: BridgeDosya[], verified: VerifiedFile[]): UnpulledFile[] {
+  const records = new Map(verified.map((row) => [fileIdentity(row.esas, row.birim), row]));
+  const out: UnpulledFile[] = [];
+  for (const item of items) {
+    const record = records.get(fileIdentity(item.esas, item.birim));
+    if (record?.complete) continue;
+    const missing = record?.missing_count ?? 0;
+    out.push({
+      key: item.key,
+      esas: item.esas,
+      birim: item.birim,
+      reason: !record ? "Hiç aktarılmamış" : missing > 0 ? `${missing} evrak eksik` : "Aktarım doğrulanamadı",
+    });
+  }
+  return out;
+}
+
 export function retryKeysFor(reports: FileReport[]): Set<string> {
   return new Set(reports.filter((report) => !fullyVerified(report)).map((report) => report.key));
 }
@@ -638,18 +696,68 @@ export async function syncAll(
   let stoppedBecause: string | undefined;
   let aborted = false;
   let consecutiveFailures = 0;
-  for (let index = 0; index < list.length; index += 1) {
-    if (options.signal?.aborted) {
-      aborted = true;
-      break;
-    }
-    const result = await syncDosya(list[index], {
+  // UYAP sayfası yenilenince (oturum tazeleme, toparlanma) listedeki satır anahtarları geçersizleşir ve kalan her dosya
+  // "liste değişmiş" hatası alır; gerçek aktarımda koşu 6. dosyadan sonra böyle durdu (2026-10-12). Liste bir koşuda en çok
+  // iki kez yeniden okunur, dosyalar esas no + birim + yargı türüyle yeni anahtarlarına eşlenir ve dosya yeniden denenir.
+  // Raporlar özgün anahtarı taşımaya devam eder (sayfa satırları onunla eşler).
+  const liveKey = new Map<string, string>();
+  const identity = (dosya: BridgeDosya) => `${dosya.yargiTuru}|${dosya.esas.replace(/\s+/g, "")}|${dosya.birim.trim()}`;
+  let relists = 2;
+  let heals = HEAL_ATTEMPTS;
+  const run = async (index: number) => {
+    const dosya = list[index];
+    const result = await syncDosya({ ...dosya, key: liveKey.get(dosya.key) ?? dosya.key }, {
       ...options,
       bridge,
       recoveryBudget,
       index,
       total: list.length,
     });
+    result.report.key = dosya.key;
+    return result;
+  };
+  const remap = (fresh: BridgeDosya[]) => {
+    const byIdentity = new Map(fresh.map((dosya) => [identity(dosya), dosya.key]));
+    for (const dosya of list) {
+      const key = byIdentity.get(identity(dosya));
+      if (key) liveKey.set(dosya.key, key);
+    }
+  };
+  const relist = async (): Promise<boolean> => {
+    if (!bridge.relist || relists <= 0 || options.signal?.aborted) return false;
+    relists -= 1;
+    const fresh = await bridge.relist();
+    if (!fresh) return false;
+    remap(fresh);
+    return true;
+  };
+  // UYAP oturumu aktarım sürerken kapanabilir (gerçek sınamalarda 33. ve 65. dakikada kapandı; 2026-10-12). Koşu bu durumda
+  // bırakılmaz: kullanıcıdan yeniden giriş istenir ve dosya listesi yeniden okunabilene kadar beklenir; okununca kalan
+  // dosyalar yeni anahtarlarıyla sürer. Araç kullanıcı adına giriş yapmaz. Süre dolarsa ya da kullanıcı durdurursa durur.
+  const waitForSession = async (index: number): Promise<boolean> => {
+    if (!bridge.relist) return false;
+    for (let attempt = 0; attempt < LOGIN_WAIT_ATTEMPTS; attempt += 1) {
+      if (options.signal?.aborted) return false;
+      options.onProgress?.({ index, total: list.length, phase: LOGIN_WAIT_PHASE, report: reports[index] });
+      await bridge.sleep(LOGIN_POLL_MS);
+      if (options.signal?.aborted) return false;
+      const fresh = await bridge.relist();
+      if (fresh && fresh.length) {
+        remap(fresh);
+        return true;
+      }
+    }
+    return false;
+  };
+  for (let index = 0; index < list.length; index += 1) {
+    if (options.signal?.aborted) {
+      aborted = true;
+      break;
+    }
+    let result = await run(index);
+    if (result.report.outcome === "failed" && !result.fatal && (result.code === "stale" || result.code === "recovery_failed" || result.code === "no_list")) {
+      if (await relist()) result = await run(index);
+    }
     reports[index] = result.report;
     await options.onCheckpoint?.({
       reports: [...reports],
@@ -661,15 +769,70 @@ export async function syncAll(
       break;
     }
     if (result.fatal) {
+      // Oturum/sekme kaybı: yeniden giriş beklenir; gelirse aynı dosya baştan denenir.
+      if (await waitForSession(index)) {
+        reports[index] = blankReport(list[index]);
+        index -= 1;
+        consecutiveFailures = 0;
+        continue;
+      }
       stoppedBecause = result.fatal.error;
       break;
     }
     consecutiveFailures = result.report.outcome === "failed" ? consecutiveFailures + 1 : 0;
     if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-      stoppedBecause = `Üst üste ${MAX_CONSECUTIVE_FAILURES} dosya okunamadı; UYAP yanıt vermiyor ya da oturum kapanmış olabilir.`;
-      break;
+      // Kendini toparlama: üst üste hata çoğu kez geçicidir (UYAP bir süre yanıt vermez, sayfa yenilenir). Koşu hemen
+      // bırakılmaz: beklenir, dosya listesi yeniden okunur (oturumun açık olduğunu da bu gösterir) ve hata alan dosyalar
+      // baştan denenir. Liste okunamıyorsa oturum kapanmış demektir; ancak o zaman durulur. Bir koşuda en çok
+      // `HEAL_ATTEMPTS` kez; nedeni ne olursa olsun aynı yol izlenir.
+      let healed = false;
+      if (bridge.relist && heals > 0 && !options.signal?.aborted) {
+        heals -= 1;
+        options.onProgress?.({ index, total: list.length, phase: "UYAP yanıt vermiyor; bir dakika beklenip dosya listesi yeniden okunacak", report: reports[index] });
+        await bridge.sleep(HEAL_WAIT_MS);
+        const fresh = options.signal?.aborted ? null : await bridge.relist();
+        // Liste okunamıyorsa oturum kapanmıştır: yeniden giriş beklenir.
+        const back2 = fresh ? (remap(fresh), true) : await waitForSession(index);
+        if (back2) {
+          for (let back = index - MAX_CONSECUTIVE_FAILURES + 1; back <= index; back += 1) reports[back] = blankReport(list[back]);
+          index -= MAX_CONSECUTIVE_FAILURES; // döngü artırınca hata alan ilk dosyaya döner
+          consecutiveFailures = 0;
+          healed = true;
+        }
+      }
+      if (!healed) {
+        stoppedBecause = `Üst üste ${MAX_CONSECUTIVE_FAILURES} dosya okunamadı; UYAP yanıt vermiyor ya da oturum kapanmış olabilir.`;
+        break;
+      }
+      continue;
     }
     if (index < list.length - 1) await bridge.sleep(FILE_PAUSE_MS);
+  }
+  // Son tur: bütün dosyalar bittikten sonra evrakı eksik kalanlar bir kez daha denenir. UYAP büyük ekleri bazen dakikalarca
+  // keser; aynı ek bir süre sonra çoğu kez iner (ölçüldü: 2026-10-11). Kullanıcının düğmeye yeniden basması gerekmesin.
+  // Yalnız aktarım kipinde, koşu durmadıysa ve yalnız UYAP ağacı okunabilmiş ("eksik") dosyalar için; dosya bilgileri
+  // yeniden okunmaz.
+  if (options.pull !== false && !aborted && !stoppedBecause) {
+    for (let index = 0; index < list.length; index += 1) {
+      const before = reports[index];
+      if (before.outcome !== "incomplete" || before.missing <= 0) continue;
+      if (options.signal?.aborted) {
+        aborted = true;
+        break;
+      }
+      await bridge.sleep(FILE_PAUSE_MS);
+      const result = await syncDosya({ ...list[index], key: liveKey.get(list[index].key) ?? list[index].key },
+        { ...options, bridge, recoveryBudget, index, total: list.length, detail: false });
+      result.report.key = list[index].key;
+      if (result.fatal) {
+        stoppedBecause = result.fatal.error;
+        break;
+      }
+      // Yeni okuma yalnız daha iyiyse eskisinin yerini alır; dosya bilgisi sonucu ilk turdan korunur.
+      if (result.report.outcome !== "failed" && result.report.missing <= before.missing)
+        reports[index] = { ...result.report, sent: before.sent + result.report.sent, detail: before.detail };
+      await options.onCheckpoint?.({ reports: [...reports], summary: summarize(reports), aborted: !!options.signal?.aborted });
+    }
   }
   return { reports, summary: summarize(reports), stoppedBecause, aborted };
 }
@@ -743,13 +906,9 @@ export function toServerItems(reports: FileReport[], dosyalar: BridgeDosya[]): S
   const byKey = new Map(dosyalar.map((dosya) => [dosya.key, dosya]));
   const items: ServerSyncItem[] = [];
   for (const report of reports) {
-    // Evraksız dosyanın JurisAI'da dava kaydı yoktur (kayıt ilk evrakla oluşur); gönderilecek sayı da yoktur.
-    if (
-      report.outcome === "pending" ||
-      report.outcome === "empty" ||
-      (report.outcome === "failed" && report.found === 0)
-    )
-      continue;
+    // Evraksız dosya da bildirilir (0 evrak, eksiksiz): yoksa her liste yenilemede "çekilmemiş" görünürdü. Dava kaydı dosya
+    // bilgileri kaydedilirken açılır; kayıt yoksa sunucu satırı "no_case" diye atlar.
+    if (report.outcome === "pending" || (report.outcome === "failed" && report.found === 0)) continue;
     const esas = (report.who?.esas || report.esas).trim();
     const birim = (report.who?.birim || report.birim).trim();
     if (!esas || !birim) continue;
@@ -765,7 +924,7 @@ export function toServerItems(reports: FileReport[], dosyalar: BridgeDosya[]): S
       declared: report.declared,
       found: report.found,
       missing: report.missing,
-      complete: report.outcome === "complete",
+      complete: report.outcome === "complete" || report.outcome === "empty",
       problems: report.problems.slice(0, 6),
     });
   }
