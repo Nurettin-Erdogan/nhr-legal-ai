@@ -6,8 +6,8 @@ PY=.venv/bin/python
 while true; do
   $PY -X utf8 -u scripts/collect_bedesten.py --source yargitay --known-file "$HOME/yargitay-known.tsv.gz" \
     --from-year 2022 --to-year 2012 >> data/logs/bedesten-yargitay.out.log 2>> data/logs/bedesten-yargitay.err.log < /dev/null
-  # PC duraklatıldığı (kullanıcı kararı, 2026-10-12) için PC payı olan 2009-2000 de burada taranır; 2011-2010 PC'de bitti.
-  $PY -X utf8 -u scripts/collect_bedesten.py --source yargitay --known-file "$HOME/yargitay-known.tsv.gz"     --from-year 2009 --to-year 2000 >> data/logs/bedesten-yargitay.out.log 2>> data/logs/bedesten-yargitay.err.log < /dev/null
+  # 2009-2007 burada (2011-2010 PC'de bitti); 2006-2000 PC'de (PC 2026-10-13'te yeniden açıldı).
+  $PY -X utf8 -u scripts/collect_bedesten.py --source yargitay --known-file "$HOME/yargitay-known.tsv.gz"     --from-year 2009 --to-year 2007 >> data/logs/bedesten-yargitay.out.log 2>> data/logs/bedesten-yargitay.err.log < /dev/null
   $PY -X utf8 -u scripts/collect_bedesten.py --source danistay --known-file "$HOME/danistay-known.tsv.gz" \
     --from-year 2026 --to-year 1982 >> data/logs/bedesten-danistay.out.log 2>> data/logs/bedesten-danistay.err.log < /dev/null
   sleep 30
