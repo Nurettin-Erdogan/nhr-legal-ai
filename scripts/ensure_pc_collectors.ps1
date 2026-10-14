@@ -1,10 +1,10 @@
-# PC'deki hukuk korpusu toplayıcılarını (Bedesten Yargıtay boşluk taraması + Emsal) canlı tutar.
-# Görev Zamanlayıcı 5 dakikada bir ve oturum açılışında çalıştırır: süreç yoksa gizli ve oturumdan bağımsız başlatır.
-# PC kapanıp açılınca ya da süreç ölünce kendiliğinden kaldığı yerden devam eder (aylık/günlük imleçler durum dosyasında).
+# PC'deki veri işlerini canlı tutar: Emsal toplayıcısı (emsal.uyap.gov.tr) ve mevzuat doğrulama döngüsü. Bedesten (Yargıtay/Danıştay)
+# işleri 2026-10-14'ten beri AWS + Azure çekici düğümlerinde; PC Bedesten'e istek atmaz. Embedding haftalık görevle çalışır.
+# Görev Zamanlayıcı 5 dakikada bir ve uykudan uyanınca çalıştırır: süreç yoksa gizli başlatır, kaldığı yerden devam eder.
 #
-# Geçici durdurma: data\campaign\PAUSE_PC_COLLECTORS dosyası varken portal toplayıcıları (Bedesten/Emsal) başlatılmaz (çalışanları kendiniz durdurun);
-# portala istek atmayan embedding işçisi etkilenmez.
-# Örn. UYAP'a bu bilgisayardan girerken: dosyayı oluşturup süreçleri durdurun, bitince dosyayı silin.
+# Geçici durdurma: data\campaign\PAUSE_PC_COLLECTORS dosyası varken portal işleri (Emsal, mevzuat doğrulama) başlatılmaz
+# (çalışanları kendiniz durdurun). Örn. UYAP'tan toplu aktarım yapılırken: dosyayı oluşturup süreçleri durdurun, bitince silin.
+# data\campaign\PAUSE_PC_EMBED: sürekli embedding işçisini başlatmaz (haftalık görev ayrı).
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $py = Join-Path $root '.venv\Scripts\python.exe'
@@ -29,22 +29,18 @@ function Start-Hidden([string]$name, [string]$scriptArgs) {
     } | Out-Null
 }
 
-# PC payı: önce eski yıllar (2006-2000) eksik taraması (Azure 2022-2007'yi tarar; aralıklar çakışmaz; 2011-2007 tamamlandı); bitince Yargıtay seed DOĞRULAMASI
-# (kimlikle doğrudan çekim, liste isteği yok; ~650/sa; sıra: atıf yapılanlar, sonra en yeni). Biten aylar durum dosyasından tek istek
-# harcamadan atlanır, bu yüzden süreç ölüp yeniden başlasa da kayıp yoktur; doğrulama imleci data\campaign\verify-yargitay.json'dadır.
-if (-not $paused -and -not (Test-Running 'collect_bedesten\.py|verify_seeds\.py')) {
-    $leg = "scripts\collect_bedesten.py --source yargitay --by-chamber"
-    $verify = "scripts\verify_seeds.py --source yargitay --delay 4.5 --min-delay 4.4 --cooldown 15"
-    $out = Join-Path $logs 'pc-gap-yargitay.out.log'
-    $err = Join-Path $logs 'pc-gap-yargitay.err.log'
-    $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }
-    $chain = "cmd.exe /c `"cd /d $root && ($py -X utf8 -u $leg --from-year 2006 --to-year 2000 && $py -X utf8 -u $verify) >> `"$out`" 2>> `"$err`"`""
-    Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
-        CommandLine = $chain; CurrentDirectory = $root; ProcessStartupInformation = $startup
-    } | Out-Null
-}
+# Yargıtay/Danıştay: eksik taraması bitti (2026-10-13/14); seed doğrulaması AWS + Azure çekici düğümlerinde
+# (`scripts/fetch_worker.py`, sonuçları `scripts/fetcher_hub.py` günde bir işler). PC Bedesten'e istek ATMAZ.
+
+# PC'nin kendi işleri (kullanıcı 2026-10-14: "PC diğer eksik verileri çeksin, boş durmasın"): ayrı portallar, Bedesten kotasını paylaşmaz.
+# UYAP'tan toplu aktarım yapılacağı zaman PAUSE_PC_COLLECTORS ile durdurulur.
 if (-not $paused -and -not (Test-Running 'collect_emsal\.py')) {
     Start-Hidden 'pc-emsal3' 'scripts\collect_emsal.py --delay 2.0'
+}
+# Mevzuat doğrulama döngüsü (mevzuat.gov.tr / Resmî Gazete; checkpoint 'mevzuat_verify'): eskiden Azure'da kendi veritabanında
+# çalışırdı, Azure artık veritabanı tutmadığı için PC'de, doğrudan ana veritabanında çalışır.
+if (-not $paused -and -not (Test-Running 'worker\.verify_loop')) {
+    Start-Hidden 'pc-mevzuat-verify' '-m worker.verify_loop'
 }
 # Tek embedding işçisi, düşük öncelikli: toplayıcıları ve bilgisayarı yavaşlatmadan, yeni gelen kararları yavaş yavaş vektörler.
 # Gürültü/yük istenmiyorsa data\campaign\PAUSE_PC_EMBED dosyası embedding işçisini de başlatmaz.
