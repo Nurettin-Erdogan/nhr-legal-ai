@@ -1,11 +1,11 @@
 """PC (ana veritabanı) tarafı: çekici düğümlere (AWS, Azure) iş gönderir, sonuçları alır ve seed'leri doğrular.
 
-PC portala hiç istek atmaz. Her çağrıda (Görev Zamanlayıcı 10 dk'da bir `run`):
+PC portala hiç istek atmaz. Her çağrıda (Görev Zamanlayıcı günde bir `run`):
   1. collect: düğümlerdeki biten sonuç parçalarını (out/*.jsonl.gz) scp ile alır, düğümden siler.
   2. apply  : her sonucu ilgili seed ile `verify_seeds.compare_texts` kuralıyla karşılaştırır:
               eşleşen → resmî (ready) + resmî metin; harf/rakam farkı → korpustan çıkarılır (deleted_at);
               portalda yok → verify_status=unavailable; ağ hatası → atıf kuyruğuna (sonra yeniden).
-  3. dispatch: düğümde bekleyen iş azsa yeni iş dosyası (5000 kimlik) gönderir. Öncelik: atıf kuyruğu
+  3. dispatch: düğümdeki bekleyen işi 8 dosyaya (8 x 5000 kimlik, ~2,5 günlük) tamamlar. Öncelik: atıf kuyruğu
               (seed_verification_queue: asistanın atıf yaptığı seed'ler), sonra en yeniden eskiye. Seed daire etiketleri
               güvenilmez (570 bin "Büyük Genel Kurulu" yanlış etiketi), bu yüzden daireye göre öncelik verilmez.
               İmleç data/campaign/fetcher-hub.json.
@@ -40,7 +40,9 @@ NODES = {
     "azure": {"host": "nhr@20.91.186.253", "key": None, "dir": "fetcher"},
 }
 JOB_SIZE = 5000
-LOW_WATER = 1          # düğümde en çok bu kadar iş dosyası varken yenisi gönderilir (biri işlenir, biri sırada)
+# PC günde bir kez çalışır (kullanıcı 2026-10-14): düğümde ~2,5 günlük iş (8 x 5000; düğüm ~16 bin/gün) hazır tutulur ki
+# PC bir gün çalışmasa bile düğüm boş kalmasın.
+TARGET_JOBS = 8
 STATE = ROOT / "data" / "campaign" / "fetcher-hub.json"
 INBOX = ROOT / "data" / "fetcher" / "inbox"
 APPLIED = ROOT / "data" / "fetcher" / "applied"
@@ -227,24 +229,29 @@ def next_batch(connection: psycopg.Connection, state: dict, n: int) -> tuple[lis
 
 
 def dispatch(name: str, node: dict, connection: psycopg.Connection, state: dict) -> int:
-    pending = ssh(node, f"ls -1 {node['dir']}/jobs/*.jsonl.gz 2>/dev/null | wc -l").strip()
-    if int(pending or 0) > LOW_WATER:  # biri işlenirken en çok biri sırada beklesin
-        return 0
-    ids, queued = next_batch(connection, state, JOB_SIZE)
-    if not ids:
-        return 0
-    job = f"{datetime.now():%Y%m%d-%H%M%S}-{name}"
-    local = ROOT / "data" / "fetcher" / "jobs" / f"{job}.jsonl.gz"
-    local.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(local, "wt", encoding="utf-8") as handle:
-        for external_id in ids:
-            handle.write(json.dumps({"external_id": external_id}) + "\n")
-    scp(node, str(local), f"{node['host']}:{node['dir']}/jobs/{job}.jsonl.gz.part")
-    ssh(node, f"mv {node['dir']}/jobs/{job}.jsonl.gz.part {node['dir']}/jobs/{job}.jsonl.gz")
-    if queued:
-        connection.execute(_PICKED, (queued,))
-    save_state(state)  # imleç ancak iş düğüme ulaştıktan sonra kalıcı
-    return len(ids)
+    pending = int(ssh(node, f"ls -1 {node['dir']}/jobs/*.jsonl.gz 2>/dev/null | wc -l").strip() or 0)
+    stamp = f"{datetime.now():%Y%m%d-%H%M%S}"
+    sent = 0
+    index = 0
+    while pending < TARGET_JOBS:
+        ids, queued = next_batch(connection, state, JOB_SIZE)
+        if not ids:
+            break
+        job = f"{stamp}-{index:02d}-{name}"
+        local = ROOT / "data" / "fetcher" / "jobs" / f"{job}.jsonl.gz"
+        local.parent.mkdir(parents=True, exist_ok=True)
+        with gzip.open(local, "wt", encoding="utf-8") as handle:
+            for external_id in ids:
+                handle.write(json.dumps({"external_id": external_id}) + "\n")
+        scp(node, str(local), f"{node['host']}:{node['dir']}/jobs/{job}.jsonl.gz.part")
+        ssh(node, f"mv {node['dir']}/jobs/{job}.jsonl.gz.part {node['dir']}/jobs/{job}.jsonl.gz")
+        if queued:
+            connection.execute(_PICKED, (queued,))
+        save_state(state)  # imleç ancak iş düğüme ulaştıktan sonra kalıcı
+        sent += len(ids)
+        pending += 1
+        index += 1
+    return sent
 
 
 def run() -> int:
