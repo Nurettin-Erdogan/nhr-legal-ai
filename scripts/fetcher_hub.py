@@ -90,7 +90,8 @@ def _log(message: str) -> None:
 
 
 def _ssh_args(node: dict) -> list[str]:
-    args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=20"]
+    # ServerAlive: Azure'da oturumun bağlandıktan sonra asılı kaldığı görüldü (2026-10-14); 30 sn yanıtsızsa kopar.
+    args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3"]
     if node["key"]:
         args += ["-i", node["key"]]
     return args
@@ -125,17 +126,27 @@ def save_state(state: dict) -> None:
 
 # -- collect -------------------------------------------------------------------------------------
 def collect(name: str, node: dict) -> int:
-    listing = ssh(node, f"cd {node['dir']}/out 2>/dev/null && ls -1 *.jsonl.gz 2>/dev/null || true").split()
+    """Biten parçaları kopyalar; düğümden toplu siler. Silme başarısız olursa parça bir sonraki turda yeniden
+    kopyalanır, işleme zararsızdır (zaten doğrulanmış kayıt atlanır)."""
+    listing = ssh(node, f"cd {node['dir']}/out 2>/dev/null && ls -1 *.jsonl.gz 2>/dev/null || true", timeout=60).split()
     target = INBOX / name
     target.mkdir(parents=True, exist_ok=True)
-    got = 0
+    copied = []
     for fname in listing:
         local = target / fname
-        scp(node, f"{node['host']}:{node['dir']}/out/{fname}", str(local) + ".part")
+        try:
+            scp(node, f"{node['host']}:{node['dir']}/out/{fname}", str(local) + ".part", timeout=180)
+        except Exception as exc:  # noqa: BLE001
+            _log(f"{name}: {fname} kopyalanamadı: {exc}")
+            break
         os.replace(str(local) + ".part", local)
-        ssh(node, f"rm -f {node['dir']}/out/{fname}")
-        got += 1
-    return got
+        copied.append(fname)
+    if copied:
+        try:
+            ssh(node, "cd " + node["dir"] + "/out && rm -f " + " ".join(copied), timeout=60)
+        except Exception as exc:  # noqa: BLE001
+            _log(f"{name}: düğümde silme başarısız (sonraki turda tekrar kopyalanır): {exc}")
+    return len(copied)
 
 
 # -- apply ---------------------------------------------------------------------------------------
