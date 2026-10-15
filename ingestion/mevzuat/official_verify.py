@@ -45,8 +45,10 @@ FROM (
     JOIN legislation_details d ON d.legal_source_id = ls.id
     WHERE ls.source_type = 'legislation' AND ls.is_current
       AND ls.deleted_at IS NULL
-      AND (ls.metadata->>'verified_against_gazette' IS DISTINCT FROM 'true'
-           OR ls.metadata->>'verified_against_mbs' IS DISTINCT FROM 'true')
+      -- Kullanıcı kararı (2026-10-15): iki resmî kaynaktan (Resmî Gazete, MBS) BİRİYLE eşleşen mevzuat resmîdir;
+      -- yalnız ikisiyle de eşleşmemiş kayıtlar beklemede kalır (bkz. _APPLY_SQL, _TRASH_SQL).
+      AND ls.metadata->>'verified_against_gazette' IS DISTINCT FROM 'true'
+      AND ls.metadata->>'verified_against_mbs' IS DISTINCT FROM 'true'
       -- Tebliğ ve yönetmeliklerin law_no değeri gazete numarası değil MBS iç kimliğidir; bunlar
       -- Resmî Gazete'de yayın günü + başlıkla doğrulanır (bkz. official_verify._check_gazette),
       -- bu yüzden artık sorgudan dışlanmaz.
@@ -102,14 +104,33 @@ UPDATE legal_sources ls
 SET metadata = ls.metadata || %s,
     ingest_status = CASE
         WHEN (ls.metadata || %s)->>'verified_against_gazette' = 'true'
-         AND (ls.metadata || %s)->>'verified_against_mbs' = 'true'
+          OR (ls.metadata || %s)->>'verified_against_mbs' = 'true'
         THEN 'ready' ELSE 'pending' END,
     last_verified_at = CASE
         WHEN (ls.metadata || %s)->>'verified_against_gazette' = 'true'
-         AND (ls.metadata || %s)->>'verified_against_mbs' = 'true'
+          OR (ls.metadata || %s)->>'verified_against_mbs' = 'true'
         THEN NOW() ELSE ls.last_verified_at END
 FROM legislation_details d
 WHERE d.legal_source_id = ls.id AND ls.is_current
+  AND d.legislation_type = %s AND d.law_no = %s
+  AND d.official_gazette_date IS NOT DISTINCT FROM %s
+  AND d.official_gazette_no IS NOT DISTINCT FROM %s
+"""
+
+# İki kaynakla da eşleşmeyen mevzuat TRASH_AFTER_ATTEMPTS denemeden sonra korpustan çıkarılır (satır silinmez,
+# `deleted_at` + neden; kullanıcı kararı 2026-10-15: "ikisinde de yoksa çöpe at"). Geçici kesintiler
+# (VerificationCooldown) deneme sayılmaz, bu yüzden yalnız gerçekten bulunamayanlar buraya düşer.
+TRASH_AFTER_ATTEMPTS = 3
+_TRASH_SQL = """
+UPDATE legal_sources ls
+SET deleted_at = NOW(),
+    metadata = ls.metadata || jsonb_build_object('verify_status', 'unverifiable',
+                                                 'verify_trashed_at', NOW()::text)
+FROM legislation_details d
+WHERE d.legal_source_id = ls.id AND ls.is_current AND ls.deleted_at IS NULL
+  AND ls.ingest_status <> 'ready'
+  AND ls.metadata->>'verified_against_gazette' IS DISTINCT FROM 'true'
+  AND ls.metadata->>'verified_against_mbs' IS DISTINCT FROM 'true'
   AND d.legislation_type = %s AND d.law_no = %s
   AND d.official_gazette_date IS NOT DISTINCT FROM %s
   AND d.official_gazette_no IS NOT DISTINCT FROM %s
@@ -213,19 +234,13 @@ def apply_law_verification(
     prior_metadata = law.get("metadata") if isinstance(law.get("metadata"), dict) else {}
     prior_count = prior_metadata.get("verify_attempt_count")
     prior_count = prior_count if isinstance(prior_count, int) else 0
-    fully_verified = bool(flags) and all(flags.values())
-    attempt_count = {"verify_attempt_count": 0 if fully_verified else prior_count + 1}
-    metadata = {**flags, **results, **attempt_count}
-    connection.execute(
-        _APPLY_SQL,
-        (Jsonb(metadata),) * 5
-        + (
-            law["legislation_type"],
-            law["law_no"],
-            law["official_gazette_date"],
-            law["official_gazette_no"],
-        ),
-    )
+    verified = bool(flags) and any(flags.values())
+    attempts = 0 if verified else prior_count + 1
+    metadata = {**flags, **results, "verify_attempt_count": attempts}
+    key = (law["legislation_type"], law["law_no"], law["official_gazette_date"], law["official_gazette_no"])
+    connection.execute(_APPLY_SQL, (Jsonb(metadata),) * 5 + key)
+    if not verified and attempts >= TRASH_AFTER_ATTEMPTS:
+        connection.execute(_TRASH_SQL, key)
 
 
 def _check_gazette(
