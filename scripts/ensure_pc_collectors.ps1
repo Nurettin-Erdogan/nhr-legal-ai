@@ -49,7 +49,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $root 'data\campaign\PAUSE_PC_EMBED'
     Start-Sleep -Seconds 3
     Get-Process python -ErrorAction SilentlyContinue | ForEach-Object {
         $line = (Get-CimInstance Win32_Process -Filter "ProcessId=$($_.Id)").CommandLine
-        if ($line -match 'embed_chunks\.py') { try { $_.PriorityClass = 'BelowNormal' } catch {} }
+        if ($line -match 'embed_chunks\.py') { try { $_.PriorityClass = 'Idle' } catch {} }
     }
 }
 
