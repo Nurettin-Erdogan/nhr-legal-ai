@@ -37,6 +37,11 @@ function Start-Hidden([string]$name, [string]$scriptArgs) {
 if (-not $paused -and -not (Test-Running 'collect_emsal\.py')) {
     Start-Hidden 'pc-emsal3' 'scripts\collect_emsal.py --delay 2.0'
 }
+# Emsal seed doğrulaması (kullanıcı 2026-10-15: "her şey 2 sunucu + PC'de doğrulansın"): PC en yeniden eskiye gider,
+# sunuculardaki Emsal şeridi (fetcher_hub) en eskiden yeniye; ortada buluşurlar. Ayrı portal: Bedesten kotasını etkilemez.
+if (-not $paused -and -not (Test-Running 'verify_seeds\.py --source emsal')) {
+    Start-Hidden 'pc-verify-emsal' 'scripts\verify_seeds.py --source emsal --delay 3.0 --min-delay 3.0 --cooldown 120'
+}
 # Mevzuat doğrulama döngüsü (mevzuat.gov.tr / Resmî Gazete; checkpoint 'mevzuat_verify'): eskiden Azure'da kendi veritabanında
 # çalışırdı, Azure artık veritabanı tutmadığı için PC'de, doğrudan ana veritabanında çalışır.
 if (-not $paused -and -not (Test-Running 'worker\.verify_loop')) {

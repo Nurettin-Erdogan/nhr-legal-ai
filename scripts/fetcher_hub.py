@@ -39,10 +39,8 @@ NODES = {
     "aws": {"host": "ubuntu@13.60.255.72", "key": str(Path.home() / ".ssh" / "nhr-aws.pem"), "dir": "fetcher"},
     "azure": {"host": "nhr@20.91.186.253", "key": None, "dir": "fetcher"},
 }
-JOB_SIZE = 5000
 # PC günde bir kez çalışır (kullanıcı 2026-10-14): düğümde ~2,5 günlük iş (8 x 5000; düğüm ~16 bin/gün) hazır tutulur ki
 # PC bir gün çalışmasa bile düğüm boş kalmasın.
-TARGET_JOBS = 8
 STATE = ROOT / "data" / "campaign" / "fetcher-hub.json"
 INBOX = ROOT / "data" / "fetcher" / "inbox"
 APPLIED = ROOT / "data" / "fetcher" / "applied"
@@ -71,6 +69,28 @@ WHERE q.picked_at IS NULL
 ORDER BY q.request_count DESC, q.requested_at
 LIMIT %(n)s
 """
+_SEED_EMSAL = """
+  AND ls.ingestion_method = 'bulk_seed' AND ls.ingest_status = 'pending' AND ls.is_current
+  AND ls.deleted_at IS NULL AND ls.source_type = 'court_decision'
+  AND ls.metadata->>'verify_status' IS NULL
+  AND ls.external_id LIKE 'emsal:%%'
+"""
+# Emsal şeridi EN ESKİDEN yeniye gider: PC'deki `verify_seeds.py --source emsal` en yeniden eskiye gittiği için ikisi
+# aynı kaydı çekmez, ortada buluşur (çakışan az sayıda kayıt işlemede zaten doğrulanmış olarak atlanır).
+_SELECT_EMSAL = """
+SELECT ls.id, ls.external_id, d.decision_date
+FROM court_decision_details d JOIN legal_sources ls ON ls.id = d.legal_source_id
+WHERE d.decision_date IS NOT NULL
+  AND (%(cdate)s::date IS NULL OR (d.decision_date, d.legal_source_id) > (%(cdate)s::date, %(cid)s::uuid))
+""" + _SEED_EMSAL + """
+ORDER BY d.decision_date ASC, d.legal_source_id ASC
+LIMIT %(n)s
+"""
+LANES = {
+    # şerit: (düğümdeki iş dizini, iş boyutu, düğümde tutulacak iş sayısı) — ~2,5 günlük iş
+    "bedesten": ("jobs", 5000, 8),
+    "emsal": ("jobs-emsal", 1500, 6),
+}
 _PICKED = "UPDATE seed_verification_queue SET picked_at = NOW() WHERE legal_source_id = ANY(%s)"
 _ROW = """
 SELECT ls.id, ls.raw_text FROM legal_sources ls
@@ -160,7 +180,8 @@ def apply_all(connection: psycopg.Connection) -> dict[str, int]:
     from ingestion.yargitay.portal import document_url as yargitay_url
     from verify_seeds import _MARK, _QUEUE_DONE, _TRASH, _VERIFY, SOURCES, compare_texts
 
-    urls = {"yargitay": yargitay_url, "danistay": danistay_url}
+    urls = {"yargitay": yargitay_url, "danistay": danistay_url,
+            "emsal": lambda i: yargitay_url(i, base_url="https://emsal.uyap.gov.tr/")}
     totals = {"verified": 0, "mismatch": 0, "unavailable": 0, "requeued": 0, "skipped": 0}
     APPLIED.mkdir(parents=True, exist_ok=True)
     for path in sorted(INBOX.glob("*/*.jsonl.gz")):
@@ -212,6 +233,18 @@ def apply_all(connection: psycopg.Connection) -> dict[str, int]:
 
 
 # -- dispatch ------------------------------------------------------------------------------------
+def next_batch_emsal(connection: psycopg.Connection, state: dict, n: int) -> tuple[list[str], list]:
+    if state.get("emsal_done"):
+        return [], []
+    cursor = state.get("emsal", {})
+    rows = connection.execute(_SELECT_EMSAL, {"cdate": cursor.get("date"), "cid": cursor.get("id"), "n": n}).fetchall()
+    if not rows:
+        state["emsal_done"] = True
+        return [], []
+    state["emsal"] = {"date": str(rows[-1][2]), "id": str(rows[-1][0])}
+    return [row[1] for row in rows], []
+
+
 def next_batch(connection: psycopg.Connection, state: dict, n: int) -> tuple[list[str], list]:
     """(kimlikler, kuyruktan alınanların legal_source_id'leri). Kuyruk işareti iş düğüme ulaşınca konur."""
     queued = connection.execute(_QUEUE, {"n": n}).fetchall()
@@ -228,23 +261,25 @@ def next_batch(connection: psycopg.Connection, state: dict, n: int) -> tuple[lis
     return ids, [row[0] for row in queued]
 
 
-def dispatch(name: str, node: dict, connection: psycopg.Connection, state: dict) -> int:
-    pending = int(ssh(node, f"ls -1 {node['dir']}/jobs/*.jsonl.gz 2>/dev/null | wc -l").strip() or 0)
+def dispatch(name: str, node: dict, connection: psycopg.Connection, state: dict, lane: str = "bedesten") -> int:
+    jobs_dir, job_size, target = LANES[lane]
+    batch = next_batch if lane == "bedesten" else next_batch_emsal
+    pending = int(ssh(node, f"mkdir -p {node['dir']}/{jobs_dir}; ls -1 {node['dir']}/{jobs_dir}/*.jsonl.gz 2>/dev/null | wc -l").strip() or 0)
     stamp = f"{datetime.now():%Y%m%d-%H%M%S}"
     sent = 0
     index = 0
-    while pending < TARGET_JOBS:
-        ids, queued = next_batch(connection, state, JOB_SIZE)
+    while pending < target:
+        ids, queued = batch(connection, state, job_size)
         if not ids:
             break
-        job = f"{stamp}-{index:02d}-{name}"
+        job = f"{stamp}-{index:02d}-{name}" + ("" if lane == "bedesten" else f"-{lane}")
         local = ROOT / "data" / "fetcher" / "jobs" / f"{job}.jsonl.gz"
         local.parent.mkdir(parents=True, exist_ok=True)
         with gzip.open(local, "wt", encoding="utf-8") as handle:
             for external_id in ids:
                 handle.write(json.dumps({"external_id": external_id}) + "\n")
-        scp(node, str(local), f"{node['host']}:{node['dir']}/jobs/{job}.jsonl.gz.part")
-        ssh(node, f"mv {node['dir']}/jobs/{job}.jsonl.gz.part {node['dir']}/jobs/{job}.jsonl.gz")
+        scp(node, str(local), f"{node['host']}:{node['dir']}/{jobs_dir}/{job}.jsonl.gz.part")
+        ssh(node, f"mv {node['dir']}/{jobs_dir}/{job}.jsonl.gz.part {node['dir']}/{jobs_dir}/{job}.jsonl.gz")
         if queued:
             connection.execute(_PICKED, (queued,))
         save_state(state)  # imleç ancak iş düğüme ulaştıktan sonra kalıcı
@@ -275,12 +310,13 @@ def run() -> int:
                 state.setdefault("totals", {})[key] = state.get("totals", {}).get(key, 0) + value
             save_state(state)
         for name, node in NODES.items():
-            try:
-                sent = dispatch(name, node, connection, state)
-                if sent:
-                    _log(f"{name}: {sent} kimlik gönderildi")
-            except Exception as exc:  # noqa: BLE001
-                _log(f"{name}: gönderme hatası: {exc}")
+            for lane in LANES:
+                try:
+                    sent = dispatch(name, node, connection, state, lane)
+                    if sent:
+                        _log(f"{name}/{lane}: {sent} kimlik gönderildi")
+                except Exception as exc:  # noqa: BLE001
+                    _log(f"{name}/{lane}: gönderme hatası: {exc}")
     return 0
 
 

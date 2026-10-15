@@ -15,6 +15,7 @@ Hız: IP başına ~750 istek/sa (4,4 sn aralık, 429'da yavaşlar). Tek süreç 
 
 from __future__ import annotations
 
+import argparse
 import gzip
 import json
 import logging
@@ -22,6 +23,9 @@ import os
 import signal
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -31,7 +35,7 @@ sys.path.insert(0, str(ROOT))
 from ingestion.bedesten_emsal import BedestenClient, BedestenError, BedestenRateLimited  # noqa: E402
 from ingestion.text import html_to_text, normalize_text  # noqa: E402
 
-JOBS = ROOT / "jobs"
+JOBS = ROOT / "jobs"          # şerit 'emsal' için ROOT / "jobs-emsal" (main içinde seçilir)
 OUT = ROOT / "out"
 PART_SIZE = 200
 FLOOR = 4.4
@@ -91,6 +95,81 @@ class Fetcher:
         raise KeyboardInterrupt
 
 
+class EmsalFetcher:
+    """UYAP Emsal (emsal.uyap.gov.tr) karar metni; Bedesten'den ayrı portal ve ayrı kota.
+    Portal sık 429 veriyor (ölçüldü: PC/Azure toplayıcıları 90-300 sn bekliyordu): yavaş ve sabırlı gider."""
+
+    BASE = "https://emsal.uyap.gov.tr/"
+
+    def __init__(self) -> None:
+        self.interval = 3.0
+        self.next_at = 0.0
+        self.requests = 0
+        self.limited = 0
+        self.beat = (time.time(), 0, 0)
+        self.streak = 0
+
+    def _heartbeat(self) -> None:
+        at, req, lim = self.beat
+        now = time.time()
+        if now - at >= 300:
+            log.info("ölçüm (emsal): %d istek/5 dk = %.0f istek/sa | 429=%d | aralık=%.1f sn",
+                     self.requests - req, (self.requests - req) / ((now - at) / 3600), self.limited - lim, self.interval)
+            self.beat = (now, self.requests, self.limited)
+
+    def _get(self, document_id: str) -> dict:
+        url = self.BASE + "getDokuman?" + urllib.parse.urlencode({"id": document_id})
+        request = urllib.request.Request(url, headers={
+            "User-Agent": "nhr-legal-ai/0.1 (official-public-source-ingestion)", "Accept": "application/json"})
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8-sig"))
+
+    def fetch(self, document_id: str) -> dict:
+        errors = 0
+        while not STOP:
+            self._heartbeat()
+            wait = self.next_at - time.time()
+            if wait > 0:
+                time.sleep(wait)
+            self.next_at = time.time() + self.interval
+            self.requests += 1
+            try:
+                payload = self._get(document_id)
+            except urllib.error.HTTPError as exc:
+                if exc.code == 429:
+                    self.limited += 1
+                    self.streak = 0
+                    self.interval = min(12.0, self.interval * 1.1)
+                    time.sleep(120)
+                    continue
+                errors += 1
+                if errors >= 4:
+                    return {"status": "error", "error": f"HTTP {exc.code}"}
+                time.sleep(15 * errors)
+                continue
+            except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+                errors += 1
+                if errors >= 4:
+                    return {"status": "error", "error": str(exc)[:160]}
+                time.sleep(15 * errors)
+                continue
+            meta = payload.get("metadata") or {}
+            message = " ".join(str(meta.get(k) or "") for k in ("FMTE", "message", "error")).strip()
+            if "captcha" in message.lower():
+                log.warning("Emsal CAPTCHA istedi; 15 dk bekleniyor (otomatik aşılmaz)")
+                time.sleep(900)
+                continue
+            html = payload.get("data")
+            if str(meta.get("FMTY") or "SUCCESS").upper() not in {"SUCCESS", "OK"} or not isinstance(html, str) or not html.strip():
+                return {"status": "not_found", "error": (message or "boş metin")[:160]}
+            self.streak += 1
+            if self.streak >= 20:
+                self.interval = max(3.0, self.interval * 0.95)
+                self.streak = 0
+            return {"status": "ok", "text": normalize_text(html_to_text(html))}
+        raise KeyboardInterrupt
+
+
 def _write_part(job: str, start: int, rows: list[dict]) -> None:
     final = OUT / f"{job}-{start:07d}.jsonl.gz"
     tmp = final.with_suffix(".gz.tmp")
@@ -100,7 +179,7 @@ def _write_part(job: str, start: int, rows: list[dict]) -> None:
     os.replace(tmp, final)
 
 
-def run_job(fetcher: Fetcher, path: Path) -> bool:
+def run_job(fetcher, path: Path) -> bool:
     job = path.name[: -len(".jsonl.gz")]
     progress = path.with_name(job + ".progress")
     with gzip.open(path, "rt", encoding="utf-8") as handle:
@@ -128,13 +207,21 @@ def run_job(fetcher: Fetcher, path: Path) -> bool:
 
 
 def main() -> int:
+    global JOBS
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--lane", choices=("bedesten", "emsal"), default="bedesten",
+                        help="bedesten: Yargıtay/Danıştay (jobs/); emsal: UYAP Emsal (jobs-emsal/)")
+    lane = parser.parse_args().lane
+    if lane == "emsal":
+        JOBS = ROOT / "jobs-emsal"
+    logname = "worker.log" if lane == "bedesten" else "worker-emsal.log"
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
-                        handlers=[logging.FileHandler(ROOT / "worker.log", encoding="utf-8"), logging.StreamHandler()])
+                        handlers=[logging.FileHandler(ROOT / logname, encoding="utf-8"), logging.StreamHandler()])
     signal.signal(signal.SIGINT, _stop)
     signal.signal(signal.SIGTERM, _stop)
     JOBS.mkdir(exist_ok=True)
     OUT.mkdir(exist_ok=True)
-    fetcher = Fetcher()
+    fetcher = Fetcher() if lane == "bedesten" else EmsalFetcher()
     while not STOP:
         jobs = sorted(JOBS.glob("*.jsonl.gz"))
         if not jobs:
