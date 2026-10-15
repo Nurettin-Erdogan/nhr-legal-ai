@@ -5,6 +5,7 @@
  */
 export interface GroupableCitation {
   marker: string;
+  source_id?: string | null;
   reference: string;
   source_url: string | null;
   verification: string;
@@ -20,14 +21,21 @@ export interface CitationGroup<T extends GroupableCitation> {
 function markerLabel(markers: string[]): string {
   if (markers.length === 1) return markers[0];
   const numbers = markers.map((marker) => Number(/^K(\d+)$/.exec(marker)?.[1] ?? NaN));
-  const consecutive = numbers.every((value, index) => Number.isFinite(value) && (index === 0 || value === numbers[index - 1] + 1));
+  const consecutive = numbers.every(
+    (value, index) => Number.isFinite(value) && (index === 0 || value === numbers[index - 1] + 1),
+  );
   return consecutive ? `${markers[0]}–${markers[markers.length - 1]}` : markers.join(", ");
 }
 
 export function groupCitations<T extends GroupableCitation>(citations: T[]): CitationGroup<T>[] {
   const groups = new Map<string, { markers: string[]; citation: T }>();
   for (const citation of citations) {
-    const key = JSON.stringify([citation.reference, citation.source_url ?? "", citation.verification]);
+    const key = JSON.stringify([
+      citation.source_id ?? "",
+      citation.reference,
+      citation.source_url ?? "",
+      citation.verification,
+    ]);
     const existing = groups.get(key);
     if (existing) existing.markers.push(citation.marker);
     else groups.set(key, { markers: [citation.marker], citation });

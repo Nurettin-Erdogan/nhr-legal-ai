@@ -126,3 +126,75 @@ test('the polling commands are refused from non-UYAP sources too', async () => {
   for (const type of ['FETCH_START', 'FETCH_POLL'])
     assert.equal((await h.send(`JURISAI_PULL_${type}`, {}, {url: 'http://localhost:3000/'})).code, 'wrong_source');
 });
+
+test('bounded poll wakes at download completion and removes its listener', async () => {
+  let finish;
+  const h = pollHarness(() => new Promise(resolve => {finish = resolve;}));
+  await h.send('JURISAI_PULL_BEGIN', {jobId: 'job-1'});
+  await h.send('JURISAI_PULL_FETCH_START');
+  const job = h.context.pullRun.fetch;
+  const pending = h.send('JURISAI_PULL_FETCH_POLL', {waitMs: 1000});
+  assert.equal(job.listeners.size, 1);
+  finish({ok: true, duplicate: false});
+  assert.equal((await pending).ok, true);
+  assert.equal(job.listeners.size, 0);
+  assert.equal((await h.send('JURISAI_PULL_FETCH_POLL')).code, 'no_fetch');
+});
+
+test('bounded poll times out with pending; it does not end or restart the download', async () => {
+  const h = pollHarness(() => new Promise(() => {}));
+  await h.send('JURISAI_PULL_BEGIN', {jobId: 'job-1'});
+  await h.send('JURISAI_PULL_FETCH_START');
+  const job = h.context.pullRun.fetch;
+  assert.equal((await h.send('JURISAI_PULL_FETCH_POLL', {waitMs: 20})).pending, true);
+  assert.equal(h.context.pullRun.fetch, job);
+  assert.equal(job.done, false);
+  assert.equal(job.listeners.size, 0);
+});
+
+test('an oversized poll wait is capped at one second', async () => {
+  const h = pollHarness(() => new Promise(() => {}));
+  await h.send('JURISAI_PULL_BEGIN', {jobId: 'job-1'});
+  await h.send('JURISAI_PULL_FETCH_START');
+  const started = performance.now();
+  assert.equal((await h.send('JURISAI_PULL_FETCH_POLL', {waitMs: 300000})).pending, true);
+  assert.ok(performance.now() - started < 2500);
+});
+
+test('cancel wakes a bounded poll immediately without leaking a completion listener', async () => {
+  const h = pollHarness(() => new Promise(() => {}));
+  await h.send('JURISAI_PULL_BEGIN', {jobId: 'job-1'});
+  await h.send('JURISAI_PULL_FETCH_START');
+  const job = h.context.pullRun.fetch;
+  const pending = h.send('JURISAI_PULL_FETCH_POLL', {waitMs: 1000});
+  await h.send('JURISAI_PULL_CANCEL', {jobId: 'job-1'});
+  assert.equal((await pending).code, 'UYAP_CANCELLED');
+  assert.equal(job.listeners.size, 0);
+});
+
+test('concurrent bounded polls deliver the completed result only once', async () => {
+  let finish;
+  const h = pollHarness(() => new Promise(resolve => {finish = resolve;}));
+  await h.send('JURISAI_PULL_BEGIN', {jobId: 'job-1'});
+  await h.send('JURISAI_PULL_FETCH_START');
+  const job = h.context.pullRun.fetch;
+  const a = h.send('JURISAI_PULL_FETCH_POLL', {waitMs: 1000});
+  const b = h.send('JURISAI_PULL_FETCH_POLL', {waitMs: 1000});
+  finish({ok: true});
+  const results = await Promise.all([a, b]);
+  assert.equal(results.filter(result => result.ok).length, 1);
+  assert.equal(results.find(result => !result.ok).code, 'no_fetch');
+  assert.equal(job.listeners.size, 0);
+});
+
+test('an old pending poll cannot consume a replacement job result', async () => {
+  const h = pollHarness(() => new Promise(() => {}));
+  await h.send('JURISAI_PULL_BEGIN', {jobId: 'job-1'});
+  await h.send('JURISAI_PULL_FETCH_START');
+  const pending = h.send('JURISAI_PULL_FETCH_POLL', {waitMs: 20});
+  h.context.pullRun = null; // worker/job replacement
+  await h.send('JURISAI_PULL_BEGIN', {jobId: 'job-2'});
+  const replacement = h.context.pullRun;
+  assert.equal((await pending).code, 'wrong_job');
+  assert.equal(h.context.pullRun, replacement);
+});

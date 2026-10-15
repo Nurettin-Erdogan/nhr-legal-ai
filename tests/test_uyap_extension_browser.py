@@ -3389,3 +3389,58 @@ def test_opening_the_next_dosya_retries_when_the_closing_modal_swallows_the_clic
     assert second["who"]["esas"] == "2024/124"
     web.close()
     uyap.close()
+
+
+@pytest.mark.parametrize("kind", ["generic", "session", "permission"])
+def test_pull_separates_generic_service_errors_from_auth_and_permission(lab, kind):
+    """Gerçek Chromium, sahte portal: iki genel hata yeniden giriş gerektirmez."""
+    lab.configure(throttleMs=500)
+    uyap, web, tab_id, tree = _read_tree(lab)
+    selected = tree["items"][:3]
+    rejected = [_legacy(item["id"]) for item in selected[:2]]
+    lab.worker.evaluate("""({kind, rejected}) => {
+      globalThis.__classifiedFetch = globalThis.fetch;
+      globalThis.__classifiedRequests = [];
+      const counts = {};
+      globalThis.fetch = async (url, options) => {
+        const u = new URL(url);
+        if (u.hostname.endsWith('uyap.gov.tr') && /(?:view|download)_document/.test(u.pathname)) {
+          const id = (u.searchParams.get('evrakId') || '').replace(/^ENC/, '');
+          globalThis.__classifiedRequests.push(id);
+          counts[id] = (counts[id] || 0) + 1;
+          if (rejected.includes(id) && (kind !== 'generic' || counts[id] <= 2)) {
+            const body = kind === 'session' ? 'OTURUMUNUZ SONA ERDİ. Yeniden giriş yapınız.'
+              : kind === 'permission' ? 'Bu evrağı görüntüleme yetkiniz yok.'
+              : 'Hata Oluştu <a href="/kill_session.uyap">Güvenli Çıkış</a> Hata Mesajı: http://avukatic.uyap.gov.tr/AVUKATWeb bağlantı hatası';
+            return new Response('<html><body>' + body + '</body></html>',
+              {headers: {'Content-Type': 'application/download'}});
+          }
+          return new Response('%PDF-1.7\\nfixture ' + id, {headers: {'Content-Type':'application/pdf'}});
+        }
+        return globalThis.__classifiedFetch(url, options);
+      };
+    }""", {"kind": kind, "rejected": rejected})
+    try:
+        pull = _ask(web, "PULL_IDS", {"tabId": tab_id, "ids": [item["id"] for item in selected], "mode": "upload"})
+        assert pull["ok"], pull
+        done = _poll_job(web, tab_id, pull["jobId"], timeout=90)
+        requests = lab.worker.evaluate("globalThis.__classifiedRequests")
+        stats = done["run"]["stats"]
+        if kind == "session":
+            assert done["job"]["state"] == "error" and done["job"]["code"] == "login_required", done
+            assert requests == [rejected[0]], requests  # giriş sayfası Kaydet'ten tekrar istenmez
+            assert stats["sent"] == 0 and not lab.uploads
+        else:
+            assert done["job"]["state"] == "done", done
+            assert _legacy(selected[2]["id"]) in requests  # iki genel/izin hatasından sonra da ilerledi
+            assert stats["sent"] == (3 if kind == "generic" else 1), stats
+            assert stats["failed"] == (0 if kind == "generic" else 2), stats
+            assert len(lab.uploads) == stats["sent"]
+    finally:
+        lab.worker.evaluate("""() => {
+          globalThis.fetch = globalThis.__classifiedFetch;
+          delete globalThis.__classifiedFetch;
+          delete globalThis.__classifiedRequests;
+        }""")
+        web.close()
+        uyap.close()

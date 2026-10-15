@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "JurisAI - UYAP Avukat Portalı Aktarımı",
-  "version": "2.26.34",
+  "version": "2.26.35",
   "description": "UYAP'ta açtığınız dosyanın evraklarından seçtiklerinizi JurisAI hesabınıza aktarır. UYAP şifreniz size ait kalır.",
   "permissions": ["activeTab", "scripting", "downloads", "storage", "webRequest", "alarms"],
   "host_permissions": [

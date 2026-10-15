@@ -11,8 +11,6 @@ import {
   facetsOf,
   filterAndSort,
   highlightSegments,
-  isHttpUrl,
-  loadSourceDetail,
   searchDecisions,
   sourceTypeLabel,
   verificationBadge,
@@ -20,11 +18,11 @@ import {
   type SearchHit,
   type SearchMode,
   type SearchPage,
-  type SourceDetail,
 } from "@/lib/decision-search";
 import { toast } from "sonner";
-import { citationSuffix, officialPortalUrl } from "@/lib/source-label";
-import { ChevronDown, ChevronUp, Copy, ExternalLink, Loader2, Search, ShieldCheck } from "lucide-react";
+import { citationSuffix } from "@/lib/source-label";
+import { SourceReader } from "@/components/SourceReader";
+import { Copy, Loader2, Search, ShieldCheck } from "lucide-react";
 
 const PAGE_SIZE = 10;
 
@@ -33,7 +31,10 @@ function Highlighted({ content, query }: { content: string; query: string }) {
     <>
       {highlightSegments(content, query).map((segment, index) =>
         segment.match ? (
-          <mark key={index} className="rounded bg-amber-200/70 px-0.5 text-foreground dark:bg-amber-500/30">
+          <mark
+            key={index}
+            className="rounded bg-amber-200/70 px-0.5 text-foreground dark:bg-amber-500/30"
+          >
             {segment.text}
           </mark>
         ) : (
@@ -45,34 +46,27 @@ function Highlighted({ content, query }: { content: string; query: string }) {
 }
 
 function Card({ hit, query }: { hit: SearchHit; query: string }) {
-  const [open, setOpen] = useState(false);
-  const [detail, setDetail] = useState<SourceDetail | null>(null);
-  const [state, setState] = useState<"idle" | "loading" | "error">("idle");
   const badge = verificationBadge(hit.verification, hit.sourceUrl, hit.courtName);
-  const portal = hit.verification === "official" ? null : officialPortalUrl(hit.sourceUrl);
   const meta = [
-    hit.sourceType === "legislation" ? [hit.lawName, hit.articleNo && `m. ${hit.articleNo}`, hit.articleTitle].filter(Boolean).join(" · ") : [hit.chamber, hit.docketNo && `E. ${hit.docketNo}`, hit.decisionNo && `K. ${hit.decisionNo}`].filter(Boolean).join(" · "),
+    hit.sourceType === "legislation"
+      ? [hit.lawName, hit.articleNo && `m. ${hit.articleNo}`, hit.articleTitle]
+          .filter(Boolean)
+          .join(" · ")
+      : [
+          hit.chamber,
+          hit.docketNo && `E. ${hit.docketNo}`,
+          hit.decisionNo && `K. ${hit.decisionNo}`,
+        ]
+          .filter(Boolean)
+          .join(" · "),
     hit.decisionDate,
   ].filter(Boolean);
 
-  const toggle = async () => {
-    const next = !open;
-    setOpen(next);
-    if (next && !detail && state !== "loading") {
-      setState("loading");
-      try {
-        setDetail(await loadSourceDetail(hit.id));
-        setState("idle");
-      } catch (error) {
-        setState("error");
-        toast.error(error instanceof Error ? error.message : "Kaynak metni alınamadı.");
-      }
-    }
-  };
-
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(`${citationOf(hit)}${citationSuffix(hit.verification, hit.sourceUrl)}`);
+      await navigator.clipboard.writeText(
+        `${citationOf(hit)}${citationSuffix(hit.verification, hit.sourceUrl)}`,
+      );
       toast.success("Atıf kopyalandı");
     } catch {
       toast.error("Panoya kopyalanamadı");
@@ -80,7 +74,11 @@ function Card({ hit, query }: { hit: SearchHit; query: string }) {
   };
 
   return (
-    <article className="rounded-xl border bg-card p-4 space-y-2" data-testid="decision-card" data-verification={hit.verification}>
+    <article
+      className="rounded-xl border bg-card p-4 space-y-2"
+      data-testid="decision-card"
+      data-verification={hit.verification}
+    >
       <div className="flex flex-wrap items-start gap-2">
         <h3 className="flex-1 min-w-0 font-semibold leading-snug">{hit.title}</h3>
         <Badge variant="outline">{sourceTypeLabel(hit.sourceType)}</Badge>
@@ -89,7 +87,10 @@ function Card({ hit, query }: { hit: SearchHit; query: string }) {
         {meta.map((part) => (
           <span key={String(part)}>{part}</span>
         ))}
-        <span className={`inline-flex items-center gap-1 font-medium ${badge.tone === "ok" ? "text-emerald-700 dark:text-emerald-400" : "text-foreground/80"}`} data-testid="decision-source-tag">
+        <span
+          className={`inline-flex items-center gap-1 font-medium ${badge.tone === "ok" ? "text-emerald-700 dark:text-emerald-400" : "text-foreground/80"}`}
+          data-testid="decision-source-tag"
+        >
           {badge.tone === "ok" && <ShieldCheck className="h-3.5 w-3.5" />}
           {badge.label}
         </span>
@@ -100,42 +101,19 @@ function Card({ hit, query }: { hit: SearchHit; query: string }) {
         </p>
       )}
       <div className="flex flex-wrap gap-2 pt-1">
-        <Button size="sm" variant="outline" onClick={() => void toggle()} aria-expanded={open}>
-          {open ? <ChevronUp className="h-3.5 w-3.5 mr-1.5" /> : <ChevronDown className="h-3.5 w-3.5 mr-1.5" />}
-          {open ? "Metni gizle" : "Tam metin"}
-        </Button>
+        <SourceReader
+          sourceId={hit.id}
+          reference={citationOf(hit)}
+          sourceUrl={hit.sourceUrl}
+          excerpt={hit.excerpt}
+          className="rounded-md border px-3 py-2 text-xs font-medium hover:bg-muted"
+        >
+          Kaynağı aç
+        </SourceReader>
         <Button size="sm" variant="ghost" onClick={() => void copy()}>
           <Copy className="h-3.5 w-3.5 mr-1.5" /> Atıf kopyala
         </Button>
-        {portal ? (
-          <Button size="sm" variant="ghost" asChild>
-            <a href={portal} target="_blank" rel="noreferrer" data-testid="decision-portal-link">
-              <ExternalLink className="h-3.5 w-3.5 mr-1.5" /> Resmî sitede aç ↗
-            </a>
-          </Button>
-        ) : isHttpUrl(hit.sourceUrl) && (
-          <Button size="sm" variant="ghost" asChild>
-            <a href={hit.sourceUrl} target="_blank" rel="noreferrer">
-              <ExternalLink className="h-3.5 w-3.5 mr-1.5" /> Kaynağı aç
-            </a>
-          </Button>
-        )}
       </div>
-      {open && (
-        <div className="rounded-lg border bg-muted/30 p-3 max-h-96 overflow-y-auto text-sm leading-relaxed" data-testid="decision-fulltext">
-          {state === "loading" && (
-            <p className="flex items-center gap-2 text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" /> Metin yükleniyor…
-            </p>
-          )}
-          {state === "error" && <p className="text-destructive">Metin yüklenemedi; kararı kaynağın sitesinde açarak okuyabilirsiniz.</p>}
-          {detail && (detail.chunks.length ? detail.chunks.map((chunk, index) => (
-            <p key={index} className="whitespace-pre-wrap mb-3 last:mb-0">
-              <Highlighted content={chunk} query={query} />
-            </p>
-          )) : <p className="text-muted-foreground">Bu kayıt için tam metin yok.</p>)}
-        </div>
-      )}
     </article>
   );
 }
@@ -174,7 +152,12 @@ export function DecisionSearch({
     setBusy(true);
     setError("");
     try {
-      const next = await searchDecisions(text, { limit: PAGE_SIZE, offset, mode: searchMode, signal: abort.signal });
+      const next = await searchDecisions(text, {
+        limit: PAGE_SIZE,
+        offset,
+        mode: searchMode,
+        signal: abort.signal,
+      });
       if (abort.signal.aborted) return;
       setPage(next);
       setHits((previous) => {
@@ -193,7 +176,11 @@ export function DecisionSearch({
   const submit = (text = query) => {
     const clean = text.trim();
     if (clean.length < MIN_QUERY_LENGTH[mode]) {
-      setError(mode === "narrative" ? "Olayı en az 10 karakterle, bir iki cümleyle anlatın." : "Arama için en az 2 karakter yazın.");
+      setError(
+        mode === "narrative"
+          ? "Olayı en az 10 karakterle, bir iki cümleyle anlatın."
+          : "Arama için en az 2 karakter yazın.",
+      );
       return;
     }
     setQuery(clean);
@@ -228,11 +215,20 @@ export function DecisionSearch({
   const shown = useMemo(() => filterAndSort(hits, filters), [hits, filters]);
   const hasMore = !!page && hits.length < page.total && page.hits.length > 0;
   const hiddenByFilter = hits.length - shown.length;
-  const set = <K extends keyof Filters>(key: K, value: Filters[K]) => setFilters((current) => ({ ...current, [key]: value }));
+  const set = <K extends keyof Filters>(key: K, value: Filters[K]) =>
+    setFilters((current) => ({ ...current, [key]: value }));
 
   return (
-    <section className="rounded-xl border bg-card p-4 sm:p-5 space-y-4 mb-6" aria-label="Karar ve mevzuat arama" data-testid="decision-search">
-      <div role="tablist" aria-label="Arama türü" className="flex flex-wrap gap-1 rounded-lg bg-muted p-1 w-fit text-sm">
+    <section
+      className="rounded-xl border bg-card p-4 sm:p-5 space-y-4 mb-6"
+      aria-label="Karar ve mevzuat arama"
+      data-testid="decision-search"
+    >
+      <div
+        role="tablist"
+        aria-label="Arama türü"
+        className="flex flex-wrap gap-1 rounded-lg bg-muted p-1 w-fit text-sm"
+      >
         {(["keyword", "narrative"] as const).map((value) => (
           <button
             key={value}
@@ -248,8 +244,9 @@ export function DecisionSearch({
       </div>
       {mode === "narrative" && (
         <p className="text-xs text-muted-foreground" data-testid="narrative-note">
-          Olayı bir iki cümleyle anlatın; sohbet asistanının kullandığı arama benzer karar ve maddeleri listeler. Sonuçlar eksik ya da konu dışı olabilir:
-          her sonuçtaki doğrulama rozetine ve eşleşen pasaja bakın. Yapay zekâ cevabı değil, kaynakların kendisidir.
+          Olayı bir iki cümleyle anlatın; sohbet asistanının kullandığı arama benzer karar ve
+          maddeleri listeler. Sonuçlar eksik ya da konu dışı olabilir: her sonuçtaki doğrulama
+          rozetine ve eşleşen pasaja bakın. Yapay zekâ cevabı değil, kaynakların kendisidir.
         </p>
       )}
       <form
@@ -265,13 +262,18 @@ export function DecisionSearch({
           placeholder={
             mode === "narrative"
               ? "Olayı anlatın (örn. işçi haklı nedenle işten ayrıldı, son 3 maaşı ödenmedi; hangi haklara sahip?)"
-              : (placeholder ?? "Konu, kavram ya da kanun maddesi yazın (örn. kıdem tazminatı, ihtiyati tedbir, 4857 sayılı Kanun 25)")
+              : (placeholder ??
+                "Konu, kavram ya da kanun maddesi yazın (örn. kıdem tazminatı, ihtiyati tedbir, 4857 sayılı Kanun 25)")
           }
           aria-label={mode === "narrative" ? "Olay anlatımı" : "Aranacak ifade"}
           maxLength={mode === "narrative" ? 1500 : 300}
         />
         <Button type="submit" disabled={busy} className="sm:w-32">
-          {busy ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Search className="h-4 w-4 mr-2" />}
+          {busy ? (
+            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+          ) : (
+            <Search className="h-4 w-4 mr-2" />
+          )}
           Ara
         </Button>
       </form>
@@ -279,7 +281,12 @@ export function DecisionSearch({
       {!submitted && activeExamples.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {activeExamples.map((example) => (
-            <button key={example} type="button" className="rounded-full border px-3 py-1 text-xs text-muted-foreground hover:bg-accent" onClick={() => submit(example)}>
+            <button
+              key={example}
+              type="button"
+              className="rounded-full border px-3 py-1 text-xs text-muted-foreground hover:bg-accent"
+              onClick={() => submit(example)}
+            >
               {example}
             </button>
           ))}
@@ -287,38 +294,66 @@ export function DecisionSearch({
       )}
 
       {error && (
-        <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm">
+        <div
+          role="alert"
+          className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm"
+        >
           {error}
         </div>
       )}
       {busy && !hits.length && (
         <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />{" "}
-          {mode === "narrative" ? "Olay çözümleniyor ve korpus taranıyor… ilk aramada 20-40 saniye sürebilir." : "Korpus taranıyor… yaygın konularda 10-20 saniye sürebilir."}
+          {mode === "narrative"
+            ? "Olay çözümleniyor ve korpus taranıyor… ilk aramada 20-40 saniye sürebilir."
+            : "Korpus taranıyor… yaygın konularda 10-20 saniye sürebilir."}
         </p>
       )}
 
       {page && (
         <div className="space-y-3">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm" role="status" aria-live="polite">
+          <div
+            className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm"
+            role="status"
+            aria-live="polite"
+          >
             <span className="font-medium" data-testid="decision-total">
-              {page.total === 0 ? "Eşleşme yok" : `${page.partial && mode === "keyword" ? "En az " : ""}${page.total.toLocaleString("tr-TR")} sonuç`}
+              {page.total === 0
+                ? "Eşleşme yok"
+                : `${page.partial && mode === "keyword" ? "En az " : ""}${page.total.toLocaleString("tr-TR")} sonuç`}
             </span>
-            {hits.length > 0 && <span className="text-muted-foreground">{hits.length} gösteriliyor</span>}
-            {hits.length > facets.unverified && <Badge variant="outline">{hits.length - facets.unverified} Resmî metin ✓</Badge>}
+            {hits.length > 0 && (
+              <span className="text-muted-foreground">{hits.length} gösteriliyor</span>
+            )}
+            {hits.length > facets.unverified && (
+              <Badge variant="outline">{hits.length - facets.unverified} Resmî metin ✓</Badge>
+            )}
           </div>
           {page.partial && (
-            <p className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-2 text-xs text-amber-800 dark:text-amber-300" data-testid="decision-partial">
+            <p
+              className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-2 text-xs text-amber-800 dark:text-amber-300"
+              data-testid="decision-partial"
+            >
               {mode === "narrative"
                 ? "Bu liste en iyi eşleşen yaklaşık 60 kaynakla sınırlıdır; korpusun tamamı taranmadı."
                 : "Konu çok geniş: eşleşen kayıtların yalnız bir bölümü tarandı, liste eksik olabilir. Daha eksiksiz sonuç için aramayı daraltın (kanun maddesi, daire ya da yıl ekleyin)."}
             </p>
           )}
-          {page.total === 0 && <p className="text-xs text-muted-foreground">Bu koşullarla eşleşme bulunamadı; bu, korpusta hiç veri olmadığı anlamına gelmez. Daha az ya da daha genel sözcüklerle deneyin.</p>}
+          {page.total === 0 && (
+            <p className="text-xs text-muted-foreground">
+              Bu koşullarla eşleşme bulunamadı; bu, korpusta hiç veri olmadığı anlamına gelmez. Daha
+              az ya da daha genel sözcüklerle deneyin.
+            </p>
+          )}
 
           {hits.length > 0 && (
             <div className="flex flex-wrap items-center gap-2 text-xs">
-              <select aria-label="Mercii" className="h-8 rounded-md border bg-background px-2" value={filters.authority} onChange={(event) => set("authority", event.target.value)}>
+              <select
+                aria-label="Mercii"
+                className="h-8 rounded-md border bg-background px-2"
+                value={filters.authority}
+                onChange={(event) => set("authority", event.target.value)}
+              >
                 <option value="">Tüm merciler</option>
                 {facets.authorities.map((entry) => (
                   <option key={entry.value} value={entry.value}>
@@ -326,7 +361,12 @@ export function DecisionSearch({
                   </option>
                 ))}
               </select>
-              <select aria-label="Yıl" className="h-8 rounded-md border bg-background px-2" value={filters.year} onChange={(event) => set("year", event.target.value)}>
+              <select
+                aria-label="Yıl"
+                className="h-8 rounded-md border bg-background px-2"
+                value={filters.year}
+                onChange={(event) => set("year", event.target.value)}
+              >
                 <option value="">Tüm yıllar</option>
                 {facets.years.map((entry) => (
                   <option key={entry.value} value={entry.value}>
@@ -335,7 +375,12 @@ export function DecisionSearch({
                 ))}
               </select>
               {facets.types.length > 1 && (
-                <select aria-label="Tür" className="h-8 rounded-md border bg-background px-2" value={filters.sourceType} onChange={(event) => set("sourceType", event.target.value)}>
+                <select
+                  aria-label="Tür"
+                  className="h-8 rounded-md border bg-background px-2"
+                  value={filters.sourceType}
+                  onChange={(event) => set("sourceType", event.target.value)}
+                >
                   <option value="">Karar ve mevzuat</option>
                   {facets.types.map((entry) => (
                     <option key={entry.value} value={entry.value}>
@@ -344,13 +389,22 @@ export function DecisionSearch({
                   ))}
                 </select>
               )}
-              <select aria-label="Sıralama" className="h-8 rounded-md border bg-background px-2" value={filters.sort} onChange={(event) => set("sort", event.target.value as Filters["sort"])}>
+              <select
+                aria-label="Sıralama"
+                className="h-8 rounded-md border bg-background px-2"
+                value={filters.sort}
+                onChange={(event) => set("sort", event.target.value as Filters["sort"])}
+              >
                 <option value="relevance">İlgi sırası</option>
                 <option value="official_first">Doğrulanmış önce</option>
                 <option value="newest">En yeni önce</option>
               </select>
               <label className="flex items-center gap-1.5">
-                <input type="checkbox" checked={filters.onlyOfficial} onChange={(event) => set("onlyOfficial", event.target.checked)} />
+                <input
+                  type="checkbox"
+                  checked={filters.onlyOfficial}
+                  onChange={(event) => set("onlyOfficial", event.target.checked)}
+                />
                 Yalnız resmî doğrulanmış
               </label>
             </div>
@@ -358,7 +412,11 @@ export function DecisionSearch({
           {hiddenByFilter > 0 && (
             <p className="text-xs text-muted-foreground" role="status">
               Süzgeçler {hiddenByFilter} sonucu gizliyor.{" "}
-              <button type="button" className="underline" onClick={() => setFilters(DEFAULT_FILTERS)}>
+              <button
+                type="button"
+                className="underline"
+                onClick={() => setFilters(DEFAULT_FILTERS)}
+              >
                 Süzgeçleri temizle
               </button>
             </p>
@@ -369,10 +427,16 @@ export function DecisionSearch({
               <Card key={hit.id} hit={hit} query={submitted} />
             ))}
           </div>
-          {hits.length > 0 && !shown.length && <p className="text-sm text-muted-foreground">Süzgeçlere uyan sonuç yok.</p>}
+          {hits.length > 0 && !shown.length && (
+            <p className="text-sm text-muted-foreground">Süzgeçlere uyan sonuç yok.</p>
+          )}
 
           {hasMore && (
-            <Button variant="outline" disabled={busy} onClick={() => void run(submitted, hits.length, mode)}>
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => void run(submitted, hits.length, mode)}
+            >
               {busy ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
               Daha fazla göster
             </Button>

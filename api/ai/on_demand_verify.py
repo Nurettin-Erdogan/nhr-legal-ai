@@ -52,8 +52,8 @@ WHERE ls.source_type = 'legislation'
   AND ls.ingest_status = 'pending'
   AND d.law_no = %s
   AND lower(d.article_no) = lower(%s)
-  AND (ls.metadata->>'verified_against_gazette' IS DISTINCT FROM 'true'
-       OR ls.metadata->>'verified_against_mbs' IS DISTINCT FROM 'true')
+  AND ls.metadata->>'verified_against_gazette' IS DISTINCT FROM 'true'
+  AND ls.metadata->>'verified_against_mbs' IS DISTINCT FROM 'true'
 ORDER BY ls.fetched_at DESC
 LIMIT 1
 """
@@ -302,7 +302,7 @@ def verify_pending_statute(
                     return (
                         "verified"
                         if flags.get("verified_against_gazette") is True
-                        and flags.get("verified_against_mbs") is True
+                        or flags.get("verified_against_mbs") is True
                         else "pending"
                     )
 

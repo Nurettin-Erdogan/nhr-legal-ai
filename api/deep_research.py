@@ -213,8 +213,11 @@ AnswerFn = Callable[[str, UUID | None], Awaitable[Any]]
 
 
 def _citation_payload(citation: Any) -> dict[str, Any]:
+    source_id = getattr(citation, "source_id", None)
     return {
         "marker": citation.marker,
+        "source_id": str(source_id) if source_id is not None else None,
+        "excerpt": getattr(citation, "excerpt", None),
         "reference": citation.reference,
         "source_url": citation.source_url,
         "verification": citation.verification,

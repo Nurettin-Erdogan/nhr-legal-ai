@@ -1,6 +1,8 @@
 /** Cevapta alıntılanmayan ama incelenen doğrulanmış kaynaklar (API: `consulted_sources`). */
 export interface ConsultedSource {
   marker: string;
+  source_id?: string | null;
+  source_type?: string | null;
   reference: string;
   source_url: string | null;
   excerpt: string | null;
@@ -33,6 +35,8 @@ export function parseConsultedSources(value: unknown): ConsultedSource[] {
     const excerpt = typeof entry.excerpt === "string" ? entry.excerpt.trim() : "";
     listed.push({
       marker: entry.marker,
+      source_id: typeof entry.source_id === "string" ? entry.source_id : null,
+      source_type: typeof entry.source_type === "string" ? entry.source_type : null,
       reference,
       source_url:
         typeof entry.source_url === "string" && /^https?:\/\//i.test(entry.source_url)

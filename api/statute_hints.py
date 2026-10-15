@@ -138,7 +138,7 @@ JOIN legal_sources ls ON ls.id = legislation.legal_source_id
 WHERE legislation.law_no = %(law_no)s AND legislation.article_no = %(article_no)s
   AND ls.source_type = 'legislation' AND ls.deleted_at IS NULL AND ls.is_current AND ls.ingest_status = 'ready'
   AND (
-    (ls.metadata->>'verified_against_gazette' = 'true' AND ls.metadata->>'verified_against_mbs' = 'true')
+    (ls.metadata->>'verified_against_gazette' = 'true' OR ls.metadata->>'verified_against_mbs' = 'true')
     OR ls.metadata->>'verified_text_against_mbs' = 'true'
   )
 LIMIT 1

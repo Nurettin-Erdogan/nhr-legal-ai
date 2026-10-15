@@ -11,6 +11,8 @@ export const MAX_QUESTION = 1500;
 
 export interface StepCitation {
   marker: string;
+  sourceId: string | null;
+  excerpt: string | null;
   reference: string;
   sourceUrl: string | null;
   verification: "official" | "third_party" | "user_document" | "unknown";
@@ -55,17 +57,30 @@ export interface ResearchState {
   latest: SavedReport | null;
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-const count = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : 0);
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+const count = (value: unknown): number =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : 0;
 const text = (value: unknown): string => (typeof value === "string" ? value : "");
 
 function parseCitation(raw: unknown): StepCitation | null {
-  if (!isRecord(raw) || typeof raw.marker !== "string" || typeof raw.reference !== "string") return null;
-  const verification = raw.verification === "official" || raw.verification === "third_party" || raw.verification === "user_document" ? raw.verification : "unknown";
+  if (!isRecord(raw) || typeof raw.marker !== "string" || typeof raw.reference !== "string")
+    return null;
+  const verification =
+    raw.verification === "official" ||
+    raw.verification === "third_party" ||
+    raw.verification === "user_document"
+      ? raw.verification
+      : "unknown";
   return {
     marker: raw.marker,
+    sourceId: typeof raw.source_id === "string" ? raw.source_id : null,
+    excerpt: typeof raw.excerpt === "string" ? raw.excerpt : null,
     reference: raw.reference,
-    sourceUrl: typeof raw.source_url === "string" && /^https?:\/\//i.test(raw.source_url) ? raw.source_url : null,
+    sourceUrl:
+      typeof raw.source_url === "string" && /^https?:\/\//i.test(raw.source_url)
+        ? raw.source_url
+        : null,
     verification,
     sourceType: text(raw.source_type),
   };
@@ -79,20 +94,24 @@ function parseStep(raw: unknown): ResearchStep | null {
     answer: text(raw.answer),
     // Belirsizse "doğrulandı" sayılmaz.
     grounded: raw.grounded === true,
-    citations: Array.isArray(raw.citations) ? raw.citations.flatMap((item) => {
-      const parsed = parseCitation(item);
-      return parsed ? [parsed] : [];
-    }) : [],
+    citations: Array.isArray(raw.citations)
+      ? raw.citations.flatMap((item) => {
+          const parsed = parseCitation(item);
+          return parsed ? [parsed] : [];
+        })
+      : [],
     error: typeof raw.error === "string" && raw.error ? raw.error : null,
     note: typeof raw.note === "string" && raw.note ? raw.note : null,
   };
 }
 
 const parseSteps = (raw: unknown): ResearchStep[] =>
-  Array.isArray(raw) ? raw.flatMap((item) => {
-    const parsed = parseStep(item);
-    return parsed ? [parsed] : [];
-  }) : [];
+  Array.isArray(raw)
+    ? raw.flatMap((item) => {
+        const parsed = parseStep(item);
+        return parsed ? [parsed] : [];
+      })
+    : [];
 
 function parseJob(raw: unknown): ResearchJob | null {
   if (!isRecord(raw) || typeof raw.id !== "string") return null;
@@ -139,10 +158,13 @@ export function progressLine(job: ResearchJob): string {
   if (job.state === "running") return job.stage || `${job.done}/${job.total} başlık tamamlandı…`;
   if (job.state === "failed") return job.error ?? "Araştırma tamamlanamadı.";
   const failed = job.steps.filter((step) => step.error).length;
-  return failed ? `${job.total} başlıktan ${job.total - failed} tanesi tamamlandı; ${failed} başlık için cevap üretilemedi.` : `${job.total} başlık tamamlandı.`;
+  return failed
+    ? `${job.total} başlıktan ${job.total - failed} tanesi tamamlandı; ${failed} başlık için cevap üretilemedi.`
+    : `${job.total} başlık tamamlandı.`;
 }
 
-export const canStart = (question: string): boolean => question.trim().length >= MIN_QUESTION && question.length <= MAX_QUESTION;
+export const canStart = (question: string): boolean =>
+  question.trim().length >= MIN_QUESTION && question.length <= MAX_QUESTION;
 
 const BASE = (import.meta.env?.VITE_API_URL ?? "http://localhost:8766").replace(/\/$/, "");
 
@@ -155,14 +177,20 @@ export class ResearchError extends Error {
   }
 }
 
-async function call(path: string, init: RequestInit & { token?: string | null } = {}): Promise<unknown> {
+async function call(
+  path: string,
+  init: RequestInit & { token?: string | null } = {},
+): Promise<unknown> {
   const { token, ...rest } = init;
   let response: Response;
   try {
     response = await fetch(`${BASE}${path}`, {
       ...rest,
       credentials: "include",
-      headers: { ...(rest.body ? { "Content-Type": "application/json" } : {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      headers: {
+        ...(rest.body ? { "Content-Type": "application/json" } : {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
     });
   } catch (error) {
     if (rest.signal?.aborted) throw error;
@@ -176,19 +204,35 @@ async function call(path: string, init: RequestInit & { token?: string | null } 
     } catch {
       /* JSON değil */
     }
-    throw new ResearchError(detail || (response.status === 401 ? "Oturumunuz sona ermiş; yeniden giriş yapın." : `İstek tamamlanamadı (${response.status}).`), response.status);
+    throw new ResearchError(
+      detail ||
+        (response.status === 401
+          ? "Oturumunuz sona ermiş; yeniden giriş yapın."
+          : `İstek tamamlanamadı (${response.status}).`),
+      response.status,
+    );
   }
   return response.json().catch(() => null);
 }
 
-export async function loadResearchState(options: { token?: string | null; signal?: AbortSignal } = {}): Promise<ResearchState> {
+export async function loadResearchState(
+  options: { token?: string | null; signal?: AbortSignal } = {},
+): Promise<ResearchState> {
   const parsed = parseResearchState(await call("/api/office-ai/deep-research", options));
   if (!parsed) throw new ResearchError("Sunucudan geçersiz bir araştırma durumu geldi.");
   return parsed;
 }
 
-export async function startResearch(question: string, options: { token?: string | null } = {}): Promise<{ jobId: string }> {
-  const raw = await call("/api/office-ai/deep-research", { method: "POST", body: JSON.stringify({ question: question.trim() }), token: options.token });
-  if (!isRecord(raw) || typeof raw.job_id !== "string") throw new ResearchError("Sunucudan geçersiz bir iş yanıtı geldi.");
+export async function startResearch(
+  question: string,
+  options: { token?: string | null } = {},
+): Promise<{ jobId: string }> {
+  const raw = await call("/api/office-ai/deep-research", {
+    method: "POST",
+    body: JSON.stringify({ question: question.trim() }),
+    token: options.token,
+  });
+  if (!isRecord(raw) || typeof raw.job_id !== "string")
+    throw new ResearchError("Sunucudan geçersiz bir iş yanıtı geldi.");
   return { jobId: raw.job_id };
 }

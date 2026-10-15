@@ -15,8 +15,9 @@ import { extractFileText, MAX_UPLOAD_BYTES } from "@/lib/extract-text";
 import { useAuth } from "@/components/AuthProvider";
 import { AuthDialog } from "@/components/AuthDialog";
 import { askAssistant } from "@/lib/ai-api";
+import { CitationList, type ChatCitation } from "@/components/ChatCitations";
 
-type Msg = { role: "user" | "assistant"; content: string };
+type Msg = { role: "user" | "assistant"; content: string; citations?: ChatCitation[] };
 type Attachment = { name: string; text: string };
 
 const ONERILER = [
@@ -109,14 +110,10 @@ function HomePage() {
     try {
       const question = (payload[payload.length - 1]?.content ?? "").slice(0, 1990);
       const result = await askAssistant(question, {});
-      const sources = result.citations.map(
-        (c) =>
-          `- ${c.marker} ${c.reference}${citationSuffix(c.verification, c.source_url)}`,
-      );
-      const content = sources.length
-        ? `${result.answer}\n\n**Kaynaklar**\n${sources.join("\n")}`
-        : result.answer;
-      setMessages((p) => [...p, { role: "assistant", content }]);
+      setMessages((p) => [
+        ...p,
+        { role: "assistant", content: result.answer, citations: result.citations },
+      ]);
     } catch {
       toast.error("Şu an cevap alınamadı, lütfen tekrar deneyin");
     } finally {
@@ -125,7 +122,14 @@ function HomePage() {
   };
 
   const ozet = messages
-    .map((m) => `${m.role === "user" ? "Vatandaş" : "JurisAI"}: ${m.content}`)
+    .map(
+      (m) =>
+        `${m.role === "user" ? "Vatandaş" : "JurisAI"}: ${m.content}${
+          m.citations?.length
+            ? `\n\nKaynaklar\n${m.citations.map((c) => `- ${c.marker} ${c.reference}${citationSuffix(c.verification, c.source_url)}`).join("\n")}`
+            : ""
+        }`,
+    )
     .join("\n\n");
 
   return (
@@ -191,6 +195,9 @@ function HomePage() {
                       <div className="prose prose-sm dark:prose-invert max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
                       </div>
+                      {m.role === "assistant" && m.citations && (
+                        <CitationList citations={m.citations} />
+                      )}
                     </div>
                   </div>
                 ))}

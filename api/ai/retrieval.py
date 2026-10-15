@@ -214,7 +214,7 @@ search_query AS (
 )
 """
 
-# Bedesten maddeleri iki bağımsız katalog kontrolünden sonra atıf alabilir.
+# Bedesten maddeleri resmî kataloglardan biriyle (Resmî Gazete ya da MBS) eşleşince atıf alabilir (kullanıcı kararı 2026-10-15).
 # Tohum (bulk_seed/pending) kararlar da aranır; kullanıcı sorduğunda canlı doğrulanır.
 _VERIFIED_SOURCE_FILTER = """
 (
@@ -225,7 +225,7 @@ _VERIFIED_SOURCE_FILTER = """
             OR (
                 (
                     ls.metadata->>'verified_against_gazette' = 'true'
-                    AND ls.metadata->>'verified_against_mbs' = 'true'
+                    OR ls.metadata->>'verified_against_mbs' = 'true'
                 )
                 OR ls.metadata->>'verified_text_against_mbs' = 'true'
             )

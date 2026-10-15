@@ -31,6 +31,10 @@ const { ConsultedSourceList } = compile("../src/components/ChatCitations.tsx", {
   "@/lib/document-scope": scope,
   "@/lib/citation-groups": compile("../src/lib/citation-groups.ts"),
   "@/lib/source-label": compile("../src/lib/source-label.ts"),
+  "@/components/SourceReader": {
+    SourceReader: ({ children }) =>
+      createElement("button", { type: "button", "data-testid": "source-reader-trigger" }, children),
+  },
 });
 
 const official = {
@@ -45,8 +49,21 @@ const official = {
 test("only official sources and the user's own documents are ever listed", () => {
   const parsed = model.parseConsultedSources([
     official,
-    { ...official, marker: "I2", source_id: "b", reference: "Üçüncü taraf kayıt", verification: "third_party" },
-    { ...official, marker: "I3", source_id: "c", reference: "kira.txt", verification: "user_document", source_url: null },
+    {
+      ...official,
+      marker: "I2",
+      source_id: "b",
+      reference: "Üçüncü taraf kayıt",
+      verification: "third_party",
+    },
+    {
+      ...official,
+      marker: "I3",
+      source_id: "c",
+      reference: "kira.txt",
+      verification: "user_document",
+      source_url: null,
+    },
     { ...official, marker: "I4", source_id: "d", reference: "Bilinmeyen", verification: "pending" },
   ]);
   assert.deepEqual(
@@ -89,7 +106,8 @@ test("the section says these are not the basis of the answer and shows each pass
   assert.ok(html.includes("cevabın dayanağı değildir"));
   assert.ok(html.includes(official.reference));
   assert.ok(html.includes("ihtiyaç nedeniyle tahliye"));
-  assert.ok(html.includes('href="https://karararama.yargitay.gov.tr/getDokuman?id=1"'));
+  assert.ok(html.includes('data-testid="source-reader-trigger"'));
+  assert.ok(!html.includes('href="https://karararama.yargitay.gov.tr/getDokuman?id=1"'));
   assert.ok(!html.includes("doğrulanmadı"));
 });
 

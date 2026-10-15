@@ -128,7 +128,7 @@ _VERIFIED_SOURCE_FILTER = """
             ls.source_type <> 'legislation'
             OR (
                 ls.metadata->>'verified_against_gazette' = 'true'
-                AND ls.metadata->>'verified_against_mbs' = 'true'
+                OR ls.metadata->>'verified_against_mbs' = 'true'
             )
         )
     )
@@ -311,6 +311,9 @@ LIMIT %(limit)s OFFSET %(offset)s
 _DETAIL_SQL = f"""
 SELECT
     ls.id,
+    CASE WHEN ls.ingest_status = 'ready' THEN 'official'
+         WHEN ls.ingestion_method = 'bulk_seed' AND ls.ingest_status = 'pending' THEN 'third_party'
+         ELSE 'unknown' END AS verification,
     ls.source_type,
     ls.title,
     ls.source_url,
@@ -819,8 +822,7 @@ def _load_corpus_stats(timeout: str = "8s") -> CorpusStats:
               AND ls.deleted_at IS NULL
               AND ls.is_current
               AND ls.ingest_status = 'ready'
-              AND ls.metadata->>'verified_against_gazette' = 'true'
-              AND ls.metadata->>'verified_against_mbs' = 'true'
+              AND (ls.metadata->>'verified_against_gazette' = 'true' OR ls.metadata->>'verified_against_mbs' = 'true')
             """
         ).fetchone()
         verification = connection.execute(

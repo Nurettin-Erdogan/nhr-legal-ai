@@ -1,6 +1,7 @@
 import { invokeFunction } from "@/lib/backend";
 import { askAssistant } from "@/lib/ai-api";
 import { describeDocumentScope } from "@/lib/document-scope";
+import { CitationList, type ChatCitation } from "@/components/ChatCitations";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -110,6 +111,9 @@ export const AIRunner = ({
   const [result, setResult] = useState<{
     id: string | null;
     output: string;
+    /** UI body excludes the text-only export bibliography; identities stay interactive. */
+    body?: string;
+    citations?: ChatCitation[];
     title: string;
     model?: string;
     yargitay_context?: {
@@ -216,9 +220,12 @@ export const AIRunner = ({
         const scope = r.document_scope
           ? `\n\n${describeDocumentScope(r.document_scope).lines.join("\n\n")}`
           : "";
+        const body = `${r.answer}${warn}${scope}`;
         setResult({
           id: null,
-          output: `${r.answer}${warn}${scope}${refs ? `\n\n**Kaynaklar**\n${refs}` : ""}`,
+          output: `${body}${refs ? `\n\n**Kaynaklar**\n${refs}` : ""}`,
+          body,
+          citations: r.citations,
           title: title || prompt.trim().slice(0, 60),
           model: "yerel-rag",
         });
@@ -671,8 +678,11 @@ export const AIRunner = ({
             </div>
           )}
           <article className="prose prose-sm max-w-none dark:prose-invert prose-headings:font-serif prose-h2:text-xl prose-h2:mt-6 prose-h2:mb-2 prose-h3:text-base prose-strong:text-foreground prose-li:my-1 prose-table:text-xs text-foreground/85">
-            <ReactMarkdown components={{ img: () => null }}>{result.output}</ReactMarkdown>
+            <ReactMarkdown components={{ img: () => null }}>
+              {result.body ?? result.output}
+            </ReactMarkdown>
           </article>
+          {result.citations && <CitationList citations={result.citations} />}
 
           <div className="mt-6 rounded-xl border border-gold/30 bg-gold/5 p-4 flex items-start gap-3">
             <ShieldAlert className="h-4 w-4 text-gold-deep shrink-0 mt-0.5" />

@@ -30,6 +30,10 @@ const { CitationList, DocumentScopeNotice } = compile("../src/components/ChatCit
   "@/lib/document-scope": scope,
   "@/lib/citation-groups": compile("../src/lib/citation-groups.ts"),
   "@/lib/source-label": compile("../src/lib/source-label.ts"),
+  "@/components/SourceReader": {
+    SourceReader: ({ children }) =>
+      createElement("button", { type: "button", "data-testid": "source-reader-trigger" }, children),
+  },
 });
 
 test("scope parsing is defensive about malformed payloads", () => {
@@ -75,7 +79,14 @@ test("an unreadable or unprocessed document is never silently dropped from the s
 test("document index parsing keeps status, reason and reindex eligibility", () => {
   const index = scope.parseCaseDocumentIndex({
     documents: [
-      { id: "1", file_name: "a.udf", status: "ready", error: null, chunk_count: 2, semantic_ready: true },
+      {
+        id: "1",
+        file_name: "a.udf",
+        status: "ready",
+        error: null,
+        chunk_count: 2,
+        semantic_ready: true,
+      },
       { id: "2", file_name: "b.png", status: "failed", error: "OCR yok", chunk_count: 0 },
       { id: "3", file_name: "c.pdf" },
       { file_name: "kimliksiz" },
@@ -94,8 +105,18 @@ test("user document citations are labelled as such, never as official or merely 
   const html = renderToStaticMarkup(
     createElement(CitationList, {
       citations: [
-        { marker: "K1", source_url: null, reference: "bilirkisi_raporu.docx", verification: "user_document" },
-        { marker: "K2", source_url: "https://example.test/k", reference: "Yargıtay 9. HD", verification: "official" },
+        {
+          marker: "K1",
+          source_url: null,
+          reference: "bilirkisi_raporu.docx",
+          verification: "user_document",
+        },
+        {
+          marker: "K2",
+          source_url: "https://example.test/k",
+          reference: "Yargıtay 9. HD",
+          verification: "official",
+        },
         { marker: "K3", source_url: null, reference: "Arşiv kararı", verification: "third_party" },
       ],
     }),
@@ -109,7 +130,9 @@ test("user document citations are labelled as such, never as official or merely 
 test("the party-claim note only appears when a user document is cited", () => {
   const html = renderToStaticMarkup(
     createElement(CitationList, {
-      citations: [{ marker: "K1", source_url: null, reference: "TBK m. 344", verification: "official" }],
+      citations: [
+        { marker: "K1", source_url: null, reference: "TBK m. 344", verification: "official" },
+      ],
     }),
   );
   assert.doesNotMatch(html, /kullanıcı belgesi/);
@@ -119,7 +142,13 @@ test("the party-claim note only appears when a user document is cited", () => {
 test("scope notice warns visibly for incomplete coverage", () => {
   const html = renderToStaticMarkup(
     createElement(DocumentScopeNotice, {
-      scope: { total: 2, ready: 1, pending: 0, ocr: 0, failed: [{ file_name: "x.png", reason: "OCR yok" }] },
+      scope: {
+        total: 2,
+        ready: 1,
+        pending: 0,
+        ocr: 0,
+        failed: [{ file_name: "x.png", reason: "OCR yok" }],
+      },
     }),
   );
   assert.match(html, /data-tone="warn"/);
@@ -127,7 +156,13 @@ test("scope notice warns visibly for incomplete coverage", () => {
 });
 
 test("OCR-read documents are flagged so numbers and dates get checked against the original", () => {
-  const scoped = scope.describeDocumentScope({ total: 2, ready: 2, pending: 0, ocr: 1, failed: [] });
+  const scoped = scope.describeDocumentScope({
+    total: 2,
+    ready: 2,
+    pending: 0,
+    ocr: 1,
+    failed: [],
+  });
   assert.equal(scoped.tone, "warn"); // tam kapsam bile olsa OCR uyarısı gösterilir
   assert.match(scoped.lines.join(" "), /1 belge OCR ile okundu; okuma hataları olabilir/);
   assert.match(scoped.lines.join(" "), /belgenin aslından doğrulayın/);
@@ -149,17 +184,37 @@ test("scope and index parsing read the OCR flag defensively", () => {
       { id: "3", file_name: "eski.docx", status: "ready" },
     ],
   });
-  assert.deepEqual(index.documents.map((item) => item.ocr), [true, false, false]);
+  assert.deepEqual(
+    index.documents.map((item) => item.ocr),
+    [true, false, false],
+  );
 });
 
 test("a documents-only answer says legal sources were not consulted", () => {
-  const parsed = scope.parseDocumentScope({ total: 2, ready: 2, pending: 0, ocr: 0, failed: [], file_only: true });
+  const parsed = scope.parseDocumentScope({
+    total: 2,
+    ready: 2,
+    pending: 0,
+    ocr: 0,
+    failed: [],
+    file_only: true,
+  });
   assert.equal(parsed.fileOnly, true);
   const summary = scope.describeDocumentScope(parsed);
   assert.equal(summary.tone, "ok");
-  assert.match(summary.lines.join(" "), /yalnız dava belgelerinizden cevaplandı; kanun ve içtihat kaynaklarına bakılmadı/);
+  assert.match(
+    summary.lines.join(" "),
+    /yalnız dava belgelerinizden cevaplandı; kanun ve içtihat kaynaklarına bakılmadı/,
+  );
 
-  const mixed = scope.parseDocumentScope({ total: 2, ready: 2, pending: 0, ocr: 0, failed: [], file_only: false });
+  const mixed = scope.parseDocumentScope({
+    total: 2,
+    ready: 2,
+    pending: 0,
+    ocr: 0,
+    failed: [],
+    file_only: false,
+  });
   assert.equal("fileOnly" in mixed, false);
   assert.doesNotMatch(scope.describeDocumentScope(mixed).lines.join(" "), /bakılmadı/);
 });

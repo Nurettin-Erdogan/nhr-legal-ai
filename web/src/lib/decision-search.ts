@@ -39,9 +39,12 @@ export interface SearchPage {
 }
 
 const text = (value: unknown, max = 4000): string | null =>
-  typeof value === "string" && value.trim() ? value.replace(/\s+/g, " ").trim().slice(0, max) : null;
+  typeof value === "string" && value.trim()
+    ? value.replace(/\s+/g, " ").trim().slice(0, max)
+    : null;
 
-export const isHttpUrl = (value: string | null): value is string => !!value && /^https?:\/\//i.test(value);
+export const isHttpUrl = (value: string | null): value is string =>
+  !!value && /^https?:\/\//i.test(value);
 
 /** Sunucu yanıtını savunmacı biçimde ayrıştırır: kimliksiz ya da başlıksız satırlar atılır; bilinmeyen doğrulama "unknown" olur. */
 export function parseSearchPage(raw: unknown): SearchPage | null {
@@ -56,7 +59,9 @@ export function parseSearchPage(raw: unknown): SearchPage | null {
     const title = text(entry.title, 400);
     if (!id || !title) continue;
     const verification: Verification =
-      entry.verification === "official" || entry.verification === "third_party" ? entry.verification : "unknown";
+      entry.verification === "official" || entry.verification === "third_party"
+        ? entry.verification
+        : "unknown";
     hits.push({
       id,
       sourceType: text(entry.source_type, 40) ?? "other",
@@ -78,7 +83,10 @@ export function parseSearchPage(raw: unknown): SearchPage | null {
       verification,
     });
   }
-  const count = (value: unknown, fallback: number) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : fallback);
+  const count = (value: unknown, fallback: number) =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0
+      ? Math.floor(value)
+      : fallback;
   return {
     query: text(source.query, 300) ?? "",
     total: count(source.total, hits.length),
@@ -103,7 +111,12 @@ export function citationOf(hit: SearchHit): string {
     return joined || hit.title;
   }
   const court = [hit.courtName ?? hit.authority, hit.chamber].filter(Boolean).join(" ");
-  const parts = [court, hit.docketNo ? `E. ${hit.docketNo}` : null, hit.decisionNo ? `K. ${hit.decisionNo}` : null, hit.decisionDate ? `T. ${trDate(hit.decisionDate)}` : null];
+  const parts = [
+    court,
+    hit.docketNo ? `E. ${hit.docketNo}` : null,
+    hit.decisionNo ? `K. ${hit.decisionNo}` : null,
+    hit.decisionDate ? `T. ${trDate(hit.decisionDate)}` : null,
+  ];
   const cited = parts.filter(Boolean).join(", ");
   return cited || hit.title;
 }
@@ -118,12 +131,18 @@ export const yearOf = (hit: SearchHit): number | null => {
  * Kart rozeti (kural: `@/lib/source-label`, AGENTS.md 2026-10-15). Resmî metinle karşılaştırılmış kayıt "Resmî metin ✓";
  * karşılaştırılmamış ya da durumu bilinmeyen kayıt olumsuz ibare olmadan kaynak adıyla gösterilir ve ✓ almaz.
  */
-export function verificationBadge(verification: Verification, sourceUrl?: string | null, courtName?: string | null): { label: string; tone: "ok" | "neutral" } {
+export function verificationBadge(
+  verification: Verification,
+  sourceUrl?: string | null,
+  courtName?: string | null,
+): { label: string; tone: "ok" | "neutral" } {
   if (verification === "official") return { label: "Resmî metin ✓", tone: "ok" };
   const url = (sourceUrl ?? "").trim();
   const court = (courtName ?? "").toLocaleLowerCase("tr-TR");
-  if (/^https:\/\/karararama\.yargitay\.gov\.tr\//i.test(url) || court.includes("yargıtay")) return { label: "Yargıtay kararı", tone: "neutral" };
-  if (/^https:\/\/karararama\.danistay\.gov\.tr\//i.test(url) || court.includes("danıştay")) return { label: "Danıştay kararı", tone: "neutral" };
+  if (/^https:\/\/karararama\.yargitay\.gov\.tr\//i.test(url) || court.includes("yargıtay"))
+    return { label: "Yargıtay kararı", tone: "neutral" };
+  if (/^https:\/\/karararama\.danistay\.gov\.tr\//i.test(url) || court.includes("danıştay"))
+    return { label: "Danıştay kararı", tone: "neutral" };
   return { label: "Karar", tone: "neutral" };
 }
 
@@ -138,7 +157,13 @@ export interface Filters {
   sort: "relevance" | "newest" | "official_first";
 }
 
-export const DEFAULT_FILTERS: Filters = { authority: "", sourceType: "", year: "", onlyOfficial: false, sort: "relevance" };
+export const DEFAULT_FILTERS: Filters = {
+  authority: "",
+  sourceType: "",
+  year: "",
+  onlyOfficial: false,
+  sort: "relevance",
+};
 
 const dateKey = (hit: SearchHit) => hit.decisionDate ?? hit.versionDate ?? "";
 
@@ -184,7 +209,9 @@ const tally = (values: (string | null)[]) => {
 export function facetsOf(hits: SearchHit[]): Facets {
   const sorted = (counts: Map<string, number>, by: "count" | "desc") =>
     [...counts.entries()]
-      .sort((a, b) => (by === "desc" ? b[0].localeCompare(a[0]) : b[1] - a[1] || a[0].localeCompare(b[0], "tr")))
+      .sort((a, b) =>
+        by === "desc" ? b[0].localeCompare(a[0]) : b[1] - a[1] || a[0].localeCompare(b[0], "tr"),
+      )
       .map(([value, count]) => ({ value, count }));
   return {
     authorities: sorted(tally(hits.map((hit) => hit.authority)), "count"),
@@ -200,18 +227,41 @@ export interface Segment {
 }
 
 const WORD = /[0-9A-Za-zÇĞİÖŞÜçğıöşüâîûÂÎÛ]+/g;
-const STOP = new Set(["ve", "veya", "ile", "için", "bir", "bu", "şu", "olan", "gibi", "kadar", "daha", "mı", "mi", "mu", "mü"]);
+const STOP = new Set([
+  "ve",
+  "veya",
+  "ile",
+  "için",
+  "bir",
+  "bu",
+  "şu",
+  "olan",
+  "gibi",
+  "kadar",
+  "daha",
+  "mı",
+  "mi",
+  "mu",
+  "mü",
+]);
 
 /** Sorgudaki anlamlı sözcükleri (kök biçimiyle: son 3 harf atılır) metinde işaretler. HTML üretilmez; parçalar metin olarak basılır. */
 export function highlightSegments(content: string, query: string): Segment[] {
-  const stems = [...new Set((query.toLocaleLowerCase("tr").match(WORD) ?? []).filter((word) => word.length >= 3 && !STOP.has(word)).map((word) => (word.length >= 6 ? word.slice(0, word.length - 3) : word)))];
+  const stems = [
+    ...new Set(
+      (query.toLocaleLowerCase("tr").match(WORD) ?? [])
+        .filter((word) => word.length >= 3 && !STOP.has(word))
+        .map((word) => (word.length >= 6 ? word.slice(0, word.length - 3) : word)),
+    ),
+  ];
   if (!content || !stems.length) return [{ text: content, match: false }];
   const lower = content.toLocaleLowerCase("tr");
   if (lower.length !== content.length) return [{ text: content, match: false }];
   const ranges: [number, number][] = [];
   for (const word of lower.matchAll(WORD)) {
     const start = word.index ?? 0;
-    if (stems.some((stem) => word[0].startsWith(stem))) ranges.push([start, start + word[0].length]);
+    if (stems.some((stem) => word[0].startsWith(stem)))
+      ranges.push([start, start + word[0].length]);
   }
   if (!ranges.length) return [{ text: content, match: false }];
   const segments: Segment[] = [];
@@ -250,19 +300,35 @@ export async function searchDecisions(
   options: { limit?: number; offset?: number; mode?: SearchMode; signal?: AbortSignal } = {},
 ): Promise<SearchPage> {
   const mode = options.mode ?? "keyword";
-  const params = new URLSearchParams({ q: query.trim(), limit: String(options.limit ?? 10), offset: String(options.offset ?? 0) });
+  const params = new URLSearchParams({
+    q: query.trim(),
+    limit: String(options.limit ?? 10),
+    offset: String(options.offset ?? 0),
+  });
   const path = mode === "narrative" ? "/api/legal/semantic" : "/api/legal/search";
   let response: Response;
   try {
-    response = await fetch(`${BASE}${path}?${params}`, { credentials: "include", signal: options.signal });
+    response = await fetch(`${BASE}${path}?${params}`, {
+      credentials: "include",
+      signal: options.signal,
+    });
   } catch (error) {
     if (options.signal?.aborted) throw error;
     throw new SearchError("Hukuk arama servisine ulaşılamadı.");
   }
   if (!response.ok) {
-    if (response.status === 504) throw new SearchError("Arama zaman aşımına uğradı; daha belirgin sözcüklerle yeniden deneyin.", 504);
+    if (response.status === 504)
+      throw new SearchError(
+        "Arama zaman aşımına uğradı; daha belirgin sözcüklerle yeniden deneyin.",
+        504,
+      );
     if (response.status === 422)
-      throw new SearchError(mode === "narrative" ? "Olayı en az 10 karakterle, bir iki cümleyle anlatın." : "Arama için en az 2 karakter yazın.", 422);
+      throw new SearchError(
+        mode === "narrative"
+          ? "Olayı en az 10 karakterle, bir iki cümleyle anlatın."
+          : "Arama için en az 2 karakter yazın.",
+        422,
+      );
     throw new SearchError(`Arama tamamlanamadı (${response.status}).`, response.status);
   }
   const page = parseSearchPage(await response.json().catch(() => null));
@@ -274,20 +340,54 @@ export interface SourceDetail {
   title: string;
   sourceUrl: string | null;
   chunks: string[];
+  rawText: string;
+  verification: Verification;
+  isCurrent: boolean | null;
 }
 
 export async function loadSourceDetail(id: string, signal?: AbortSignal): Promise<SourceDetail> {
   let response: Response;
   try {
-    response = await fetch(`${BASE}/api/legal/sources/${encodeURIComponent(id)}`, { credentials: "include", signal });
+    response = await fetch(`${BASE}/api/legal/sources/${encodeURIComponent(id)}`, {
+      credentials: "include",
+      signal,
+    });
   } catch (error) {
     if (signal?.aborted) throw error;
     throw new SearchError("Kaynak metnine ulaşılamadı.");
   }
-  if (!response.ok) throw new SearchError(response.status === 404 ? "Kaynak bulunamadı." : `Kaynak metni alınamadı (${response.status}).`, response.status);
+  if (!response.ok)
+    throw new SearchError(
+      response.status === 404
+        ? "Kaynak bulunamadı."
+        : `Kaynak metni alınamadı (${response.status}).`,
+      response.status,
+    );
   const raw = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) || typeof raw.title !== "string")
+    throw new SearchError("Kaynak servisinden geçersiz yanıt geldi.");
+  if (typeof raw.id !== "string" || raw.id.toLowerCase() !== id.toLowerCase())
+    throw new SearchError("Açılan kaynağın kimliği istenen kaynakla eşleşmiyor.");
   const chunks = Array.isArray(raw?.chunks)
-    ? (raw!.chunks as unknown[]).map((chunk) => (chunk && typeof chunk === "object" ? text((chunk as Record<string, unknown>).content, 20000) : null)).filter((value): value is string => !!value)
+    ? (raw.chunks as unknown[])
+        .map((chunk) =>
+          chunk &&
+          typeof chunk === "object" &&
+          typeof (chunk as Record<string, unknown>).content === "string"
+            ? ((chunk as Record<string, unknown>).content as string).trim()
+            : null,
+        )
+        .filter((value): value is string => !!value)
     : [];
-  return { title: text(raw?.title, 400) ?? "", sourceUrl: text(raw?.source_url, 600), chunks };
+  return {
+    title: text(raw.title, 400) ?? "",
+    sourceUrl: text(raw.official_source_url, 2000) ?? text(raw.source_url, 2000),
+    chunks,
+    rawText: typeof raw.raw_text === "string" ? raw.raw_text.trim() : "",
+    verification:
+      raw.verification === "official" || raw.verification === "third_party"
+        ? raw.verification
+        : "unknown",
+    isCurrent: typeof raw.is_current === "boolean" ? raw.is_current : null,
+  };
 }

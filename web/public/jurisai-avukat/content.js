@@ -1229,12 +1229,18 @@
       if (!started?.started) return started?.error ? started : lost;
       let silent = 0;
       while (true) {
-        await sleep(700);
-        const answer = await send({ type: "JURISAI_PULL_FETCH_POLL" });
-        if (answer?.pending) { silent = 0; continue; }
+        const polledAt = Date.now();
+        const answer = await send({ type: "JURISAI_PULL_FETCH_POLL", waitMs: 1000 });
+        if (answer?.pending) {
+          silent = 0;
+          // Eski çalışan waitMs'i tanımıyorsa sıkı mesaj döngüsü oluşmasın.
+          if (Date.now() - polledAt < 100) await sleep(200);
+          continue;
+        }
         if (answer && answer.code !== "wrong_job" && answer.code !== "no_fetch") return answer;
         // Yanıt yok ya da çalışan işi tanımıyor: birkaç yoklama bekle, sürerse evrakı baştan dene.
         if (answer || (silent += 1) >= 5) break;
+        await sleep(700);
       }
       if (pulling?.stop || !(await rebegin())) return lost;
     }
@@ -1245,7 +1251,11 @@
     // İndirme kesintisi ve doğrulama reddi, iç içe hata mesajında önizleme
     // reddinden söz edilse bile kalıcı evrak hatası değildir.
     if (outcome?.retryable || outcome?.code === "UYAP_VALIDATION_FAILED") return false;
-    return /Desteklenmeyen dosya türü|önizlemede vermiyor|çok büyük|sınırını aşıyor|zaten/i.test(outcome?.error || "");
+    return outcome?.code === "UYAP_ACCESS_DENIED" || /Desteklenmeyen dosya türü|önizlemede vermiyor|çok büyük|sınırını aşıyor|zaten/i.test(outcome?.error || "");
+  }
+
+  function pullSessionFailure(outcome) {
+    return ["UYAP_SESSION_EXPIRED", "login_required"].includes(outcome?.code);
   }
 
   /**
@@ -1309,11 +1319,8 @@
     const failedLines = new Map(); // evrak kimliği → son hata satırı (sonradan inen evrak listeden çıkar)
     let queue = todo;
     let abandoned = false;
-    // Oturum süresi dolunca UYAP evrak yerine kendi "Hata Oluştu … Güvenli Çıkış" sayfasını (ya da giriş sayfasını) döndürür.
-    // Bu, evrağa özgü bir hata değildir: art arda iki evrakta görülürse dosyanın kalan yüzlerce evrakı tek tek denenmez;
-    // aktarım "oturum kapandı" koduyla hemen biter ve sayfa kullanıcıdan yeniden giriş ister (gerçek aktarımda oturumu
-    // dolmuş bir koşu 350 evraklık dosyada böyle sürüp gitti; 2026-10-13).
-    let sessionPages = 0;
+    // Genel hata şablonu oturum kaybı değildir. Yalnız açık giriş/oturum
+    // belirtisi veya HTTP 401, kullanıcıdan yeniden giriş istenmesini sağlar.
     let sessionLost = false;
     for (let round = 0; round < PULL_ROUNDS && queue.length && !pulling.stop && !abandoned; round += 1) {
     const again = [];
@@ -1351,7 +1358,7 @@
       if (direct) {
         outcome = await pullFetch({ mode, direct, meta, quick }, rebegin);
         // İlk geçişte geçici hata alan evrak tıklama yoluyla hemen yeniden denenmez; dosyanın sonundaki tura kalır.
-        usedDirect = !!outcome?.ok || pullItemOnlyError(outcome) || (quick && !!outcome?.retryable);
+        usedDirect = !!outcome?.ok || pullItemOnlyError(outcome) || pullSessionFailure(outcome) || (quick && !!outcome?.retryable);
       }
       if (outcome?.code === "UYAP_CANCELLED") { pulling.stop = true; break; }
       if (!usedDirect && pulling.stop) break;
@@ -1399,15 +1406,13 @@
         else if (outcome.duplicate) stats.duplicates += 1;
         else stats.sent += 1; // aktarılan ya da (bilgisayara indirme kipinde) kaydedilen
         if (failedLines.delete(item.id)) stats.failed -= 1; // önceki denemede takılmıştı, şimdi indi
-        sessionPages = 0;
       } else {
         if (!failedLines.has(item.id)) stats.failed += 1;
         // Evrağın kendisine özgü ret (tür desteklenmiyor, UYAP ön izlemede vermiyor) oturum/portal sorunu değildir: art arda gelse de
         // aktarım durdurulmaz ve yavaşlatılmaz. Canlıda art arda 5 .zip eki 350 evraklık aktarımı 114. evrakta kesmişti.
         const itemOnly = pullItemOnlyError(outcome);
         if (!itemOnly) consecutiveFailures += 1;
-        sessionPages = /Hata Oluştu|oturum kapanmış olabilir/i.test(outcome?.error || "") ? sessionPages + 1 : 0;
-        if (sessionPages >= 2) sessionLost = true;
+        if (pullSessionFailure(outcome)) sessionLost = true;
         failedLines.set(item.id, `${item.title.slice(0, 90)}: ${outcome?.error || "eklenti yanıt vermedi"}`);
         if (!itemOnly && round + 1 < PULL_ROUNDS) again.push(item);
         if (!itemOnly) gap = Math.min(20000, gap * 2); // UYAP bizi sınırlıyor olabilir: yavaşla

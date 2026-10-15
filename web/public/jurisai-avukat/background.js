@@ -184,6 +184,18 @@ function isUyapValidationPage(html) {
     && /do[ğg]rulama\s+hatasi/.test(text);
 }
 
+// Genel "Hata Oluştu", "Güvenli Çıkış" bağlantısı veya iç servis adresi,
+// oturum kaybının kanıtı değildir. Yalnız açık kimlik doğrulama belirtisi kabul edilir.
+function uyapHtmlFailureCode(html) {
+  const text = htmlDocumentText(html);
+  const title = htmlDocumentText((/<title[^>]*>([\s\S]*?)<\/title>/i.exec(html) || [])[1] || "");
+  if (/oturum(?:unuz|un)?\s+(?:süresi\s+(?:dol|bit)|sona\s+er|kapan|zaman\s+aş)|geçerli\s+(?:bir\s+)?oturum\s+bulunama/.test(text) ||
+      /(?:giriş|login|kimlik doğrulama)\s*(?:ekrani|sayfasi)$/.test(title.trim()) ||
+      /<input\b[^>]*\btype\s*=\s*["']?password\b/i.test(html)) return "UYAP_SESSION_EXPIRED";
+  if (/yetkiniz\s+(?:yok|bulunm)|erişim\s+(?:izniniz\s+yok|reddedildi)/.test(text)) return "UYAP_ACCESS_DENIED";
+  return "UYAP_PORTAL_ERROR";
+}
+
 function isPassiveDocumentHtml(html) {
   // Makbuz/KEP şablonları yalnız metin, tablo ve biçimlendirme içerir. Giriş/hata sayfaları
   // veya etkin içerik bu istisnadan yararlanamaz. Bu kontrol MIME türünden bağımsızdır.
@@ -342,7 +354,12 @@ async function readUyapDocument(url, timeoutMs, onProgress = null, signal = null
       }
       throwIfPullCancelled(signal);
       if (response.url) assertUyapUrl(response.url);
-      if (!response.ok) throw new Error(`UYAP yanıtı HTTP ${response.status}`);
+      if (!response.ok) {
+        const error = new Error(`UYAP yanıtı HTTP ${response.status}`);
+        if (response.status === 401) error.code = "UYAP_SESSION_EXPIRED";
+        else if (response.status === 403) error.code = "UYAP_ACCESS_DENIED";
+        throw error;
+      }
       return response;
     };
     // Parçalar önce küçük bir listede toplanır, `BLOB_FOLD_BYTES`'ı geçince Blob'a katılır: JS belleğinde en çok birkaç MB durur.
@@ -435,11 +452,13 @@ async function fetchDocument(url, timeoutMs, meta = null, onProgress = null, sig
       // UYAP bazı makbuzları PDF yerine gerçek HTML belge olarak sunar. Yalnızca
       // başlığı ve resmî makbuz alanları eşleşirse kabul et; giriş/hata sayfasını asla yükleme.
       if (await isUyapReceipt(blob, meta) || await isUyapKepDocument(blob, meta)) return { blob, type: "text/html", filename: "" };
-      // Gerçek sebep (yetki yok, önizlenemiyor, oturum) UYAP'ın sayfa başlığında/metninde yazar; yalnız oturum
-      // belirtisi varsa "oturum kapanmış olabilir" denir (aynı çekimde diğer evraklar geliyorsa yanıltıcıdır).
+      // Kısaltılmış kullanıcı mesajından teşhis koyma: hata türü özgün yanıtın
+      // başlık/metnindeki açık belirtilerden, mesaj ise maskelenmiş özetten gelir.
       const said = await uyapReplyText(blob, type);
-      const sessionHint = !said || /giriş|oturum|login/i.test(said);
-      throw retryable(`UYAP belge yerine sayfa döndürdü${said ? `: "${said}"` : ""}${sessionHint ? " (oturum kapanmış olabilir)" : ""}`);
+      const code = uyapHtmlFailureCode(await decodeDocumentHtml(blob.slice(0, 8192)));
+      const message = `UYAP belge yerine sayfa döndürdü${said ? `: "${said}"` : ""}`;
+      throw Object.assign(code === "UYAP_PORTAL_ERROR" ? retryable(message) : new Error(message),
+        { code, notDocument: true });
     }
     // Önizlenemeyen evrakta UYAP belge yerine kısa bir düz metin (mesaj) döndürür: belge olarak kaydedilmez.
     if (/^text\//i.test(type) && blob.size < 1024) {
@@ -451,7 +470,10 @@ async function fetchDocument(url, timeoutMs, meta = null, onProgress = null, sig
           { previewRefused: true, notDocument: true },
         );
       }
-      throw retryable(`UYAP belge yerine şu mesajı döndürdü: "${said}"`);
+      const code = uyapHtmlFailureCode(await decodeDocumentHtml(blob));
+      const message = `UYAP belge yerine şu mesajı döndürdü: "${said}"`;
+      throw Object.assign(code === "UYAP_PORTAL_ERROR" ? retryable(message) : new Error(message),
+        { code, notDocument: true });
     }
     const disposition = res.headers.get("content-disposition") || "";
     const filename = (/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition) || [])[1] || "";
@@ -1260,7 +1282,7 @@ async function handlePullFetch(meta, mode = "upload", direct = "", quick = false
       // Doğrulama reddinde türetilmiş Kaydet URL'si de aynı eski parametreleri
       // taşır. Doğrudan yolun çağıranı bir kez normal tıklama/yakalama yapar;
       // yakalanmış taze istek de reddedilirse ret açıkça kullanıcıya döner.
-      if (error.freshRequestRequired || error.code === "UYAP_CANCELLED") throw error;
+      if (error.freshRequestRequired || ["UYAP_CANCELLED", "UYAP_SESSION_EXPIRED", "UYAP_ACCESS_DENIED"].includes(error.code)) throw error;
       const transient = isTransientPullError(error);
       // Ön izleme belge yerine metin/sayfa döndürdüyse gerçek dosya başka adrestedir: (1) UYAP'ın kendi başlattığı ayrı indirme
       // (ör. "Tiff görüntülenemediğinden indiriliyor"), (2) UYAP'ın "Kaydet" adresi (ör. "boyutu çok büyük").
@@ -1272,7 +1294,7 @@ async function handlePullFetch(meta, mode = "upload", direct = "", quick = false
           fetched = await fetchCurrent(saveUrl, timeout, meta);
           viaSave = true;
         } catch (saveError) {
-          if (saveError.freshRequestRequired || saveError.code === "UYAP_CANCELLED") throw saveError;
+          if (saveError.freshRequestRequired || ["UYAP_CANCELLED", "UYAP_SESSION_EXPIRED", "UYAP_ACCESS_DENIED"].includes(saveError.code)) throw saveError;
           if (isTransientPullError(saveError) && !viaDirect && !quick) {
             // UYAP "Kaydet" akışını yarıda kesti: bir kez bekleyip aynı adresi yeniden dene.
             retried = true;
@@ -1462,17 +1484,42 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (!ownsPullRun(sender)) { sendResponse({ ok: false, code: "wrong_job" }); return false; }
       const run = pullRun;
       if (run.fetch && !run.fetch.done) { sendResponse({ ok: false, code: "busy", error: "Önceki evrak hâlâ indiriliyor." }); return false; }
-      const job = (run.fetch = { done: false, result: null });
+      const job = (run.fetch = { done: false, result: null, listeners: new Set() });
       handlePullFetch(message.meta || {}, message.mode, message.direct || "", message.quick === true)
         .then((result) => { job.result = result; }, (error) => { job.result = { ok: false, error: error?.message || "Evrak aktarılamadı", retryable: true }; })
-        .finally(() => { job.done = true; });
+        .finally(() => { job.done = true; for (const notify of [...job.listeners]) notify(); });
       sendResponse({ ok: true, started: true });
       return false;
     }
     case "JURISAI_PULL_FETCH_POLL": {
       if (!ownsPullRun(sender)) { sendResponse({ ok: false, code: "wrong_job" }); return false; }
-      const job = pullRun.fetch;
+      const run = pullRun;
+      const job = run.fetch;
       if (!job) { sendResponse({ ok: false, code: "no_fetch", error: "Bekleyen evrak indirmesi yok.", retryable: true }); return false; }
+      // En fazla bir saniyelik olay: küçük belge biter bitmez yanıt verilir;
+      // içerik betiğinde her evrak için sabit 700 ms zamanlayıcı beklenmez.
+      const waitMs = Math.max(0, Math.min(1000, Number(message.waitMs) || 0));
+      if (!job.done && waitMs > 0) {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          job.listeners.delete(finish);
+          run.controller.signal.removeEventListener("abort", finish);
+          if (pullRun !== run || !ownsPullRun(sender)) return sendResponse({ ok: false, code: "wrong_job" });
+          if (run.controller.signal.aborted) return sendResponse({ ok: false, code: "UYAP_CANCELLED", stopped: true });
+          if (run.fetch !== job) return sendResponse({ ok: false, code: "no_fetch", retryable: true });
+          if (!job.done) return sendResponse({ ok: true, pending: true });
+          run.fetch = null;
+          sendResponse(job.result);
+        };
+        const timer = setTimeout(finish, waitMs);
+        job.listeners.add(finish);
+        run.controller.signal.addEventListener("abort", finish, { once: true });
+        if (run.controller.signal.aborted) finish();
+        return true;
+      }
       if (!job.done) { sendResponse({ ok: true, pending: true }); return false; }
       pullRun.fetch = null;
       sendResponse(job.result);

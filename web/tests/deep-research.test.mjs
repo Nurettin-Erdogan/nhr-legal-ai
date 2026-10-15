@@ -6,7 +6,10 @@ import ts from "typescript";
 
 const require = createRequire(import.meta.url);
 function compile(relative) {
-  const source = readFileSync(new URL(relative, import.meta.url), "utf8").replace("import.meta.env?.VITE_API_URL", "undefined");
+  const source = readFileSync(new URL(relative, import.meta.url), "utf8").replace(
+    "import.meta.env?.VITE_API_URL",
+    "undefined",
+  );
   const { outputText } = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   });
@@ -22,17 +25,32 @@ const step = (overrides = {}) => ({
   title: "İlgili mevzuat",
   answer: "Bir yıl çalışma gerekir [K1].",
   grounded: true,
-  citations: [{ marker: "K1", reference: "İŞ KANUNU m. 14", source_url: "https://example.test/x", verification: "official", source_type: "legislation" }],
+  citations: [
+    {
+      marker: "K1",
+      reference: "İŞ KANUNU m. 14",
+      source_url: "https://example.test/x",
+      verification: "official",
+      source_type: "legislation",
+    },
+  ],
   error: null,
   ...overrides,
 });
 
 test("an unclear grounding flag is never treated as verified", () => {
   for (const grounded of [undefined, null, "true", 1, "yes"]) {
-    const parsed = lib.parseResearchState({ job: null, latest: { id: "r", steps: [step({ grounded })] } });
+    const parsed = lib.parseResearchState({
+      job: null,
+      latest: { id: "r", steps: [step({ grounded })] },
+    });
     assert.equal(parsed.latest.steps[0].grounded, false);
   }
-  assert.equal(lib.parseResearchState({ job: null, latest: { id: "r", steps: [step()] } }).latest.steps[0].grounded, true);
+  assert.equal(
+    lib.parseResearchState({ job: null, latest: { id: "r", steps: [step()] } }).latest.steps[0]
+      .grounded,
+    true,
+  );
 });
 
 test("citations keep their verification and unsafe or unknown values are neutralised", () => {
@@ -43,7 +61,12 @@ test("citations keep their verification and unsafe or unknown values are neutral
       steps: [
         step({
           citations: [
-            { marker: "K1", reference: "A", verification: "third_party", source_url: "javascript:alert(1)" },
+            {
+              marker: "K1",
+              reference: "A",
+              verification: "third_party",
+              source_url: "javascript:alert(1)",
+            },
             { marker: "K2", reference: "B", verification: "bilinmeyen" },
             { marker: "K3" },
             null,
@@ -62,21 +85,74 @@ test("citations keep their verification and unsafe or unknown values are neutral
   assert.match(lib.verificationLabel("unknown"), /bilinmiyor/);
 });
 
+test("live and saved research citations preserve source identity and excerpt for the common reader", () => {
+  const source_id = "12345678-1234-1234-1234-123456789abc";
+  const item = step({
+    citations: [
+      {
+        marker: "K1",
+        reference: "Karar",
+        source_id,
+        excerpt: "Kısa pasaj",
+        source_type: "court_decision",
+        verification: "third_party",
+      },
+    ],
+  });
+  const parsed = lib.parseResearchState({
+    job: { id: "job", steps: [item] },
+    latest: { id: "saved", steps: [item] },
+  });
+  for (const list of [parsed.job.steps, parsed.latest.steps]) {
+    assert.equal(list[0].citations[0].sourceId, source_id);
+    assert.equal(list[0].citations[0].excerpt, "Kısa pasaj");
+    assert.equal(list[0].citations[0].verification, "third_party");
+  }
+});
+
 test("a malformed state is rejected and an unknown job state keeps polling", () => {
   assert.equal(lib.parseResearchState(null), null);
   assert.equal(lib.parseResearchState({ job: { state: "running" }, latest: null }), null);
-  assert.deepEqual(lib.parseResearchState({ job: null, latest: null }), { job: null, latest: null });
-  assert.equal(lib.parseResearchState({ job: { id: "j", state: "weird" }, latest: null }).job.state, "running");
-  const steps = lib.parseResearchState({ job: { id: "j", state: "done", steps: [step(), { key: "x" }, null] }, latest: null }).job.steps;
+  assert.deepEqual(lib.parseResearchState({ job: null, latest: null }), {
+    job: null,
+    latest: null,
+  });
+  assert.equal(
+    lib.parseResearchState({ job: { id: "j", state: "weird" }, latest: null }).job.state,
+    "running",
+  );
+  const steps = lib.parseResearchState({
+    job: { id: "j", state: "done", steps: [step(), { key: "x" }, null] },
+    latest: null,
+  }).job.steps;
   assert.equal(steps.length, 1);
 });
 
 test("progress lines explain running, failed and partially failed jobs", () => {
-  const job = (state, extra = {}) => ({ id: "j", state, stage: "", total: 3, done: 1, error: null, steps: [], savedId: null, ...extra });
-  assert.equal(lib.progressLine(job("running", { stage: "2/3: Yargı kararları aranıyor ve yazılıyor…" })), "2/3: Yargı kararları aranıyor ve yazılıyor…");
+  const job = (state, extra = {}) => ({
+    id: "j",
+    state,
+    stage: "",
+    total: 3,
+    done: 1,
+    error: null,
+    steps: [],
+    savedId: null,
+    ...extra,
+  });
+  assert.equal(
+    lib.progressLine(job("running", { stage: "2/3: Yargı kararları aranıyor ve yazılıyor…" })),
+    "2/3: Yargı kararları aranıyor ve yazılıyor…",
+  );
   assert.equal(lib.progressLine(job("running")), "1/3 başlık tamamlandı…");
-  assert.equal(lib.progressLine(job("failed", { error: "Hiçbir başlık için cevap üretilemedi." })), "Hiçbir başlık için cevap üretilemedi.");
-  assert.equal(lib.progressLine(job("done", { steps: [{ error: null }, { error: null }, { error: null }] })), "3 başlık tamamlandı.");
+  assert.equal(
+    lib.progressLine(job("failed", { error: "Hiçbir başlık için cevap üretilemedi." })),
+    "Hiçbir başlık için cevap üretilemedi.",
+  );
+  assert.equal(
+    lib.progressLine(job("done", { steps: [{ error: null }, { error: null }, { error: null }] })),
+    "3 başlık tamamlandı.",
+  );
   assert.equal(
     lib.progressLine(job("done", { steps: [{ error: null }, { error: "x" }, { error: null }] })),
     "3 başlıktan 2 tanesi tamamlandı; 1 başlık için cevap üretilemedi.",
@@ -99,14 +175,24 @@ test("requests send the trimmed question and surface server messages", async () 
   const original = globalThis.fetch;
   try {
     globalThis.fetch = respond(202, { job_id: "j1", steps: [] });
-    assert.deepEqual(await lib.startResearch("  kıdem tazminatı şartları nelerdir  ", { token: "tok" }), { jobId: "j1" });
+    assert.deepEqual(
+      await lib.startResearch("  kıdem tazminatı şartları nelerdir  ", { token: "tok" }),
+      { jobId: "j1" },
+    );
     assert.match(calls[0].url, /\/api\/office-ai\/deep-research$/);
     assert.equal(calls[0].init.method, "POST");
-    assert.deepEqual(JSON.parse(calls[0].init.body), { question: "kıdem tazminatı şartları nelerdir" });
+    assert.deepEqual(JSON.parse(calls[0].init.body), {
+      question: "kıdem tazminatı şartları nelerdir",
+    });
     assert.equal(calls[0].init.headers.Authorization, "Bearer tok");
 
-    globalThis.fetch = respond(409, { detail: "Devam eden bir araştırmanız var; bitmesini bekleyin." });
-    await assert.rejects(lib.startResearch("kıdem tazminatı şartları"), (error) => error.status === 409 && /Devam eden/.test(error.message));
+    globalThis.fetch = respond(409, {
+      detail: "Devam eden bir araştırmanız var; bitmesini bekleyin.",
+    });
+    await assert.rejects(
+      lib.startResearch("kıdem tazminatı şartları"),
+      (error) => error.status === 409 && /Devam eden/.test(error.message),
+    );
     globalThis.fetch = respond(200, { job: null, latest: null });
     assert.deepEqual(await lib.loadResearchState(), { job: null, latest: null });
     globalThis.fetch = respond(200, { job: { state: "running" }, latest: null });

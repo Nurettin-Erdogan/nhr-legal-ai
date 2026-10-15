@@ -113,6 +113,7 @@ class LegalChunk(BaseModel):
 
 class LegalSourceDetail(BaseModel):
     id: UUID
+    verification: str = "unknown"
     source_type: str
     title: str
     source_url: str | None

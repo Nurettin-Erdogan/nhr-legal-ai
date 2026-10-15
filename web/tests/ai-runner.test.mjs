@@ -40,7 +40,14 @@ function runner(props) {
           grounded: true,
           citations: [
             { marker: "[K1]", reference: "Kira belgesi", verification: "user_document" },
-            { marker: "[K2]", reference: "Derleme", verification: "third_party" },
+            {
+              marker: "[K2]",
+              reference: "Derleme",
+              verification: "third_party",
+              source_id: "12345678-1234-1234-1234-123456789abc",
+              source_type: "court_decision",
+              excerpt: "Kayıtlı pasaj",
+            },
           ],
         };
       },
@@ -109,11 +116,14 @@ for (const mode of ["research", "case_law", "semantic_case_search", "agent_resea
       ],
     ]);
     assert.deepEqual(view.calls.errors, []);
-    const output = nodes(view.render()).find((node) => node.type === "Markdown").props.children;
-    assert.match(output, /Kira belgesi \(kullanıcı belgesi\)/);
-    // Karşılaştırılmamış kayıtta olumsuz ibare de ✓ de yok (AGENTS.md, 2026-10-15).
-    assert.match(output, /- \[K2\] Derleme$/m);
-    assert.doesNotMatch(output, /doğrulanmadı|✓/);
+    const tree = view.render();
+    const output = nodes(tree).find((node) => node.type === "Markdown").props.children;
+    assert.equal(output, "Doğrulanmış cevap");
+    const citations = nodes(tree).find((node) => node.type === "CitationList").props.citations;
+    assert.equal(citations[0].verification, "user_document");
+    assert.equal(citations[1].verification, "third_party");
+    assert.equal(citations[1].source_id, "12345678-1234-1234-1234-123456789abc");
+    assert.equal(citations[1].excerpt, "Kayıtlı pasaj");
   });
 }
 

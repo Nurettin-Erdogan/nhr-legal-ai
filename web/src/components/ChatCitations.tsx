@@ -1,4 +1,5 @@
 import { Info, ShieldAlert } from "lucide-react";
+import { SourceReader } from "@/components/SourceReader";
 import { groupCitations } from "@/lib/citation-groups";
 import { officialPortalUrl, verificationTag } from "@/lib/source-label";
 import type { ConsultedSource } from "@/lib/consulted-sources";
@@ -10,6 +11,9 @@ import {
 
 export interface ChatCitation {
   marker: string;
+  source_id?: string | null;
+  source_type?: string | null;
+  excerpt?: string | null;
   source_url: string | null;
   reference: string;
   /** "official" resmî metinle karşılaştırılmış; "user_document" kullanıcının kendi belgesi; diğerleri karşılaştırılmamış. */
@@ -24,7 +28,10 @@ function CitationBadge({ verification, url }: { verification: string; url?: stri
   const tag = verificationTag(verification);
   if (tag?.tone === "official")
     return (
-      <span className="rounded px-1.5 py-0.5 bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 text-[10px] font-medium" data-testid="citation-official">
+      <span
+        className="rounded px-1.5 py-0.5 bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 text-[10px] font-medium"
+        data-testid="citation-official"
+      >
         {tag.label}
       </span>
     );
@@ -36,7 +43,13 @@ function CitationBadge({ verification, url }: { verification: string; url?: stri
     );
   const portal = officialPortalUrl(url);
   return portal ? (
-    <a href={portal} target="_blank" rel="noreferrer" className="text-[10px] font-medium text-primary underline underline-offset-2" data-testid="citation-portal-link">
+    <a
+      href={portal}
+      target="_blank"
+      rel="noreferrer"
+      className="text-[10px] font-medium text-primary underline underline-offset-2"
+      data-testid="citation-portal-link"
+    >
       Resmî sitede aç ↗
     </a>
   ) : null;
@@ -53,15 +66,15 @@ export function CitationList({ citations }: { citations: ChatCitation[] }) {
       {groupCitations(citations).map(({ label, citation: c }) => (
         <div key={label} className="text-xs flex flex-wrap items-start gap-1.5">
           <span className="font-mono text-muted-foreground">{label}</span>
-          {c.source_url && /^https?:\/\//i.test(c.source_url) ? (
-            <a
-              href={c.source_url}
-              target="_blank"
-              rel="noreferrer"
-              className="underline underline-offset-2"
+          {c.verification !== "user_document" && c.source_type !== "document" ? (
+            <SourceReader
+              sourceId={c.source_id}
+              reference={c.reference}
+              sourceUrl={c.source_url}
+              excerpt={c.excerpt}
             >
               {c.reference}
-            </a>
+            </SourceReader>
           ) : (
             <span>{c.reference}</span>
           )}
@@ -96,15 +109,15 @@ export function ConsultedSourceList({ sources }: { sources: ConsultedSource[] })
         {sources.map((source) => (
           <li key={source.marker + source.reference} className="text-xs">
             <div className="flex flex-wrap items-start gap-1.5">
-              {source.source_url ? (
-                <a
-                  href={source.source_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="underline underline-offset-2 font-medium"
+              {source.verification !== "user_document" && source.source_type !== "document" ? (
+                <SourceReader
+                  sourceId={source.source_id}
+                  reference={source.reference}
+                  sourceUrl={source.source_url}
+                  excerpt={source.excerpt}
                 >
                   {source.reference}
-                </a>
+                </SourceReader>
               ) : (
                 <span className="font-medium">{source.reference}</span>
               )}

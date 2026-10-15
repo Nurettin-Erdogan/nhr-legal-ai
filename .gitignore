@@ -50,6 +50,7 @@ postgres_data/
 
 # Yerel araç artıkları (IDE/ajan yapılandırması, kurulum silici, geçici betikler)
 /.abacusai/
+/.claude/settings.local.json
 /.mcp.json
 /unins000.*
 scripts/_tmp_*.py

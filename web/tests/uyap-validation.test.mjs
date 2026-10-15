@@ -11,7 +11,7 @@ const errorPage = '<html><head><title>UYAP Internet Adli Bilgi Sistemi</title></
   '<td>Doğrulama hatası.Lütfen tekrar deneyiniz.</td></tr></table></body></html>';
 const url = 'https://vatandas.uyap.gov.tr/view_document_brd.uyap?evrakId=opaque';
 
-function harness(type, { captured = true, body = errorPage } = {}) {
+function harness(type, { captured = true, body = errorPage, status = 200 } = {}) {
   const calls = [];
   let sleeps = 0;
   let uploads = 0;
@@ -25,7 +25,7 @@ function harness(type, { captured = true, body = errorPage } = {}) {
     fetch: async target => {
       calls.push(target);
       return new Response(typeof body === 'function' ? body(calls.length) : body,
-        { status: 200, headers: { 'Content-Type': typeof type === 'function' ? type(calls.length) : type } });
+        { status, headers: { 'Content-Type': typeof type === 'function' ? type(calls.length) : type } });
     },
   });
   vm.runInContext(source.slice(source.indexOf('const SITE_HOST_RE ='), source.indexOf('async function saveLocally(')) +
@@ -121,4 +121,64 @@ test('a real document quoting validation words is not mistaken for the UYAP erro
   const body = '<html><body>KEP İletisi: kurum@banka.com.tr Konu: Doğrulama hatası Tarih: 01.01.2025</body></html>';
   const h = harness('text/html', { body });
   assert.equal((await h.fetchDocument(url, 1000, { evrakTuru: 'KEP Cevabı' })).type, 'text/html');
+});
+
+test('generic UYAP error with logout navigation and an internal service URL is not session expiry', async () => {
+  const body = '<html><head><title>UYAP Internet Adli Bilgi Sistemi</title></head><body>' +
+    '<h1>Hata Oluştu</h1><a href="/kill_session.uyap">Güvenli Çıkış</a>' +
+    '<b>Hata Mesajı:</b> http://avukatic.uyap.gov.tr/AVUKATWeb/servis erişilemedi</body></html>';
+  const h = harness('application/download', {body});
+  await assert.rejects(h.fetchDocument(url, 1000), error => {
+    assert.equal(error.code, 'UYAP_PORTAL_ERROR');
+    assert.equal(error.retryable, true);
+    assert.doesNotMatch(error.message, /oturum kapanmış olabilir/);
+    return true;
+  });
+  assert.equal(h.stats().uploads, 0);
+});
+
+for (const body of [
+  '<html><body>OTURUMUNUZ SONA ERDİ. Yeniden giriş yapınız.</body></html>',
+  '<html><body>Oturum süresi dolmuştur.</body></html>',
+  '<html><body>' + 'Başlık '.repeat(80) + 'Geçerli bir oturum bulunamadı.</body></html>',
+  '<html><head><title>UYAP Giriş Ekranı</title></head><body>Kimliğinizi doğrulayın</body></html>',
+  '<html><form><input type="password"></form></html>',
+]) test('explicit login evidence stops without retrying preview or save: ' + body.slice(0, 65), async () => {
+  const h = harness('application/download', {body});
+  const result = await h.handlePullFetch({evrakTuru: 'Ek', evrakAdi: 'Ek 1'});
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'UYAP_SESSION_EXPIRED');
+  assert.notEqual(result.retryable, true);
+  assert.deepEqual(h.calls, [url]);
+  assert.deepEqual(h.stats(), {sleeps: 0, uploads: 0});
+});
+
+for (const [status, code] of [[401, 'UYAP_SESSION_EXPIRED'], [403, 'UYAP_ACCESS_DENIED']]) {
+  test(`HTTP ${status} is classified without speculative save/retry requests`, async () => {
+    const h = harness('text/plain', {body: 'Ret', status});
+    const result = await h.handlePullFetch({evrakTuru: 'Ek', evrakAdi: 'Ek 1'});
+    assert.equal(result.code, code);
+    assert.deepEqual(h.calls, [url]);
+    assert.deepEqual(h.stats(), {sleeps: 0, uploads: 0});
+  });
+}
+
+test('an explicit permission refusal is a document/access error, not session expiry', async () => {
+  const h = harness('text/html', {body: '<html><body>Bu evrağı görüntüleme yetkiniz yok.</body></html>'});
+  const result = await h.handlePullFetch({evrakTuru: 'Karar'});
+  assert.equal(result.code, 'UYAP_ACCESS_DENIED');
+  assert.notEqual(result.retryable, true);
+  assert.deepEqual(h.calls, [url]);
+});
+
+for (const [body, code] of [
+  ['Oturumunuz sona erdi. Yeniden giriş yapınız.', 'UYAP_SESSION_EXPIRED'],
+  ['Bu evrağı görüntüleme yetkiniz yok (kod 777).', 'UYAP_ACCESS_DENIED'],
+]) test('short plain-text refusal preserves the auth/access distinction: ' + code, async () => {
+  const h = harness('text/plain; charset=utf-8', {body});
+  const result = await h.handlePullFetch({evrakTuru: 'Karar'});
+  assert.equal(result.code, code);
+  assert.notEqual(result.retryable, true);
+  assert.deepEqual(h.calls, [url]);
+  assert.deepEqual(h.stats(), {sleeps: 0, uploads: 0});
 });

@@ -133,10 +133,32 @@ def test_source_detail_returns_legislation_and_chunks(connection, monkeypatch):
     source = legal.legal_source_detail(source_id)
 
     assert source.source_type == "legislation"
+    assert source.verification == "official"
     assert source.law_name == "İş Kanunu"
     assert source.official_gazette_no == "25134"
     assert len(source.chunks) == 1
     assert TOKEN in source.raw_text
+
+
+def test_source_reader_keeps_pending_bulk_decision_separate(connection, monkeypatch):
+    _seed_court(connection, court_name="Yargıtay", authority="Yargıtay", suffix="reader-pending")
+    source_id = connection.execute(
+        "SELECT id FROM legal_sources WHERE external_id = %s",
+        (f"test/{TOKEN}/court/reader-pending",),
+    ).fetchone()
+    assert source_id is not None
+    connection.execute("UPDATE legal_sources SET ingestion_method='bulk_seed',ingest_status='pending' WHERE id=%s", (source_id["id"],))
+    _use_connection(monkeypatch, connection)
+    assert legal.legal_source_detail(source_id["id"]).verification == "third_party"
+
+
+def test_source_reader_rejects_a_deleted_source(connection, monkeypatch):
+    source_id = _seed_legislation(connection)
+    connection.execute("UPDATE legal_sources SET deleted_at=now() WHERE id=%s", (source_id,))
+    _use_connection(monkeypatch, connection)
+    with pytest.raises(legal.HTTPException) as exc:
+        legal.legal_source_detail(source_id)
+    assert exc.value.status_code == 404
 
 
 def _seed_court(connection, *, court_name: str, authority: str, suffix: str) -> None:

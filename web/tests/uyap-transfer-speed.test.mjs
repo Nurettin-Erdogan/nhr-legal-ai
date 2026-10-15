@@ -12,7 +12,7 @@ vm.runInContext(background.slice(background.indexOf('function htmlDocumentText('
 const { isUyapReceipt, isUyapKepDocument } = context.helpers;
 const content = readFileSync(new URL('../public/jurisai-avukat/content.js', import.meta.url), 'utf8');
 vm.runInContext(content.slice(content.indexOf('  function pullPauseMs('), content.indexOf('  async function runPull(')) +
-  '\nglobalThis.pause = pullPauseMs; globalThis.itemOnly = pullItemOnlyError;', context);
+  '\nglobalThis.pause = pullPauseMs; globalThis.itemOnly = pullItemOnlyError; globalThis.sessionFailure = pullSessionFailure;', context);
 const pause = context.pause;
 const itemOnly = context.itemOnly;
 
@@ -143,4 +143,57 @@ test('deterministic pacing benchmark: 100 sequential 700ms direct transfers remo
     .reduce((a, b) => a + b, 0);
   assert.equal(oldMs, 120000);
   assert.equal(newMs, 70000);
+});
+
+test('generic errors never force login; explicit auth and permission codes remain distinct', () => {
+  for (const error of ['Hata Oluştu — Güvenli Çıkış', 'Bağlantı hatası', 'oturum kapanmış olabilir']) {
+    assert.equal(context.sessionFailure({ok: false, error, code: 'UYAP_PORTAL_ERROR'}), false);
+  }
+  assert.equal(context.sessionFailure({code: 'UYAP_SESSION_EXPIRED'}), true);
+  assert.equal(context.sessionFailure({code: 'login_required'}), true);
+  assert.equal(context.sessionFailure({code: 'UYAP_VALIDATION_FAILED'}), false);
+  assert.equal(context.sessionFailure({code: 'UYAP_ACCESS_DENIED'}), false);
+  assert.equal(itemOnly({code: 'UYAP_ACCESS_DENIED'}), true);
+});
+
+test('content polling returns a ready result without the old fixed 700ms sleep', async () => {
+  const sleeps = [];
+  const requests = [];
+  const local = vm.createContext({
+    Date, pulling: {stop: false}, sleep: async ms => sleeps.push(ms),
+    chrome: {runtime: {sendMessage: async msg => {
+      requests.push(msg);
+      return msg.type.endsWith('START') ? {started: true} : {ok: true};
+    }}},
+  });
+  vm.runInContext(content.slice(content.indexOf('  async function pullFetch('), content.indexOf('  function pullItemOnlyError(')) +
+    '\nglobalThis.fetchOne = pullFetch;', local);
+  assert.equal((await local.fetchOne({}, async () => true)).ok, true);
+  assert.deepEqual(sleeps, []);
+  assert.deepEqual(requests.map(msg => [msg.type, msg.waitMs]), [
+    ['JURISAI_PULL_FETCH_START', undefined], ['JURISAI_PULL_FETCH_POLL', 1000],
+  ]);
+});
+
+test('bounded polling remains compatible with an older worker without a busy loop', async () => {
+  const sleeps = [];
+  let polls = 0;
+  const local = vm.createContext({
+    Date, pulling: {stop: false}, sleep: async ms => sleeps.push(ms),
+    chrome: {runtime: {sendMessage: async msg => msg.type.endsWith('START') ? {started: true}
+      : ++polls === 1 ? {pending: true} : {ok: true}}},
+  });
+  vm.runInContext(content.slice(content.indexOf('  async function pullFetch('), content.indexOf('  function pullItemOnlyError(')) +
+    '\nglobalThis.fetchOne = pullFetch;', local);
+  assert.equal((await local.fetchOne({}, async () => true)).ok, true);
+  assert.deepEqual(sleeps, [200]);
+});
+
+test('deterministic small-document benchmark preserves 500ms pacing while removing polling slack', () => {
+  // Simulated 100ms work, not a claim about live UYAP throughput.
+  const previous = 100 * 700;
+  const improved = Array.from({length: 100}, (_, i) => 100 + pause(1500, 1500, true, true, 100, i < 99))
+    .reduce((a, b) => a + b, 0);
+  assert.equal(previous, 70000);
+  assert.equal(improved, 49600);
 });

@@ -90,7 +90,8 @@ def test_verified_candidate_is_applied_before_retrieval():
     assert applied[0][1]["verified_against_mbs"] is True
 
 
-def test_partial_verification_stays_pending_and_records_result():
+def test_one_official_catalog_is_enough_to_verify():
+    # Kullanıcı kararı 2026-10-15: Resmî Gazete ya da MBS'den biriyle eşleşen madde resmîdir.
     applied: list[tuple[dict, dict, dict]] = []
 
     status = verify_pending_statute(
@@ -107,9 +108,31 @@ def test_partial_verification_stays_pending_and_records_result():
         applier=lambda law, flags, results: applied.append((law, flags, results)),
     )
 
-    assert status == "pending"
+    assert status == "verified"
     assert len(applied) == 1
     assert applied[0][1]["verified_against_mbs"] is False
+
+
+def test_matching_neither_catalog_stays_pending_and_records_result():
+    applied: list[tuple[dict, dict, dict]] = []
+
+    status = verify_pending_statute(
+        "2577 sayili Kanun madde 7 nedir?",
+        candidate_loader=lambda *_args: _candidate(),
+        verifier=lambda _law: (
+            {
+                "verified_against_gazette": False,
+                "verified_against_mbs": False,
+            },
+            {"mbs_verification": {"verified": False}},
+            5,
+        ),
+        applier=lambda law, flags, results: applied.append((law, flags, results)),
+    )
+
+    assert status == "pending"
+    assert len(applied) == 1
+    assert applied[0][1]["verified_against_gazette"] is False
 
 
 def test_slow_portal_is_bounded_by_request_budget():

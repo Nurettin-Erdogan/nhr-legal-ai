@@ -26,6 +26,19 @@ def _response(answer="Kıdem tazminatı bir yıl çalışma ile doğar [K1].", g
     return SimpleNamespace(answer=answer, grounded=grounded, citations=[_citation()] if citations is None else citations, conversation_id=conversation_id)
 
 
+def test_citation_payload_preserves_source_identity_for_the_internal_reader():
+    citation = _citation()
+    citation.source_id = uuid4()
+    citation.excerpt = "Kayıtlı alıntı"
+    payload = research._citation_payload(citation)
+    assert payload["source_id"] == str(citation.source_id)
+    assert payload["excerpt"] == citation.excerpt
+    assert payload["verification"] == "official"
+    assert json.loads(json.dumps(payload))["source_id"] == str(citation.source_id)
+    legacy = research._citation_payload(_citation())
+    assert legacy["source_id"] is None and legacy["excerpt"] is None
+
+
 # --- Plan ---------------------------------------------------------------------------------------------------------------------
 
 

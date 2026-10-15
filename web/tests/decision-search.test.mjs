@@ -6,7 +6,10 @@ import ts from "typescript";
 
 const require = createRequire(import.meta.url);
 function compile(relative) {
-  const source = readFileSync(new URL(relative, import.meta.url), "utf8").replace("import.meta.env?.VITE_API_URL", "undefined");
+  const source = readFileSync(new URL(relative, import.meta.url), "utf8").replace(
+    "import.meta.env?.VITE_API_URL",
+    "undefined",
+  );
   const { outputText } = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   });
@@ -62,9 +65,19 @@ test("the parser drops rows without an id or title and survives malformed bodies
   const page = search.parseSearchPage({
     total: 3,
     partial: true,
-    results: [row(), row({ id: "" }), row({ title: "  " }), null, "x", row({ id: "2", rank: "yüksek", source_type: undefined })],
+    results: [
+      row(),
+      row({ id: "" }),
+      row({ title: "  " }),
+      null,
+      "x",
+      row({ id: "2", rank: "yüksek", source_type: undefined }),
+    ],
   });
-  assert.deepEqual(page.hits.map((item) => item.id), ["1", "2"]);
+  assert.deepEqual(
+    page.hits.map((item) => item.id),
+    ["1", "2"],
+  );
   assert.equal(page.hits[1].rank, 0);
   assert.equal(page.hits[1].sourceType, "other");
   assert.equal(page.total, 3);
@@ -75,26 +88,71 @@ test("the parser drops rows without an id or title and survives malformed bodies
 });
 
 test("citations follow the court-decision and statute conventions", () => {
-  assert.equal(search.citationOf(hit()), "Yargıtay 9. Hukuk Dairesi, E. 2020/1, K. 2021/2, T. 04.03.2021");
+  assert.equal(
+    search.citationOf(hit()),
+    "Yargıtay 9. Hukuk Dairesi, E. 2020/1, K. 2021/2, T. 04.03.2021",
+  );
   const statute = hit({
-    source_type: "legislation", law_name: "İş Kanunu", law_no: "4857", article_no: "25", court_name: null, chamber: null, docket_no: null,
+    source_type: "legislation",
+    law_name: "İş Kanunu",
+    law_no: "4857",
+    article_no: "25",
+    court_name: null,
+    chamber: null,
+    docket_no: null,
   });
   assert.equal(search.citationOf(statute), "İş Kanunu (4857 sayılı) m. 25");
-  assert.equal(search.citationOf(hit({ court_name: null, authority: null, chamber: null, docket_no: null, decision_no: null, decision_date: null })), "Yargıtay 9. Hukuk Dairesi, E. 2020/1, K. 2021/2");
-  const bare = search.parseSearchPage({ results: [{ id: "9", title: "Başlık", source_type: "other" }] }).hits[0];
+  assert.equal(
+    search.citationOf(
+      hit({
+        court_name: null,
+        authority: null,
+        chamber: null,
+        docket_no: null,
+        decision_no: null,
+        decision_date: null,
+      }),
+    ),
+    "Yargıtay 9. Hukuk Dairesi, E. 2020/1, K. 2021/2",
+  );
+  const bare = search.parseSearchPage({
+    results: [{ id: "9", title: "Başlık", source_type: "other" }],
+  }).hits[0];
   assert.equal(search.citationOf(bare), "Başlık");
 });
 
 test("filters combine and sorting is stable", () => {
   const hits = search.parseSearchPage({
     results: [
-      row({ id: "a", authority: "Yargıtay", decision_date: "2019-01-01", verification: "third_party" }),
-      row({ id: "b", authority: "Danıştay", decision_date: "2022-05-05", verification: "official" }),
-      row({ id: "c", authority: "Yargıtay", decision_date: "2022-01-01", verification: "official" }),
-      row({ id: "d", source_type: "legislation", authority: "TBMM", decision_date: null, verification: "unknown" }),
+      row({
+        id: "a",
+        authority: "Yargıtay",
+        decision_date: "2019-01-01",
+        verification: "third_party",
+      }),
+      row({
+        id: "b",
+        authority: "Danıştay",
+        decision_date: "2022-05-05",
+        verification: "official",
+      }),
+      row({
+        id: "c",
+        authority: "Yargıtay",
+        decision_date: "2022-01-01",
+        verification: "official",
+      }),
+      row({
+        id: "d",
+        source_type: "legislation",
+        authority: "TBMM",
+        decision_date: null,
+        verification: "unknown",
+      }),
     ],
   }).hits;
-  const ids = (filters) => search.filterAndSort(hits, { ...search.DEFAULT_FILTERS, ...filters }).map((item) => item.id);
+  const ids = (filters) =>
+    search.filterAndSort(hits, { ...search.DEFAULT_FILTERS, ...filters }).map((item) => item.id);
   assert.deepEqual(ids({}), ["a", "b", "c", "d"]);
   assert.deepEqual(ids({ onlyOfficial: true }), ["b", "c"]);
   assert.deepEqual(ids({ authority: "Yargıtay" }), ["a", "c"]);
@@ -115,15 +173,30 @@ test("facets count what is loaded and report how many are not officially verifie
     ],
   }).hits;
   const facets = search.facetsOf(hits);
-  assert.deepEqual(facets.authorities, [{ value: "Yargıtay", count: 2 }, { value: "Danıştay", count: 1 }]);
-  assert.deepEqual(facets.years.map((year) => year.value), ["2022", "2019"]);
+  assert.deepEqual(facets.authorities, [
+    { value: "Yargıtay", count: 2 },
+    { value: "Danıştay", count: 1 },
+  ]);
+  assert.deepEqual(
+    facets.years.map((year) => year.value),
+    ["2022", "2019"],
+  );
   assert.equal(facets.unverified, 2);
 });
 
 test("highlighting marks query words by stem and never produces markup", () => {
-  const segments = search.highlightSegments("İşçinin kıdem tazminatı <b>hakkı</b> doğdu.", "kıdem tazminatı");
-  assert.equal(segments.map((segment) => segment.text).join(""), "İşçinin kıdem tazminatı <b>hakkı</b> doğdu.");
-  assert.deepEqual(segments.filter((segment) => segment.match).map((segment) => segment.text), ["kıdem", "tazminatı"]);
+  const segments = search.highlightSegments(
+    "İşçinin kıdem tazminatı <b>hakkı</b> doğdu.",
+    "kıdem tazminatı",
+  );
+  assert.equal(
+    segments.map((segment) => segment.text).join(""),
+    "İşçinin kıdem tazminatı <b>hakkı</b> doğdu.",
+  );
+  assert.deepEqual(
+    segments.filter((segment) => segment.match).map((segment) => segment.text),
+    ["kıdem", "tazminatı"],
+  );
   assert.deepEqual(search.highlightSegments("metin", "yok"), [{ text: "metin", match: false }]);
   assert.deepEqual(search.highlightSegments("", "kıdem"), [{ text: "", match: false }]);
   assert.deepEqual(search.highlightSegments("kıdem", "ve bir"), [{ text: "kıdem", match: false }]);
@@ -140,31 +213,51 @@ test("the search call picks the endpoint by mode and turns failures into readabl
   };
   const original = globalThis.fetch;
   try {
-    globalThis.fetch = respond(200, { query: "q", total: 1, partial: false, limit: 10, offset: 0, results: [row()] });
+    globalThis.fetch = respond(200, {
+      query: "q",
+      total: 1,
+      partial: false,
+      limit: 10,
+      offset: 0,
+      results: [row()],
+    });
     const keyword = await search.searchDecisions("  kıdem tazminatı ");
     assert.equal(keyword.hits.length, 1);
     assert.match(calls[0].url, /\/api\/legal\/search\?/);
     assert.equal(new URL(calls[0].url).searchParams.get("q"), "kıdem tazminatı");
     assert.equal(calls[0].init.credentials, "include");
 
-    await search.searchDecisions("işçi haklı nedenle feshetti", { mode: "narrative", limit: 5, offset: 10 });
+    await search.searchDecisions("işçi haklı nedenle feshetti", {
+      mode: "narrative",
+      limit: 5,
+      offset: 10,
+    });
     assert.match(calls[1].url, /\/api\/legal\/semantic\?/);
     assert.equal(new URL(calls[1].url).searchParams.get("limit"), "5");
     assert.equal(new URL(calls[1].url).searchParams.get("offset"), "10");
 
     globalThis.fetch = respond(504, {});
-    await assert.rejects(search.searchDecisions("kıdem"), (error) => error.status === 504 && /zaman aşımı/.test(error.message));
+    await assert.rejects(
+      search.searchDecisions("kıdem"),
+      (error) => error.status === 504 && /zaman aşımı/.test(error.message),
+    );
     globalThis.fetch = respond(422, {});
     await assert.rejects(search.searchDecisions("k"), (error) => /en az 2/.test(error.message));
-    await assert.rejects(search.searchDecisions("kısa", { mode: "narrative" }), (error) => /en az 10/.test(error.message));
+    await assert.rejects(search.searchDecisions("kısa", { mode: "narrative" }), (error) =>
+      /en az 10/.test(error.message),
+    );
     globalThis.fetch = respond(500, {});
     await assert.rejects(search.searchDecisions("kıdem"), (error) => error.status === 500);
     globalThis.fetch = respond(200, null);
-    await assert.rejects(search.searchDecisions("kıdem"), (error) => /geçersiz/.test(error.message));
+    await assert.rejects(search.searchDecisions("kıdem"), (error) =>
+      /geçersiz/.test(error.message),
+    );
     globalThis.fetch = async () => {
       throw new TypeError("network");
     };
-    await assert.rejects(search.searchDecisions("kıdem"), (error) => /ulaşılamadı/.test(error.message));
+    await assert.rejects(search.searchDecisions("kıdem"), (error) =>
+      /ulaşılamadı/.test(error.message),
+    );
   } finally {
     globalThis.fetch = original;
   }
@@ -181,13 +274,54 @@ test("source detail keeps only non-empty chunks and reports a missing source", a
     globalThis.fetch = async () => ({
       ok: true,
       status: 200,
-      json: async () => ({ title: " Başlık ", source_url: "https://example.test/x", chunks: [{ content: "bir" }, { content: "  " }, null, { content: "iki" }] }),
+      json: async () => ({
+        id: "abc/def",
+        title: " Başlık ",
+        source_url: "https://example.test/x",
+        chunks: [{ content: "bir" }, { content: "  " }, null, { content: "iki" }],
+      }),
     });
     const detail = await search.loadSourceDetail("abc/def");
     assert.deepEqual(detail.chunks, ["bir", "iki"]);
     assert.equal(detail.title, "Başlık");
     globalThis.fetch = async () => ({ ok: false, status: 404, json: async () => ({}) });
     await assert.rejects(search.loadSourceDetail("x"), (error) => error.status === 404);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("reader data preserves long text, server trust and identity instead of showing a clipped excerpt", async () => {
+  const original = globalThis.fetch;
+  const rawText = "İlk paragraf.\n\n" + "uzun ".repeat(5000) + "SON KAYIT";
+  const id = "12345678-1234-1234-1234-123456789abc";
+  try {
+    globalThis.fetch = async () => ({
+      ok: true,
+      json: async () => ({
+        id,
+        title: "Kaynak",
+        raw_text: rawText,
+        verification: "third_party",
+        is_current: false,
+        chunks: [{ content: rawText }],
+      }),
+    });
+    const result = await search.loadSourceDetail(id);
+    assert.equal(result.rawText, rawText);
+    assert.equal(result.chunks[0], rawText);
+    assert.equal(result.verification, "third_party");
+    assert.equal(result.isCurrent, false);
+    for (const payload of [
+      null,
+      [],
+      {},
+      { id: "other", title: "Yanlış" },
+      { title: "Kimliksiz" },
+    ]) {
+      globalThis.fetch = async () => ({ ok: true, json: async () => payload });
+      await assert.rejects(search.loadSourceDetail(id), /geçersiz|kimli/);
+    }
   } finally {
     globalThis.fetch = original;
   }

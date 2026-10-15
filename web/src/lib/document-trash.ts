@@ -125,7 +125,43 @@ export interface BatchTrashResult {
 export async function trashDocuments(ids: string[]): Promise<BatchTrashResult> {
   const document_ids = [...new Set(ids.map(checked))];
   if (!document_ids.length) throw new Error("Çöpe taşınacak belge seçilmedi.");
-  return call<BatchTrashResult>("/trash/batch", "POST", { document_ids });
+  try {
+    return await call<BatchTrashResult>("/trash/batch", "POST", { document_ids });
+  } catch (error) {
+    // Eski, yeniden başlatılmamış yerel API'ler toplu rotayı henüz
+    // bilmeyebilir. Tekli rota aynı yetki kontrolünü ve denetim kaydını
+    // kullandığından, yalnızca bu uyumluluk durumunda ona düş.
+    if (!(error instanceof Error) || (error as Error & { status?: number }).status !== 404) {
+      throw error;
+    }
+
+    const workers = Math.min(8, document_ids.length);
+    let nextIndex = 0;
+    let trashed = 0;
+    await Promise.all(
+      Array.from({ length: workers }, async () => {
+        while (nextIndex < document_ids.length) {
+          const id = document_ids[nextIndex++];
+          try {
+            const result = await call<{ trashed: boolean }>(`/${id}/trash`, "POST");
+            if (result.trashed) trashed += 1;
+          } catch (itemError) {
+            // Aynı anda başka bir sekmede çöpe alınan ya da erişilemeyen
+            // belgeler toplu sonuçta "bulunamadı" sayılır; başka hatalar gizlenmez.
+            if (!(itemError instanceof Error) || (itemError as Error & { status?: number }).status !== 404) {
+              throw itemError;
+            }
+          }
+        }
+      }),
+    );
+    return {
+      requested: document_ids.length,
+      trashed,
+      not_found: document_ids.length - trashed,
+      retention_days: 30,
+    };
+  }
 }
 
 export async function restoreDocument(id: string) {
