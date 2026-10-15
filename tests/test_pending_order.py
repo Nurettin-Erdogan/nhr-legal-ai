@@ -71,7 +71,7 @@ def _order(conn) -> list[str]:
 @requires_db
 def test_hopeless_laws_never_outrank_fresh_communiques_even_when_not_recently_tried(connection):
     hopeless = [_law(connection, "decree", n, attempts=400) for n in range(1, 4)]
-    communique = _law(connection, "communique", 10, attempts=5, mbs=True)
+    communique = _law(connection, "communique", 10, attempts=5)
     fresh = _law(connection, "communique", 11)
     order = _order(connection)
     assert order.index(fresh) < order.index(communique) < min(order.index(h) for h in hopeless)
@@ -80,8 +80,8 @@ def test_hopeless_laws_never_outrank_fresh_communiques_even_when_not_recently_tr
 @requires_db
 def test_a_recently_tried_exhausted_law_goes_behind_a_never_tried_communique(connection):
     # Eski sıralamada tür önceliği "yakın zamanda denendi" ölçütünün önündeydi: kanun hep öne dönerdi.
-    tried = _law(connection, "law", 20, attempts=30, recent=True, gazette=True)
-    waiting = _law(connection, "communique", 21, attempts=6, mbs=True)
+    tried = _law(connection, "law", 20, attempts=30, recent=True)
+    waiting = _law(connection, "communique", 21, attempts=6)
     order = _order(connection)
     assert order.index(waiting) < order.index(tried)
 
@@ -97,9 +97,20 @@ def test_within_a_tier_law_types_still_come_first_and_fresh_candidates_before_ex
 
 @requires_db
 def test_least_tried_goes_first_so_persistent_failures_cannot_starve_untouched_laws(connection):
-    # 300 kadar kalıcı başarısız tek-taraflı kayıt, hiç doğrulanmamış (5 denemede kalmış) kayıtların
+    # 300 kadar kalıcı başarısız kayıt, hiç doğrulanmamış (5 denemede kalmış) kayıtların
     # önünde kalıyordu; artık aynı kademede deneme sayısı küçük olan önce gelir.
-    stuck = [_law(connection, "regulation", n, attempts=35, mbs=True) for n in range(40, 43)]
+    stuck = [_law(connection, "regulation", n, attempts=35) for n in range(40, 43)]
     untouched = [_law(connection, "communique", n, attempts=5) for n in range(50, 53)]
     order = _order(connection)
     assert max(order.index(u) for u in untouched) < min(order.index(x) for x in stuck)
+
+
+@requires_db
+def test_one_official_source_is_enough_so_single_side_verified_laws_leave_the_queue(connection):
+    # Kullanıcı kararı 2026-10-15: Resmî Gazete VEYA MBS eşleşmesi yeterli; bunlar artık kuyrukta beklemez.
+    gazette_only = _law(connection, "law", 60, gazette=True)
+    mbs_only = _law(connection, "communique", 61, mbs=True)
+    neither = _law(connection, "communique", 62)
+    order = _order(connection)
+    assert neither in order
+    assert gazette_only not in order and mbs_only not in order
