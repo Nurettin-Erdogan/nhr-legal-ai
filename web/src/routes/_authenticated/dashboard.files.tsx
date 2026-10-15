@@ -3,6 +3,8 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { useSearchParam } from "@/lib/router-compat";
 import { DocumentTrash } from "@/components/DocumentTrash";
+import { DocumentWorkflowActions } from "@/components/DocumentWorkflowActions";
+import { GoogleDriveImport } from "@/components/GoogleDriveImport";
 import { ContentMatchExcerpt } from "@/components/ContentMatchExcerpt";
 import { FileUploadDialog } from "@/components/FileUploadDialog";
 import { UyapSyncDialog } from "@/components/UyapSyncDialog";
@@ -410,15 +412,16 @@ const Files = () => {
 
   return (
     <DashboardLayout
-      title="Dosyalar"
+      title="Belgeler"
       subtitle="UYAP ve yüklenen belgeler · dava dosyaları, evrak türleri ve tarihler"
       actions={
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" variant="ghost" onClick={() => void load()} disabled={loading}>
             <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
           </Button>
           <UyapSyncDialog onSynced={load} />
           <FileUploadDialog onUploaded={load} />
+          <GoogleDriveImport onImported={()=>void load()} />
         </div>
       }
     >
@@ -655,6 +658,7 @@ const Files = () => {
             </Button>
             {selectedDocumentIds.size > 0 && (
               <>
+                <DocumentWorkflowActions ids={[...selectedDocumentIds]} disabled={batchTrashBusy || selectingAll} />
                 <Button
                   size="sm"
                   variant="ghost"

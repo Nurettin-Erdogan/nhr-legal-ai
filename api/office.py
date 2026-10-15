@@ -69,6 +69,7 @@ TABLES: dict[str, str] = {
 # Genel CRUD ucundan ERİŞİLEMEYEN (yalnız özel uçlar yazar: doğrulama sonucu istemci tarafından uydurulamasın) ama KVKK dışa aktarımına
 # dahil olan sahip tabloları.
 EXPORT_ONLY_TABLES: dict[str, str] = {
+    "document_jobs": "office_document_jobs",
     "uyap_audit_runs": "office_uyap_audit_runs",
     "uyap_case_sync": "office_uyap_case_sync",
     "uyap_case_detail": "office_uyap_case_detail",

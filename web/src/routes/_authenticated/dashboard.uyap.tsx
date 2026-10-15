@@ -7,7 +7,6 @@ import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/components/AuthProvider";
 import { UyapDosyalarim } from "@/components/UyapDosyalarim";
-import { UyapRunHistory } from "@/components/UyapRunHistory";
 import { UyapCaseLinks } from "@/components/UyapCaseLinks";
 import { setExtensionKey } from "@/lib/uyap-bridge";
 import { supabase } from "@/integrations/supabase/client";
@@ -198,7 +197,6 @@ const UyapConnect = () => {
       subtitle="UYAP'ta kendi oturumunu aç; belgeleri JurisAI hesabına sen onaylayarak aktar."
     >
       <UyapDosyalarim />
-      <UyapRunHistory />
       <UyapCaseLinks />
 
       {/* Tarayıcı eklentisi */}

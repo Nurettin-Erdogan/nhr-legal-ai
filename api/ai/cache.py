@@ -44,6 +44,8 @@ def answer_cache_key(
     model: str,
     fingerprint: str,
     history_key: str = "",
+    selected_document_ids: Sequence[UUID] = (),
+    user_id: UUID | None = None,
 ) -> str:
     material = "\n".join(
         (
@@ -53,6 +55,8 @@ def answer_cache_key(
             model,
             fingerprint,
             history_key,
+            ",".join(sorted(str(value) for value in selected_document_ids)),
+            "" if user_id is None else str(user_id),
         )
     )
     return sha256(material.encode("utf-8")).hexdigest()

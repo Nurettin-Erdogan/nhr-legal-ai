@@ -1,5 +1,6 @@
 import { Info, ShieldAlert } from "lucide-react";
 import { groupCitations } from "@/lib/citation-groups";
+import { officialPortalUrl, verificationTag } from "@/lib/source-label";
 import type { ConsultedSource } from "@/lib/consulted-sources";
 import {
   USER_DOCUMENT_NOTE,
@@ -11,24 +12,34 @@ export interface ChatCitation {
   marker: string;
   source_url: string | null;
   reference: string;
-  /** "official" resmî; "user_document" kullanıcının kendi belgesi; diğerleri doğrulanmamış. */
+  /** "official" resmî metinle karşılaştırılmış; "user_document" kullanıcının kendi belgesi; diğerleri karşılaştırılmamış. */
   verification: string;
 }
 
-function CitationBadge({ verification }: { verification: string }) {
-  if (verification === "official") return null;
-  if (verification === "user_document") {
+/**
+ * Atıf rozeti (kural: `@/lib/source-label`): resmî kayıtta "Resmî metin ✓", kullanıcı belgesinde "kullanıcı belgesi".
+ * Karşılaştırılmamış kayıtta olumsuz rozet de ✓ de yoktur; kararı resmî portalda açan bağlantı gösterilir.
+ */
+function CitationBadge({ verification, url }: { verification: string; url?: string | null }) {
+  const tag = verificationTag(verification);
+  if (tag?.tone === "official")
     return (
-      <span className="rounded px-1.5 py-0.5 bg-sky-500/15 text-sky-700 dark:text-sky-400 text-[10px] font-medium">
-        kullanıcı belgesi
+      <span className="rounded px-1.5 py-0.5 bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 text-[10px] font-medium" data-testid="citation-official">
+        {tag.label}
       </span>
     );
-  }
-  return (
-    <span className="rounded px-1.5 py-0.5 bg-amber-500/15 text-amber-700 dark:text-amber-400 text-[10px] font-medium">
-      doğrulanmadı
-    </span>
-  );
+  if (tag)
+    return (
+      <span className="rounded px-1.5 py-0.5 bg-sky-500/15 text-sky-700 dark:text-sky-400 text-[10px] font-medium">
+        {tag.label}
+      </span>
+    );
+  const portal = officialPortalUrl(url);
+  return portal ? (
+    <a href={portal} target="_blank" rel="noreferrer" className="text-[10px] font-medium text-primary underline underline-offset-2" data-testid="citation-portal-link">
+      Resmî sitede aç ↗
+    </a>
+  ) : null;
 }
 
 export function CitationList({ citations }: { citations: ChatCitation[] }) {
@@ -54,7 +65,7 @@ export function CitationList({ citations }: { citations: ChatCitation[] }) {
           ) : (
             <span>{c.reference}</span>
           )}
-          <CitationBadge verification={c.verification} />
+          <CitationBadge verification={c.verification} url={c.source_url} />
         </div>
       ))}
       {hasUserDocument && (
@@ -97,7 +108,7 @@ export function ConsultedSourceList({ sources }: { sources: ConsultedSource[] })
               ) : (
                 <span className="font-medium">{source.reference}</span>
               )}
-              <CitationBadge verification={source.verification} />
+              <CitationBadge verification={source.verification} url={source.source_url} />
             </div>
             {source.excerpt && (
               <p className="mt-0.5 line-clamp-3 text-muted-foreground">{source.excerpt}</p>

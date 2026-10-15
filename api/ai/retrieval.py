@@ -11,6 +11,7 @@ from api.ai.search_plan import plan_search
 from api.ai.passages import is_duration_question, sentence_score
 from api.ai.relevance import question_intent, intent_tsquery, focused_intent_tsquery, relevant_contexts
 from api.ai.seed_tier import seed_tier
+from api.ai.workspace_scope import project_document_predicate
 
 _LAW_NO_RE = re.compile(r"(?<!\d)(\d{3,5})(?!\d)")
 _ARTICLE_RE = re.compile(
@@ -461,15 +462,27 @@ ORDER BY ranked.score DESC, {_RECENCY_ORDER}
 """
 
 
-# Belge aramasının kapsamı: bir proje ya da bir büro davası. Dava kapsamı, UYAP/büro belgelerinin
+# Belge aramasının kapsamı: bir proje, bir büro davası veya açık belge seçimi. Dava kapsamı, UYAP/büro belgelerinin
 # türetilmiş kayıtlarını `office_case_documents.case_id` üzerinden bulur; belge başka davaya
 # bağlanırsa kapsam kendiliğinden güncel kalır. RLS her iki durumda da yalnız erişilebilir
-# belgeleri döndürür.
+# belgeleri döndürür. Açık seçim varsa yalnız seçilen office_case_documents aranır;
+# case_id ayrıca verildiyse seçimin bu davaya ait alt kümesiyle sınırlanır.
 _DOCUMENT_SCOPE_PROJECT = "document.project_id = %(project_id)s"
 _DOCUMENT_SCOPE_CASE = (
     "document.office_case_document_id IN "
     "(SELECT office_doc.id FROM office_case_documents AS office_doc "
     "WHERE office_doc.case_id = %(case_id)s AND office_doc.deleted_at IS NULL)"  # çöpteki belge aranmaz
+)
+_DOCUMENT_SCOPE_SELECTED = (
+    "document.office_case_document_id IN "
+    "(SELECT office_doc.id FROM office_case_documents AS office_doc "
+    "WHERE office_doc.id = ANY(%(document_ids)s::uuid[]) AND office_doc.deleted_at IS NULL "
+    "AND (%(case_id)s::uuid IS NULL OR office_doc.case_id = %(case_id)s) "
+    "AND (%(office_project_id)s::uuid IS NULL OR " + project_document_predicate('office_doc') + "))"
+)
+_DOCUMENT_SCOPE_OFFICE_PROJECT = (
+    "document.office_case_document_id IN (SELECT office_doc.id FROM office_case_documents office_doc "
+    "WHERE office_doc.deleted_at IS NULL AND " + project_document_predicate('office_doc') + ")"
 )
 
 
@@ -518,6 +531,10 @@ DOCUMENT_LEXICAL_RETRIEVAL_SQL = _document_lexical_sql(_SEARCH_QUERY_CTES)
 DOCUMENT_LEXICAL_BROAD_SQL = _document_lexical_sql(_BROAD_SEARCH_QUERY_CTES)
 DOCUMENT_CASE_LEXICAL_RETRIEVAL_SQL = _document_lexical_sql(_SEARCH_QUERY_CTES, _DOCUMENT_SCOPE_CASE)
 DOCUMENT_CASE_LEXICAL_BROAD_SQL = _document_lexical_sql(_BROAD_SEARCH_QUERY_CTES, _DOCUMENT_SCOPE_CASE)
+DOCUMENT_SELECTED_LEXICAL_RETRIEVAL_SQL = _document_lexical_sql(_SEARCH_QUERY_CTES, _DOCUMENT_SCOPE_SELECTED)
+DOCUMENT_SELECTED_LEXICAL_BROAD_SQL = _document_lexical_sql(_BROAD_SEARCH_QUERY_CTES, _DOCUMENT_SCOPE_SELECTED)
+DOCUMENT_OFFICE_PROJECT_LEXICAL_SQL = _document_lexical_sql(_SEARCH_QUERY_CTES, _DOCUMENT_SCOPE_OFFICE_PROJECT)
+DOCUMENT_OFFICE_PROJECT_BROAD_SQL = _document_lexical_sql(_BROAD_SEARCH_QUERY_CTES, _DOCUMENT_SCOPE_OFFICE_PROJECT)
 
 def _document_hybrid_sql(scope: str = _DOCUMENT_SCOPE_PROJECT) -> str:
     return f"""
@@ -597,6 +614,8 @@ ORDER BY ranked.score DESC, document.created_at DESC
 
 DOCUMENT_HYBRID_RETRIEVAL_SQL = _document_hybrid_sql()
 DOCUMENT_CASE_HYBRID_RETRIEVAL_SQL = _document_hybrid_sql(_DOCUMENT_SCOPE_CASE)
+DOCUMENT_SELECTED_HYBRID_RETRIEVAL_SQL = _document_hybrid_sql(_DOCUMENT_SCOPE_SELECTED)
+DOCUMENT_OFFICE_PROJECT_HYBRID_SQL = _document_hybrid_sql(_DOCUMENT_SCOPE_OFFICE_PROJECT)
 
 
 def named_law_numbers(question: str) -> tuple[str, ...]:
@@ -1160,17 +1179,27 @@ def retrieve_document_contexts(
     question: str,
     project_id: str | None = None,
     case_id: str | None = None,
+    document_ids: list[str] | None = None,
+    office_project_id: str | None = None,
     top_k: int,
     query_embedding: list[float] | None = None,
     embedding_model: str | None = None,
 ) -> list[RAGContext]:
-    """Kullanıcının belgelerinde arar; kapsam tam olarak bir proje YA DA bir büro davasıdır."""
-    if (project_id is None) == (case_id is None):
+    """RLS altında proje, dava veya açık belge seçimi. Seçim dava kapsamını daraltabilir."""
+    selected = bool(document_ids)
+    scopes = sum(value is not None for value in (project_id, case_id, office_project_id))
+    if (selected and (project_id is not None or scopes > 1)) or (not selected and scopes != 1):
         raise ValueError("Belge araması için project_id veya case_id'den tam biri verilmelidir")
     by_case = case_id is not None
     hybrid_sql = DOCUMENT_CASE_HYBRID_RETRIEVAL_SQL if by_case else DOCUMENT_HYBRID_RETRIEVAL_SQL
     lexical_sql = DOCUMENT_CASE_LEXICAL_RETRIEVAL_SQL if by_case else DOCUMENT_LEXICAL_RETRIEVAL_SQL
     broad_sql = DOCUMENT_CASE_LEXICAL_BROAD_SQL if by_case else DOCUMENT_LEXICAL_BROAD_SQL
+    if office_project_id:
+        hybrid_sql, lexical_sql, broad_sql = DOCUMENT_OFFICE_PROJECT_HYBRID_SQL, DOCUMENT_OFFICE_PROJECT_LEXICAL_SQL, DOCUMENT_OFFICE_PROJECT_BROAD_SQL
+    if selected:
+        hybrid_sql = DOCUMENT_SELECTED_HYBRID_RETRIEVAL_SQL
+        lexical_sql = DOCUMENT_SELECTED_LEXICAL_RETRIEVAL_SQL
+        broad_sql = DOCUMENT_SELECTED_LEXICAL_BROAD_SQL
 
     plan = plan_search(question)
     params = {
@@ -1180,6 +1209,9 @@ def retrieve_document_contexts(
         "candidate_limit": max(top_k * 4, 20),
     }
     params["case_id" if by_case else "project_id"] = case_id if by_case else project_id
+    params['office_project_id'] = office_project_id
+    if selected:
+        params.update(document_ids=document_ids, case_id=case_id)
     if query_embedding is not None and embedding_model:
         params.update(
             {

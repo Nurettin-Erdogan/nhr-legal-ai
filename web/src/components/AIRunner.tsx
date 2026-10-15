@@ -1,5 +1,6 @@
 import { invokeFunction } from "@/lib/backend";
 import { askAssistant } from "@/lib/ai-api";
+import { describeDocumentScope } from "@/lib/document-scope";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -41,6 +42,8 @@ import ReactMarkdown from "react-markdown";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/components/AuthProvider";
 import { CaseDocPicker } from "@/components/CaseDocPicker";
+import { DocumentJobPanel } from "@/components/DocumentJobPanel";
+import { startDocumentJob, type DocumentJobInput } from "@/lib/document-jobs";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
@@ -68,6 +71,11 @@ interface Props {
   module: AIModule;
   placeholder: string;
   examples?: string[];
+  initialDocIds?: string[];
+  initialPrompt?: string;
+  caseId?: string;
+  officeProjectId?: string;
+  contextKey?: string;
 }
 
 // Kaynaklı hukuk araştırması yapan modüller yerel FastAPI RAG hattından (atıf doğrulamalı) geçer.
@@ -80,11 +88,23 @@ const RAG_MODULES: ReadonlySet<AIModule> = new Set([
 
 const DRAFT_KEY = (m: string, userId: string) => `ai-draft:${userId}:${m}`;
 
-export const AIRunner = ({ module, placeholder, examples = [] }: Props) => {
+export const AIRunner = ({
+  module,
+  placeholder,
+  examples = [],
+  initialDocIds = [],
+  initialPrompt = "",
+  caseId,
+  officeProjectId,
+  contextKey = "",
+}: Props) => {
   const { session } = useAuth();
-  const draftKey = session ? DRAFT_KEY(module, session.user.id) : null;
+  const draftKey = session
+    ? `${DRAFT_KEY(module, session.user.id)}${contextKey ? `:${contextKey}` : ""}`
+    : null;
   const [loadedDraftKey, setLoadedDraftKey] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
+  const [analysisInstruction, setAnalysisInstruction] = useState("");
   const [title, setTitle] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{
@@ -107,12 +127,15 @@ export const AIRunner = ({ module, placeholder, examples = [] }: Props) => {
   } | null>(null);
   const [history, setHistory] = useState<AIOutput[]>([]);
   const [historyQuery, setHistoryQuery] = useState("");
-  const [docIds, setDocIds] = useState<string[]>([]);
+  const [docIds, setDocIds] = useState<string[]>(initialDocIds);
+  const maxDocuments = RAG_MODULES.has(module) ? 40 : 2000;
+  const [jobId, setJobId] = useState<string>();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Session-only, owner-scoped drafts; never load the legacy shared drafts.
   useEffect(() => {
-    setPrompt("");
+    setPrompt(initialPrompt);
+    setAnalysisInstruction("");
     setTitle("");
     try {
       const raw = draftKey ? sessionStorage.getItem(draftKey) : null;
@@ -120,8 +143,10 @@ export const AIRunner = ({ module, placeholder, examples = [] }: Props) => {
         const d = JSON.parse(raw);
         if (d?.prompt) setPrompt(d.prompt);
         if (d?.title) setTitle(d.title);
+        if (typeof d?.analysisInstruction === "string")
+          setAnalysisInstruction(d.analysisInstruction);
       } else {
-        setPrompt("");
+        setPrompt(initialPrompt);
         setTitle("");
       }
     } catch {
@@ -129,22 +154,22 @@ export const AIRunner = ({ module, placeholder, examples = [] }: Props) => {
     }
     setResult(null);
     setLoadedDraftKey(draftKey);
-  }, [draftKey]);
+  }, [draftKey, initialPrompt]);
 
   // Auto-save draft
   useEffect(() => {
     if (!draftKey || loadedDraftKey !== draftKey) return;
     const t = setTimeout(() => {
       try {
-        if (prompt || title)
-          sessionStorage.setItem(draftKey, JSON.stringify({ prompt, title }));
+        if (prompt || title || analysisInstruction)
+          sessionStorage.setItem(draftKey, JSON.stringify({ prompt, title, analysisInstruction }));
         else sessionStorage.removeItem(draftKey);
       } catch {
         /* ignore */
       }
     }, 400);
     return () => clearTimeout(t);
-  }, [prompt, title, draftKey, loadedDraftKey]);
+  }, [prompt, title, analysisInstruction, draftKey, loadedDraftKey]);
 
   const loadHistory = async () => {
     if (RAG_MODULES.has(module)) {
@@ -164,6 +189,10 @@ export const AIRunner = ({ module, placeholder, examples = [] }: Props) => {
   }, [module]);
 
   const run = async () => {
+    if (docIds.length > maxDocuments) {
+      toast.error(`Bu işlem için en fazla ${maxDocuments} belge seçebilirsiniz.`);
+      return;
+    }
     if (prompt.trim().length < 5) {
       toast.error("Lütfen daha detaylı bir soru/istek yazın");
       return;
@@ -172,17 +201,24 @@ export const AIRunner = ({ module, placeholder, examples = [] }: Props) => {
     setResult(null);
     if (RAG_MODULES.has(module)) {
       try {
-        const r = await askAssistant(prompt.trim(), {});
+        const r = await askAssistant(prompt.trim(), {
+          caseId,
+          selectedDocumentIds: docIds,
+          ...(officeProjectId ? { officeProjectId } : {}),
+        });
         const refs = r.citations
           .map(
             (c) =>
-              `- ${c.marker} ${c.reference}${c.verification !== "official" ? " (doğrulanmadı)" : ""}${c.source_url ? ` — ${c.source_url}` : ""}`,
+              `- ${c.marker} ${c.reference}${c.verification === "user_document" ? " (kullanıcı belgesi)" : c.verification === "official" ? " (Resmî metin ✓)" : ""}${c.source_url ? ` — ${c.source_url}` : ""}`,
           )
           .join("\n");
         const warn = r.grounded ? "" : "\n\n> Bu cevap getirilen kaynaklarla doğrulanamadı.";
+        const scope = r.document_scope
+          ? `\n\n${describeDocumentScope(r.document_scope).lines.join("\n\n")}`
+          : "";
         setResult({
           id: null,
-          output: `${r.answer}${warn}${refs ? `\n\n**Kaynaklar**\n${refs}` : ""}`,
+          output: `${r.answer}${warn}${scope}${refs ? `\n\n**Kaynaklar**\n${refs}` : ""}`,
           title: title || prompt.trim().slice(0, 60),
           model: "yerel-rag",
         });
@@ -203,9 +239,30 @@ export const AIRunner = ({ module, placeholder, examples = [] }: Props) => {
       setLoading(false);
       return;
     }
+    if (["document_analysis", "auto_summary", "risk_analysis"].includes(module)) {
+      try {
+        setJobId(
+          await startDocumentJob({
+            module: module as DocumentJobInput["module"],
+            document_ids: docIds,
+            text: docIds.length ? "" : prompt,
+            prompt: docIds.length ? prompt : analysisInstruction.trim() || "Belge metnini incele.",
+            title: title || "Belge çalışması",
+            case_id: caseId,
+            project_id: officeProjectId,
+          }),
+        );
+        toast.success("Belge işi kuyruğa alındı.");
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "İş başlatılamadı.");
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
     try {
       const { data, error } = await invokeFunction("ai-legal", {
-        body: { module, prompt, title: title || undefined, docIds },
+        body: { module, prompt, title: title || undefined, docIds, caseId },
       });
       if (error) throw error;
       if (data?.error) throw new Error(data.error);
@@ -272,15 +329,18 @@ export const AIRunner = ({ module, placeholder, examples = [] }: Props) => {
         toast.error("Dosyadan metin çıkarılamadı");
         return;
       }
-      const truncated = text.slice(0, 18000);
+      if (text.length > 2_000_000)
+        throw new Error(
+          "Bu metin bir kuyruk işinin 2 milyon karakter sınırını aşıyor. Belgeyi arşive yükleyip oradan seçin.",
+        );
+      const truncated = text;
       setPrompt((p) =>
         p ? `${p}\n\n--- ${file.name} ---\n${truncated}` : `--- ${file.name} ---\n${truncated}`,
       );
       if (!title) setTitle(file.name.replace(/\.[^.]+$/, ""));
       toast.success(`${file.name} eklendi (${truncated.length.toLocaleString("tr-TR")} karakter)`);
     } catch (err) {
-      console.error(err);
-      toast.error("Dosya işlenemedi");
+      toast.error(err instanceof Error ? err.message : "Dosya işlenemedi");
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
@@ -352,14 +412,56 @@ export const AIRunner = ({ module, placeholder, examples = [] }: Props) => {
                 className="bg-transparent border-primary-foreground/20 text-primary-foreground placeholder:text-primary-foreground/50 resize-y"
               />
               <div className="rounded-xl bg-background/90 text-foreground">
-                <CaseDocPicker value={docIds} onChange={setDocIds} />
+                <CaseDocPicker
+                  value={docIds}
+                  onChange={(ids) => {
+                    setDocIds(ids);
+                    if (ids.length && !prompt.trim())
+                      setPrompt(
+                        module === "risk_analysis"
+                          ? "Seçili belgeleri süre, ispat ve usul açısından kaynaklara göre incele."
+                          : "Seçili belgeleri ayrı başlıklar altında özetle.",
+                      );
+                  }}
+                  max={maxDocuments}
+                  caseId={caseId}
+                  officeProjectId={officeProjectId}
+                />
               </div>
+              {RAG_MODULES.has(module) && docIds.length > 0 && (
+                <p className="text-xs">
+                  Arama yalnız seçtiğiniz {docIds.length} belge içinde yapılır; soru hukuki
+                  değerlendirme istiyorsa mevzuat ve içtihat da aranır. İlgili metin parçaları
+                  kullanılır; bu işlem belgelerin tamamının satır satır incelenmesi değildir.
+                </p>
+              )}
+              {module === "document_analysis" && (
+                <div className="space-y-2 text-xs">
+                  {!docIds.length && (
+                    <label className="block space-y-1">
+                      <span>İnceleme talimatı (yukarıdaki belge metninden ayrı)</span>
+                      <Textarea
+                        value={analysisInstruction}
+                        onChange={(e) => setAnalysisInstruction(e.target.value)}
+                        maxLength={2000}
+                        rows={2}
+                        placeholder="Örn. Metindeki ödeme tutarlarını ve vadeleri incele."
+                        className="bg-transparent border-primary-foreground/20 text-primary-foreground placeholder:text-primary-foreground/50"
+                      />
+                    </label>
+                  )}
+                  <p>
+                    İnceleme, talimatınıza göre bölüm bölüm doğrulanan olguları çıkarır; belgeler
+                    arası kapsamlı çelişki analizi veya hukuki görüş yerine geçmez.
+                  </p>
+                </div>
+              )}
               <div className="flex flex-wrap items-center gap-2">
                 <Button
                   variant="elite"
                   size="sm"
                   onClick={run}
-                  disabled={loading || prompt.trim().length < 5}
+                  disabled={loading || prompt.trim().length < 5 || docIds.length > maxDocuments}
                 >
                   {loading ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -393,6 +495,7 @@ export const AIRunner = ({ module, placeholder, examples = [] }: Props) => {
                   size="sm"
                   onClick={() => {
                     setPrompt("");
+                    setAnalysisInstruction("");
                     setTitle("");
                     setResult(null);
                     try {
@@ -411,10 +514,10 @@ export const AIRunner = ({ module, placeholder, examples = [] }: Props) => {
                 <span
                   className={cn(
                     "text-xs ml-auto font-mono",
-                    prompt.length > 18000 ? "text-destructive" : "text-primary-foreground/60",
+                    prompt.length > 2000000 ? "text-destructive" : "text-primary-foreground/60",
                   )}
                 >
-                  {prompt.length.toLocaleString("tr-TR")} / 20.000
+                  {prompt.length.toLocaleString("tr-TR")} karakter
                 </span>
               </div>
             </div>
@@ -446,6 +549,21 @@ export const AIRunner = ({ module, placeholder, examples = [] }: Props) => {
         </div>
       </div>
 
+      {!RAG_MODULES.has(module) && (
+        <DocumentJobPanel
+          jobId={jobId}
+          module={module}
+          onCompleted={(job) => {
+            if (job.output)
+              setResult({
+                id: job.output_id,
+                output: job.output,
+                title: title || "Belge çalışması",
+              });
+            void loadHistory();
+          }}
+        />
+      )}
       {/* Result */}
       {result && (
         <div className="rounded-2xl bg-card border border-border shadow-card-elite p-6 lg:p-8">
@@ -553,7 +671,7 @@ export const AIRunner = ({ module, placeholder, examples = [] }: Props) => {
             </div>
           )}
           <article className="prose prose-sm max-w-none dark:prose-invert prose-headings:font-serif prose-h2:text-xl prose-h2:mt-6 prose-h2:mb-2 prose-h3:text-base prose-strong:text-foreground prose-li:my-1 prose-table:text-xs text-foreground/85">
-            <ReactMarkdown>{result.output}</ReactMarkdown>
+            <ReactMarkdown components={{ img: () => null }}>{result.output}</ReactMarkdown>
           </article>
 
           <div className="mt-6 rounded-xl border border-gold/30 bg-gold/5 p-4 flex items-start gap-3">

@@ -42,6 +42,10 @@ export interface ChatMessage {
 export interface ConversationSummary {
   id: string;
   title: string | null;
+  project_id?: string | null;
+  case_id?: string | null;
+  office_project_id?: string | null;
+  selected_document_ids?: string[];
   last_message_at: string;
   message_count: number;
 }
@@ -100,21 +104,41 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-export const listConversations = () => api<ConversationSummary[]>("/api/conversations");
+export interface ConversationScope {
+  projectId?: string | null;
+  caseId?: string | null;
+  officeProjectId?: string | null;
+  selectedDocumentIds?: string[];
+}
 
-export async function getConversation(id: string): Promise<ChatMessage[]> {
+export const listConversations = (scope: ConversationScope = {}) => {
+  const params = new URLSearchParams();
+  if (scope.projectId) params.set("project_id", scope.projectId);
+  if (scope.caseId) params.set("case_id", scope.caseId);
+  if (scope.officeProjectId) params.set("office_project_id", scope.officeProjectId);
+  return api<ConversationSummary[]>(`/api/conversations${params.size ? `?${params}` : ""}`);
+};
+
+export async function getConversationDetail(
+  id: string,
+): Promise<{ scope: ConversationScope; messages: ChatMessage[] }> {
   const detail = await api<{
+    project_id: string | null;
+    case_id: string | null;
+    office_project_id: string | null;
+    selected_document_ids: string[];
     messages: Array<{
       id: string;
       role: string;
       content: string;
       grounded: boolean | null;
+      document_scope?: unknown;
       unverified_markers: string[];
       citations: Citation[];
       summary?: string[];
     }>;
   }>(`/api/conversations/${id}`);
-  return detail.messages
+  const messages: ChatMessage[] = detail.messages
     .filter((m) => m.role === "user" || m.role === "assistant")
     .map((m) => ({
       id: m.id,
@@ -122,10 +146,25 @@ export async function getConversation(id: string): Promise<ChatMessage[]> {
       content: m.content,
       citations: m.citations,
       grounded: m.grounded,
+      documentScope: parseDocumentScope(m.document_scope),
       unverifiedMarkers: m.unverified_markers,
-      summary: Array.isArray(m.summary) ? m.summary.filter((item): item is string => typeof item === "string") : undefined,
+      summary: Array.isArray(m.summary)
+        ? m.summary.filter((item): item is string => typeof item === "string")
+        : undefined,
     }));
+  return {
+    messages,
+    scope: {
+      projectId: detail.project_id ?? null,
+      caseId: detail.case_id ?? null,
+      officeProjectId: detail.office_project_id ?? null,
+      selectedDocumentIds: detail.selected_document_ids ?? [],
+    },
+  };
 }
+
+export const getConversation = async (id: string): Promise<ChatMessage[]> =>
+  (await getConversationDetail(id)).messages;
 
 export const deleteConversation = (id: string) =>
   api<void>(`/api/conversations/${id}`, { method: "DELETE" });
@@ -152,6 +191,9 @@ export async function askAssistant(
     projectId?: string | null;
     /** Büro davası: yalnız bu davaya bağlı belgeler de aranır. `projectId` ile birlikte verilmez. */
     caseId?: string | null;
+    officeProjectId?: string | null;
+    /** office_case_documents kimlikleri: yalnız seçili belgeler; caseId varsa onun alt kümesi. */
+    selectedDocumentIds?: string[];
     onStage?: (stage: string) => void;
     onSearchSummary?: (summary: SearchSummaryData) => void;
     /** Doğrulanmış cevap hazır, ek adım (madde özeti) sürüyor: cevap beklemeden gösterilebilir. Kalıcı sonuç yine döner. */
@@ -167,9 +209,15 @@ export async function askAssistant(
       conversation_id: opts.conversationId ?? null,
       project_id: opts.projectId ?? null,
       case_id: opts.caseId ?? null,
+      office_project_id: opts.officeProjectId ?? null,
+      selected_document_ids: opts.selectedDocumentIds ?? [],
     }),
   });
   if (!response.ok || !response.body) {
+    if (!response.ok) {
+      const error = await response.json().catch(() => null);
+      if (typeof error?.detail === "string") throw new Error(error.detail);
+    }
     throw new Error(
       response.status === 401
         ? "Oturum süresi doldu, tekrar giriş yapın."
@@ -182,7 +230,12 @@ export async function askAssistant(
   let result: AnswerResult | null = null;
   const handle = (line: string) => {
     if (!line.trim()) return;
-    const event = JSON.parse(line) as { stage: string; result?: AnswerResult; preview?: AnswerResult; detail?: unknown };
+    const event = JSON.parse(line) as {
+      stage: string;
+      result?: AnswerResult;
+      preview?: AnswerResult;
+      detail?: unknown;
+    };
     if (event.stage === "error") {
       throw new Error(typeof event.detail === "string" ? event.detail : "Cevap üretilemedi.");
     }

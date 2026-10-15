@@ -30,6 +30,9 @@ from api.uyap_detail import router as uyap_detail_router
 from api.uyap_sync import router as uyap_sync_router
 from api.uyap_runs import router as uyap_runs_router
 from api.office_ai import router as office_ai_router
+from api.document_jobs import router as document_jobs_router
+from api.project_documents import router as project_documents_router
+from api.integrations import router as integrations_router
 from api.office_public import router as office_public_router
 from api.office_trash import router as office_trash_router
 from api.projects import router as projects_router
@@ -196,6 +199,9 @@ app.include_router(uyap_detail_router)
 app.include_router(office_router)
 app.include_router(office_trash_router)
 app.include_router(office_ai_router)
+app.include_router(document_jobs_router)
+app.include_router(project_documents_router)
+app.include_router(integrations_router)
 app.include_router(office_public_router)
 app.include_router(admin_ingestion_router)
 app.include_router(admin_audit_router)

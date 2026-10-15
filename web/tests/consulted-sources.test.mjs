@@ -30,6 +30,7 @@ const scope = compile("../src/lib/document-scope.ts");
 const { ConsultedSourceList } = compile("../src/components/ChatCitations.tsx", {
   "@/lib/document-scope": scope,
   "@/lib/citation-groups": compile("../src/lib/citation-groups.ts"),
+  "@/lib/source-label": compile("../src/lib/source-label.ts"),
 });
 
 const official = {

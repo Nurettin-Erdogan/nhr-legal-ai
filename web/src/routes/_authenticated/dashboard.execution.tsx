@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Loader2, RefreshCw, Search } from "lucide-react";
 import { DashboardLayout } from "@/components/DashboardLayout";
+import { ExecutionAsk } from "@/components/ExecutionAsk";
 import { Button } from "@/components/ui/button";
 import { Link, useNavigate } from "@/lib/router-compat";
 import { cn } from "@/lib/utils";
@@ -126,6 +127,8 @@ const ExecutionPage = () => {
 
       {data && data.files.length > 0 && summary && (
         <>
+          <ExecutionAsk />
+
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4" data-testid="execution-summary">
             <Stat
               label="İcra dosyası"

@@ -41,7 +41,7 @@ _REFERENTIAL_RE = re.compile(
 )
 
 _CONVERSATION_SQL = """
-SELECT id, project_id
+SELECT id, project_id, case_id, office_project_id, selected_document_ids
 FROM conversations
 WHERE id = %s AND deleted_at IS NULL
 """
@@ -68,6 +68,9 @@ class ConversationContext:
     # Son kullanıcı soruları (eskiden yeniye), cevabı kaynağa dayanmayanlar DAHİL: takip sorusunun konusu
     # "yeterli kaynak yok" denen bir önceki sorudan da gelebilir. Cevap metni buraya girmez.
     questions: tuple[str, ...] = ()
+    case_id: UUID | None = None
+    office_project_id: UUID | None = None
+    selected_document_ids: tuple[UUID, ...] = ()
 
 
 def _clip(text: str, limit: int) -> str:
@@ -276,4 +279,7 @@ def load_conversation_context(
         project_id=conversation["project_id"],
         turns=history_turns_from_rows(ordered),
         questions=prior_questions_from_rows(ordered),
+        case_id=conversation.get("case_id"),
+        office_project_id=conversation.get("office_project_id"),
+        selected_document_ids=tuple(conversation.get("selected_document_ids") or ()),
     )

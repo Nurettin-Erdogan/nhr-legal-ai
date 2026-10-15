@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { citationSuffix } from "@/lib/source-label";
 import { useEffect, useRef, useState } from "react";
 import { SiteHeader } from "@/components/SiteHeader";
 import { SiteFooter } from "@/components/SiteFooter";
@@ -110,7 +111,7 @@ function HomePage() {
       const result = await askAssistant(question, {});
       const sources = result.citations.map(
         (c) =>
-          `- ${c.marker} ${c.reference}${c.verification !== "official" ? " (doğrulanmadı)" : ""}`,
+          `- ${c.marker} ${c.reference}${citationSuffix(c.verification, c.source_url)}`,
       );
       const content = sources.length
         ? `${result.answer}\n\n**Kaynaklar**\n${sources.join("\n")}`

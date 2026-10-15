@@ -16,6 +16,7 @@ from psycopg.errors import InsufficientPrivilege
 
 from api.audit import AI_ANSWER, AuditContext, record_event
 from api.ai.case_questions import asks_for_legal_assessment, is_case_file_question
+from api.ai.document_selection import selected_document_coverage
 from api.ai.cache import (
     answer_cache,
     answer_cache_key,
@@ -30,7 +31,8 @@ from api.ai.conversation_history import (
 )
 from api.ai.embeddings import EmbeddingProviderError, create_embedding_provider
 from api.embed_pause import pause_embeddings, resume_embeddings, unload_ollama_model
-from api.ai.history import record_exchange
+from api.ai.history import ConversationScopeMismatch, record_exchange
+from api.ai.workspace_scope import office_project_case, project_document_coverage
 from api.document_indexing import case_document_coverage, sweep_unindexed
 from api.ai.live_verify import verify_third_party_contexts
 from api.ai.consulted_relevance import relevant_chunk_ids
@@ -335,6 +337,10 @@ async def _load_history(
         raise HTTPException(
             status_code=409, detail="Bu sohbet farklı bir projeye ait"
         )
+    if (request.case_id, request.office_project_id, set(request.selected_document_ids)) != (
+        context.case_id, context.office_project_id, set(context.selected_document_ids),
+    ):
+        raise HTTPException(409, "Bu sohbet farklı bir dava, proje veya belge seçimine ait. Kendi kapsamıyla açın veya yeni sohbet başlatın.")
     questions = getattr(context, "questions", ()) or tuple(turn.question for turn in context.turns)
     return context.turns, questions
 
@@ -347,6 +353,7 @@ def persist_answer(
     model_name: str,
     audit: AuditContext | None = None,
     from_cache: bool = False,
+    document_scope: dict | None = None,
 ) -> tuple[UUID | None, UUID | None]:
     try:
         with authenticated_database_connection(str(user_id)) as connection:
@@ -359,6 +366,10 @@ def persist_answer(
                 answer=answer,
                 model_name=model_name,
                 as_of=request.as_of,
+                case_id=request.case_id,
+                office_project_id=request.office_project_id,
+                selected_document_ids=request.selected_document_ids,
+                document_scope=document_scope,
             )
             # Soru ve cevap metni denetim günlüğüne yazılmaz; yalnız olayın özeti.
             record_event(
@@ -381,10 +392,15 @@ def persist_answer(
                     "document_citations": sum(
                         1 for context in answer.contexts if context.source_type == "document"
                     ),
+                    "case_id": str(request.case_id) if request.case_id else None,
+                    "office_project_id": str(request.office_project_id) if request.office_project_id else None,
+                    "selected_document_count": len(request.selected_document_ids),
                 },
                 strict=False,
             )
             return conversation_id, message_id
+    except ConversationScopeMismatch as exc:
+        raise HTTPException(409, str(exc)) from exc
     except InsufficientPrivilege as exc:
         raise HTTPException(
             status_code=403,
@@ -456,33 +472,48 @@ def _retrieve(
     statutes_on_timeout: bool = False,
 ) -> list[RAGContext]:
     search_question = question or request.question
-    if request.project_id is not None or request.case_id is not None:
+    selected = bool(request.selected_document_ids)
+    case_id = office_project_case(user_id, request.office_project_id) if request.office_project_id else request.case_id
+    if request.project_id is not None or case_id is not None or selected or request.office_project_id:
         if user_id is None:
             raise HTTPException(
                 status_code=401,
                 detail="Proje belgeleriyle çalışmak için oturum açmalısınız",
             )
-        if request.case_id is not None:
-            # Hangi yoldan geldiğinden bağımsız, henüz indekslenmemiş dava belgelerini bütçe içinde hazırlar.
-            sweep_unindexed(user_id, case_id=request.case_id)
+        if selected:
+            coverage = selected_document_coverage(user_id, request.selected_document_ids,
+                None if request.office_project_id else case_id, **({'office_project_id':request.office_project_id} if request.office_project_id else {}))
             if diagnostics is not None:
-                diagnostics["document_scope"] = case_document_coverage(user_id, request.case_id)
-        file_only = request.case_id is not None and is_case_file_question(search_question)
+                diagnostics["document_scope"] = coverage
+        if request.office_project_id and not selected:
+            if case_id is not None:
+                sweep_unindexed(user_id, case_id=case_id)
+            if diagnostics is not None:
+                diagnostics['document_scope'] = project_document_coverage(user_id, request.office_project_id)
+        elif case_id is not None and not selected:
+            # Hangi yoldan geldiğinden bağımsız, henüz indekslenmemiş dava belgelerini bütçe içinde hazırlar.
+            sweep_unindexed(user_id, case_id=case_id)
+            if diagnostics is not None:
+                diagnostics["document_scope"] = case_document_coverage(user_id, case_id)
+        file_only = case_id is not None and is_case_file_question(search_question)
         with authenticated_database_connection(str(user_id)) as connection:
             document_contexts = retrieve_document_contexts(
                 connection,
                 question=search_question,
                 project_id=None if request.project_id is None else str(request.project_id),
-                case_id=None if request.case_id is None else str(request.case_id),
+                case_id=None if case_id is None or request.office_project_id else str(case_id),
+                **({'office_project_id':str(request.office_project_id)} if request.office_project_id else {}),
                 top_k=top_k,
                 query_embedding=query_embedding,
                 embedding_model=embedding_model,
+                **({"document_ids": [str(value) for value in request.selected_document_ids]} if selected else {}),
             )
-            if request.case_id is not None:
+            record = []
+            if case_id is not None and not selected:
                 # UYAP'tan çekilen dosya bilgileri (taraflar, dosya hesabı, sorgular, safahat) evrak değildir ama dosyanın
                 # parçasıdır: soruyla ilgili bölümleri kullanıcının belgeleri arasına, en başa eklenir. "Borçlu kim?",
                 # "Bakiye borç ne kadar?" gibi soruların cevabı evrak metninde değil bu kayıtlardadır.
-                record = record_contexts(connection, user_id=user_id, case_id=request.case_id, question=search_question)
+                record = record_contexts(connection, user_id=user_id, case_id=case_id, question=search_question)
                 if record:
                     # Belge araması sırayı Decimal olarak döndürür.
                     top = max((float(context.rank) for context in document_contexts), default=0.0)
@@ -490,14 +521,17 @@ def _retrieve(
                     document_contexts = [*record, *document_contexts]
                 if diagnostics is not None:
                     diagnostics["uyap_record_sections"] = len(record)
-            legal_assessment = asks_for_legal_assessment(search_question)
-            if request.case_id is not None and record and not legal_assessment:
+            legal_assessment = asks_for_legal_assessment(search_question) or (selected and case_law_requested(search_question))
+            if (selected or request.office_project_id) and not legal_assessment:
+                # Seçili belgenin olguları başka davaların kararlarındaki olgularla ikame edilemez.
+                file_only = True
+            if case_id is not None and record and not legal_assessment:
                 # Sorunun karşılığı dosyanın UYAP kaydında var ve hukuki değerlendirme istenmiyor: başka davaların kararlarına
                 # bakılmaz. "Takip kesinleşti mi?" sorusuna, dosyadaki "Kesinleşme bilgisi girildi: …" kaydı dururken ilgisiz
                 # bir kararın genel cümleleriyle cevap veriliyordu (ölçüldü: 2026-10-10).
                 file_only = True
             named: list[RAGContext] = []
-            if request.case_id is not None:
+            if case_id is not None or selected or request.office_project_id:
                 named = documents_named_in(search_question, document_contexts)
                 if named:
                     # Soru bir belgeyi adıyla gösteriyor ("ihtarnamede…"): yalnız o belgenin parçaları aranır. Hukuki
@@ -505,7 +539,7 @@ def _retrieve(
                     document_contexts = named
                     file_only = file_only or not legal_assessment
             if (
-                request.case_id is not None
+                case_id is not None
                 and not file_only
                 and not legal_assessment
                 and documents_answer(search_question, document_contexts)
@@ -544,7 +578,7 @@ def _retrieve(
                 legal_contexts = [context for context in legal_contexts if context.source_type == "legislation"]
             own = sorted(document_contexts, key=lambda context: context.rank, reverse=True)
             statutes = (
-                _case_statute_contexts(connection, search_question, named) if request.case_id is not None else []
+                _case_statute_contexts(connection, search_question, named) if case_id is not None or selected else []
             )
             known = {context.chunk_id for context in statutes}
             others = [
@@ -696,9 +730,9 @@ async def _execute_answer_body(
 
     try:
         fast_diagnostics: dict = {}
-        fast_contexts = [] if _force_full_search else await asyncio.to_thread(
+        fast_contexts = [] if _force_full_search or request.selected_document_ids else await asyncio.to_thread(
             try_fast_statute, question=search_question, as_of=request.as_of,
-            project_id=request.project_id or request.case_id, conversation_id=request.conversation_id,
+            project_id=request.project_id or request.case_id or request.office_project_id, conversation_id=request.conversation_id,
             max_chunks=settings.rag_top_k, max_chars=settings.rag_context_chars,
             diagnostics=fast_diagnostics,
         )
@@ -813,7 +847,7 @@ async def _execute_answer_body(
     await emit('search_summary', **summary)
     if not contexts:
         pending = int((retrieval_diagnostics.get('document_scope') or {}).get('pending') or 0)
-        if request.case_id is not None and pending:
+        if (request.case_id is not None or request.office_project_id is not None) and pending:
             # Asıl neden "kaynak yok" değil, davadaki belgelerin henüz hazır olmaması (ör. OCR sürüyor).
             raise HTTPException(
                 status_code=422,
@@ -822,6 +856,9 @@ async def _execute_answer_body(
                     "birkaç dakika sürebilir). İşlem bitince soruyu tekrar sorun."
                 ),
             )
+        scope = retrieval_diagnostics.get('document_scope') or {}
+        if scope.get('file_only'):
+            raise HTTPException(422, "Bu soru için çalışma alanınızdaki belgelerde yeterli bilgi bulunamadı. Projeye bağlı dava/belge yoksa önce bağlayın; hukuki araştırma için mevzuat veya içtihat istediğinizi belirtin.")
         raise HTTPException(
             status_code=422,
             detail="Bu soru için yeterli resmî doğrulanmış kaynak bulunamadı. Portal doğrulaması tamamlanmamış veya eşleşmeyen kayıtlar cevaba alınmadı.",
@@ -832,11 +869,13 @@ async def _execute_answer_body(
     cache_key = answer_cache_key(
         # Aynı takip sorusu farklı konularda farklı yorumlanır: yorumlanmış soru anahtarın parçasıdır.
         question=request.question if interpreted is None else f"{request.question} | {interpreted}",
-        project_id=request.project_id or request.case_id,
+        project_id=request.project_id or request.case_id or request.office_project_id,
         as_of=request.as_of,
         model=provider.model,
         fingerprint=fingerprint,
         history_key=history_fingerprint(history),
+        selected_document_ids=request.selected_document_ids,
+        user_id=user_id if request.selected_document_ids else None,
     )
     cached = answer_cache.get(cache_key)
     conversation_id: UUID | None = None
@@ -866,6 +905,7 @@ async def _execute_answer_body(
                     model_name=provider.model,
                     audit=audit,
                     from_cache=True,
+                    document_scope=retrieval_diagnostics.get("document_scope"),
                 )
             timings.persist_ms = (monotonic() - persist_started) * 1000
             timings.total_ms = (monotonic() - started) * 1000
@@ -1021,6 +1061,7 @@ async def _execute_answer_body(
             user_id=user_id,
             model_name=provider.model,
             audit=audit,
+            document_scope=retrieval_diagnostics.get("document_scope"),
         )
     timings.persist_ms = (monotonic() - persist_started) * 1000
     response = _response_from_verified(

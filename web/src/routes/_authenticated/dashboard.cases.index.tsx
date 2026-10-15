@@ -257,7 +257,7 @@ const Cases = () => {
 
   return (
     <DashboardLayout
-      title="Davalar"
+      title="Davalar ve Projeler"
       subtitle="Tüm dava ve dosyalarınızın canlı durumu"
       actions={
         <Dialog open={open} onOpenChange={setOpen}>

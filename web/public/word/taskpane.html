@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>JurisAI — Word</title>
+    <link rel="stylesheet" href="taskpane.css" />
+    <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+    <script defer src="taskpane.js"></script>
+  </head>
+  <body>
+    <main>
+      <h1>JurisAI · Word</h1>
+      <p>
+        Seçili metni veya açık belgenin metnini kendi JurisAI hesabınızda işleyin. Gönderilmeden
+        önce kapsamı görürsünüz.
+      </p>
+      <form id="login">
+        <label>E-posta<input id="email" type="email" autocomplete="username" required /></label>
+        <label
+          >JurisAI parolası<input
+            id="password"
+            type="password"
+            autocomplete="current-password"
+            required /></label
+        ><button>Giriş yap</button>
+        <p>
+          JurisAI hesabınızın parolasını kullanın; Word veya Google parolanızı girmeyin. Jeton
+          yalnız bu bölmenin belleğinde tutulur.
+        </p>
+      </form>
+      <section id="workspace" hidden>
+        <button id="logout" type="button">Çıkış yap</button>
+        <label
+          >İşlem<select id="module">
+            <option value="document_analysis">Belge analizi</option>
+            <option value="auto_summary">Özet</option>
+            <option value="risk_analysis">Kaynaklı risk incelemesi</option>
+          </select></label
+        >
+        <div class="buttons">
+          <button id="selection" type="button">Seçili metni al</button
+          ><button id="body" type="button">Belgenin metnini al</button>
+        </div>
+        <label
+          >Gönderilecek metin<textarea id="input" rows="9" maxlength="2000000"></textarea>
+        </label>
+        <p id="scope">Henüz metin seçilmedi.</p>
+        <button id="start" type="button">Bu metni JurisAI'a gönder ve işle</button>
+        <button id="cancel" type="button" hidden>İşi durdur</button>
+        <label>Sonuç<textarea id="output" rows="12" readonly></textarea></label
+        ><button id="insert" type="button" disabled>Sonucu Word'deki seçimin sonuna ekle</button>
+        <p>
+          Mevcut belge silinmez veya üzerine yazılmaz. Çıktı düz metin olarak eklenir; hukuki
+          içeriği avukat kontrol etmelidir.
+        </p>
+      </section>
+      <p id="status" role="status"></p>
+    </main>
+  </body>
+</html>

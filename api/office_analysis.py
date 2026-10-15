@@ -42,11 +42,11 @@ def _facts_line(facts: dict) -> str:
     return " · ".join(parts)
 
 
-async def analyze(text: str, generate, contexts, *, title: str = "Belge analizi") -> tuple[str, list[dict]]:
+async def analyze(text: str, generate, contexts, *, title: str = "Belge analizi", documents: list[tuple[str, str]] | None = None) -> tuple[str, list[dict]]:
     """(markdown, kaynak listesi). Belge sayısı ve uzunluk sınırlıdır; sınır dışı kalan kısım söylenir."""
     import uuid
 
-    documents = split_documents(text)
+    documents = documents if documents is not None else split_documents(text)
     skipped = max(0, len(documents) - MAX_DOCUMENTS)
     lines = [f"# {title}", "", "_Yapay zekâ özetidir ve belgeyle karşılaştırılmalıdır. Hukuki değerlendirme içermez; resmî kaynak ya da hukuki görüş yerine geçmez._", ""]
     for index, (name, body) in enumerate(documents[:MAX_DOCUMENTS], start=1):

@@ -164,12 +164,19 @@ class AIAnswerRequest(BaseModel):
     project_id: UUID | None = None
     # Büro davası: dava belgeleri (UYAP dahil) kullanıcının özel belgeleri olarak aranır.
     case_id: UUID | None = None
+    # Arayüzün büro projesi (office_projects); çekirdek projects tablosuyla karıştırılmaz.
+    office_project_id: UUID | None = None
+    # office_case_documents kimlikleri; bu seçim varsa bütün dava değil yalnız bu belgeler aranır.
+    selected_document_ids: list[UUID] = Field(default_factory=list, max_length=40)
     as_of: date | None = None
 
     @model_validator(mode="after")
     def _single_document_scope(self) -> "AIAnswerRequest":
-        if self.project_id is not None and self.case_id is not None:
-            raise ValueError("project_id ve case_id birlikte verilemez")
+        if sum(value is not None for value in (self.project_id, self.case_id, self.office_project_id)) > 1:
+            raise ValueError("project_id, case_id ve office_project_id birlikte verilemez")
+        if self.selected_document_ids and self.project_id is not None:
+            raise ValueError("project_id ve selected_document_ids birlikte verilemez")
+        self.selected_document_ids = list(dict.fromkeys(self.selected_document_ids))
         return self
 
 

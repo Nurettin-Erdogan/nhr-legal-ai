@@ -69,6 +69,8 @@ export function CaseDetailView({
   initialTab = "Özet",
   notesEditor,
   taskComposer,
+  renderSelectedActions,
+  draftAction,
 }: {
   data: CaseDetailData;
   onDownload: (id: string) => void;
@@ -97,8 +99,14 @@ export function CaseDetailView({
   notesEditor?: ReactNode;
   /** "Görevler" sekmesinin üstündeki hızlı görev ekleme formu. */
   taskComposer?: ReactNode;
+  renderSelectedActions?: (ids: string[]) => ReactNode;
+  draftAction?: ReactNode;
 }) {
   const [tab, setTab] = useState<Tab>(initialTab);
+  const [selectedDocuments, setSelectedDocuments] = useState<string[]>([]);
+  const selectedIds = selectedDocuments.filter((id) =>
+    data.documents.rows.some((document) => document.id === id),
+  );
   const c = data.record;
   // Telefon/çağrı hizmeti bağlı değilken "Aramalar" sekmesi boş bir söz olur: yalnız gerçek arama kaydı varsa gösterilir.
   const visibleTabs = tabs.filter(
@@ -158,8 +166,8 @@ export function CaseDetailView({
             değildir.
           </p>
           <p className="mt-2 text-sm text-muted-foreground">
-            Notlar sekmesinden not ekleyebilir, Görevler sekmesinden bu davaya görev açabilirsiniz. Diğer dava bilgileri dava
-            listesindeki Düzenle işlemiyle güncellenir.
+            Notlar sekmesinden not ekleyebilir, Görevler sekmesinden bu davaya görev açabilirsiniz.
+            Diğer dava bilgileri dava listesindeki Düzenle işlemiyle güncellenir.
           </p>
         </>
       )}
@@ -172,9 +180,7 @@ export function CaseDetailView({
       {tab === "İcra Özeti" && executionBreakdown}
       {tab === "Süreler" &&
         (deadlines ?? (
-          <p className="text-sm text-muted-foreground">
-            Süre hesabı bu görünümde kullanılamıyor.
-          </p>
+          <p className="text-sm text-muted-foreground">Süre hesabı bu görünümde kullanılamıyor.</p>
         ))}
       {tab === "Belgelerle Sor" &&
         (documentAsk ?? (
@@ -190,9 +196,7 @@ export function CaseDetailView({
         ))}
       {tab === "Dosya Özeti" &&
         (caseSummary ?? (
-          <p className="text-sm text-muted-foreground">
-            Dosya özeti bu görünümde kullanılamıyor.
-          </p>
+          <p className="text-sm text-muted-foreground">Dosya özeti bu görünümde kullanılamıyor.</p>
         ))}
       {tab === "Notlar" &&
         (notesEditor ?? (
@@ -203,6 +207,31 @@ export function CaseDetailView({
       {tab === "Evraklar" && (
         <>
           {documentActions}
+          <div className="mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-secondary/20 p-3">
+            <button type="button" className={actionClass} onClick={() => setTab("Belgelerle Sor")}>
+              Belgelerle sor
+            </button>
+            <button type="button" className={actionClass} onClick={() => setTab("Dosya Özeti")}>
+              Dosya özeti
+            </button>
+            <button type="button" className={actionClass} onClick={() => setTab("Belge Kıyasla")}>
+              Belge kıyasla
+            </button>
+            {draftAction}
+            {selectedIds.length > 0 && (
+              <>
+                <span className="text-xs text-muted-foreground">{selectedIds.length} seçili</span>
+                {renderSelectedActions?.(selectedIds)}
+                <button
+                  type="button"
+                  className={actionClass}
+                  onClick={() => setSelectedDocuments([])}
+                >
+                  Seçimi kaldır
+                </button>
+              </>
+            )}
+          </div>
           <p className="text-sm text-muted-foreground mb-3">
             Yalnız bu davaya bağlanmış evraklar listelenir; bağlantısız UYAP belgeleri burada
             görünmez.
@@ -215,10 +244,24 @@ export function CaseDetailView({
           <Records section={data.documents}>
             {(d) => (
               <li key={d.id} className="py-3 flex items-center justify-between gap-3">
+                <input
+                  type="checkbox"
+                  aria-label={`Seç: ${d.file_name}`}
+                  checked={selectedIds.includes(d.id)}
+                  onChange={(event) =>
+                    setSelectedDocuments((ids) =>
+                      event.target.checked ? [...ids, d.id] : ids.filter((id) => id !== d.id),
+                    )
+                  }
+                  className="h-4 w-4 shrink-0 accent-primary"
+                />
                 <div className="min-w-0">
                   <p className="text-sm break-words">{d.file_name}</p>
                   {d.uyap_path && (
-                    <p className="text-xs text-muted-foreground break-words" title="UYAP klasör yolu">
+                    <p
+                      className="text-xs text-muted-foreground break-words"
+                      title="UYAP klasör yolu"
+                    >
                       📁 {d.uyap_path}
                     </p>
                   )}
@@ -272,25 +315,30 @@ export function CaseDetailView({
         </Records>
       )}
       {tab === "Takvim" && c.next_hearing && (
-        <div className="mb-4 rounded-lg border border-border bg-secondary/40 p-3 text-sm" data-testid="case-hearing">
+        <div
+          className="mb-4 rounded-lg border border-border bg-secondary/40 p-3 text-sm"
+          data-testid="case-hearing"
+        >
           <p className="font-medium">Duruşma</p>
           <p className="text-xs text-muted-foreground">
-            {displayCaseDate(c.next_hearing)} · {c.court || "Mahkeme belirtilmemiş"} · dava kaydındaki "Sonraki Duruşma" tarihi
+            {displayCaseDate(c.next_hearing)} · {c.court || "Mahkeme belirtilmemiş"} · dava
+            kaydındaki "Sonraki Duruşma" tarihi
           </p>
         </div>
       )}
-      {tab === "Takvim" && (!c.next_hearing || data.events.rows.length > 0 || data.events.error) && (
-        <Records section={data.events}>
-          {(e) => (
-            <li key={e.id} className="py-3 text-sm">
-              <p>{e.title}</p>
-              <p className="text-xs text-muted-foreground">
-                {displayCaseDate(e.start_at)} · {e.location || "Yer belirtilmemiş"}
-              </p>
-            </li>
-          )}
-        </Records>
-      )}
+      {tab === "Takvim" &&
+        (!c.next_hearing || data.events.rows.length > 0 || data.events.error) && (
+          <Records section={data.events}>
+            {(e) => (
+              <li key={e.id} className="py-3 text-sm">
+                <p>{e.title}</p>
+                <p className="text-xs text-muted-foreground">
+                  {displayCaseDate(e.start_at)} · {e.location || "Yer belirtilmemiş"}
+                </p>
+              </li>
+            )}
+          </Records>
+        )}
       {tab === "Aramalar" && (
         <Records section={data.calls}>
           {(a) => (

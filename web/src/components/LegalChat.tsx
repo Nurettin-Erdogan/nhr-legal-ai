@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -18,40 +18,66 @@ import ReactMarkdown from "react-markdown";
 import { CollapsibleAnswer } from "@/components/CollapsibleAnswer";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
-import { useSearchParam } from "@/lib/router-compat";
+import { Link, useSearchParam } from "@/lib/router-compat";
+import { useAuth } from "@/components/AuthProvider";
 import { ResearchSources } from "@/components/ResearchSources";
 import { SearchSummary } from "@/components/SearchSummary";
 import { shouldAutoResearch, type SearchSummaryData } from "@/lib/search-summary";
 import {
   askAssistant,
   deleteConversation,
-  getConversation,
+  getConversationDetail,
   listConversations,
   STAGE_LABELS,
   type AnswerResult,
   type ChatMessage,
   type ConversationSummary,
+  type ConversationScope,
 } from "@/lib/ai-api";
 import { CitationList, ConsultedSourceList, DocumentScopeNotice } from "@/components/ChatCitations";
 import { parseConsultedSources } from "@/lib/consulted-sources";
 
-export function LegalChat({
+interface LegalChatProps {
+  title: string;
+  examples: string[];
+  intro: string;
+  caseId?: string;
+  projectId?: string;
+  officeProjectId?: string;
+  compact?: boolean;
+  onAnswered?: () => void;
+}
+
+export function LegalChat(props: LegalChatProps) {
+  const { user } = useAuth();
+  // Hesap veya sabit kapsam değiştiğinde geçmiş/içerik bir sonraki ekrana taşınmaz.
+  return (
+    <ScopedLegalChat
+      key={`${user?.id ?? "anonymous"}:${props.caseId ?? ""}:${props.projectId ?? ""}:${props.officeProjectId ?? ""}`}
+      {...props}
+    />
+  );
+}
+
+function ScopedLegalChat({
   title,
   examples,
   intro,
   caseId,
+  projectId,
+  officeProjectId,
   compact = false,
   onAnswered,
-}: {
-  title: string;
-  examples: string[];
-  intro: string;
-  /** Büro davası: sorular o davaya bağlı belgelerde de aranır; cevap belge kapsamını gösterir. */
-  caseId?: string;
-  /** Sohbet listesi olmadan, bir sayfanın içine gömülü kullanım (dava sohbeti). */
-  compact?: boolean;
-  onAnswered?: () => void;
-}) {
+}: LegalChatProps) {
+  const { user } = useAuth();
+  const ownerId = user?.id;
+  const baseScope: ConversationScope = {
+    caseId: caseId ?? null,
+    projectId: projectId ?? null,
+    officeProjectId: officeProjectId ?? null,
+    selectedDocumentIds: [],
+  };
+  const [activeScope, setActiveScope] = useState<ConversationScope>(baseScope);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -68,16 +94,30 @@ export function LegalChat({
   const [requestSummary, setRequestSummary] = useState<SearchSummaryData>();
   const [requestError, setRequestError] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
+  const alive = useRef(true);
+  const listSequence = useRef(0);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
 
-  const refresh = () =>
-    listConversations()
-      .then(setConversations)
-      .catch(() => setConversations([]));
+  const refresh = useCallback(async () => {
+    if (!ownerId) return;
+    const sequence = ++listSequence.current;
+    try {
+      const rows = await listConversations({ caseId, projectId, officeProjectId });
+      if (alive.current && sequence === listSequence.current) setConversations(rows);
+    } catch {
+      if (alive.current && sequence === listSequence.current)
+        toast.error("Sohbet geçmişi yüklenemedi.");
+    }
+  }, [caseId, projectId, officeProjectId, ownerId]);
 
   useEffect(() => {
-    // Dava sohbeti tek oturumluktur: genel sohbet geçmişi bir davaya bağlı değildir, listelenmez.
-    if (!compact) refresh();
-  }, [compact]);
+    void refresh();
+  }, [refresh]);
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, loading]);
@@ -89,14 +129,23 @@ export function LegalChat({
     setRequestSummary(undefined);
     setRequestError("");
     try {
-      const history = await getConversation(id);
-      if (sequence !== openSequence.current) return;
+      const history = await getConversationDetail(id);
+      if (!alive.current || sequence !== openSequence.current) return;
+      if (
+        (caseId && history.scope.caseId !== caseId) ||
+        (projectId && history.scope.projectId !== projectId) ||
+        (officeProjectId && history.scope.officeProjectId !== officeProjectId)
+      ) {
+        throw new Error("Bu sohbet farklı bir dosyaya ait.");
+      }
       setActiveId(id);
-      setMessages(history);
-    } catch {
-      if (sequence === openSequence.current) toast.error("Sohbet açılamadı");
+      setActiveScope(history.scope);
+      setMessages(history.messages);
+    } catch (error) {
+      if (alive.current && sequence === openSequence.current)
+        toast.error(error instanceof Error ? error.message : "Sohbet açılamadı");
     } finally {
-      if (sequence === openSequence.current) setOpening(false);
+      if (alive.current && sequence === openSequence.current) setOpening(false);
     }
   };
 
@@ -107,6 +156,7 @@ export function LegalChat({
     setRequestSummary(undefined);
     setRequestError("");
     setActiveId(null);
+    setActiveScope(baseScope);
     setMessages([]);
     setInput("");
   };
@@ -119,6 +169,7 @@ export function LegalChat({
       toast.error("Silinemedi");
       return;
     }
+    if (!alive.current) return;
     if (activeId === id) newChat();
     refresh();
   };
@@ -142,7 +193,8 @@ export function LegalChat({
       unverifiedMarkers: result.unverified_markers,
       searchSummary: result.search_summary,
       documentScope: result.document_scope ?? undefined,
-      interpretedQuestion: typeof result.interpreted_question === "string" ? result.interpreted_question : undefined,
+      interpretedQuestion:
+        typeof result.interpreted_question === "string" ? result.interpreted_question : undefined,
       summary: Array.isArray(result.summary) ? result.summary : undefined,
     });
     // Özet beklenirken doğrulanmış cevap önizleme olarak gösterilir; kalıcı cevap gelince onun yerini alır.
@@ -150,28 +202,36 @@ export function LegalChat({
     try {
       const result = await askAssistant(question, {
         conversationId: activeId,
-        caseId: caseId ?? null,
-        onStage: (s) => setStage(STAGE_LABELS[s] ?? ""),
-        onSearchSummary: setRequestSummary,
+        ...activeScope,
+        onStage: (s) => {
+          if (alive.current) setStage(STAGE_LABELS[s] ?? "");
+        },
+        onSearchSummary: (summary) => {
+          if (alive.current) setRequestSummary(summary);
+        },
         onPreview: (preview) => {
-          if (previewShown) return;
+          if (!alive.current || previewShown) return;
           previewShown = true;
           setRequestSummary(undefined);
           setMessages((p) => [...p, asMessage(preview)]);
         },
       });
+      if (!alive.current) return;
       setMessages((p) => [...(previewShown ? p.slice(0, -1) : p), asMessage(result)]);
       setRequestSummary(undefined);
       if (result.conversation_id) setActiveId(result.conversation_id);
-      if (!compact) refresh();
+      void refresh();
       onAnswered?.();
     } catch (e) {
+      if (!alive.current) return;
       const error = e instanceof Error ? e.message : "Hata oluştu";
       setRequestError(error);
       toast.error(error);
     } finally {
-      setLoading(false);
-      setStage("");
+      if (alive.current) {
+        setLoading(false);
+        setStage("");
+      }
     }
   };
 
@@ -222,6 +282,78 @@ export function LegalChat({
       )}
 
       <div className="rounded-2xl bg-card border border-border flex flex-col overflow-hidden">
+        {compact && (
+          <div className="border-b border-border p-3 flex flex-wrap gap-2 items-center">
+            <label className="text-xs flex-1 min-w-48">
+              {officeProjectId ? "Bu projenin sohbetleri" : "Bu davanın sohbetleri"} (son 50)
+              <select
+                aria-label="Kayıtlı sohbeti aç"
+                value={activeId ?? ""}
+                disabled={loading || opening}
+                onChange={(event) => {
+                  if (event.target.value) void open(event.target.value);
+                  else newChat();
+                }}
+                className="block w-full mt-1 rounded-md border border-border bg-background p-2 text-sm"
+              >
+                <option value="">Yeni sohbet</option>
+                {conversations.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.title ?? "Sohbet"}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <Button variant="outline" size="sm" onClick={newChat} disabled={loading || opening}>
+              <Plus className="h-4 w-4" />
+              Yeni
+            </Button>
+            {activeId && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void remove(activeId)}
+                disabled={loading || opening}
+              >
+                <Trash2 className="h-4 w-4" />
+                Sohbeti sil
+              </Button>
+            )}
+          </div>
+        )}
+        {(activeScope.caseId ||
+          activeScope.officeProjectId ||
+          activeScope.projectId ||
+          activeScope.selectedDocumentIds?.length) && (
+          <div
+            className="border-b border-border px-4 py-2 text-xs text-muted-foreground"
+            role="status"
+          >
+            {activeScope.officeProjectId
+              ? "Proje kapsamlı sohbet"
+              : activeScope.caseId
+                ? "Dava kapsamlı sohbet"
+                : activeScope.projectId
+                  ? "Araştırma projesi sohbeti"
+                  : "Belge seçimli sohbet"}
+            {activeScope.selectedDocumentIds?.length
+              ? ` · ${activeScope.selectedDocumentIds.length} seçili belge`
+              : ""}
+            {activeScope.caseId && (
+              <Link className="ml-3 underline" to={`/dashboard/cases/${activeScope.caseId}`}>
+                Davayı aç
+              </Link>
+            )}
+            {activeScope.officeProjectId && (
+              <Link
+                className="ml-3 underline"
+                to={`/dashboard/projects/${activeScope.officeProjectId}`}
+              >
+                Projeyi aç
+              </Link>
+            )}
+          </div>
+        )}
         <div ref={scrollRef} className="flex-1 overflow-y-auto p-6">
           {messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center min-h-full text-center max-w-lg mx-auto">
@@ -272,18 +404,29 @@ export function LegalChat({
                     )}
                   >
                     {m.role === "assistant" && m.interpretedQuestion && (
-                      <p className="mb-2 text-xs text-muted-foreground" data-testid="interpreted-question">
+                      <p
+                        className="mb-2 text-xs text-muted-foreground"
+                        data-testid="interpreted-question"
+                      >
                         Önceki sorunuza göre şöyle anlaşıldı: “{m.interpretedQuestion}”
                       </p>
                     )}
                     {m.role === "assistant" && (m.summary?.length ?? 0) > 0 && (
-                      <div className="mb-3 rounded-xl border border-primary/20 bg-primary/5 p-3" data-testid="answer-summary">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-primary">Kısa özet</p>
+                      <div
+                        className="mb-3 rounded-xl border border-primary/20 bg-primary/5 p-3"
+                        data-testid="answer-summary"
+                      >
+                        <p className="text-xs font-semibold uppercase tracking-wide text-primary">
+                          Kısa özet
+                        </p>
                         <ul className="mt-1.5 list-disc space-y-1 pl-5 text-sm">
-                          {m.summary?.map((item) => <li key={item}>{item}</li>)}
+                          {m.summary?.map((item) => (
+                            <li key={item}>{item}</li>
+                          ))}
                         </ul>
                         <p className="mt-2 text-[11px] text-muted-foreground">
-                          Yapay zekâ özetidir ve eksik olabilir; koşul ve istisnalar için aşağıdaki madde metnini esas alın.
+                          Yapay zekâ özetidir ve eksik olabilir; koşul ve istisnalar için aşağıdaki
+                          madde metnini esas alın.
                         </p>
                       </div>
                     )}

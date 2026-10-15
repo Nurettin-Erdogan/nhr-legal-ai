@@ -92,6 +92,16 @@ def test_list_limit_is_bounded(monkeypatch):
     assert client.get("/api/conversations?limit=0").status_code == 422
 
 
+def test_list_supports_exact_case_and_office_project_filters_and_rejects_mixing(monkeypatch):
+    client, executed = _client(monkeypatch, lambda sql, params: [])
+    for name in ('case_id', 'office_project_id'):
+        value = uuid4()
+        assert client.get(f'/api/conversations?{name}={value}').status_code == 200
+        assert f'conversation.{name} = %({name})s' in executed[-1][0]
+        assert executed[-1][1][name] == value
+    assert client.get(f'/api/conversations?case_id={uuid4()}&office_project_id={uuid4()}').status_code == 422
+
+
 def _detail_handler(conversation_id, message_id, citation_rows, *, missing=False):
     def handler(sql, params):
         if "FROM conversations" in sql:

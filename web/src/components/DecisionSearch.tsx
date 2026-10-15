@@ -23,7 +23,8 @@ import {
   type SourceDetail,
 } from "@/lib/decision-search";
 import { toast } from "sonner";
-import { ChevronDown, ChevronUp, Copy, ExternalLink, Loader2, Search, ShieldAlert, ShieldCheck } from "lucide-react";
+import { citationSuffix, officialPortalUrl } from "@/lib/source-label";
+import { ChevronDown, ChevronUp, Copy, ExternalLink, Loader2, Search, ShieldCheck } from "lucide-react";
 
 const PAGE_SIZE = 10;
 
@@ -47,7 +48,8 @@ function Card({ hit, query }: { hit: SearchHit; query: string }) {
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<SourceDetail | null>(null);
   const [state, setState] = useState<"idle" | "loading" | "error">("idle");
-  const badge = verificationBadge(hit.verification);
+  const badge = verificationBadge(hit.verification, hit.sourceUrl, hit.courtName);
+  const portal = hit.verification === "official" ? null : officialPortalUrl(hit.sourceUrl);
   const meta = [
     hit.sourceType === "legislation" ? [hit.lawName, hit.articleNo && `m. ${hit.articleNo}`, hit.articleTitle].filter(Boolean).join(" · ") : [hit.chamber, hit.docketNo && `E. ${hit.docketNo}`, hit.decisionNo && `K. ${hit.decisionNo}`].filter(Boolean).join(" · "),
     hit.decisionDate,
@@ -70,7 +72,7 @@ function Card({ hit, query }: { hit: SearchHit; query: string }) {
 
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(`${citationOf(hit)}${hit.verification === "official" ? "" : " (doğrulanmadı)"}`);
+      await navigator.clipboard.writeText(`${citationOf(hit)}${citationSuffix(hit.verification, hit.sourceUrl)}`);
       toast.success("Atıf kopyalandı");
     } catch {
       toast.error("Panoya kopyalanamadı");
@@ -87,8 +89,8 @@ function Card({ hit, query }: { hit: SearchHit; query: string }) {
         {meta.map((part) => (
           <span key={String(part)}>{part}</span>
         ))}
-        <span className={`inline-flex items-center gap-1 font-medium ${badge.tone === "ok" ? "text-emerald-700 dark:text-emerald-400" : "text-amber-700 dark:text-amber-400"}`}>
-          {badge.tone === "ok" ? <ShieldCheck className="h-3.5 w-3.5" /> : <ShieldAlert className="h-3.5 w-3.5" />}
+        <span className={`inline-flex items-center gap-1 font-medium ${badge.tone === "ok" ? "text-emerald-700 dark:text-emerald-400" : "text-foreground/80"}`} data-testid="decision-source-tag">
+          {badge.tone === "ok" && <ShieldCheck className="h-3.5 w-3.5" />}
           {badge.label}
         </span>
       </div>
@@ -105,7 +107,13 @@ function Card({ hit, query }: { hit: SearchHit; query: string }) {
         <Button size="sm" variant="ghost" onClick={() => void copy()}>
           <Copy className="h-3.5 w-3.5 mr-1.5" /> Atıf kopyala
         </Button>
-        {isHttpUrl(hit.sourceUrl) && (
+        {portal ? (
+          <Button size="sm" variant="ghost" asChild>
+            <a href={portal} target="_blank" rel="noreferrer" data-testid="decision-portal-link">
+              <ExternalLink className="h-3.5 w-3.5 mr-1.5" /> Resmî sitede aç ↗
+            </a>
+          </Button>
+        ) : isHttpUrl(hit.sourceUrl) && (
           <Button size="sm" variant="ghost" asChild>
             <a href={hit.sourceUrl} target="_blank" rel="noreferrer">
               <ExternalLink className="h-3.5 w-3.5 mr-1.5" /> Kaynağı aç
@@ -113,11 +121,6 @@ function Card({ hit, query }: { hit: SearchHit; query: string }) {
           </Button>
         )}
       </div>
-      {hit.verification !== "official" && (
-        <p className="text-[11px] text-amber-700 dark:text-amber-400">
-          Bu kayıt resmî portalla henüz doğrulanmadı: aranabilir ve atıf yapılabilir, ama resmî kaynak olarak sunulmaz. Kullanmadan önce kaynağı kontrol edin.
-        </p>
-      )}
       {open && (
         <div className="rounded-lg border bg-muted/30 p-3 max-h-96 overflow-y-auto text-sm leading-relaxed" data-testid="decision-fulltext">
           {state === "loading" && (
@@ -125,7 +128,7 @@ function Card({ hit, query }: { hit: SearchHit; query: string }) {
               <Loader2 className="h-4 w-4 animate-spin" /> Metin yükleniyor…
             </p>
           )}
-          {state === "error" && <p className="text-destructive">Metin yüklenemedi; "Kaynağı aç" ile resmî sayfaya bakabilirsiniz.</p>}
+          {state === "error" && <p className="text-destructive">Metin yüklenemedi; kararı kaynağın sitesinde açarak okuyabilirsiniz.</p>}
           {detail && (detail.chunks.length ? detail.chunks.map((chunk, index) => (
             <p key={index} className="whitespace-pre-wrap mb-3 last:mb-0">
               <Highlighted content={chunk} query={query} />
@@ -302,7 +305,7 @@ export function DecisionSearch({
               {page.total === 0 ? "Eşleşme yok" : `${page.partial && mode === "keyword" ? "En az " : ""}${page.total.toLocaleString("tr-TR")} sonuç`}
             </span>
             {hits.length > 0 && <span className="text-muted-foreground">{hits.length} gösteriliyor</span>}
-            {facets.unverified > 0 && <Badge variant="outline">{facets.unverified} doğrulanmamış</Badge>}
+            {hits.length > facets.unverified && <Badge variant="outline">{hits.length - facets.unverified} Resmî metin ✓</Badge>}
           </div>
           {page.partial && (
             <p className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-2 text-xs text-amber-800 dark:text-amber-300" data-testid="decision-partial">

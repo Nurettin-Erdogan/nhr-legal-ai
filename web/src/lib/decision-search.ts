@@ -114,10 +114,17 @@ export const yearOf = (hit: SearchHit): number | null => {
   return Number.isInteger(year) && year > 1800 ? year : null;
 };
 
-export function verificationBadge(verification: Verification): { label: string; tone: "ok" | "warn" } {
-  if (verification === "official") return { label: "Resmî kaynakla doğrulandı", tone: "ok" };
-  if (verification === "third_party") return { label: "Üçüncü taraf kaynak · doğrulanmadı", tone: "warn" };
-  return { label: "Doğrulama durumu bilinmiyor", tone: "warn" };
+/**
+ * Kart rozeti (kural: `@/lib/source-label`, AGENTS.md 2026-10-15). Resmî metinle karşılaştırılmış kayıt "Resmî metin ✓";
+ * karşılaştırılmamış ya da durumu bilinmeyen kayıt olumsuz ibare olmadan kaynak adıyla gösterilir ve ✓ almaz.
+ */
+export function verificationBadge(verification: Verification, sourceUrl?: string | null, courtName?: string | null): { label: string; tone: "ok" | "neutral" } {
+  if (verification === "official") return { label: "Resmî metin ✓", tone: "ok" };
+  const url = (sourceUrl ?? "").trim();
+  const court = (courtName ?? "").toLocaleLowerCase("tr-TR");
+  if (/^https:\/\/karararama\.yargitay\.gov\.tr\//i.test(url) || court.includes("yargıtay")) return { label: "Yargıtay kararı", tone: "neutral" };
+  if (/^https:\/\/karararama\.danistay\.gov\.tr\//i.test(url) || court.includes("danıştay")) return { label: "Danıştay kararı", tone: "neutral" };
+  return { label: "Karar", tone: "neutral" };
 }
 
 export const sourceTypeLabel = (type: string): string =>

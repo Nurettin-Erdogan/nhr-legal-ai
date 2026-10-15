@@ -1,0 +1,65 @@
+:root {
+  color-scheme: light dark;
+  font:
+    14px Arial,
+    sans-serif;
+}
+body {
+  margin: 0;
+  background: Canvas;
+  color: CanvasText;
+}
+main {
+  padding: 16px;
+  max-width: 600px;
+  margin: auto;
+}
+h1 {
+  font-size: 22px;
+}
+p {
+  font-size: 12px;
+  line-height: 1.6;
+}
+label {
+  display: grid;
+  gap: 5px;
+  margin: 14px 0;
+}
+input,
+textarea,
+select,
+button {
+  font: inherit;
+  border: 1px solid GrayText;
+  border-radius: 6px;
+  padding: 9px;
+}
+textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+button {
+  cursor: pointer;
+  background: #2468d6;
+  color: white;
+  min-height: 40px;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+[hidden] {
+  display: none !important;
+}
+#status {
+  white-space: pre-wrap;
+}
+#status[data-error="true"] {
+  color: #d04646;
+}

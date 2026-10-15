@@ -70,7 +70,8 @@ def test_sources_footer_marks_unverified_third_party_sources():
     footer = office_ai._sources_footer([_context(), _context(verification="third_party")])
 
     assert "[K1]" in footer and "[K2]" in footer
-    assert footer.count("(doğrulanmadı)") == 1
+    # Resmî kayıt "Resmî metin ✓" taşır; karşılaştırılmamış kayıt olumsuz ibare de ✓ de almaz (AGENTS.md, 2026-10-15).
+    assert footer.count("(Resmî metin ✓)") == 1 and "doğrulanmadı" not in footer
 
 
 def test_unknown_module_is_rejected_and_login_required():
@@ -276,6 +277,53 @@ def test_document_analysis_summarises_each_marked_document_and_lists_sources_by_
     assert "12.000 TL" in markdown and "Belgede geçen olgular" in markdown  # B belgesinin olgusu; uydurma 10.000 B'de elenir
     assert "Hukuki değerlendirme içermez" in markdown and "Türk Borçlar Kanunu (6098) m. 344" in markdown
     assert len(sources) == 1  # üçüncü taraf listelenmez
+
+
+def test_selected_analysis_keeps_documents_separate_and_does_not_summarize_the_instruction():
+    from api import office_analysis
+
+    async def generate(system, prompt):
+        if "denetçisisin" in system:
+            import json
+            return json.dumps({"results": [True] * len(json.loads(prompt)["MADDELER"])})
+        return "- Kira bedeli 10.000 TL olarak belirlenmiştir."
+
+    markdown, _ = asyncio.run(office_analysis.analyze(
+        "Bu talimat belge içeriği değildir: 999.999 TL.", generate, [],
+        documents=[("Kira A.pdf", "Kira bedeli 10.000 TL olarak belirlenmiştir."), ("Kira B.pdf", "Kira bedeli 12.000 TL olarak belirlenmiştir.")],
+    ))
+    assert "## 1. Kira A.pdf" in markdown and "## 2. Kira B.pdf" in markdown
+    assert "12.000 TL" in markdown
+    assert "999.999" not in markdown
+
+
+def test_selected_analysis_uses_authenticated_scope_and_refuses_any_missing_document(monkeypatch):
+    import contextlib
+    from types import SimpleNamespace
+
+    first, second = uuid4(), uuid4()
+    seen = []
+    rows = [{"id": first, "file_name": "A.pdf", "text": "Kira 10.000 TL."}]
+
+    @contextlib.contextmanager
+    def connection(owner):
+        seen.append(owner)
+        def execute(sql, params):
+            assert "deleted_at IS NULL" in sql and "d.status = 'ready'" in sql
+            assert params == ([first, second], [first, second])
+            return SimpleNamespace(fetchall=lambda: rows)
+        yield SimpleNamespace(execute=execute)
+
+    monkeypatch.setattr(office_ai, "authenticated_database_connection", connection)
+    with pytest.raises(HTTPException) as failure:
+        office_ai._selected_analysis_documents(USER_ID, [first, second])
+    assert failure.value.status_code == 409
+    assert seen == [str(USER_ID)]
+    rows.append({"id": second, "file_name": "B.pdf", "text": "Kira 12.000 TL."})
+    assert office_ai._selected_analysis_documents(USER_ID, [first, second]) == [("A.pdf", "Kira 10.000 TL."), ("B.pdf", "Kira 12.000 TL.")]
+    with pytest.raises(HTTPException) as limit:
+        office_ai._selected_analysis_documents(USER_ID, [uuid4() for _ in range(5)])
+    assert limit.value.status_code == 422
 
 
 def test_risk_analysis_never_predicts_outcomes_and_reports_sources(monkeypatch):

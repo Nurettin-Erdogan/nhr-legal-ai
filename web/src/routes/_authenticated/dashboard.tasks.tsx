@@ -230,7 +230,7 @@ const Tasks = () => {
 
   return (
     <DashboardLayout
-      title="Görevler"
+      title="İş Takibi"
       subtitle="Ekip içi iş takibi"
       actions={
         <Dialog open={open} onOpenChange={setOpen}>

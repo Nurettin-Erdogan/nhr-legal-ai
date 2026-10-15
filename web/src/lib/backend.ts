@@ -3,6 +3,7 @@
  * korur; işler artık kendi FastAPI arka ucumuzda (yerel model, korpus atıfları) yapılır.
  */
 import { askAssistant } from "@/lib/ai-api";
+import { citationSuffix } from "@/lib/source-label";
 import { generateDocument, runOfficeModule } from "@/lib/office-api";
 
 type Result<T> = { data: T | null; error: Error | null };
@@ -14,6 +15,8 @@ const handlers: Record<string, (body: Record<string, unknown>) => Promise<unknow
       prompt: String(body.prompt ?? ""),
       title: typeof body.title === "string" ? body.title : undefined,
       docIds: Array.isArray(body.docIds) ? (body.docIds as string[]) : [],
+      caseId: typeof body.caseId === "string" ? body.caseId : undefined,
+      projectId: typeof body.projectId === "string" ? body.projectId : undefined,
     });
     return { ...result, yargitay_context: null };
   },
@@ -46,7 +49,7 @@ const handlers: Record<string, (body: Record<string, unknown>) => Promise<unknow
     const result = await askAssistant(last.content.slice(0, 2000), {});
     const sources = result.citations.map(
       (c) =>
-        `- ${c.marker} ${c.reference}${c.verification !== "official" ? " (doğrulanmadı)" : ""}`,
+        `- ${c.marker} ${c.reference}${citationSuffix(c.verification, c.source_url)}`,
     );
     const content = sources.length
       ? `${result.answer}\n\n**Kaynaklar**\n${sources.join("\n")}`

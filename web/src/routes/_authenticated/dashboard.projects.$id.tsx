@@ -12,6 +12,8 @@ import { Loader2, Plus, ArrowLeft, StickyNote, Sparkles, Trash2 } from "lucide-r
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/components/AuthProvider";
 import { toast } from "sonner";
+import { LegalChat } from "@/components/LegalChat";
+import { ProjectDocuments } from "@/components/ProjectDocuments";
 
 interface Project {
   id: string;
@@ -38,6 +40,12 @@ interface AIOut {
 }
 
 function ProjectDetail() {
+  const { id } = useParams<{ id: string }>();
+  const { user } = useAuth();
+  return <ProjectDetailWorkspace key={`${user?.id ?? "anonymous"}:${id}`} />;
+}
+
+function ProjectDetailWorkspace() {
   const { id } = useParams<{ id: string }>();
   const { session } = useAuth();
   const [project, setProject] = useState<Project | null>(null);
@@ -147,7 +155,34 @@ function ProjectDetail() {
           <TabsTrigger value="ai">
             <Sparkles className="h-4 w-4 mr-1.5" /> AI Çıktıları ({aiOutputs.length})
           </TabsTrigger>
+          <TabsTrigger value="chat">Sohbet</TabsTrigger>
+          <TabsTrigger value="documents">Belgeler</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="documents">
+          <ProjectDocuments projectId={id} />
+        </TabsContent>
+        <TabsContent value="chat">
+          <LegalChat
+            key={id}
+            title="Proje sohbeti"
+            officeProjectId={id}
+            compact
+            intro={
+              project.case_id
+                ? "Projeye doğrudan bağlanan belgeler, bağlı davanın evrakları ve hukuk kaynakları kullanılır. Sohbet bu projede saklanır."
+                : "Belgeler sekmesinden bağladığınız belgeler ve hukuk kaynakları kullanılır. Belge yoksa dosyaya özgü bilgiler uydurulmaz."
+            }
+            examples={
+              project.case_id
+                ? [
+                    "Bu dosyadaki belgelere göre taraflar kimlerdir?",
+                    "Dosyanın safahatında en son ne yapılmış?",
+                  ]
+                : ["Kira artışına ilişkin mevzuatı araştır."]
+            }
+          />
+        </TabsContent>
 
         <TabsContent value="notes" className="space-y-4">
           <div className="rounded-2xl bg-card border border-border p-5 space-y-3">

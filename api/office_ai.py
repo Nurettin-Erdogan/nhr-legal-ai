@@ -154,7 +154,8 @@ def _sources_footer(contexts: list[RAGContext]) -> str:
         return ""
     lines = []
     for index, context in enumerate(contexts, start=1):
-        badge = " (doğrulanmadı)" if context.verification == "third_party" else ""
+        # Etiket kuralı: resmî metinle karşılaştırılmış kayıt "Resmî metin ✓"; karşılaştırılmamış kayıt olumsuz ibare de ✓ de almaz.
+        badge = " (Resmî metin ✓)" if context.verification == "official" else ""
         lines.append(f"- [K{index}] {context.reference_line}{badge}")
     return "\n\n**Kaynaklar**\n" + "\n".join(lines)
 
@@ -353,13 +354,37 @@ async def _risk(prompt: str, user_id: UUID) -> dict[str, Any]:
     return {"content": markdown, "model": None, "sources": sources, "unverified_references": [], "label": "Risk Analizi"}
 
 
-async def _analysis(prompt: str, user_id: UUID, title: str) -> dict[str, Any]:
+def _selected_analysis_documents(user_id: UUID, ids: list[UUID]) -> list[tuple[str, str]]:
+    """Seçili belgeler ayrı kaynaklardır; kısa künye örnekleri tam metin yerine kullanılmaz."""
+    wanted = list(dict.fromkeys(ids))
+    if len(wanted) > office_analysis.MAX_DOCUMENTS:
+        raise HTTPException(status_code=422, detail="Bir analiz için en fazla 4 belge seçilebilir. Daha büyük dosyalar için dava içindeki Dosya Özeti'ni kullanın.")
+    try:
+        with authenticated_database_connection(str(user_id)) as connection:
+            rows = connection.execute(
+                "SELECT od.id, od.file_name, "
+                " (SELECT string_agg(c.content, E'\\n\\n' ORDER BY c.chunk_index) "
+                "  FROM document_chunks c WHERE c.document_id = d.id) AS text "
+                "FROM office_case_documents od JOIN documents d ON d.office_case_document_id = od.id "
+                "WHERE od.id = ANY(%s::uuid[]) AND od.deleted_at IS NULL AND d.status = 'ready' "
+                "ORDER BY array_position(%s::uuid[], od.id)", (wanted, wanted),
+            ).fetchall()
+    except psycopg.Error as exc:
+        raise HTTPException(status_code=503, detail="Seçili belgelerin metni okunamadı.") from exc
+    if len(rows) != len(wanted) or any(not (row["text"] or "").strip() for row in rows):
+        # Olmayan/yetkisiz/henüz indekslenmemiş belge ayrımı dışarıya açılmaz.
+        raise HTTPException(status_code=409, detail="Seçili belgelerin tamamı okunabilir değil. Belge listesini yenileyip metin işleme durumunu kontrol edin.")
+    return [(row["file_name"], row["text"]) for row in rows]
+
+
+async def _analysis(prompt: str, user_id: UUID, title: str, documents: list[tuple[str, str]] | None = None) -> dict[str, Any]:
     async def generate(system: str, text: str) -> str:
         output, _ = await _generate(system, text)
         return output
 
-    contexts = await _retrieve_sources(prompt[:600], user_id, top_k=6)
-    markdown, sources = await office_analysis.analyze(prompt, generate, contexts, title=title)
+    query = "\n".join(text[:600] for _, text in documents) if documents else prompt[:600]
+    contexts = await _retrieve_sources(query[:1900], user_id, top_k=6)
+    markdown, sources = await office_analysis.analyze(prompt, generate, contexts, title=title, documents=documents)
     return {"content": markdown, "model": None, "sources": sources, "unverified_references": [], "label": title}
 
 
@@ -376,7 +401,9 @@ async def run_module(
     if body.module not in MODULE_PROMPTS:
         raise HTTPException(status_code=400, detail="Bu modül yerel AI hattında desteklenmiyor")
     label = MODULE_PROMPTS[body.module][0]
-    docs = await asyncio.to_thread(_document_context, user_id, body.doc_ids, _MAX_USER_CHARS)
+    is_analysis = body.module in ("document_analysis", "auto_summary")
+    selected = await asyncio.to_thread(_selected_analysis_documents, user_id, body.doc_ids) if is_analysis and body.doc_ids else None
+    docs = "" if is_analysis else await asyncio.to_thread(_document_context, user_id, body.doc_ids, _MAX_USER_CHARS)
     prompt = body.prompt.strip()
     if body.module in ("draft", "contract_draft"):
         result = await _draft(
@@ -384,8 +411,10 @@ async def run_module(
         )
     elif body.module == "risk_analysis":
         result = await _risk(f"{prompt}\n{docs}".strip(), user_id)
+        if body.doc_ids:
+            result["content"] += "\n\n_Belge kapsamı: bu inceleme seçili belgelerin kısa metin örnekleriyle hazırlanmıştır; belgelerin tamamının incelendiği anlamına gelmez._\n"
     else:  # document_analysis, auto_summary
-        result = await _analysis(f"{prompt}{docs}", user_id, "Belge analizi" if body.module == "document_analysis" else "Toplu özet")
+        result = await _analysis(prompt, user_id, "Belge analizi" if body.module == "document_analysis" else "Toplu özet", selected)
     title = (body.title or "").strip() or f"{label}: {prompt[:60]}"
     output_id = uuid4()
     try:

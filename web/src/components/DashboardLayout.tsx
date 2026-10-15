@@ -1,19 +1,14 @@
 import { NavLink, useLocation, Link, useNavigate } from "@/lib/router-compat";
 import {
   LayoutDashboard,
-  Landmark,
   Scale,
   BookOpen,
-  FileSearch,
   Gavel,
-  Camera,
+  Landmark,
   Briefcase,
-  Inbox,
   FolderOpen,
   Link2,
-  ScanText,
   FileSignature,
-  Rocket,
   Settings,
   Menu,
   X,
@@ -21,17 +16,13 @@ import {
   User as UserIcon,
   Users,
   ListChecks,
-  CalendarDays,
-  Bell,
-  Sparkles,
   FileText,
-  Files,
-  ShieldAlert,
   ChevronDown,
   type LucideIcon,
 } from "lucide-react";
 import {
   NAV_COLLAPSED_KEY,
+  ACCOUNT_NAV,
   NAV_GROUPS,
   activeNavPath,
   isNavGroupCollapsed,
@@ -42,6 +33,7 @@ import {
 import { FeedbackButton } from "@/components/FeedbackButton";
 import { GlobalSearch } from "@/components/GlobalSearch";
 import { ReminderBell } from "@/components/ReminderBell";
+import { SectionNavigation } from "@/components/SectionNavigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { Logo } from "./Logo";
 import { cn } from "@/lib/utils";
@@ -62,23 +54,12 @@ const NAV_ICONS: Record<string, LucideIcon> = {
   "/dashboard/execution": Landmark,
   "/dashboard/clients": Users,
   "/dashboard/tasks": ListChecks,
-  "/dashboard/calendar": CalendarDays,
-  "/dashboard/reminders": Bell,
-  "/dashboard/applications": Inbox,
   "/dashboard/ai": Scale,
   "/dashboard/legislation": BookOpen,
   "/dashboard/case-law": Gavel,
-  "/dashboard/semantic-search": Sparkles,
-  "/dashboard/agent-research": FileSearch,
   "/dashboard/drafts": FileSignature,
-  "/dashboard/document-analysis": FileText,
-  "/dashboard/auto-summary": Files,
-  "/dashboard/risk-analysis": ShieldAlert,
   "/dashboard/files": FolderOpen,
   "/dashboard/uyap": Link2,
-  "/dashboard/document-processing": ScanText,
-  "/dashboard/scanner": Camera,
-  "/dashboard/automation": Rocket,
   "/dashboard/settings": Settings,
 };
 
@@ -196,6 +177,21 @@ export const DashboardLayout = ({
           </div>
         );
       })}
+      <div className="border-t border-border pt-3">
+        <Link
+          to={ACCOUNT_NAV.to}
+          onClick={() => setMobileOpen(false)}
+          aria-current={activePath === ACCOUNT_NAV.to ? "page" : undefined}
+          className={cn(
+            "flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium",
+            activePath === ACCOUNT_NAV.to
+              ? "bg-secondary text-primary"
+              : "text-muted-foreground hover:bg-muted",
+          )}
+        >
+          <Settings className="h-[18px] w-[18px]" /> {ACCOUNT_NAV.label}
+        </Link>
+      </div>
     </nav>
   );
 
@@ -248,7 +244,10 @@ export const DashboardLayout = ({
           </div>
           <GlobalSearch />
           {actions && (
-            <div className="order-last flex w-full flex-wrap items-center gap-2 sm:order-none sm:w-auto sm:shrink-0 sm:flex-nowrap" data-testid="page-actions">
+            <div
+              className="order-last flex w-full flex-wrap items-center gap-2 sm:order-none sm:w-auto sm:shrink-0 sm:flex-nowrap"
+              data-testid="page-actions"
+            >
               {actions}
             </div>
           )}
@@ -288,6 +287,7 @@ export const DashboardLayout = ({
         </header>
 
         <main className="animate-fade-in flex-1 p-4 lg:p-8">
+          <SectionNavigation pathname={location.pathname} />
           {incompleteScreen && (
             <p
               role="status"

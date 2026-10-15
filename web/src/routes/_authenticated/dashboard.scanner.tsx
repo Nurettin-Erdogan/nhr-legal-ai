@@ -16,6 +16,9 @@ import {
 import { toast } from "sonner";
 import { jsPDF } from "jspdf";
 import { useNavigate } from "@/lib/router-compat";
+import { useAuth } from "@/components/AuthProvider";
+import { supabase } from "@/integrations/supabase/client";
+import { storagePathFor } from "@/lib/uyap";
 
 type Page = { dataUrl: string; w: number; h: number };
 
@@ -27,6 +30,8 @@ const Scanner = () => {
   const [pages, setPages] = useState<Page[]>([]);
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const savedScan = useRef<{ pages: Page[]; owner: string; id: string; name: string } | null>(null);
 
   useEffect(() => () => stopCamera(), []);
 
@@ -95,23 +100,27 @@ const Scanner = () => {
 
   const removePage = (i: number) => setPages((p) => p.filter((_, idx) => idx !== i));
 
+  const buildPdf = () => {
+    const pdf = new jsPDF({ unit: "pt", format: "a4" });
+    const pw = pdf.internal.pageSize.getWidth();
+    const ph = pdf.internal.pageSize.getHeight();
+    pages.forEach((pg, idx) => {
+      if (idx > 0) pdf.addPage();
+      const ratio = Math.min(pw / pg.w, ph / pg.h);
+      const w = pg.w * ratio;
+      const h = pg.h * ratio;
+      const x = (pw - w) / 2;
+      const y = (ph - h) / 2;
+      pdf.addImage(pg.dataUrl, "JPEG", x, y, w, h);
+    });
+    return pdf;
+  };
+
   const downloadPdf = async () => {
-    if (!pages.length) return;
+    if (!pages.length || busy) return;
     setBusy(true);
     try {
-      const pdf = new jsPDF({ unit: "pt", format: "a4" });
-      const pw = pdf.internal.pageSize.getWidth();
-      const ph = pdf.internal.pageSize.getHeight();
-      pages.forEach((pg, idx) => {
-        if (idx > 0) pdf.addPage();
-        const ratio = Math.min(pw / pg.w, ph / pg.h);
-        const w = pg.w * ratio;
-        const h = pg.h * ratio;
-        const x = (pw - w) / 2;
-        const y = (ph - h) / 2;
-        pdf.addImage(pg.dataUrl, "JPEG", x, y, w, h);
-      });
-      pdf.save(`tarama-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.pdf`);
+      buildPdf().save(`tarama-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.pdf`);
     } finally {
       setBusy(false);
     }
@@ -126,14 +135,44 @@ const Scanner = () => {
     });
   };
 
-  const sendToAssistant = () => {
-    if (!pages.length) return;
-    sessionStorage.setItem(
-      "scanner_payload",
-      JSON.stringify({ pages: pages.map((p) => p.dataUrl), at: Date.now() }),
-    );
-    toast.success("Tarama Asistana iletildi");
-    navigate("/dashboard/ai");
+  const saveToLibrary = async () => {
+    if (!pages.length || busy || !user) return;
+    setBusy(true);
+    try {
+      if (savedScan.current?.pages !== pages || savedScan.current.owner !== user.id) {
+        const fileName = `Tarama-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.pdf`;
+        const blob = buildPdf().output("blob");
+        const path = storagePathFor(user.id, fileName);
+        const uploaded = await supabase.storage
+          .from("case-files")
+          .upload(path, blob, { contentType: "application/pdf", upsert: false });
+        if (uploaded.error) throw new Error(uploaded.error.message);
+        const id = crypto.randomUUID();
+        const inserted = await supabase
+          .from("case_documents")
+          .insert({
+            id,
+            owner_id: user.id,
+            file_name: fileName,
+            storage_path: path,
+            mime_type: "application/pdf",
+            size_bytes: blob.size,
+            source: "manual",
+          });
+        if (inserted.error) {
+          // Yalnız bu işlemde oluşturulan, henüz kaydı olmayan dosya geri alınır.
+          await supabase.storage.from("case-files").remove([path]);
+          throw new Error(inserted.error.message);
+        }
+        savedScan.current = { pages, owner: user.id, id, name: fileName };
+      }
+      toast.success("Tarama PDF olarak kaydedildi. Metni arka planda işlenecek.");
+      navigate(`/dashboard/files?q=${encodeURIComponent(savedScan.current.name)}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Tarama kaydedilemedi.");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -268,12 +307,12 @@ const Scanner = () => {
               <Download className="h-4 w-4 mr-2" /> JPG olarak indir
             </Button>
             <Button
-              onClick={sendToAssistant}
-              disabled={!pages.length}
+              onClick={() => void saveToLibrary()}
+              disabled={!pages.length || busy || !user}
               variant="outline"
               className="w-full justify-start"
             >
-              <Send className="h-4 w-4 mr-2" /> Asistana gönder
+              <Send className="h-4 w-4 mr-2" /> Belgelerime kaydet
             </Button>
           </div>
 

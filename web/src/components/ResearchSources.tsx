@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { OFFICIAL_TAG, decisionSourceName } from "@/lib/source-label";
 import { Button } from "@/components/ui/button";
 
 interface Source {
@@ -90,8 +91,8 @@ export function ResearchSources({ question, autoLoad = false }: { question: stri
         {sources.map((source, index) => (
           <article key={source.source_id} className="border-t border-border pt-2 text-xs">
             <p className="font-medium">{index + 1}. {source.reference}</p>
-            <span className={source.verification === "official" ? "text-emerald-700 dark:text-emerald-400" : "text-amber-700 dark:text-amber-400"}>
-              {source.verification === "official" ? "Korpusta resmî doğrulanmış" : "Üçüncü taraf · doğrulanmadı"}
+            <span className={source.verification === "official" ? "text-emerald-700 dark:text-emerald-400" : "text-foreground/80"}>
+              {source.verification === "official" ? OFFICIAL_TAG : decisionSourceName(source.source_url)}
             </span>
             {source.source_url && /^https?:\/\//i.test(source.source_url) && (
               <a href={source.source_url} target="_blank" rel="noreferrer" className="ml-3 underline">Kaynağı aç</a>

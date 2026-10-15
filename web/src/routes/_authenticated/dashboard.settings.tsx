@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { DashboardLayout } from "@/components/DashboardLayout";
+import { IntegrationSettings } from "@/components/IntegrationSettings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -178,6 +179,7 @@ const Settings = () => {
       <div className="max-w-3xl space-y-6">
         <AccountProfile security={security} />
         <DataRights />
+        <IntegrationSettings />
         <section className="space-y-5 rounded-xl border border-border bg-card p-6">
           <h2 className="text-xl font-semibold">Çağrı tercihleri</h2>
           <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm">

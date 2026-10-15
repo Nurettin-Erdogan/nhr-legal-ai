@@ -1,6 +1,6 @@
 import { invokeFunction } from "@/lib/backend";
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,12 +18,21 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/components/AuthProvider";
 import { CaseDocPicker } from "@/components/CaseDocPicker";
+import { LegalDocumentEditor } from "@/components/LegalDocumentEditor";
+import { DocumentJobPanel } from "@/components/DocumentJobPanel";
+import { startDocumentJob } from "@/lib/document-jobs";
+import { readDocumentContext } from "@/lib/document-workflow";
+import { DEFAULT_DOCUMENT_LAYOUT, documentPageStyle } from "@/lib/document-layout";
+import { buildDocumentDocx } from "@/lib/document-export";
+import { DocumentLayoutControls } from "@/components/DocumentLayoutControls";
+import { useSearchParam, Link } from "@/lib/router-compat";
+import { db } from "@/lib/db";
 import { toast } from "sonner";
 import { Sparkles, Loader2, Download, FileText, Save, FileSignature } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { exportTextPdf } from "@/lib/pdf-export";
-import { Document, Packer, Paragraph, TextRun, HeadingLevel } from "docx";
+import { Packer } from "docx";
 import { saveAs } from "file-saver";
 
 const DOC_TYPES = [
@@ -45,6 +54,14 @@ const EXAMPLES: Record<string, string> = {
 
 const Drafts = () => {
   const { user } = useAuth();
+  const currentOwner = useRef(user?.id);
+  currentOwner.current = user?.id;
+  const contextKey = useSearchParam("context");
+  const urlCaseId = useSearchParam("case");
+  const [caseId, setCaseId] = useState<string>();
+  const [officeProjectId, setOfficeProjectId] = useState<string>();
+  const [contextError, setContextError] = useState("");
+  const [contextLoading, setContextLoading] = useState(false);
   const [docType, setDocType] = useState("dilekce");
   const [title, setTitle] = useState("");
   const [partiesText, setPartiesText] = useState("");
@@ -54,19 +71,135 @@ const Drafts = () => {
   const [saving, setSaving] = useState(false);
   const [content, setContent] = useState("");
   const [docIds, setDocIds] = useState<string[]>([]);
+  const [jobId, setJobId] = useState<string>();
+  const [layout, setLayout] = useState(DEFAULT_DOCUMENT_LAYOUT);
+
+  useEffect(() => {
+    let active = true;
+    setDocIds([]);
+    setCaseId(undefined);
+    setOfficeProjectId(undefined);
+    setContextError("");
+    setContextLoading(false);
+    setContent("");
+    setJobId(undefined);
+    setLayout(DEFAULT_DOCUMENT_LAYOUT);
+    setGenerating(false);
+    setTitle("");
+    setSubject("");
+    setPartiesText("");
+    setDetails("");
+    if (!currentOwner.current) return;
+    const context = contextKey ? readDocumentContext(currentOwner.current, contextKey) : null;
+    if (contextKey && !context) {
+      setContextError(
+        "Belge seçiminin süresi dolmuş veya bu oturumda erişilemiyor. Belgeler ekranından yeniden seçin.",
+      );
+      return;
+    }
+    setDocIds(context?.ids ?? []);
+    setOfficeProjectId(context?.officeProjectId);
+    const selectedCase =
+      context?.caseId ?? (context?.officeProjectId ? undefined : urlCaseId || undefined);
+    if (!selectedCase) return;
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(selectedCase)) {
+      setContextError("Dosya bağlantısı geçersiz.");
+      return;
+    }
+    setCaseId(selectedCase);
+    setContextLoading(true);
+    void (async () => {
+      try {
+        const result = await db
+          .from("cases")
+          .select("id,title,case_no,esas_no,court,opponent,client_id")
+          .eq("id", selectedCase)
+          .maybeSingle();
+        if (result.error || !result.data)
+          throw new Error(result.error?.message ?? "Dosya bulunamadı veya erişim yetkiniz yok.");
+        let clientName = "";
+        if (result.data.client_id) {
+          const client = await db
+            .from("clients")
+            .select("full_name")
+            .eq("id", result.data.client_id)
+            .maybeSingle();
+          if (client.error) throw new Error(client.error.message);
+          clientName = client.data?.full_name ?? "";
+        }
+        if (!active) return;
+        setTitle(result.data.title);
+        setSubject(result.data.title);
+        setPartiesText(
+          [
+            clientName && `Müvekkil: ${clientName}`,
+            result.data.opponent && `Karşı taraf: ${result.data.opponent}`,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        );
+        setDetails(
+          [
+            result.data.case_no || result.data.esas_no
+              ? `Dosya no: ${result.data.case_no || result.data.esas_no}`
+              : "",
+            result.data.court ? `Mahkeme / birim: ${result.data.court}` : "",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        );
+      } catch (error) {
+        if (active)
+          setContextError(error instanceof Error ? error.message : "Dosya bilgileri yüklenemedi.");
+      } finally {
+        if (active) setContextLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [user?.id, contextKey, urlCaseId]);
 
   const handleGenerate = async () => {
+    const initiatedBy = user?.id;
+    if (!initiatedBy) return;
+    if (contextError || contextLoading || docIds.length > 2000) return;
     if (!subject.trim()) {
       toast.error("Konu alanı zorunludur");
       return;
     }
     setGenerating(true);
     setContent("");
+    if (docIds.length) {
+      try {
+        const startedJob = await startDocumentJob({
+          module: "draft",
+          document_ids: docIds,
+          case_id: caseId,
+          project_id: officeProjectId,
+          doc_type: docType,
+          title: title || subject.slice(0, 100),
+          subject,
+          details,
+          parties: partiesText.split("\n").filter(Boolean),
+          prompt: subject,
+        });
+        if (currentOwner.current !== initiatedBy) return;
+        setJobId(startedJob);
+        toast.success("Tam metin belge hazırlama işi kuyruğa alındı.");
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "İş başlatılamadı.");
+      } finally {
+        setGenerating(false);
+      }
+      return;
+    }
     try {
       const parties = partiesText.split("\n").filter(Boolean);
       const { data, error } = await invokeFunction("generate-legal-document", {
         body: { docType, title, parties, subject, details, docIds },
       });
+      if (currentOwner.current !== initiatedBy) return;
       if (error) throw error;
       if (data?.error) throw new Error(data.error);
       setContent(data?.content || "");
@@ -77,8 +210,8 @@ const Drafts = () => {
         if (firstLine) setTitle(firstLine.replace(/^#+\s*/, "").slice(0, 80));
       }
       toast.success("Belge hazır. İnceleyip kaydedebilirsiniz.");
-    } catch (e: any) {
-      toast.error(e?.message ?? "Belge üretilemedi");
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Belge üretilemedi");
     } finally {
       setGenerating(false);
     }
@@ -94,12 +227,19 @@ const Drafts = () => {
         title: title || subject.slice(0, 80),
         content,
         parties: partiesText.split("\n").filter(Boolean),
-        metadata: { subject, details },
+        metadata: {
+          subject,
+          details,
+          case_id: caseId ?? null,
+          office_project_id: officeProjectId ?? null,
+          document_ids: docIds,
+          page_layout: layout,
+        },
       });
       if (error) throw error;
       toast.success("Belge kaydedildi");
-    } catch (e: any) {
-      toast.error(e?.message ?? "Kaydedilemedi");
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Kaydedilemedi");
     } finally {
       setSaving(false);
     }
@@ -108,29 +248,20 @@ const Drafts = () => {
   const exportPDF = async () => {
     if (!content) return;
     try {
-      await exportTextPdf(content, title || "belge");
-    } catch (e: any) {
-      toast.error(e?.message ?? "PDF oluşturulamadı");
+      await exportTextPdf(content, title || "belge", layout);
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "PDF oluşturulamadı");
     }
   };
 
   const exportDOCX = async () => {
     if (!content) return;
-    const paras = content.split("\n").map((line) => {
-      const isHeading = /^#{1,3}\s/.test(line);
-      const text = line
-        .replace(/^#+\s*/, "")
-        .replace(/\*\*(.*?)\*\*/g, "$1")
-        .replace(/[*_`>]/g, "");
-      return new Paragraph({
-        heading: isHeading ? HeadingLevel.HEADING_2 : undefined,
-        children: [new TextRun({ text: text || " ", bold: isHeading })],
-        spacing: { after: 120 },
-      });
-    });
-    const doc = new Document({ sections: [{ children: paras }] });
-    const blob = await Packer.toBlob(doc);
-    saveAs(blob, `${(title || "belge").replace(/\s+/g, "-")}.docx`);
+    try {
+      const blob = await Packer.toBlob(buildDocumentDocx(content, layout));
+      saveAs(blob, `${(title || "belge").replace(/[\\/:*?"<>|\s]+/g, "-")}.docx`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Word belgesi oluşturulamadı.");
+    }
   };
 
   const exportTXT = () => {
@@ -141,9 +272,31 @@ const Drafts = () => {
 
   return (
     <DashboardLayout
-      title="Akıllı Belge Üretimi"
+      title="Belge Hazırla"
       subtitle="AI ile dilekçe, sözleşme ve ihtarname hazırlayın"
     >
+      {(contextLoading || contextError || caseId || docIds.length > 0) && (
+        <div className="mb-5 flex flex-wrap items-center gap-3 rounded-xl border border-border p-3 text-sm">
+          {contextError ? (
+            <p role="alert" className="text-destructive">
+              {contextError}
+            </p>
+          ) : contextLoading ? (
+            <p role="status">Dosya bilgileri yükleniyor…</p>
+          ) : (
+            <p>
+              {caseId ? "Dosya bilgileri forma alındı." : "Belge seçiminiz alındı."} {docIds.length}{" "}
+              belge seçili.
+            </p>
+          )}
+          <Link
+            to={caseId ? `/dashboard/cases/${caseId}?tab=evraklar` : "/dashboard/files"}
+            className="ml-auto underline"
+          >
+            {caseId ? "Dosyaya dön" : "Belgelere dön"}
+          </Link>
+        </div>
+      )}
       <div className="grid lg:grid-cols-2 gap-6">
         {/* Form */}
         <Card className="p-6 space-y-4">
@@ -224,11 +377,17 @@ const Drafts = () => {
             />
           </div>
 
-          <CaseDocPicker value={docIds} onChange={setDocIds} />
+          <CaseDocPicker
+            value={docIds}
+            onChange={setDocIds}
+            max={2000}
+            caseId={caseId}
+            officeProjectId={officeProjectId}
+          />
 
           <Button
             onClick={handleGenerate}
-            disabled={generating}
+            disabled={generating || contextLoading || !!contextError || docIds.length > 2000}
             variant="elite"
             size="lg"
             className="w-full"
@@ -244,12 +403,21 @@ const Drafts = () => {
 
         {/* Result */}
         <Card className="p-6">
+          <DocumentJobPanel
+            jobId={jobId}
+            module="draft"
+            onCompleted={(job) => {
+              if (job.output) setContent(job.output);
+            }}
+          />
           {content ? (
-            <Tabs defaultValue="preview" className="w-full">
+            <Tabs defaultValue="edit" className="w-full">
+              <DocumentLayoutControls value={layout} onChange={setLayout} />
               <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
                 <TabsList>
+                  <TabsTrigger value="edit">Düzenle</TabsTrigger>
                   <TabsTrigger value="preview">Önizleme</TabsTrigger>
-                  <TabsTrigger value="markdown">Kaynak</TabsTrigger>
+                  <TabsTrigger value="markdown">Düz metin</TabsTrigger>
                 </TabsList>
                 <div className="flex gap-2 flex-wrap">
                   <Button size="sm" variant="outline" onClick={exportPDF}>
@@ -274,9 +442,17 @@ const Drafts = () => {
                   </Button>
                 </div>
               </div>
+              <TabsContent value="edit">
+                <LegalDocumentEditor value={content} onChange={setContent} layout={layout} />
+              </TabsContent>
               <TabsContent value="preview">
-                <div className="prose prose-sm dark:prose-invert max-w-none max-h-[70vh] overflow-y-auto p-4 rounded-lg bg-muted/30">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+                <div
+                  style={documentPageStyle(layout)}
+                  className="prose prose-sm dark:prose-invert max-h-[70vh] overflow-y-auto rounded-lg bg-muted/30"
+                >
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: () => null }}>
+                    {content}
+                  </ReactMarkdown>
                 </div>
               </TabsContent>
               <TabsContent value="markdown">
@@ -295,6 +471,16 @@ const Drafts = () => {
               <p className="text-xs mt-2 max-w-xs">
                 Sol taraftaki formu doldurup "Belgeyi Oluştur" butonuna basın.
               </p>
+              <Button
+                className="mt-4"
+                variant="outline"
+                onClick={() => {
+                  setTitle((value) => value || "Yeni belge");
+                  setContent("# Yeni belge\n\nBelge metnini buraya yazın.");
+                }}
+              >
+                Boş belgeyle başla
+              </Button>
             </div>
           )}
         </Card>

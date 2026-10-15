@@ -29,6 +29,9 @@ class ConversationSummary(BaseModel):
     id: UUID
     title: str | None
     project_id: UUID | None
+    case_id: UUID | None = None
+    office_project_id: UUID | None = None
+    selected_document_ids: list[UUID] = Field(default_factory=list)
     created_at: datetime
     last_message_at: datetime
     message_count: int
@@ -51,6 +54,7 @@ class ConversationMessage(BaseModel):
     created_at: datetime
     model_name: str | None = None
     grounded: bool | None = None
+    document_scope: dict | None = None
     unverified_markers: list[str] = Field(default_factory=list)
     citations: list[ConversationCitation] = Field(default_factory=list)
     summary: list[str] = Field(default_factory=list)
@@ -60,6 +64,9 @@ class ConversationDetail(BaseModel):
     id: UUID
     title: str | None
     project_id: UUID | None
+    case_id: UUID | None = None
+    office_project_id: UUID | None = None
+    selected_document_ids: list[UUID] = Field(default_factory=list)
     created_at: datetime
     messages: list[ConversationMessage]
 
@@ -69,6 +76,9 @@ SELECT
     conversation.id,
     conversation.title,
     conversation.project_id,
+    conversation.case_id,
+    conversation.office_project_id,
+    conversation.selected_document_ids,
     conversation.created_at,
     COALESCE(stats.last_message_at, conversation.created_at) AS last_message_at,
     stats.message_count
@@ -86,7 +96,7 @@ LIMIT %(limit)s
 """
 
 _CONVERSATION_SQL = """
-SELECT id, title, project_id, created_at
+SELECT id, title, project_id, case_id, office_project_id, selected_document_ids, created_at
 FROM conversations
 WHERE id = %s AND deleted_at IS NULL
 """
@@ -184,6 +194,7 @@ def build_messages(
                 created_at=row["created_at"],
                 model_name=row["model_name"],
                 grounded=metadata.get("grounded") if assistant else None,
+                document_scope=metadata.get("document_scope") if assistant else None,
                 unverified_markers=list(metadata.get("unverified_markers") or [])
                 if assistant
                 else [],
@@ -198,17 +209,21 @@ def build_messages(
 def list_conversations(
     user_id: Annotated[UUID, Depends(current_user_id)],
     project_id: UUID | None = None,
+    case_id: UUID | None = None,
+    office_project_id: UUID | None = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> list[ConversationSummary]:
-    sql = _LIST_SQL.format(
-        project_filter="AND conversation.project_id = %(project_id)s"
-        if project_id is not None
-        else ""
-    )
+    scopes = {"project_id": project_id, "case_id": case_id, "office_project_id": office_project_id}
+    if sum(value is not None for value in scopes.values()) > 1:
+        raise HTTPException(422, "Birden fazla sohbet kapsamı birlikte verilemez")
+    # Sütun adları sabit allowlist'ten; değerler yalnız bağlı parametredir.
+    sql = _LIST_SQL.format(project_filter=" ".join(
+        f"AND conversation.{key} = %({key})s" for key, value in scopes.items() if value is not None
+    ))
     try:
         with authenticated_database_connection(str(user_id)) as connection:
             rows = connection.execute(
-                sql, {"limit": limit, "project_id": project_id}
+                sql, {"limit": limit, **scopes}
             ).fetchall()
     except psycopg.Error as exc:
         logger.exception("Sohbet listesi alınamadı")

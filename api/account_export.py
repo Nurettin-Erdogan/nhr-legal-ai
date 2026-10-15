@@ -14,7 +14,7 @@ from uuid import UUID
 
 MAX_ROWS = 20_000
 EXCLUDED_TABLES = frozenset({"uyap_ingest_tokens"})  # anahtar özetleri dışa verilmez
-EXCLUDED_COLUMNS = frozenset({"storage_path", "token", "token_hash", "token_prefix", "password_hash"})
+EXCLUDED_COLUMNS = frozenset({"storage_path", "token", "token_hash", "token_prefix", "password_hash", "lease", "leased_until"})
 
 
 def _clean(row: dict[str, Any]) -> dict[str, Any]:
@@ -28,7 +28,8 @@ def build_export(connection, user_id: UUID, tables: dict[str, str]) -> dict[str,
     ).fetchone()
     office: dict[str, Any] = {}
     truncated: list[str] = []
-    for name, physical in sorted(tables.items()):
+    export_tables = {**tables, 'project_document_links':'office_project_documents'}
+    for name, physical in sorted(export_tables.items()):
         if name in EXCLUDED_TABLES:
             continue
         rows = connection.execute(f'SELECT * FROM "{physical}" ORDER BY created_at LIMIT %s', (MAX_ROWS + 1,)).fetchall()
@@ -38,7 +39,7 @@ def build_export(connection, user_id: UUID, tables: dict[str, str]) -> dict[str,
         office[name] = [_clean(dict(row)) for row in rows]
 
     conversations = connection.execute(
-        "SELECT id, title, created_at FROM conversations WHERE created_by = %s AND deleted_at IS NULL ORDER BY created_at LIMIT %s",
+        "SELECT id, title, project_id, case_id, office_project_id, selected_document_ids, created_at FROM conversations WHERE created_by = %s AND deleted_at IS NULL ORDER BY created_at LIMIT %s",
         (user_id, MAX_ROWS + 1),
     ).fetchall()
     if len(conversations) > MAX_ROWS:

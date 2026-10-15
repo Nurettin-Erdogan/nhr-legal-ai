@@ -41,10 +41,19 @@ test("a missing or unknown verification is never shown as official", () => {
   }
   assert.equal(hit({ verification: "third_party" }).verification, "third_party");
   assert.equal(hit({ verification: "official" }).verification, "official");
-  assert.match(search.verificationBadge("third_party").label, /doğrulanmadı/);
-  assert.equal(search.verificationBadge("third_party").tone, "warn");
-  assert.equal(search.verificationBadge("unknown").tone, "warn");
-  assert.equal(search.verificationBadge("official").tone, "ok");
+  // AGENTS.md (2026-10-15): resmî metinle karşılaştırılmış kayıt "Resmî metin ✓"; karşılaştırılmamış kayıt olumsuz ibare olmadan
+  // kaynak adıyla gösterilir ve hiçbir zaman ✓ ya da "resmî" almaz.
+  assert.deepEqual(search.verificationBadge("official"), { label: "Resmî metin ✓", tone: "ok" });
+  for (const [args, label] of [
+    [["third_party", "https://karararama.yargitay.gov.tr/getDokuman?id=1"], "Yargıtay kararı"],
+    [["third_party", "https://karararama.danistay.gov.tr/getDokuman?id=2"], "Danıştay kararı"],
+    [["third_party", null, "Yargıtay 9. Hukuk Dairesi"], "Yargıtay kararı"],
+    [["unknown", "https://example.com/x"], "Karar"],
+  ]) {
+    const badge = search.verificationBadge(...args);
+    assert.deepEqual(badge, { label, tone: "neutral" });
+    assert.doesNotMatch(badge.label, /resmî|doğrula|✓/i);
+  }
 });
 
 test("the parser drops rows without an id or title and survives malformed bodies", () => {

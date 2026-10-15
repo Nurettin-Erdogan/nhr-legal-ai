@@ -32,5 +32,6 @@ export function docTextNote(state: DocTextState): string {
 export function docSourceLabel(source: string | null | undefined): string {
   if (!source || source === "manual") return "Elle yüklendi";
   if (source.startsWith("uyap")) return "UYAP";
+  if (source === "google_drive") return "Google Drive";
   return source;
 }

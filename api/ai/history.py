@@ -13,6 +13,10 @@ _TITLE_LENGTH = 80
 _SNIPPET_LENGTH = 500
 
 
+class ConversationScopeMismatch(ValueError):
+    """Sohbet başka kapsamla devam ettirilemez; kayıt öncesi de kontrol edilir."""
+
+
 def _conversation_title(question: str) -> str:
     condensed = " ".join(question.split())
     if len(condensed) <= _TITLE_LENGTH:
@@ -60,6 +64,10 @@ def record_exchange(
     answer: VerifiedAnswer,
     model_name: str,
     as_of: date | None = None,
+    case_id: UUID | None = None,
+    office_project_id: UUID | None = None,
+    selected_document_ids: list[UUID] | None = None,
+    document_scope: dict | None = None,
 ) -> tuple[UUID, UUID]:
     """Persist the question, the verified answer and the sources it relied on.
 
@@ -76,15 +84,24 @@ def record_exchange(
         conversation_id = uuid4()
         connection.execute(
             """
-            INSERT INTO conversations (id, project_id, created_by, title)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO conversations (id, project_id, created_by, title, case_id, office_project_id, selected_document_ids)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             """,
-            (conversation_id, project_id, user_id, _conversation_title(question)),
+            (conversation_id, project_id, user_id, _conversation_title(question), case_id, office_project_id, selected_document_ids or []),
         )
+    else:
+        row = connection.execute(
+            "SELECT project_id,case_id,office_project_id,selected_document_ids FROM conversations "
+            "WHERE id=%s AND deleted_at IS NULL FOR UPDATE", (conversation_id,),
+        ).fetchone()
+        if row is None or (row['project_id'], row['case_id'], row['office_project_id'], set(row['selected_document_ids'])) != (
+            project_id, case_id, office_project_id, set(selected_document_ids or []),
+        ):
+            raise ConversationScopeMismatch("Sohbetin kaynak kapsamı değişti. Yeni sohbet başlatın.")
 
     connection.execute(
-        "INSERT INTO messages (conversation_id, role, content) VALUES (%s, 'user', %s)",
-        (conversation_id, question),
+        "INSERT INTO messages (id, conversation_id, role, content) VALUES (%s, %s, 'user', %s)",
+        (uuid4(), conversation_id, question),
     )
     message_id = uuid4()
     connection.execute(
@@ -102,6 +119,7 @@ def record_exchange(
                     "grounded": answer.grounded,
                     "unverified_markers": list(answer.unverified_markers),
                     "as_of": as_of.isoformat() if as_of else None,
+                    **({"document_scope": document_scope} if document_scope is not None else {}),
                     **({"summary": list(answer.summary)} if answer.summary else {}),
                 }
             ),
@@ -112,6 +130,7 @@ def record_exchange(
         connection.execute(
             """
             INSERT INTO citations (
+                id,
                 message_id,
                 document_chunk_id,
                 legal_chunk_id,
@@ -122,9 +141,10 @@ def record_exchange(
                 snippet,
                 relevance_score
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
+                uuid4(),
                 message_id,
                 context.chunk_id if context.source_type == "document" else None,
                 context.chunk_id if context.source_type != "document" else None,

@@ -57,7 +57,7 @@ test("citations keep their verification and unsafe or unknown values are neutral
   assert.equal(first.verification, "third_party");
   assert.equal(first.sourceUrl, null);
   assert.equal(second.verification, "unknown");
-  assert.equal(lib.verificationLabel("third_party"), "doğrulanmadı");
+  assert.equal(lib.verificationLabel("third_party"), ""); // olumsuz ibare yok (AGENTS.md, 2026-10-15)
   assert.equal(lib.verificationLabel("official"), "");
   assert.match(lib.verificationLabel("unknown"), /bilinmiyor/);
 });

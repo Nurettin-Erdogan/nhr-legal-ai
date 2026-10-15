@@ -29,6 +29,7 @@ const scope = compile("../src/lib/document-scope.ts");
 const { CitationList, DocumentScopeNotice } = compile("../src/components/ChatCitations.tsx", {
   "@/lib/document-scope": scope,
   "@/lib/citation-groups": compile("../src/lib/citation-groups.ts"),
+  "@/lib/source-label": compile("../src/lib/source-label.ts"),
 });
 
 test("scope parsing is defensive about malformed payloads", () => {
@@ -100,8 +101,8 @@ test("user document citations are labelled as such, never as official or merely 
     }),
   );
   assert.match(html, /kullanıcı belgesi/);
-  assert.match(html, /doğrulanmadı/); // yalnız üçüncü taraf kayıt için
-  assert.equal((html.match(/doğrulanmadı/g) ?? []).length, 1);
+  // Karşılaştırılmamış kayıt olumsuz ibare de ✓ de almaz (AGENTS.md, 2026-10-15); resmî kayıt "Resmî metin ✓" alır.
+  assert.doesNotMatch(html, /doğrulanmadı/);
   assert.match(html, /bir tarafın iddiasıdır; hukuki dayanak ya da resmî kaynak değildir/);
 });
 

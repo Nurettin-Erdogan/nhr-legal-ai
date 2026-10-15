@@ -131,8 +131,9 @@ def test_the_report_states_gaps_unverified_sources_and_limits():
     markdown = research.render_markdown(QUESTION, steps)
     assert "# Derin araştırma raporu" in markdown and QUESTION in markdown
     assert "Doktrin ve karşılaştırmalı hukuk kaynakları korpusta yoktur" in markdown
-    assert "- [K1] İŞ KANUNU m. 14\n" in markdown  # resmî kaynakta rozet yok
-    assert "- [K1] İŞ KANUNU m. 14 (doğrulanmadı)" in markdown  # üçüncü taraf ayrı işaretli
+    assert "- [K1] İŞ KANUNU m. 14 (Resmî metin ✓)\n" in markdown  # resmî kaynak işaretli
+    assert "- [K1] İŞ KANUNU m. 14\n" in markdown  # karşılaştırılmamış kayıt: olumsuz ibare de ✓ de yok (AGENTS.md, 2026-10-15)
+    assert "doğrulanmadı" not in markdown
     assert "yeterince desteklenemedi" in markdown  # desteklenmeyen bölüm uyarılı
     assert "Bu başlık tamamlanamadı: Model şu an yanıt vermiyor" in markdown
 

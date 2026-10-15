@@ -22,6 +22,8 @@ from api.ai.providers import (
     OllamaProvider,
 )
 from api.ai.research import router as research_router
+from api.ai.document_selection import selected_document_coverage
+from api.ai.workspace_scope import office_project_case
 from api.audit import AuditContext
 from api.auth.routes import optional_current_user_id
 from api.config import get_settings
@@ -125,6 +127,15 @@ def _require_case_access(user_id: UUID | None, case_id: UUID | None) -> None:
         raise HTTPException(status_code=404, detail="Dava bulunamadı")
 
 
+def _require_selected_document_access(user_id: UUID | None, request: AIAnswerRequest) -> None:
+    """Seçimin tamamını RLS altında doğrula; erişilemeyen belgenin varlığını ifşa etme."""
+    case_id = office_project_case(user_id, request.office_project_id) if request.office_project_id else request.case_id
+    if not request.selected_document_ids:
+        return
+    selected_document_coverage(user_id, request.selected_document_ids,
+        None if request.office_project_id else case_id, **({'office_project_id':request.office_project_id} if request.office_project_id else {}))
+
+
 @router.post("/answer", response_model=AIAnswerResponse)
 async def answer_question(
     request: AIAnswerRequest,
@@ -133,6 +144,7 @@ async def answer_question(
 ) -> AIAnswerResponse:
     _require_project_access(user_id, request.project_id)
     _require_case_access(user_id, request.case_id)
+    _require_selected_document_access(user_id, request)
     response, _timings = await execute_answer(
         request, user_id, audit=AuditContext.from_request(http_request)
     )
@@ -147,6 +159,7 @@ async def answer_question_progress(
 ) -> StreamingResponse:
     _require_project_access(user_id, request.project_id)
     _require_case_access(user_id, request.case_id)
+    _require_selected_document_access(user_id, request)
     audit = AuditContext.from_request(http_request)
 
     async def events():

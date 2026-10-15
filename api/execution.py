@@ -19,9 +19,11 @@ from uuid import UUID
 
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 
 from api.auth.routes import current_user_id
 from api.db import authenticated_database_connection
+from api.execution_ask import MAX_QUESTION, answer as answer_question
 from api.execution_overview import build_overview, list_overview
 from api.turkish_text import TR_FOLD as _TR, fold, fold_keep_length
 
@@ -535,6 +537,43 @@ def execution_file_detail(case_id: UUID, user_id: Annotated[UUID, Depends(curren
     # UYAP'tan çekilen dosya bilgisinden künye, taraflar, önemli işlemler ve sorgular; çekilmemişse None.
     detail["overview"] = overviews.get(case_id)
     return detail
+
+
+_ASK_SQL = f"""
+SELECT c.id AS case_id, coalesce(c.esas_no, c.case_no) AS file_no, c.court, s.dosya_durumu AS uyap_status
+FROM office_cases c
+LEFT JOIN office_uyap_case_sync s ON s.case_id = c.id AND s.owner_id = c.owner_id
+WHERE c.owner_id = %(owner)s AND {COURT_SQL}
+ORDER BY c.created_at DESC
+"""
+
+
+class AskBody(BaseModel):
+    question: str = Field(min_length=2, max_length=MAX_QUESTION)
+
+
+@router.post("/ask")
+def execution_ask(body: AskBody, user_id: Annotated[UUID, Depends(current_user_id)]) -> dict[str, Any]:
+    """Dosyalar arası soru: bilinen kalıplar süzgece çevrilir ve oturum sahibinin icra dosyalarına uygulanır (dil modeli yok).
+
+    Soru metni kaydedilmez; yanıtta yalnız sahibin kendi dosyaları yer alır.
+    """
+    try:
+        with authenticated_database_connection(str(user_id)) as connection:
+            cases = connection.execute(_ASK_SQL, {"owner": user_id}).fetchall()
+            overviews = load_overviews(connection, user_id, [row["case_id"] for row in cases], date.today())
+    except psycopg.Error:
+        logger.exception("Dosyalar arası soru yanıtlanamadı")
+        raise HTTPException(status_code=503, detail="Dosyalar şu an sorgulanamıyor") from None
+    files = [
+        {
+            "case_id": row["case_id"], "file_no": row["file_no"], "court": " ".join((row["court"] or "").split()),
+            "kind": execution_kind(row["court"]) or "takip", "uyap_status": row["uyap_status"],
+            "overview": overviews.get(row["case_id"]),
+        }
+        for row in cases
+    ]
+    return answer_question(files, body.question)
 
 
 @router.get("/files")

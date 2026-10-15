@@ -207,6 +207,21 @@ def _search(world, user, case_id, **kwargs):
 
 
 @needs_db
+def test_explicit_selection_excludes_other_documents_case_and_owner_in_real_rls(db):
+    case, other = _case(db, db.alice), _case(db, db.alice)
+    text = "Davacı işçi kıdem tazminatı talep etmektedir."
+    chosen = _indexed_document(db, db.alice, case, text, "secilen.udf")
+    _indexed_document(db, db.alice, case, text, "secilmeyen.udf")
+    another_case = _indexed_document(db, db.alice, other, text, "baska.udf")
+    assert [c.title for c in _search(db, db.alice, case, document_ids=[str(chosen)])] == ["secilen.udf"]
+    assert _search(db, db.bob, case, document_ids=[str(chosen)]) == []
+    assert _search(db, db.alice, case, document_ids=[str(another_case)]) == []
+    db.become(None)
+    db.connection.execute("UPDATE office_case_documents SET deleted_at=now() WHERE id=%s", (chosen,))
+    assert _search(db, db.alice, case, document_ids=[str(chosen)]) == []
+
+
+@needs_db
 def test_owner_finds_case_documents_labelled_as_user_documents(db):
     case = _case(db, db.alice)
     _indexed_document(

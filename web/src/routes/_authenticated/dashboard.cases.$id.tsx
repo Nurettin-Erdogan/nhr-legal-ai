@@ -12,6 +12,7 @@ import { ExecutionBreakdown } from "@/components/ExecutionBreakdown";
 import { isExecutionCourt } from "@/lib/execution-breakdown";
 import { CaseNotesEditor, CaseTaskComposer } from "@/components/CaseQuickActions";
 import { DocumentTrash } from "@/components/DocumentTrash";
+import { DocumentWorkflowActions } from "@/components/DocumentWorkflowActions";
 import { trashDocument } from "@/lib/document-trash";
 import { Button } from "@/components/ui/button";
 import { useParams, useSearchParam, Link } from "@/lib/router-compat";
@@ -160,6 +161,8 @@ const CaseDetail = () => {
           <CaseDetailView
             key={`${id}:${urlTab}`}
             data={data}
+            renderSelectedActions={(ids) => <DocumentWorkflowActions ids={ids} caseId={id} />}
+            draftAction={<Link className="rounded-md border border-border px-3 py-2 text-sm hover:bg-secondary" to={`/dashboard/drafts?case=${id}`}>Belge hazırla</Link>}
             onDownload={download}
             downloading={downloading}
             downloadError={downloadError}

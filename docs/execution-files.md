@@ -134,3 +134,23 @@ doğrulamadaki sayıdan az evrak varsa rozet **"Son doğrulamadan sonra N evrak 
 Testler: `tests/test_execution.py`, `tests/test_execution_detail.py`, `tests/test_execution_overview.py`, `web/tests/execution.test.mjs`,
 `web/tests/execution-overview.test.mjs`, tarayıcı: `.local/check_icra_kunye.py`,
 `web/tests/execution-breakdown.test.mjs`. Gerçek tarayıcı denetimi: `.local/check_icra_ozeti.py` (uydurma belgelerle).
+
+## Dosyalarıma sor (2026-10-13)
+
+İcra Takibi sayfasının üstündeki kutu bütün icra dosyalarında soru sorar: "hangi dosyalarımda araç sorgusu VAR yazıyor?",
+"açık dosyalarım hangileri?", "6 aydır işlem görmeyen açık dosyalar", "kesinleşme bilgisi girilmemiş dosyalar", bir taraf
+adı ya da birim adı. Uç nokta: `POST /api/office/execution/ask` (`api/execution_ask.py`); arayüz
+`web/src/components/ExecutionAsk.tsx`.
+
+**Dil modeli kullanılmaz.** Bilinen kalıplar bir süzgece çevrilir (UYAP durumu, takip türü/yolu, borçlu sorgu sonucu,
+işlem kaydı var/yok, işlemsiz geçen süre, sıralama, ad araması) ve UYAP'tan çekilmiş kayıtlara uygulanır. Bu yüzden cevap
+tamdır (dosya atlanmaz, "en fazla dört cümle" sınırı yoktur) ve uydurma içeremez: her satır, eşleşmeyi sağlayan kaydın
+kendisiyle gösterilir ("Araç sorgusu: VAR · 05.10.2026 (…)"). Sorunun nasıl anlaşıldığı kullanıcıya yazılır ("Şöyle
+anladım: …"); hiçbir kalıba uymayan soru tahminle cevaplanmaz, "anlaşılamadı" denir ve örnekler verilir. Tanınmayan sözcük
+ad/birim/dosya no araması sayılır ve öyle olduğu gösterilir.
+
+Sınırlar: tutar karşılaştırması yok (hiçbir şey hesaplanmaz); "VAR" yorumlanmaz; alacaklı hakkındaki sorgu sayılmaz; UYAP
+bilgisi çekilmemiş dosya, kayda bakan sorularda değerlendirilemez ve sayısı ayrıca söylenir; yalnız icra dosyaları
+(öteki davalar kapsam dışı); soru metni kaydedilmez. Gerçek hesapta denendi (18 dosya, yalnız sayılar): örnek soruların
+hepsi süzgece çevrildi. Testler: `tests/test_execution_ask.py`, `web/tests/execution-ask.test.mjs`; tarayıcı:
+`.local/check_dosyalarima_sor.py`.

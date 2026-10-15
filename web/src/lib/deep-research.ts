@@ -127,7 +127,8 @@ export function parseResearchState(raw: unknown): ResearchState | null {
 }
 
 export function verificationLabel(verification: StepCitation["verification"]): string {
-  if (verification === "third_party") return "doğrulanmadı";
+  // Karşılaştırılmamış kayıtta olumsuz ibare yazılmaz (AGENTS.md, 2026-10-15); ✓ de verilmez.
+  if (verification === "third_party") return "";
   if (verification === "user_document") return "kullanıcı belgesi";
   if (verification === "unknown") return "doğrulama durumu bilinmiyor";
   return "";
