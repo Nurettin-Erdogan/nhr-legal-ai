@@ -102,7 +102,7 @@ class EmsalFetcher:
     BASE = "https://emsal.uyap.gov.tr/"
 
     def __init__(self) -> None:
-        self.interval = 3.0
+        self.interval = 8.0   # ~450/sa üst sınır; CAPTCHA gelince 20 sn'ye kadar iner
         self.next_at = 0.0
         self.requests = 0
         self.limited = 0
@@ -156,15 +156,18 @@ class EmsalFetcher:
             meta = payload.get("metadata") or {}
             message = " ".join(str(meta.get(k) or "") for k in ("FMTE", "message", "error")).strip()
             if "captcha" in message.lower():
-                log.warning("Emsal CAPTCHA istedi; 15 dk bekleniyor (otomatik aşılmaz)")
-                time.sleep(900)
+                # CAPTCHA, portalın bu hızı istemediği işareti: aşılmaz; 1 saat beklenir ve kalıcı olarak yavaşlanır
+                # (ölçüldü 2026-10-15: ~500 istek/sa'te 20-40 dk'da bir CAPTCHA). Aralık en çok 20 sn'ye çıkar (~180/sa).
+                self.interval = min(20.0, self.interval * 2)
+                log.warning("Emsal CAPTCHA istedi; 60 dk bekleniyor, yeni aralık %.1f sn (otomatik aşılmaz)", self.interval)
+                time.sleep(3600)
                 continue
             html = payload.get("data")
             if str(meta.get("FMTY") or "SUCCESS").upper() not in {"SUCCESS", "OK"} or not isinstance(html, str) or not html.strip():
                 return {"status": "not_found", "error": (message or "boş metin")[:160]}
             self.streak += 1
-            if self.streak >= 20:
-                self.interval = max(3.0, self.interval * 0.95)
+            if self.streak >= 200:
+                self.interval = max(8.0, self.interval * 0.95)
                 self.streak = 0
             return {"status": "ok", "text": normalize_text(html_to_text(html))}
         raise KeyboardInterrupt
