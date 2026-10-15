@@ -87,9 +87,10 @@ ORDER BY d.decision_date ASC, d.legal_source_id ASC
 LIMIT %(n)s
 """
 LANES = {
-    # şerit: (düğümdeki iş dizini, iş boyutu, düğümde tutulacak iş sayısı) — ~2,5 günlük iş
-    "bedesten": ("jobs", 5000, 8),
-    "emsal": ("jobs-emsal", 1500, 6),
+    # şerit: (düğümdeki iş dizini, iş boyutu, düğümde tutulacak iş sayısı)
+    # ~6 günlük iş: PC birkaç gün açılmasa bile sunucular boş kalmaz (kullanıcı 2026-10-15: "hiçbir zaman boşta kalmasın").
+    "bedesten": ("jobs", 5000, 20),
+    "emsal": ("jobs-emsal", 1500, 12),
 }
 _PICKED = "UPDATE seed_verification_queue SET picked_at = NOW() WHERE legal_source_id = ANY(%s)"
 _ROW = """
