@@ -35,7 +35,12 @@ getirilen kaynaklara dayandığı kod tarafında doğrulanır.
 gelen kayıtlar da var (2026-09-20 itibarıyla ~10,2 milyon Yargıtay/Danıştay kararı,
 `ingestion_method='bulk_seed'`, `ingest_status='pending'`). Bunlar aranabilir ve
 atıf yapılabilir, ama her yerde ayrı gösterilir: arayüz sayacında ayrı satır,
-cevaptaki atıfta "doğrulanmadı" rozeti, modele verilen kaynak metninde uyarı satırı.
+modele verilen kaynak metninde uyarı satırı, cevaptaki atıfta resmî kayıtlardan ayrı
+etiket. Etiket ifadesi (kullanıcı kararı 2026-10-15): resmî metinle karşılaştırılmış
+kayıt "Resmî metin ✓"; karşılaştırılmamış kayıt olumsuz ibare olmadan kaynak ve
+künyeyle ("Yargıtay kararı · E./K. no") ve kararı resmî portalda açan "Resmî sitede
+aç" bağlantısıyla gösterilir. Karşılaştırılmamış kayıt hiçbir yerde "doğrulandı",
+"resmî" ya da ✓ ile gösterilmez.
 Bir kayıt ancak resmî portaldan çekilip metni eşleştiğinde `ready` olur
 ([docs/ingestion-bulk-mrfg.md](docs/ingestion-bulk-mrfg.md)). Bu ayrımı silen
 değişiklik yapılmaz.
