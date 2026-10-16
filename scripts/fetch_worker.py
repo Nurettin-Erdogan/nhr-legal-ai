@@ -102,7 +102,12 @@ class EmsalFetcher:
     BASE = "https://emsal.uyap.gov.tr/"
 
     def __init__(self) -> None:
-        self.interval = 8.0   # ~450/sa üst sınır; CAPTCHA gelince 20 sn'ye kadar iner
+        # Ayarlanabilir (systemd Environment=): EMSAL_INTERVAL sn, EMSAL_CAPTCHA_WAIT sn, EMSAL_BACKOFF=0 aralığı sabit tutar.
+        self.interval = float(os.getenv("EMSAL_INTERVAL", "8"))
+        self.floor = self.interval
+        self.captcha_wait = float(os.getenv("EMSAL_CAPTCHA_WAIT", "3600"))
+        self.backoff = os.getenv("EMSAL_BACKOFF", "1") != "0"
+        self.done = 0
         self.next_at = 0.0
         self.requests = 0
         self.limited = 0
@@ -113,8 +118,8 @@ class EmsalFetcher:
         at, req, lim = self.beat
         now = time.time()
         if now - at >= 300:
-            log.info("ölçüm (emsal): %d istek/5 dk = %.0f istek/sa | 429=%d | aralık=%.1f sn",
-                     self.requests - req, (self.requests - req) / ((now - at) / 3600), self.limited - lim, self.interval)
+            log.info("ölçüm (emsal): %d istek/5 dk = %.0f istek/sa | 429=%d | aralık=%.1f sn | toplam=%d",
+                     self.requests - req, (self.requests - req) / ((now - at) / 3600), self.limited - lim, self.interval, self.done)
             self.beat = (now, self.requests, self.limited)
 
     def _get(self, document_id: str) -> dict:
@@ -156,18 +161,20 @@ class EmsalFetcher:
             meta = payload.get("metadata") or {}
             message = " ".join(str(meta.get(k) or "") for k in ("FMTE", "message", "error")).strip()
             if "captcha" in message.lower():
-                # CAPTCHA, portalın bu hızı istemediği işareti: aşılmaz; 1 saat beklenir ve kalıcı olarak yavaşlanır
-                # (ölçüldü 2026-10-15: ~500 istek/sa'te 20-40 dk'da bir CAPTCHA). Aralık en çok 20 sn'ye çıkar (~180/sa).
-                self.interval = min(20.0, self.interval * 2)
-                log.warning("Emsal CAPTCHA istedi; 60 dk bekleniyor, yeni aralık %.1f sn (otomatik aşılmaz)", self.interval)
-                time.sleep(3600)
+                # CAPTCHA aşılmaz. Bekleme süresi ve aralığın iki katına çıkıp çıkmayacağı ortam değişkenleriyle ayarlanır
+                # (2026-10-16 deneyi: dört sunucuda farklı ayarlarla saatlik gerçek verim karşılaştırılıyor).
+                if self.backoff:
+                    self.interval = min(30.0, self.interval * 2)
+                log.warning("Emsal CAPTCHA istedi; %.0f sn bekleniyor, aralık %.1f sn (otomatik aşılmaz)", self.captcha_wait, self.interval)
+                time.sleep(self.captcha_wait)
                 continue
             html = payload.get("data")
             if str(meta.get("FMTY") or "SUCCESS").upper() not in {"SUCCESS", "OK"} or not isinstance(html, str) or not html.strip():
                 return {"status": "not_found", "error": (message or "boş metin")[:160]}
             self.streak += 1
-            if self.streak >= 200:
-                self.interval = max(8.0, self.interval * 0.95)
+            self.done += 1
+            if self.backoff and self.streak >= 200:
+                self.interval = max(self.floor, self.interval * 0.95)
                 self.streak = 0
             return {"status": "ok", "text": normalize_text(html_to_text(html))}
         raise KeyboardInterrupt
