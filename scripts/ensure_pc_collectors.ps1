@@ -40,7 +40,16 @@ if (-not $paused -and -not (Test-Running 'collect_emsal\.py')) {
 # Emsal seed doğrulaması (kullanıcı 2026-10-15: "her şey 2 sunucu + PC'de doğrulansın"): PC en yeniden eskiye gider,
 # sunuculardaki Emsal şeridi (fetcher_hub) en eskiden yeniye; ortada buluşurlar. Ayrı portal: Bedesten kotasını etkilemez.
 if (-not $paused -and -not (Test-Running 'verify_seeds\.py --source emsal')) {
-    Start-Hidden 'pc-verify-emsal' 'scripts\verify_seeds.py --source emsal --delay 3.0 --min-delay 3.0 --cooldown 120'
+    Start-Hidden 'pc-verify-emsal' 'scripts\verify_seeds.py --source emsal --delay 10.0 --min-delay 8.0 --cooldown 120 --captcha-wait 3600'
+}
+# PC'nin kendi Bedesten çekicisi (kullanıcı 2026-10-16): sunucularla aynı sistem, işleri fetcher_hub gönderir, sonuçları alır.
+# Kod data\fetcher\pcnode altına kopyalanır (sunuculardaki ~/fetcher ile aynı yapı). UYAP'ta çalışılacağı zaman bayrakla durur.
+$node = Join-Path $root 'data\fetcher\pcnode'
+if (-not $paused -and -not (Test-Running 'pcnode.fetch_worker\.py')) {
+    New-Item -ItemType Directory -Force (Join-Path $node 'ingestion'), (Join-Path $node 'jobs'), (Join-Path $node 'out') | Out-Null
+    foreach ($f in '__init__.py','bedesten_emsal.py','text.py') { Copy-Item (Join-Path $root "ingestion\$f") (Join-Path $node "ingestion\$f") -Force }
+    Copy-Item (Join-Path $root 'scripts\fetch_worker.py') (Join-Path $node 'fetch_worker.py') -Force
+    Start-Hidden 'pc-fetcher' 'data\fetcher\pcnode\fetch_worker.py'
 }
 # Mevzuat doğrulama döngüsü (mevzuat.gov.tr / Resmî Gazete; checkpoint 'mevzuat_verify'): eskiden Azure'da kendi veritabanında
 # çalışırdı, Azure artık veritabanı tutmadığı için PC'de, doğrudan ana veritabanında çalışır.

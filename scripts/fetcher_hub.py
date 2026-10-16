@@ -38,6 +38,10 @@ load_dotenv(ROOT / ".env")
 NODES = {
     "aws": {"host": "ubuntu@13.60.255.72", "key": str(Path.home() / ".ssh" / "nhr-aws.pem"), "dir": "fetcher"},
     "azure": {"host": "nhr@20.91.186.253", "key": None, "dir": "fetcher"},
+    # PC'nin kendisi de çekici (kullanıcı 2026-10-16: "PC de çalışsın, UYAP'a bakacağım zaman durdur derim"): yerel dizin,
+    # yalnız Bedesten şeridi (PC'nin Emsal'i `verify_seeds.py --source emsal` ile en yeniden eskiye ayrıca gider).
+    # Çekici süreci ensure_pc_collectors.ps1 başlatır; PAUSE_PC_COLLECTORS bayrağıyla durur.
+    "pc": {"host": None, "key": None, "dir": str(ROOT / "data" / "fetcher" / "pcnode"), "lanes": ("bedesten",)},
 }
 # PC günde bir kez çalışır (kullanıcı 2026-10-14): düğümde ~2,5 günlük iş (8 x 5000; düğüm ~16 bin/gün) hazır tutulur ki
 # PC bir gün çalışmasa bile düğüm boş kalmasın.
@@ -148,9 +152,22 @@ def save_state(state: dict) -> None:
 
 
 # -- collect -------------------------------------------------------------------------------------
+def _collect_local(name: str, node: dict) -> int:
+    out = Path(node["dir"]) / "out"
+    target = INBOX / name
+    target.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    for path in sorted(out.glob("*.jsonl.gz")) if out.exists() else []:
+        os.replace(path, target / path.name)
+        moved += 1
+    return moved
+
+
 def collect(name: str, node: dict) -> int:
     """Biten parçaları kopyalar; düğümden toplu siler. Silme başarısız olursa parça bir sonraki turda yeniden
     kopyalanır, işleme zararsızdır (zaten doğrulanmış kayıt atlanır)."""
+    if node["host"] is None:
+        return _collect_local(name, node)
     listing = ssh(node, f"cd {node['dir']}/out 2>/dev/null && ls -1 *.jsonl.gz 2>/dev/null || true", timeout=60).split()
     target = INBOX / name
     target.mkdir(parents=True, exist_ok=True)
@@ -265,7 +282,11 @@ def next_batch(connection: psycopg.Connection, state: dict, n: int) -> tuple[lis
 def dispatch(name: str, node: dict, connection: psycopg.Connection, state: dict, lane: str = "bedesten") -> int:
     jobs_dir, job_size, target = LANES[lane]
     batch = next_batch if lane == "bedesten" else next_batch_emsal
-    pending = int(ssh(node, f"mkdir -p {node['dir']}/{jobs_dir}; ls -1 {node['dir']}/{jobs_dir}/*.jsonl.gz 2>/dev/null | wc -l").strip() or 0)
+    if node["host"] is None:
+        (Path(node["dir"]) / jobs_dir).mkdir(parents=True, exist_ok=True)
+        pending = len(list((Path(node["dir"]) / jobs_dir).glob("*.jsonl.gz")))
+    else:
+        pending = int(ssh(node, f"mkdir -p {node['dir']}/{jobs_dir}; ls -1 {node['dir']}/{jobs_dir}/*.jsonl.gz 2>/dev/null | wc -l").strip() or 0)
     stamp = f"{datetime.now():%Y%m%d-%H%M%S}"
     sent = 0
     index = 0
@@ -279,8 +300,13 @@ def dispatch(name: str, node: dict, connection: psycopg.Connection, state: dict,
         with gzip.open(local, "wt", encoding="utf-8") as handle:
             for external_id in ids:
                 handle.write(json.dumps({"external_id": external_id}) + "\n")
-        scp(node, str(local), f"{node['host']}:{node['dir']}/{jobs_dir}/{job}.jsonl.gz.part")
-        ssh(node, f"mv {node['dir']}/{jobs_dir}/{job}.jsonl.gz.part {node['dir']}/{jobs_dir}/{job}.jsonl.gz")
+        if node["host"] is None:
+            import shutil
+            shutil.copyfile(local, Path(node["dir"]) / jobs_dir / f"{job}.jsonl.gz.part")
+            os.replace(Path(node["dir"]) / jobs_dir / f"{job}.jsonl.gz.part", Path(node["dir"]) / jobs_dir / f"{job}.jsonl.gz")
+        else:
+            scp(node, str(local), f"{node['host']}:{node['dir']}/{jobs_dir}/{job}.jsonl.gz.part")
+            ssh(node, f"mv {node['dir']}/{jobs_dir}/{job}.jsonl.gz.part {node['dir']}/{jobs_dir}/{job}.jsonl.gz")
         if queued:
             connection.execute(_PICKED, (queued,))
         save_state(state)  # imleç ancak iş düğüme ulaştıktan sonra kalıcı
@@ -311,7 +337,7 @@ def run() -> int:
                 state.setdefault("totals", {})[key] = state.get("totals", {}).get(key, 0) + value
             save_state(state)
         for name, node in NODES.items():
-            for lane in LANES:
+            for lane in node.get("lanes", tuple(LANES)):
                 try:
                     sent = dispatch(name, node, connection, state, lane)
                     if sent:
@@ -325,6 +351,10 @@ def status() -> int:
     state = load_state()
     print(json.dumps({k: v for k, v in state.items()}, ensure_ascii=False, indent=1))
     for name, node in NODES.items():
+        if node["host"] is None:
+            d = Path(node["dir"])
+            print(name, "yerel | iş:", len(list((d / "jobs").glob("*.jsonl.gz"))), "| sonuç:", len(list((d / "out").glob("*.jsonl.gz"))))
+            continue
         try:
             print(name, ssh(node, f"systemctl is-active nhr-fetcher; ls {node['dir']}/jobs {node['dir']}/out 2>/dev/null | tr '\\n' ' '; echo; tail -n 2 {node['dir']}/worker.log").strip())
         except Exception as exc:  # noqa: BLE001
