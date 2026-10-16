@@ -42,29 +42,28 @@ if (-not $paused -and -not (Test-Running 'collect_emsal\.py')) {
 if (-not $paused -and -not (Test-Running 'verify_seeds\.py --source emsal')) {
     Start-Hidden 'pc-verify-emsal' 'scripts\verify_seeds.py --source emsal --delay 10.0 --min-delay 8.0 --cooldown 120 --captcha-wait 3600'
 }
-# PC'nin kendi Bedesten çekicisi (kullanıcı 2026-10-16): sunucularla aynı sistem, işleri fetcher_hub gönderir, sonuçları alır.
-# Kod data\fetcher\pcnode altına kopyalanır (sunuculardaki ~/fetcher ile aynı yapı). UYAP'ta çalışılacağı zaman bayrakla durur.
-$node = Join-Path $root 'data\fetcher\pcnode'
-if (-not $paused -and -not (Test-Running 'pcnode.fetch_worker\.py')) {
-    New-Item -ItemType Directory -Force (Join-Path $node 'ingestion'), (Join-Path $node 'jobs'), (Join-Path $node 'out') | Out-Null
-    foreach ($f in '__init__.py','bedesten_emsal.py','text.py') { Copy-Item (Join-Path $root "ingestion\$f") (Join-Path $node "ingestion\$f") -Force }
-    Copy-Item (Join-Path $root 'scripts\fetch_worker.py') (Join-Path $node 'fetch_worker.py') -Force
-    Start-Hidden 'pc-fetcher' 'data\fetcher\pcnode\fetch_worker.py'
-}
+# PC artık Bedesten çekicisi DEĞİL (kullanıcı 2026-10-16: PC'yi bırak, ikinci AWS sunucusu açılsın): PC yalnız Emsal, mevzuat doğrulama ve
+# embedding yapar; Bedesten çekimini AWS + Azure (+ ikinci AWS) düğümleri yapar. UYAP çakışma riski bu yüzden azalır.
 # Mevzuat doğrulama döngüsü (mevzuat.gov.tr / Resmî Gazete; checkpoint 'mevzuat_verify'): eskiden Azure'da kendi veritabanında
 # çalışırdı, Azure artık veritabanı tutmadığı için PC'de, doğrudan ana veritabanında çalışır.
 if (-not $paused -and -not (Test-Running 'worker\.verify_loop')) {
     Start-Hidden 'pc-mevzuat-verify' '-m worker.verify_loop'
 }
-# Tek embedding işçisi, düşük öncelikli: toplayıcıları ve bilgisayarı yavaşlatmadan, yeni gelen kararları yavaş yavaş vektörler.
-# Gürültü/yük istenmiyorsa data\campaign\PAUSE_PC_EMBED dosyası embedding işçisini de başlatmaz.
-if (-not (Test-Path -LiteralPath (Join-Path $root 'data\campaign\PAUSE_PC_EMBED')) -and -not (Test-Running 'embed_chunks\.py')) {
-    Start-Hidden 'pc-embed-1' 'scripts\embed_chunks.py --loop'
+# Embedding (kullanıcı 2026-10-16: "embedding'i hızlandır, portalla işi yok"): 3 dilimli işçi (K/3), parça başına 64. Portala istek atmaz,
+# UYAP duraklatma bayrağından etkilenmez. Önceliği BelowNormal (PC'nin diğer işlerini ezmez), Ollama Normal.
+# Gürültü/yük istenmiyorsa data\campaign\PAUSE_PC_EMBED dosyası işçileri başlatmaz.
+if (-not (Test-Path -LiteralPath (Join-Path $root 'data\campaign\PAUSE_PC_EMBED'))) {
+    foreach ($k in 0, 1, 2) {
+        if (-not (Test-Running "embed_chunks\.py.*--shard $k/3")) {
+            Start-Hidden "pc-embed-$k" "scripts\embed_chunks.py --loop --shard $k/3 --batch 64"
+        }
+    }
     Start-Sleep -Seconds 3
     Get-Process python -ErrorAction SilentlyContinue | ForEach-Object {
         $line = (Get-CimInstance Win32_Process -Filter "ProcessId=$($_.Id)").CommandLine
-        if ($line -match 'embed_chunks\.py') { try { $_.PriorityClass = 'Idle' } catch {} }
+        if ($line -match 'embed_chunks\.py') { try { $_.PriorityClass = 'BelowNormal' } catch {} }
     }
+    Get-Process ollama* -ErrorAction SilentlyContinue | ForEach-Object { try { $_.PriorityClass = 'Normal' } catch {} }
 }
 
 # Azure->PC veritabanı senkronu 2026-10-14'ten beri yok: Azure artık veritabanı tutmuyor, yalnız çekici düğüm

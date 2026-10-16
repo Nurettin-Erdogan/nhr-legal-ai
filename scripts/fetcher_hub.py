@@ -38,13 +38,10 @@ load_dotenv(ROOT / ".env")
 NODES = {
     "aws": {"host": "ubuntu@13.60.255.72", "key": str(Path.home() / ".ssh" / "nhr-aws.pem"), "dir": "fetcher"},
     "azure": {"host": "nhr@20.91.186.253", "key": None, "dir": "fetcher"},
-    # PC'nin kendisi de çekici (kullanıcı 2026-10-16: "PC de çalışsın, UYAP'a bakacağım zaman durdur derim"): yerel dizin,
-    # yalnız Bedesten şeridi (PC'nin Emsal'i `verify_seeds.py --source emsal` ile en yeniden eskiye ayrıca gider).
-    # Çekici süreci ensure_pc_collectors.ps1 başlatır; PAUSE_PC_COLLECTORS bayrağıyla durur.
-    "pc": {"host": None, "key": None, "dir": str(ROOT / "data" / "fetcher" / "pcnode"), "lanes": ("bedesten",)},
 }
 # Daytona sandbox'ı (kullanıcı 2026-10-16: "PC'yi bırakırız olmazsa bunu da ekle"): API anahtarı .env'de DAYTONA_API_KEY varsa eklenir.
-if os.getenv("DAYTONA_API_KEY"):
+# KAPALI: Daytona ücretsiz seviyesi portallara çıkışa izin vermiyor (Tier 3+ gerekir, ölçüldü 2026-10-16); FETCHER_USE_DAYTONA=1 ile açılır.
+if os.getenv("DAYTONA_API_KEY") and os.getenv("FETCHER_USE_DAYTONA") == "1":
     NODES["daytona"] = {"host": None, "key": None, "dir": "fetcher", "kind": "daytona", "lanes": ("bedesten",)}
 # PC günde bir kez çalışır (kullanıcı 2026-10-14): düğümde ~2,5 günlük iş (8 x 5000; düğüm ~16 bin/gün) hazır tutulur ki
 # PC bir gün çalışmasa bile düğüm boş kalmasın.
