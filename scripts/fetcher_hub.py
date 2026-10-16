@@ -38,6 +38,8 @@ load_dotenv(ROOT / ".env")
 NODES = {
     "aws": {"host": "ubuntu@13.60.255.72", "key": str(Path.home() / ".ssh" / "nhr-aws.pem"), "dir": "fetcher"},
     "azure": {"host": "nhr@20.91.186.253", "key": None, "dir": "fetcher"},
+    # İkinci AWS sunucusu (2026-10-16, PC'nin yerine; makine sayısı artmadı): aynı hesap/anahtar, farklı IP.
+    "aws2": {"host": "ubuntu@13.60.216.212", "key": str(Path.home() / ".ssh" / "nhr-aws.pem"), "dir": "fetcher"},
 }
 # Daytona sandbox'ı (kullanıcı 2026-10-16: "PC'yi bırakırız olmazsa bunu da ekle"): API anahtarı .env'de DAYTONA_API_KEY varsa eklenir.
 # KAPALI: Daytona ücretsiz seviyesi portallara çıkışa izin vermiyor (Tier 3+ gerekir, ölçüldü 2026-10-16); FETCHER_USE_DAYTONA=1 ile açılır.
