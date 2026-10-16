@@ -43,6 +43,9 @@ NODES = {
     # Çekici süreci ensure_pc_collectors.ps1 başlatır; PAUSE_PC_COLLECTORS bayrağıyla durur.
     "pc": {"host": None, "key": None, "dir": str(ROOT / "data" / "fetcher" / "pcnode"), "lanes": ("bedesten",)},
 }
+# Daytona sandbox'ı (kullanıcı 2026-10-16: "PC'yi bırakırız olmazsa bunu da ekle"): API anahtarı .env'de DAYTONA_API_KEY varsa eklenir.
+if os.getenv("DAYTONA_API_KEY"):
+    NODES["daytona"] = {"host": None, "key": None, "dir": "fetcher", "kind": "daytona", "lanes": ("bedesten",)}
 # PC günde bir kez çalışır (kullanıcı 2026-10-14): düğümde ~2,5 günlük iş (8 x 5000; düğüm ~16 bin/gün) hazır tutulur ki
 # PC bir gün çalışmasa bile düğüm boş kalmasın.
 STATE = ROOT / "data" / "campaign" / "fetcher-hub.json"
@@ -163,9 +166,28 @@ def _collect_local(name: str, node: dict) -> int:
     return moved
 
 
+def _collect_daytona(name: str, node: dict) -> int:
+    import fetcher_daytona as fd
+
+    fd.ensure_running()
+    sandbox = fd.get_sandbox()
+    target = INBOX / name
+    target.mkdir(parents=True, exist_ok=True)
+    got = []
+    for fname in fd.ls(sandbox, "out"):
+        fd.get(sandbox, "out", fname, str(target / fname) + ".part")
+        os.replace(str(target / fname) + ".part", target / fname)
+        got.append(fname)
+    if got:
+        fd.rm(sandbox, "out", got)
+    return len(got)
+
+
 def collect(name: str, node: dict) -> int:
     """Biten parçaları kopyalar; düğümden toplu siler. Silme başarısız olursa parça bir sonraki turda yeniden
     kopyalanır, işleme zararsızdır (zaten doğrulanmış kayıt atlanır)."""
+    if node.get("kind") == "daytona":
+        return _collect_daytona(name, node)
     if node["host"] is None:
         return _collect_local(name, node)
     listing = ssh(node, f"cd {node['dir']}/out 2>/dev/null && ls -1 *.jsonl.gz 2>/dev/null || true", timeout=60).split()
@@ -282,7 +304,12 @@ def next_batch(connection: psycopg.Connection, state: dict, n: int) -> tuple[lis
 def dispatch(name: str, node: dict, connection: psycopg.Connection, state: dict, lane: str = "bedesten") -> int:
     jobs_dir, job_size, target = LANES[lane]
     batch = next_batch if lane == "bedesten" else next_batch_emsal
-    if node["host"] is None:
+    if node.get("kind") == "daytona":
+        import fetcher_daytona as fd
+
+        sandbox = fd.get_sandbox()
+        pending = len(fd.ls(sandbox, jobs_dir))
+    elif node["host"] is None:
         (Path(node["dir"]) / jobs_dir).mkdir(parents=True, exist_ok=True)
         pending = len(list((Path(node["dir"]) / jobs_dir).glob("*.jsonl.gz")))
     else:
@@ -300,7 +327,9 @@ def dispatch(name: str, node: dict, connection: psycopg.Connection, state: dict,
         with gzip.open(local, "wt", encoding="utf-8") as handle:
             for external_id in ids:
                 handle.write(json.dumps({"external_id": external_id}) + "\n")
-        if node["host"] is None:
+        if node.get("kind") == "daytona":
+            fd.put(sandbox, str(local), jobs_dir, f"{job}.jsonl.gz")
+        elif node["host"] is None:
             import shutil
             shutil.copyfile(local, Path(node["dir"]) / jobs_dir / f"{job}.jsonl.gz.part")
             os.replace(Path(node["dir"]) / jobs_dir / f"{job}.jsonl.gz.part", Path(node["dir"]) / jobs_dir / f"{job}.jsonl.gz")
