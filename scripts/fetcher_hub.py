@@ -43,6 +43,9 @@ NODES = {
     "aws2": {"host": "ubuntu@13.60.216.212", "key": str(Path.home() / ".ssh" / "nhr-aws.pem"), "dir": "fetcher"},
     # Dördüncü sunucu (2026-10-16, kullanıcı: "bir sunucu daha açayım"); Azure 22 Ekim civarı kapanınca yerine yenisi AÇILMAZ (3'e iner).
     "aws3": {"host": "ubuntu@56.228.34.25", "key": str(Path.home() / ".ssh" / "nhr-aws.pem"), "dir": "fetcher"},
+    # aws4-aws7 yalnız Yargıtay/Danıştay (2026-10-16, kullanıcı: "2-3 sunucu daha, onlar sadece Yargıtay/Danıştay çeksin").
+    "aws4": {"host": "ubuntu@51.21.194.213", "key": str(Path.home() / ".ssh" / "nhr-aws.pem"), "dir": "fetcher", "lanes": ("bedesten",)},
+    "aws5": {"host": "ubuntu@13.60.96.7", "key": str(Path.home() / ".ssh" / "nhr-aws.pem"), "dir": "fetcher", "lanes": ("bedesten",)},
 }
 # Daytona sandbox'ı (kullanıcı 2026-10-16: "PC'yi bırakırız olmazsa bunu da ekle"): API anahtarı .env'de DAYTONA_API_KEY varsa eklenir.
 # KAPALI: Daytona ücretsiz seviyesi portallara çıkışa izin vermiyor (Tier 3+ gerekir, ölçüldü 2026-10-16); FETCHER_USE_DAYTONA=1 ile açılır.
