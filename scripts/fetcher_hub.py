@@ -46,6 +46,8 @@ NODES = {
     # aws4-aws7 yalnız Yargıtay/Danıştay (2026-10-16, kullanıcı: "2-3 sunucu daha, onlar sadece Yargıtay/Danıştay çeksin").
     "aws4": {"host": "ubuntu@51.21.194.213", "key": str(Path.home() / ".ssh" / "nhr-aws.pem"), "dir": "fetcher", "lanes": ("bedesten",)},
     "aws5": {"host": "ubuntu@13.60.96.7", "key": str(Path.home() / ".ssh" / "nhr-aws.pem"), "dir": "fetcher", "lanes": ("bedesten",)},
+    "aws6": {"host": "ubuntu@13.60.183.240", "key": str(Path.home() / ".ssh" / "nhr-aws.pem"), "dir": "fetcher", "lanes": ("bedesten",)},
+    "aws7": {"host": "ubuntu@13.51.205.117", "key": str(Path.home() / ".ssh" / "nhr-aws.pem"), "dir": "fetcher", "lanes": ("bedesten",)},
 }
 # Daytona sandbox'ı (kullanıcı 2026-10-16: "PC'yi bırakırız olmazsa bunu da ekle"): API anahtarı .env'de DAYTONA_API_KEY varsa eklenir.
 # KAPALI: Daytona ücretsiz seviyesi portallara çıkışa izin vermiyor (Tier 3+ gerekir, ölçüldü 2026-10-16); FETCHER_USE_DAYTONA=1 ile açılır.
