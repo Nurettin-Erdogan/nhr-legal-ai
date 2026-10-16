@@ -36,8 +36,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 load_dotenv(ROOT / ".env")
 
 NODES = {
-    "aws": {"host": "ubuntu@13.60.255.72", "key": str(Path.home() / ".ssh" / "nhr-aws.pem"), "dir": "fetcher"},
-    "azure": {"host": "nhr@20.91.186.253", "key": None, "dir": "fetcher"},
+    # Emsal şeridi yalnız aws2 ve aws3'te (kullanıcı 2026-10-16: "Emsal'i 2 sunucuyla çekelim"; aws ve azure IP'leri CAPTCHA'ya en çok takılanlar).
+    "aws": {"host": "ubuntu@13.60.255.72", "key": str(Path.home() / ".ssh" / "nhr-aws.pem"), "dir": "fetcher", "lanes": ("bedesten",)},
+    "azure": {"host": "nhr@20.91.186.253", "key": None, "dir": "fetcher", "lanes": ("bedesten",)},
     # İkinci AWS sunucusu (2026-10-16, PC'nin yerine; makine sayısı artmadı): aynı hesap/anahtar, farklı IP.
     "aws2": {"host": "ubuntu@13.60.216.212", "key": str(Path.home() / ".ssh" / "nhr-aws.pem"), "dir": "fetcher"},
     # Dördüncü sunucu (2026-10-16, kullanıcı: "bir sunucu daha açayım"); Azure 22 Ekim civarı kapanınca yerine yenisi AÇILMAZ (3'e iner).
