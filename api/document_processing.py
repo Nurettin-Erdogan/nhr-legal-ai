@@ -461,6 +461,10 @@ def process_document(file_name: str, data: bytes, *, ocr: str = "off", detect_ty
     if ocr not in ("off", "defer", "run"):
         raise ValueError(f"Geçersiz OCR kipi: {ocr}")
     extension = Path(file_name).suffix.lower()
+    if extension == ".bin":
+        # Deliberately quarantined archive data is not a parser invitation,
+        # even when it contains bytes resembling a supported format.
+        raise DocumentProcessingError("Özgün dosya arşivlendi; bu tür için metin çıkarma desteği yok. İçeriği aranabilir değil.")
     # Yalnız UYAP kaynağındaki eski yanlış uzantıları indekslerken açılır.
     # Genel kullanıcı yüklemesinde sahte PDF denetimi aynen korunur.
     if detect_type:
@@ -499,14 +503,16 @@ def process_document(file_name: str, data: bytes, *, ocr: str = "off", detect_ty
 
     chunks: list[ProcessedChunk] = []
     for section in sections:
-        for chunk in chunk_text(section.content):
+        # PDF/font parsers may emit NUL separators. Clean only derived search
+        # text, not source bytes; a space avoids joining distinct amounts/words.
+        for chunk in chunk_text(section.content.replace("\x00", " ")):
             chunks.append(
                 ProcessedChunk(
                     index=len(chunks),
                     content=chunk.content,
                     content_hash=chunk.content_hash,
                     page_number=section.page_number,
-                    section_title=section.section_title,
+                    section_title=section.section_title.replace("\x00", " ") if section.section_title else None,
                 )
             )
     if not chunks:

@@ -1,3 +1,4 @@
+import asyncio
 """Parallel real HTTP handlers + runtime PostgreSQL in an isolated *_test database.
 
 Committed synthetic fixtures are needed for independent connections; only their
@@ -49,6 +50,8 @@ def concurrent_world(monkeypatch, tmp_path):
     monkeypatch.setattr(office_public, '_storage_path', path)
     monkeypatch.setattr(office_public, '_schedule_index', lambda *args: None)
     monkeypatch.setattr(office_public, '_owner_for_token', lambda token: (uuid4(), owner) if token == 'synthetic-token-for-tests-only' else None)
+    monkeypatch.setattr(office_public, "_uyap_account", lambda *_: asyncio.sleep(0, result=uuid4()))  # UYAP kişisi ayrıca sınanır (test_uyap_account.py)
+    monkeypatch.setattr(office_public, "_mark", lambda *_, **__: asyncio.sleep(0))
     app = FastAPI()
     app.include_router(office.router)
     app.include_router(office_public.router)

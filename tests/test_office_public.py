@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import io
 import zipfile
 from uuid import uuid4
+
+import psycopg
+import pytest
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -18,10 +22,23 @@ from api.uyap_meta import extract_text_sample, is_allowed_file, parse_uyap_meta,
 
 TOKEN = "t" * 32
 OWNER = uuid4()
+# Eklentinin her istekte gönderdiği UYAP kişisi (parmak izi + maskeli ad; kimlik numarası değil).
+IDENTITY = {"X-UYAP-Identity": "a" * 64, "X-UYAP-Identity-Kind": "tc", "X-UYAP-Portal": "vatandas", "X-UYAP-Display": "AYSE%20Y%C4%B0LMAZ"}
+ACCOUNT = uuid4()
 
 
-def _client(monkeypatch, *, owner=(uuid4(), OWNER), outcome=("inserted", uuid4())):
+def _client(monkeypatch, *, owner=(uuid4(), OWNER), outcome=("inserted", uuid4()), identity=True):
     stored: list[dict] = []
+    checks: list = []
+    marks: list = []
+
+    def fake_register(owner_id, identity, audit=None):
+        checks.append((owner_id, identity))
+        return ACCOUNT
+
+    def fake_mark(owner_id, account_id, **target):
+        marks.append((owner_id, account_id, target))
+        return 1
 
     def fake_owner(token):
         return owner if token == TOKEN else None
@@ -35,9 +52,14 @@ def _client(monkeypatch, *, owner=(uuid4(), OWNER), outcome=("inserted", uuid4()
 
     monkeypatch.setattr(office_public, "_owner_for_token", fake_owner)
     monkeypatch.setattr(office_public, "_store", fake_store)
+    monkeypatch.setattr(office_public, "register", fake_register)
+    monkeypatch.setattr(office_public, "mark", fake_mark)
     app = FastAPI()
     app.include_router(router)
-    return TestClient(app), stored
+    client = TestClient(app, headers=IDENTITY if identity else None)
+    client.identity_checks = checks
+    client.marks = marks
+    return client, stored
 
 
 def _b64(data: bytes) -> str:
@@ -253,6 +275,44 @@ def test_file_name_and_extension_rules():
     assert is_allowed_file("a.UDF") and not is_allowed_file("a.exe")
 
 
+@pytest.mark.parametrize("failure,status,code,retryable", [
+    (OSError(errno.ENOSPC, "private path and document data"), 507, "storage_full", False),
+    (OSError(errno.EINVAL, "private path and document data"), 500, "storage_path_invalid", False),
+    (OSError(errno.EACCES, "private path and document data"), 500, "storage_permission_denied", False),
+    (OSError(errno.EIO, "private path and document data"), 500, "storage_io_error", False),
+    (psycopg.errors.QueryCanceled("private query and document data"), 503, "database_temporarily_unavailable", True),
+    (psycopg.errors.CheckViolation("private query and document data"), 500, "database_write_error", False),
+])
+def test_upload_reports_safe_actionable_storage_errors_and_closes_temp(monkeypatch, failure, status, code, retryable):
+    client, _ = _client(monkeypatch)
+    uploads = []
+
+    def fail(owner, **kwargs):
+        uploads.append(kwargs["data"])
+        raise failure
+
+    monkeypatch.setattr(office_public, "_store", fail)
+    response = client.post("/api/public/v1/documents/upload",
+                           files={"file": ("test.txt", b"synthetic", "text/plain")},
+                           headers={"Authorization": f"Bearer {TOKEN}"})
+    assert response.status_code == status
+    assert response.json()["code"] == code
+    assert response.json()["retryable"] is retryable
+    assert "private" not in response.text and TOKEN not in response.text
+    assert uploads[0]._closed
+
+
+def test_upload_never_claims_success_when_database_insert_was_not_confirmed(monkeypatch):
+    client, _ = _client(monkeypatch, outcome=("failed", None))
+    response = client.post("/api/public/v1/documents/upload",
+                           files={"file": ("test.txt", b"synthetic", "text/plain")},
+                           headers={"Authorization": f"Bearer {TOKEN}"})
+    assert response.status_code == 500
+    assert response.json()["code"] == "document_write_unconfirmed"
+    assert response.json()["retryable"] is False
+    assert response.json().get("ok") is not True
+
+
 def test_udf_text_is_read_from_content_xml():
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
@@ -260,6 +320,21 @@ def test_udf_text_is_read_from_content_xml():
 
     assert "Merhaba dilekçe" in extract_text_sample("belge.udf", buffer.getvalue())
     assert extract_text_sample("bozuk.udf", b"not a zip") == ""
+
+
+def test_preview_nul_is_removed_without_modifying_source_or_joining_numbers():
+    source = b"120\x00340 lira"
+    assert extract_text_sample("ek.txt", source) == "120 340 lira"
+    assert source == b"120\x00340 lira"
+
+
+def test_nul_in_identity_metadata_is_rejected_not_silently_changed(monkeypatch):
+    client, stored = _client(monkeypatch)
+    response = client.post("/api/public/v1/documents/upload",
+                           files={"file": ("ek.txt", b"synthetic", "text/plain")},
+                           data={"evrakId": "id\x001"}, headers={"Authorization": f"Bearer {TOKEN}"})
+    assert response.status_code == 400
+    assert not stored
 
 
 def test_upload_accepts_odt_and_keeps_the_uyap_folder_path(monkeypatch):
@@ -459,3 +534,43 @@ def test_same_uyap_evrak_with_repacked_odt_is_not_imported_twice(monkeypatch, tm
         evrak_key="abc", checksum_sha256=hashlib.sha256(new_data).hexdigest(),
         content_text=" ".join(extract_text_sample("abc-Ek_1.odt", new_data).split()),
     ) == old_id
+
+
+def test_upload_without_a_uyap_identity_is_refused_before_reading_the_body(monkeypatch):
+    """Dosyalar karışmasın: UYAP kişisi bilinmeyen eklentinin evrakı hiçbir hesaba yazılmaz (kullanıcı kararı 2026-10-16)."""
+    client, stored = _client(monkeypatch, identity=False)
+    response = client.post("/api/public/v1/documents/upload", files={"file": ("a.pdf", b"%PDF-1.4 x", "application/pdf")},
+                           data={"evrakId": "1"}, headers={"Authorization": f"Bearer {TOKEN}"})
+    assert response.status_code == 428 and response.json()["code"] == "uyap_identity_required"
+    assert stored == [] and client.identity_checks == []
+    known = client.post("/api/public/v1/documents/known", headers={"Authorization": f"Bearer {TOKEN}"}, json={"evrakIds": ["1"]})
+    assert known.status_code == 428
+
+
+def test_each_uploaded_document_is_marked_with_the_uyap_person_it_came_from(monkeypatch):
+    """Dosyalar kimin UYAP'ından geldiyse onun altında durur (kullanıcı kararı 2026-10-16); kimse engellenmez."""
+    document_id = uuid4()
+    client, stored = _client(monkeypatch, outcome=("inserted", document_id))
+    response = client.post("/api/public/v1/documents/upload", files={"file": ("a.pdf", b"%PDF-1.4 x", "application/pdf")},
+                           data={"evrakId": "1"}, headers={"Authorization": f"Bearer {TOKEN}"})
+    assert response.status_code == 200 and len(stored) == 1
+    [(owner_id, identity)] = client.identity_checks
+    assert owner_id == OWNER and identity.kind == "tc" and identity.display == "AYSE YİLMAZ"
+    assert client.marks == [(OWNER, ACCOUNT, {"document_id": document_id})]
+
+
+def test_a_known_check_marks_the_files_unattributed_documents_for_that_person(monkeypatch):
+    client, _ = _client(monkeypatch)
+    monkeypatch.setattr(office_public, "_stored_keys", lambda owner, esas, birim: ["k1"])
+    response = client.post("/api/public/v1/documents/known", headers={"Authorization": f"Bearer {TOKEN}"},
+                           json={"evrakIds": ["1"], "dosyaEsasNo": "2024/1", "birim": "Ankara 1. Asliye Hukuk"})
+    assert response.status_code == 200
+    assert client.marks == [(OWNER, ACCOUNT, {"esas_no": "2024/1", "birim": "Ankara 1. Asliye Hukuk"})]
+
+
+def test_a_display_name_with_digits_is_not_accepted_so_no_id_number_can_be_stored(monkeypatch):
+    client, stored = _client(monkeypatch)
+    response = client.post("/api/public/v1/documents/upload", files={"file": ("a.pdf", b"%PDF-1.4 x", "application/pdf")},
+                           data={"evrakId": "1"}, headers={"Authorization": f"Bearer {TOKEN}", "X-UYAP-Display": "12345678901"})
+    assert response.status_code == 428 and stored == [] and client.identity_checks == []
+

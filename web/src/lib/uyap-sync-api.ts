@@ -1,7 +1,7 @@
 /** UYAP eşitleme doğrulamasının sunucuya yazılması ve okunması (oturumlu istekler; evrak içeriği geçmez). */
 import { inMemoryAccessToken } from "@/lib/auth-api";
 import { reconcileSaved, type SavedSync, type ServerSyncItem } from "@/lib/uyap-sync-all";
-import { parseDetail, type DosyaDetail } from "@/lib/uyap-bridge";
+import { parseDetail, type DosyaDetail, type UyapIdentity } from "@/lib/uyap-bridge";
 import { parseAuditRun, type AuditCheckpoint, type StoredAuditRun } from "@/lib/uyap-run-report";
 
 const BASE = (import.meta.env?.VITE_API_URL ?? "http://localhost:8766").replace(/\/$/, "");
@@ -151,6 +151,23 @@ export async function loadSyncStatus(signal?: AbortSignal): Promise<SyncStatus |
   }
 }
 
+/**
+ * Aktarım başlamadan, hiçbir şey kaydedilmeden önce: UYAP'ta giriş yapan kişi okunabildi mi? Okunduysa hesabın UYAP kişileri
+ * arasına kaydedilir (kimse engellenmez); evraklar bu kişiyle işaretlenir ve Belgeler'de onun altında durur.
+ */
+export async function checkUyapAccount(identity: UyapIdentity | null | undefined): Promise<string> {
+  if (!identity)
+    throw new Error(
+      "UYAP'ta giriş yapan kişi okunamadı. UYAP sekmesini yenileyin (F5), sonra burada \"Listeyi yenile\"ye basıp yeniden deneyin. Dosyalar kimin UYAP'ından geldiği bilinmeden aktarılmaz.",
+    );
+  const response = await postBounded("/api/office/uyap/account/check", identity);
+  if (response.status === 401) throw new Error("Oturumunuz sona ermiş; yeniden giriş yapın.");
+  const body = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+  if (!response.ok || body?.ok !== true || typeof body.account_id !== "string")
+    throw new Error("UYAP kişisi kaydedilemedi; aktarım başlatılmadı.");
+  return body.account_id;
+}
+
 /** Bir dosyanın evrak dışı bilgilerini (taraflar, safahat, dosya hesabı…) hesaba kaydeder. Sunucu eksiksizliği kendisi yeniden hesaplar. */
 export async function saveCaseDetail(
   detail: DosyaDetail,
@@ -212,4 +229,30 @@ export async function loadCaseDetail(
   } catch {
     return null;
   }
+}
+
+export interface UyapAccountSummary {
+  id: string;
+  display: string;
+  files: number;
+  documents: number;
+}
+
+export interface UyapAccounts {
+  accounts: UyapAccountSummary[];
+  /** UYAP'tan gelmiş ama kimin hesabından geldiği henüz bilinmeyen evraklar (özellik eklenmeden önce aktarılanlar). */
+  unknown: { files: number; documents: number };
+}
+
+/** Bu hesaba aktarım yapılmış UYAP kişileri, dosya/evrak sayılarıyla. */
+export async function loadUyapAccounts(): Promise<UyapAccounts> {
+  const response = await fetch(`${BASE}/api/office/uyap/account`, { credentials: "include", headers: headers(false) });
+  if (!response.ok) throw new Error("UYAP hesapları okunamadı.");
+  const body = (await response.json()) as Record<string, unknown>;
+  const accounts = (Array.isArray(body.accounts) ? body.accounts : []).map((raw) => {
+    const row = (raw ?? {}) as Record<string, unknown>;
+    return { id: String(row.id ?? ""), display: String(row.display ?? ""), files: Number(row.files) || 0, documents: Number(row.documents) || 0 };
+  });
+  const unknown = (body.unknown ?? {}) as Record<string, unknown>;
+  return { accounts, unknown: { files: Number(unknown.files) || 0, documents: Number(unknown.documents) || 0 } };
 }

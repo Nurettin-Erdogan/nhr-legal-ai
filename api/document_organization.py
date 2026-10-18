@@ -69,13 +69,29 @@ def parse_folder(value: str) -> tuple[str, str | None, str | None]:
     return tuple(parts)
 
 
+UNKNOWN_ACCOUNT = "unknown"
+
+
+def parse_account(value: str) -> UUID | str | None:
+    """UYAP hesabı süzgeci: boş (hepsi), "unknown" (kimden geldiği bilinmeyen UYAP evrakı) ya da UYAP kişisinin kimliği."""
+    if not value:
+        return None
+    if value == UNKNOWN_ACCOUNT:
+        return UNKNOWN_ACCOUNT
+    try:
+        return UUID(value)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Geçersiz UYAP hesabı") from None
+
+
 def organized_documents(
     connection: Any, owner: UUID, *, q: str, source: str, category: str,
     folder: str, order: str, offset: int, limit: int, summary_only: bool = False,
-    search_in: str = "metadata",
+    search_in: str = "metadata", account: str = "",
 ) -> dict[str, Any]:
     if category and category not in CATEGORIES:
         raise HTTPException(status_code=422, detail="Geçersiz belge kategorisi")
+    selected_account = parse_account(account)
     selected_folder = parse_folder(folder) if folder else None
     if search_in not in ("metadata", "content"):
         raise HTTPException(status_code=422, detail="Geçersiz arama kapsamı")
@@ -92,7 +108,7 @@ def organized_documents(
         OR uyap_birim ILIKE %s ESCAPE '\\' OR doc_type ILIKE %s ESCAPE '\\')"""
     cte = """WITH matched AS (
         SELECT id, file_name, storage_path, size_bytes, source, uyap_file_no, uyap_birim,
-               doc_type, doc_date, case_id, created_at, """ + hit_columns + """
+               doc_type, doc_date, case_id, created_at, uyap_account_id, """ + hit_columns + """
                NULLIF(btrim(uyap_file_no), '') AS folder_no,
                NULLIF(btrim(uyap_birim), '') AS folder_birim,
                CASE WHEN source IN ('uyap', 'uyap-avukat-eklentisi', 'uyap-extension') THEN 'uyap' ELSE 'manual' END AS origin,
@@ -107,11 +123,24 @@ def organized_documents(
     if source != "all":
         base_where += " AND origin = %s"
         params.append(source)
+    # Dosyalar kimin UYAP'ından geldiyse onun altında (kullanıcı kararı 2026-10-16). Kişi sayımları bu süzgeçten önce alınır.
+    account_facets = connection.execute(
+        cte + "SELECT c.uyap_account_id, a.display_name, count(*) AS n, count(DISTINCT (c.folder_no, c.folder_birim)) AS files "
+        "FROM categorized c LEFT JOIN office_uyap_accounts a ON a.id = c.uyap_account_id "
+        "WHERE " + base_where.replace("origin", "c.origin") + " AND c.origin = 'uyap' "
+        "GROUP BY c.uyap_account_id, a.display_name ORDER BY a.display_name NULLS LAST",
+        tuple(params),
+    ).fetchall()
+    if selected_account == UNKNOWN_ACCOUNT:
+        base_where += " AND origin = 'uyap' AND uyap_account_id IS NULL"
+    elif selected_account is not None:
+        base_where += " AND uyap_account_id = %s"
+        params.append(selected_account)
     # Facet sayımları sayfalama öncesinde; ilk 50 belge bütün arşiv gibi sunulmaz.
     facets = connection.execute(
-        cte + "SELECT origin, folder_no, folder_birim, category, count(*) AS n "
+        cte + "SELECT origin, folder_no, folder_birim, category, uyap_account_id, count(*) AS n "
         "FROM categorized WHERE " + base_where +
-        " GROUP BY origin, folder_no, folder_birim, category "
+        " GROUP BY origin, folder_no, folder_birim, category, uyap_account_id "
         "ORDER BY origin DESC, folder_birim NULLS LAST, folder_no NULLS LAST, category",
         tuple(params),
     ).fetchall()
@@ -123,9 +152,12 @@ def organized_documents(
         group = folders.setdefault(key, {
             "key": key, "source": item["origin"], "file_no": item["folder_no"],
             "birim": item["folder_birim"], "count": 0,
-            "matching_count": 0,
+            "matching_count": 0, "accounts": {},
         })
         group["count"] += item["n"]
+        if item["origin"] == "uyap":
+            account_key = str(item["uyap_account_id"]) if item["uyap_account_id"] else UNKNOWN_ACCOUNT
+            group["accounts"][account_key] = group["accounts"].get(account_key, 0) + item["n"]
         counts[item["category"]] = counts.get(item["category"], 0) + item["n"]
         if (not category or item["category"] == category) and (not folder or key == folder_key(*selected_folder)):
             total += item["n"]
@@ -156,8 +188,17 @@ def organized_documents(
                 row.pop("match_content"), q, page_number=row.pop("page_number"),
                 section_title=row.pop("section_title"),
             )
+    names = {str(item["uyap_account_id"]): item["display_name"] for item in account_facets if item["uyap_account_id"]}
+    for group in folders.values():
+        # Dosyanın sahibi: evraklarının çoğunun geldiği UYAP kişisi (aynı dosya iki kişinin UYAP'ında da olabilir).
+        counted = group.pop("accounts")
+        owner_key = max(counted, key=counted.get) if counted else None
+        group["account_id"] = owner_key
+        group["account_name"] = names.get(owner_key) if owner_key and owner_key != UNKNOWN_ACCOUNT else None
     return {
         "rows": rows, "total": total, "folders": list(folders.values()),
+        "accounts": [{"id": str(item["uyap_account_id"]) if item["uyap_account_id"] else UNKNOWN_ACCOUNT,
+                      "name": item["display_name"], "count": item["n"], "files": item["files"]} for item in account_facets],
         "categories": [{"id": key, "label": label, "count": counts[key]}
                        for key, label in CATEGORIES.items() if counts.get(key)],
         "matched_total": sum(counts.values()),

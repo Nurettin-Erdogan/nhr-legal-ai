@@ -96,6 +96,55 @@ def test_imports_create_one_pending_case_and_retries_do_not_duplicate_evidence(w
 
 
 @needs_db
+def test_nul_in_extracted_preview_does_not_reject_or_change_original_upload(world, tmp_path):
+    connection, alice, _, as_user = world
+    payload = b"120\x00340 lira (synthetic attachment)"
+    outcome, document_id = put(alice, name="ek.txt", data=payload, evrak="nul-preview")
+    assert outcome == "inserted"
+    with as_user(alice):
+        row = connection.execute("SELECT storage_path,content_excerpt,checksum_sha256 FROM office_case_documents WHERE id=%s",
+                                 (document_id,)).fetchone()
+    import hashlib
+    assert row["content_excerpt"] == "120 340 lira (synthetic attachment)"
+    assert row["checksum_sha256"] == hashlib.sha256(payload).hexdigest()
+    assert (tmp_path / row["storage_path"]).read_bytes() == payload
+    assert put(alice, name="ek.txt", data=payload, evrak="nul-preview") == ("duplicate", document_id)
+
+
+@needs_db
+def test_opaque_archive_round_trip_checksum_deduplication_and_owner_isolation(world, tmp_path, monkeypatch):
+    import hashlib
+    from fastapi import HTTPException
+
+    connection, alice, bob, as_user = world
+    original = b"MZ\x00\x80\xff" + bytes(range(256)) * 11
+    outcome, document_id = put(alice, name="attachment.customformat.bin", data=original, evrak="opaque-archive")
+    assert outcome == "inserted"
+    with as_user(alice):
+        row = connection.execute("SELECT storage_path,checksum_sha256,content_excerpt FROM office_case_documents WHERE id=%s",
+                                 (document_id,)).fetchone()
+    assert row["checksum_sha256"] == hashlib.sha256(original).hexdigest()
+    assert row["content_excerpt"] is None
+    assert (tmp_path / row["storage_path"]).read_bytes() == original
+    assert put(alice, name="attachment.customformat.bin", data=original, evrak="opaque-archive") == ("duplicate", document_id)
+    with as_user(bob):
+        assert connection.execute("SELECT id FROM office_case_documents WHERE id=%s", (document_id,)).fetchone() is None
+    monkeypatch.setattr(office, "_storage_root", lambda: tmp_path)
+    response = office.download_file(key=row["storage_path"], user_id=alice)
+    assert response.media_type == "application/octet-stream"
+    assert response.headers["content-disposition"].startswith("attachment;")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    with pytest.raises(HTTPException) as denied:
+        office.download_file(key=row["storage_path"], user_id=bob)
+    assert denied.value.status_code == 403
+    indexed = document_indexing.index_office_document(alice, document_id)
+    assert indexed.status == "failed" and "aranabilir değil" in indexed.error
+    with as_user(alice):
+        assert connection.execute("SELECT count(*) AS n FROM document_chunks c JOIN documents d ON d.id=c.document_id "
+                                  "WHERE d.office_case_document_id=%s", (document_id,)).fetchone()["n"] == 0
+
+
+@needs_db
 def test_a_large_upload_is_stored_from_its_temporary_file_and_retries_do_not_duplicate_it(world, monkeypatch, tmp_path):
     """Boyut sınırı yok: büyük ek (canlıda 53 MB'lık zip) belleğe alınmadan temp dosyadan saklanır, özet/boyut doğru yazılır,
     aynı evrak yeniden gelince çoğalmaz. Eşik düşürülerek "büyük dosya" yolu küçük veriyle denenir."""

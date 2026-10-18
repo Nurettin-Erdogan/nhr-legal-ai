@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import base64
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -56,6 +58,8 @@ def test_scheduler_failure_never_breaks_the_upload(monkeypatch, tmp_path):
 def _public_client(monkeypatch, outcome):
     document_id = uuid4()
     monkeypatch.setattr(office_public, "_owner_for_token", lambda token: (uuid4(), USER) if token == TOKEN else None)
+    monkeypatch.setattr(office_public, "_uyap_account", lambda *_: asyncio.sleep(0, result=uuid4()))  # UYAP kişisi ayrıca sınanır (test_uyap_account.py)
+    monkeypatch.setattr(office_public, "_mark", lambda *_, **__: asyncio.sleep(0))
     monkeypatch.setattr(office_public, "_store", lambda owner_id, **kw: (outcome, document_id))
     app = FastAPI()
     app.include_router(public_router)

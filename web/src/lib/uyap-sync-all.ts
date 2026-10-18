@@ -25,9 +25,14 @@ import {
   type DosyaDetail,
   type JobStatus,
   type TreeResult,
+  type UyapIdentity,
   type WaitOptions,
 } from "@/lib/uyap-bridge";
 import { steadySleep } from "@/lib/steady-timer";
+
+/** Aynı UYAP kişisi mi (parmak izi + tür). Köprüdeki `sameIdentity` ile aynı kural; testler köprüyü sahtelediği için burada da tanımlı. */
+const sameIdentity = (a: UyapIdentity | null | undefined, b: UyapIdentity | null | undefined): boolean =>
+  !!a && !!b && a.kind === b.kind && a.fingerprint === b.fingerprint;
 
 /** "empty": UYAP dosyada evrak bulunmadığını kendisi bildiriyor; aktarılacak bir şey yoktur, eksik sayılmaz. */
 export type FileOutcome = "complete" | "empty" | "incomplete" | "failed" | "pending";
@@ -52,6 +57,13 @@ export interface FileReport {
   pulls: number;
   /** Kullanıcıya gösterilecek kısa nedenler (en çok 6). */
   problems: string[];
+  /**
+   * UYAP'ın "Evrak UYAP sistemine yüklenmemiş" dediği evraklar: içerik UYAP'ın kendisinde yok, aktarılamaz. `found` ve
+   * `missing` bunları içermez (eksik sayılmaz); ayrıca gösterilir.
+   */
+  absent?: number;
+  /** Bu dosyada harcanan süre (saniye): ağaç okuma + doğrulama, evrak aktarımı, dosya bilgileri. Hız ölçümü içindir. */
+  timing?: { tree: number; pull: number; detail: number };
   /**
    * Evrak dışı bilgilerin (dosya bilgileri, dosya hesabı, taraflar, safahat, tahsilat/reddiyat) okunması. Evrak sonucunu etkilemez:
    * "complete": her sekme UYAP'ın sayılarıyla tam okundu; "partial": okundu ama bir tablo eksik; "failed": okunamadı;
@@ -119,6 +131,8 @@ export const FATAL_CODES = new Set([
   "unknown_job",
   "no_content",
   "pairing_rejected",
+  "destination_unavailable",
+  "uyap_account_mismatch",
   "no_list",
   "idle",
 ]);
@@ -137,11 +151,15 @@ const FILE_PAUSE_MS = 1500;
 /** Üst üste hatadan sonra koşu bırakılmadan önce kaç kez beklenip yeniden denenir ve her seferinde ne kadar beklenir. */
 const HEAL_ATTEMPTS = 3;
 const HEAL_WAIT_MS = 60000;
-/** Oturum kapanınca koşu durmaz: yeniden giriş bu kadar süre beklenir (yoklama aralığı × deneme sayısı = 30 dakika). */
+/**
+ * Oturum kapanınca koşu durmaz: yeniden giriş bu kadar süre beklenir (yoklama aralığı × deneme sayısı = 3 saat). UYAP oturumu
+ * aktarım sürerken de ~1 saatte kapanıyor (ölçüldü); 30 dk beklemek, kullanıcı başında değilken 2 saatlik koşuyu durdurdu
+ * (2026-10-17).
+ */
 const LOGIN_POLL_MS = 20000;
-const LOGIN_WAIT_ATTEMPTS = 90;
+const LOGIN_WAIT_ATTEMPTS = 540;
 export const LOGIN_WAIT_PHASE =
-  "UYAP oturumu kapanmış görünüyor: UYAP sekmesinde yeniden giriş yapın. Giriş yapınca aktarım kaldığı dosyadan kendiliğinden devam edecek (30 dakika beklenir).";
+  "UYAP oturumu kapanmış görünüyor: UYAP sekmesinde yeniden giriş yapın. Giriş yapınca aktarım kaldığı dosyadan kendiliğinden devam edecek (3 saate kadar beklenir).";
 const MAX_CONSECUTIVE_FAILURES = 3;
 const MAX_PROBLEMS = 6;
 export const MAX_READ_RETRIES = 2;
@@ -297,7 +315,12 @@ interface PullResult {
   sent: number;
   errors: string[];
   failure?: BridgeFailure;
+  /** UYAP'ta içeriği olmayan evrakların kimlikleri. */
+  absent: string[];
 }
+
+/** Eklentinin bir aktarım işinde kabul ettiği en çok evrak; büyük dosya bu boyutta parçalarla aktarılır. */
+export const PULL_BATCH = 5000;
 
 async function pullIds(
   tabId: number,
@@ -306,8 +329,26 @@ async function pullIds(
   signal: AbortSignal | undefined,
   onPhase: (text: string) => void,
 ): Promise<PullResult> {
+  // Büyük dosya (canlıda 6 000-20 000+ evrak, 2026-10-17) eklentinin tek iş sınırına (5 000) parçalanır; önceden tamamı
+  // reddediliyor ve dosyadan tek evrak inmiyordu. Ölümcül hata (oturum, hedef) kalan parçaları durdurur.
+  if (ids.length > PULL_BATCH) {
+    const total: PullResult = { sent: 0, errors: [], absent: [] };
+    for (let start = 0; start < ids.length && !signal?.aborted; start += PULL_BATCH) {
+      const part = await pullIds(tabId, ids.slice(start, start + PULL_BATCH), bridge, signal, (text) =>
+        onPhase(`${text} (parça ${Math.floor(start / PULL_BATCH) + 1}/${Math.ceil(ids.length / PULL_BATCH)})`),
+      );
+      total.sent += part.sent;
+      total.absent.push(...part.absent);
+      for (const error of part.errors) if (total.errors.length < 5 && !total.errors.includes(error)) total.errors.push(error);
+      if (part.failure) {
+        total.failure = part.failure;
+        if (part.failure.code && FATAL_CODES.has(part.failure.code)) break;
+      }
+    }
+    return total;
+  }
   const started = await bridge.startPull(tabId, ids);
-  if (!started.ok) return { sent: 0, errors: [], failure: started };
+  if (!started.ok) return { sent: 0, errors: [], failure: started, absent: [] };
   const finished = await bridge.wait(tabId, started.jobId, {
     signal,
     maxMs: PULL_WAIT_MS,
@@ -318,16 +359,18 @@ async function pullIds(
   if (!finished.ok) {
     // Zaman aşımında da arka plandaki aktarım işi durmalı; yeni doğrulama/çekim onunla çakışmasın.
     await bridge.stop(tabId, started.jobId).catch(() => undefined);
-    return { sent: 0, errors: [], failure: finished };
+    return { sent: 0, errors: [], failure: finished, absent: [] };
   }
   const { job, run } = finished.status;
+  const absent = run?.stats?.absent ?? [];
   if (job.state === "error")
     return {
       sent: run?.stats?.sent ?? 0,
       errors: run?.stats?.errors ?? [],
       failure: { ok: false, code: job.code, error: job.error || "Aktarım başarısız." },
+      absent,
     };
-  return { sent: run?.stats?.sent ?? 0, errors: run?.stats?.errors ?? [] };
+  return { sent: run?.stats?.sent ?? 0, errors: run?.stats?.errors ?? [], absent };
 }
 
 export interface SyncOptions {
@@ -342,6 +385,10 @@ export interface SyncOptions {
   pull?: boolean;
   /** false ise evrak dışı dosya bilgileri okunmaz (varsayılan: okunur; evraklar bittikten sonra, salt okunur). */
   detail?: boolean;
+  /** Koşunun başladığı UYAP kişisi (sunucu bu hesaba bağlı olduğunu doğruladı). Her dosyada aynı kişi aranır. */
+  identity?: UyapIdentity | null;
+  /** Bir dosya okunamadığında hata koduyla çağrılır (sayfa tanınmadıysa yapı özeti kaydetmek için; içerik taşımaz). */
+  onProblem?: (code: string) => void;
   /** Bir dosyanın bilgileri okununca çağrılır (sunucuya kaydetmek için). Hata fırlatırsa dosya raporuna "kaydedilemedi" yazılır. */
   onDetail?: (
     detail: DosyaDetail,
@@ -370,7 +417,9 @@ export async function syncDosya(
     return result;
   }
   if (result.fatal || options.signal?.aborted) return result;
+  const detailStartedAt = Date.now();
   const fatal = await readDetail(dosya, result.report, options, result.tabId ?? options.tabId);
+  if (result.report.timing) result.report.timing.detail = Math.round((Date.now() - detailStartedAt) / 100) / 10;
   return fatal ? { report: result.report, fatal } : result;
 }
 
@@ -497,12 +546,17 @@ async function syncEvraks(
   let lastTree: TreeResult | undefined;
   let rereads = 0;
   let emptyReads = 0;
+  const absentIds = new Set<string>(); // UYAP'ta içeriği olmayan evraklar: bu dosyada yeniden istenmez, eksik sayılmaz
+  let lastPullSent = -1; // son aktarımda inen evrak; hiç inmediyse dosya hemen yeniden denenmez (koşu sonunda bir tur daha)
+  const timing = (report.timing = { tree: 0, pull: 0, detail: 0 });
+  const seconds = (startedAt: number) => Math.round((Date.now() - startedAt) / 100) / 10;
   for (;;) {
     emit(
       report.pulls === 0 && rereads === 0
         ? "Evrak ağacı okunuyor"
         : "Aktarım sunucudan doğrulanıyor",
     );
+    const readStartedAt = Date.now();
     const read = await readTree(
       dosya,
       bridge,
@@ -511,6 +565,7 @@ async function syncEvraks(
       options.recoveryBudget ?? { remaining: 1 },
       pinnedTabId,
     );
+    timing.tree += seconds(readStartedAt);
     pinnedTabId = read.tabId ?? pinnedTabId;
     if (!lastTree && read.failure?.code === "empty_tree") {
       // UYAP "dosyaya ait evrak bilgisi bulunamadı" diyor (ör. kapatılmış eski icra dosyası): hata değil, evraksız dosya.
@@ -528,20 +583,40 @@ async function syncEvraks(
       return fail(read.failure ?? { ok: false, error: "Evrak ağacı okunamadı." });
     }
     lastTree = read.tree;
+    // Dosyalar karışmasın: koşu, başladığı UYAP kişisiyle sürer. Aktarım ortasında başka biri UYAP'a girdiyse ya da sunucu
+    // bu kişiyi hesaba bağlı saymadıysa hiçbir evrak/dosya bilgisi kaydedilmeden durulur (kullanıcı kararı 2026-10-16).
+    if (options.identity && (lastTree.accountRefused || !sameIdentity(options.identity, lastTree.identity))) {
+      report.found = 0;
+      return fail({
+        ok: false,
+        code: "uyap_account_mismatch",
+        error:
+          lastTree.accountRefused ||
+          `UYAP'ta giriş yapan kişi değişti (koşu ${options.identity.display} ile başlamıştı); dosyalar karışmasın diye aktarım durduruldu.`,
+      });
+    }
     if (lastTree.who.esas && lastTree.who.birim) report.who = { ...lastTree.who };
-    const todo = missingIds(lastTree);
+    const todo = missingIds(lastTree).filter((id) => !absentIds.has(id));
+    const absentHere = lastTree.items.filter((item) => absentIds.has(item.id)).length;
     report.declared = lastTree.counts.declaredTotal;
-    report.found = lastTree.items.length;
+    report.found = lastTree.items.length - absentHere;
     report.missing = todo.length;
     report.stored = report.found - todo.length;
+    report.absent = absentHere;
     const structural = treeProblems(lastTree);
 
     if (todo.length === 0 && structural.length === 0) break;
-    if (todo.length > 0 && options.pull !== false && report.pulls < MAX_PULLS_PER_FILE) {
+    // Bir aktarım hiç evrak indiremediyse aynısını hemen tekrarlamak yalnız süre yer (canlıda 3 × ~4,5 dk, 2026-10-17).
+    if (todo.length > 0 && options.pull !== false && report.pulls < MAX_PULLS_PER_FILE && lastPullSent !== 0) {
       report.pulls += 1;
       emit(`Evrak aktarılıyor: ${todo.length} evrak`);
+      const pullStartedAt = Date.now();
       const pulled = await pullIds(read.tabId, todo, bridge, options.signal, emit);
+      timing.pull += seconds(pullStartedAt);
       report.sent += pulled.sent;
+      // Tamamlanan ama hiç evrak indiremeyen aktarım tekrarlanmaz; zaman aşımı/iş kaybı gibi yarım kalan aktarım tekrarlanır.
+      lastPullSent = pulled.failure ? -1 : pulled.sent + pulled.absent.length;
+      for (const id of pulled.absent) absentIds.add(id);
       for (const message of pulled.errors) addProblem(report, message);
       if (pulled.failure) {
         addProblem(report, pulled.failure.error);
@@ -564,6 +639,11 @@ async function syncEvraks(
   const finalTree = lastTree as TreeResult; // döngü ancak bir ağaç okunduktan sonra buraya çıkar
   const structural = treeProblems(finalTree);
   for (const problem of structural) addProblem(report, problem);
+  if (report.absent) {
+    // Yalnız UYAP'ın içerik vermediği evraklar kaldıysa önceki denemelerin indirme hata satırları artık sorun değildir.
+    report.problems = report.problems.filter((line) => !/UYAP bu evrakın içeriğini vermiyor|sistemine yüklenmemiş/i.test(line));
+    addProblem(report, `${report.absent} evrakın içeriği UYAP'ın kendisinde yok ("sisteme yüklenmemiş"); aktarılamaz, eksik sayılmadı.`);
+  }
   if (report.missing > 0)
     addProblem(report, `${report.missing} evrak JurisAI'da kayıtlı görünmüyor.`);
   report.outcome = report.missing === 0 && structural.length === 0 ? "complete" : "incomplete";
@@ -759,6 +839,7 @@ export async function syncAll(
       if (await relist()) result = await run(index);
     }
     reports[index] = result.report;
+    if (result.report.outcome === "failed" && result.code) options.onProblem?.(result.code);
     await options.onCheckpoint?.({
       reports: [...reports],
       summary: summarize(reports),
@@ -769,6 +850,12 @@ export async function syncAll(
       break;
     }
     if (result.fatal) {
+      // JurisAI hedefinin/anahtarının hatası UYAP'a tekrar girişle düzelmez.
+      // Kaydedilmiş ilerlemeyi koru; UYAP'tan aynı belgeyi yeniden indirme.
+      if (["pairing_rejected", "destination_unavailable", "uyap_account_mismatch"].includes(result.fatal.code || "")) {
+        stoppedBecause = result.fatal.error;
+        break;
+      }
       // Oturum/sekme kaybı: yeniden giriş beklenir; gelirse aynı dosya baştan denenir.
       if (await waitForSession(index)) {
         reports[index] = blankReport(list[index]);
@@ -831,6 +918,28 @@ export async function syncAll(
       // Yeni okuma yalnız daha iyiyse eskisinin yerini alır; dosya bilgisi sonucu ilk turdan korunur.
       if (result.report.outcome !== "failed" && result.report.missing <= before.missing)
         reports[index] = { ...result.report, sent: before.sent + result.report.sent, detail: before.detail };
+      await options.onCheckpoint?.({ reports: [...reports], summary: summarize(reports), aborted: !!options.signal?.aborted });
+    }
+  }
+  // Dosya bilgileri için de son tur: evrakı tamam ama bir bilgi tablosu o an yüklenmemiş dosyalar bir kez daha okunur. Gerçek
+  // aktarımda (2026-10-16) iki dosyanın taraf tablosu iki denemede de gelmedi, dakikalar sonra ilk okumada tam geldi. Evrak
+  // yeniden aktarılmaz (`pull: false`); yeni okuma yalnız daha iyiyse eskisinin yerini alır.
+  if (options.detail !== false && !aborted && !stoppedBecause) {
+    for (let index = 0; index < list.length; index += 1) {
+      const before = reports[index];
+      const state = before.detail?.state;
+      if ((before.outcome !== "complete" && before.outcome !== "empty") || (state !== "partial" && state !== "failed")) continue;
+      if (options.signal?.aborted) {
+        aborted = true;
+        break;
+      }
+      await bridge.sleep(FILE_PAUSE_MS);
+      const result = await syncDosya({ ...list[index], key: liveKey.get(list[index].key) ?? list[index].key },
+        { ...options, bridge, recoveryBudget, index, total: list.length, pull: false });
+      result.report.key = list[index].key;
+      if (result.fatal) break; // evraklar zaten doğrulandı: bu ek okuma koşuyu "durdu" diye işaretlemez
+      if (result.report.detail?.state === "complete")
+        reports[index] = { ...before, detail: result.report.detail };
       await options.onCheckpoint?.({ reports: [...reports], summary: summarize(reports), aborted: !!options.signal?.aborted });
     }
   }

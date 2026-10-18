@@ -34,6 +34,7 @@ import {
   loadAllFileBrowserDocuments,
   type FileBrowserDocument as DocRow,
   type FileBrowserFolder as DocumentFolder,
+  type FileBrowserAccount,
   type FileBrowserCategory as DocumentCategory,
   type ContentSearchCoverage,
   type FileBrowserFilters,
@@ -102,6 +103,8 @@ const Files = () => {
   const [source, setSource] = useState("all");
   const [category, setCategory] = useState("");
   const [folder, setFolder] = useState("");
+  const [account, setAccount] = useState("");
+  const [accounts, setAccounts] = useState<FileBrowserAccount[]>([]);
   const [order, setOrder] = useState("recent");
   const [grouped, setGrouped] = useState(true);
   const [openedFolders, setOpenedFolders] = useState<Set<string>>(() => new Set());
@@ -132,8 +135,9 @@ const Files = () => {
       category,
       folder,
       order,
+      account,
     }),
-    [searchTerm, searchIn, source, category, folder, order],
+    [searchTerm, searchIn, source, category, folder, order, account],
   );
 
   const load = useCallback(async () => {
@@ -186,6 +190,7 @@ const Files = () => {
       setTotal(documents.total);
       setFolders(documents.folders);
       setCategories(documents.categories);
+      setAccounts(documents.accounts ?? []);
       setContentCoverage(documents.content_coverage ?? null);
       if (searchIn === "content" && searchTerm.length >= 2)
         setOpenedFolders(
@@ -199,16 +204,37 @@ const Files = () => {
     setLoading(false);
   }, [grouped, fileBrowserFilters]);
 
+  /** Kişi başlığı: dosyalar kimin UYAP'ından geldiyse onun altında (kullanıcı kararı 2026-10-16). */
+  const accountLabel = useCallback(
+    (item: DocumentFolder) =>
+      item.source !== "uyap"
+        ? "UYAP dışından yüklenenler"
+        : !item.account_id || item.account_id === "unknown"
+          ? "UYAP · kimden geldiği bilinmiyor"
+          : `UYAP · ${item.account_name || accounts.find((a) => a.id === item.account_id)?.name || "adı okunamadı"}`,
+    [accounts],
+  );
+
   const documentGroups = useMemo(() => {
-    if (!grouped) return [{ key: "all", folder: undefined, docs }];
+    if (!grouped) return [{ key: "all", folder: undefined, docs, heading: null as string | null }];
+    // Sıra: kişiler (sayım sırasıyla), sonra kimden geldiği bilinmeyen UYAP dosyaları, en son UYAP dışı klasörler.
+    const rank = (item: DocumentFolder) => {
+      if (item.source !== "uyap") return accounts.length + 2;
+      const index = accounts.findIndex((a) => a.id === (item.account_id || "unknown") && a.id !== "unknown");
+      return index >= 0 ? index : accounts.length + 1;
+    };
+    let previous = "";
     return folders
       .filter((item) => item.matching_count > 0)
-      .map((item) => ({
-        key: item.key,
-        folder: item,
-        docs: folderContents[item.key]?.rows ?? [],
-      }));
-  }, [docs, folders, grouped, folderContents]);
+      .map((item, index) => ({ item, index }))
+      .sort((a, b) => rank(a.item) - rank(b.item) || a.index - b.index)
+      .map(({ item }) => {
+        const label = accountLabel(item);
+        const heading = label !== previous ? label : null;
+        previous = label;
+        return { key: item.key, folder: item, docs: folderContents[item.key]?.rows ?? [], heading };
+      });
+  }, [docs, folders, grouped, folderContents, accounts, accountLabel]);
 
   const loadFolder = useCallback(
     async (key: string) => {
@@ -555,7 +581,30 @@ const Files = () => {
             </Button>
           </div>
         </div>
-        <div className="grid gap-3 md:grid-cols-[2fr_1fr_1fr]">
+        <div className="grid gap-3 md:grid-cols-[1.3fr_2fr_1fr_1fr]">
+          <label className="text-xs text-muted-foreground space-y-1 block">
+            <span>Kimin UYAP'ından</span>
+            <select
+              aria-label="Kimin UYAP'ından"
+              value={account}
+              onChange={(event) => {
+                setAccount(event.target.value);
+                setFolder("");
+              }}
+              className="block w-full min-w-0 rounded-lg border border-border bg-background p-2 text-sm text-foreground"
+              data-testid="uyap-account-filter"
+            >
+              <option value="">Herkes</option>
+              {account && !accounts.some((item) => item.id === account) && (
+                <option value={account}>Seçili kişi (eşleşen belge yok)</option>
+              )}
+              {accounts.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.id === "unknown" ? "Kimden geldiği bilinmiyor" : item.name || "Adı okunamadı"} ({item.files} dosya)
+                </option>
+              ))}
+            </select>
+          </label>
           <label className="text-xs text-muted-foreground space-y-1 block">
             <span>Dava dosyası / birim</span>
             <select
@@ -620,7 +669,7 @@ const Files = () => {
             sıralaması aktarımda kaydedilen tarihi kullanır. Seçimlerdeki sayılar arama ve kaynak
             filtresine uyan belgeleri gösterir.
           </p>
-          {(q || source !== "all" || folder || category) && (
+          {(q || source !== "all" || folder || category || account) && (
             <Button
               size="sm"
               variant="ghost"
@@ -630,6 +679,7 @@ const Files = () => {
                 setSource("all");
                 setFolder("");
                 setCategory("");
+                setAccount("");
               }}
             >
               Filtreleri temizle
@@ -710,6 +760,13 @@ const Files = () => {
               <tbody>
                 {documentGroups.map((group) => (
                   <Fragment key={group.key}>
+                    {grouped && group.heading && (
+                      <tr className="border-t-2 border-border" data-testid="uyap-account-heading">
+                        <th colSpan={5} scope="colgroup" className="px-6 pt-5 pb-2 text-left text-sm font-semibold text-primary">
+                          {group.heading}
+                        </th>
+                      </tr>
+                    )}
                     {grouped && group.folder && (
                       <tr className="border-t border-border bg-secondary/50">
                         <th

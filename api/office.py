@@ -73,6 +73,8 @@ EXPORT_ONLY_TABLES: dict[str, str] = {
     "uyap_audit_runs": "office_uyap_audit_runs",
     "uyap_case_sync": "office_uyap_case_sync",
     "uyap_case_detail": "office_uyap_case_detail",
+    "uyap_account": "office_uyap_accounts",
+    "uyap_diagnostics": "office_uyap_diagnostics",
 }
 # Arayüzün `user_id` dediği sahiplik sütunu bu tablolarda `owner_id`'dir.
 _USER_ID_ALIAS = {"legal_documents", "risk_analyses", "call_settings"}
@@ -926,9 +928,10 @@ def search_case_documents(
     category: Annotated[str, Query(max_length=60)] = "",
     folder: Annotated[str, Query(max_length=1000)] = "",
     order: Literal["recent", "date_desc", "date_asc"] = "recent",
+    account: Annotated[str, Query(max_length=40)] = "",
 ) -> dict[str, Any]:
     """Sahibin tüm aktif belgelerinde sunucu tarafı arama ve sayfalama."""
-    if organized or summary_only or source != "all" or category or folder or order != "recent" or search_in == "content":
+    if organized or summary_only or source != "all" or category or folder or order != "recent" or search_in == "content" or account:
         try:
             with authenticated_database_connection(str(user_id)) as connection:
                 if search_in == "content":
@@ -936,7 +939,7 @@ def search_case_documents(
                 return organized_documents(
                     connection, user_id, q=q, source=source, category=category,
                     folder=folder, order=order, offset=offset, limit=limit, summary_only=summary_only,
-                    search_in=search_in,
+                    search_in=search_in, account=account,
                 )
         except psycopg.Error:
             logger.exception("Kategorili belge listesi yüklenemedi")

@@ -41,8 +41,35 @@ export interface ExtensionStatus {
   code?: string;
 }
 
+/**
+ * UYAP'ta giriş yapan kişi: eklentinin tarayıcıda ürettiği parmak izi (kimlik numarası değil) ve UYAP'taki ad soyad.
+ * Evraklar bu kişiyle işaretlenir; Belgeler'de dosyalar kimin UYAP'ından geldiyse onun altında durur (api/uyap_account.py).
+ */
+export interface UyapIdentity {
+  fingerprint: string;
+  kind: "tc" | "name";
+  portal: "vatandas" | "avukat" | "diger";
+  display: string;
+}
+
+export function parseIdentity(raw: unknown): UyapIdentity | null {
+  if (!raw || typeof raw !== "object") return null;
+  const source = raw as Record<string, unknown>;
+  const fingerprint = typeof source.fingerprint === "string" ? source.fingerprint : "";
+  const display = typeof source.display === "string" ? source.display : "";
+  if (!/^[0-9a-f]{64}$/.test(fingerprint) || (source.kind !== "tc" && source.kind !== "name")) return null;
+  if (!/^[A-Za-zÇĞİÖŞÜÂÎÛçğıöşüâîû][A-Za-zÇĞİÖŞÜÂÎÛçğıöşüâîû .'*\-]{0,118}[A-Za-zÇĞİÖŞÜÂÎÛçğıöşüâîû.*]$/.test(display)) return null;
+  const portal = source.portal === "vatandas" || source.portal === "avukat" ? source.portal : "diger";
+  return { fingerprint, kind: source.kind, portal, display };
+}
+
+export const sameIdentity = (a: UyapIdentity | null | undefined, b: UyapIdentity | null | undefined): boolean =>
+  !!a && !!b && a.kind === b.kind && a.fingerprint === b.fingerprint;
+
 export interface DosyaListe {
   items: BridgeDosya[];
+  /** Listeyi okuyan UYAP kişisi (okunamadıysa null: aktarım başlatılmaz). Sunucuya yalnız denetim için gider. */
+  identity?: UyapIdentity | null;
   /** Listenin okunduğu UYAP sekmesi: koşu başka bir açık hesap/sekme seçmez. Sunucuya kaydedilmez. */
   tabId?: number;
   /** Her yargı türünde bulunan dosya sayısı (sorgulanan türlerin tamamı, boş olanlar dahil). */
@@ -67,7 +94,8 @@ export type BridgeCommand =
   | "JOB_STATUS"
   | "CURRENT_JOB"
   | "PULL_IDS"
-  | "STOP_JOB";
+  | "STOP_JOB"
+  | "DIAGNOSE";
 
 /** Eklentiye komut gönderir; yanıt gelmezse (eklenti yok ya da eski) `timeout` hatası döner. */
 export function bridgeRequest<T extends object = object>(
@@ -184,6 +212,7 @@ export function parseDosyaListe(raw: unknown): DosyaListe {
     complete: source.complete === true && errors.length === 0,
     pages: count(source.pages),
     page: count(source.page),
+    identity: parseIdentity(source.identity),
   };
 }
 
@@ -333,6 +362,10 @@ export interface TreeResult {
   /** JurisAI hesabında zaten olan evrak kimlikleri. */
   known: string[];
   knownChecked: boolean;
+  /** Ağacı okuyan UYAP kişisi; koşunun başındaki kişiden farklıysa koşu durur. */
+  identity?: UyapIdentity | null;
+  /** Sunucu bu UYAP kişisini hesaba bağlı saymadıysa nedeni (boşsa sorun yok). */
+  accountRefused?: string;
 }
 
 export interface PullStats {
@@ -342,6 +375,8 @@ export interface PullStats {
   failed: number;
   known: number;
   errors: string[];
+  /** UYAP'ın "sisteme yüklenmemiş" dediği evraklar (içerik UYAP'ta yok; eksik sayılmaz). */
+  absent: string[];
 }
 
 /* ---------- Dosya detayı (evrak dışı bilgiler) ----------
@@ -425,13 +460,16 @@ const strings = (value: unknown, max: number, limit: number): string[] =>
     : [];
 
 /** Eklentiden gelen ağaç yanıtını savunmacı biçimde ayrıştırır (metinler UYAP sayfasından okunmuştur: güvenilmez). */
+/** Bir dosyanın ağacından alınan en çok evrak (ekler dahil). Canlıda 20 000'i aşan ceza dosyaları görüldü (2026-10-17). */
+export const MAX_TREE_ITEMS = 200000;
+
 export function parseTree(raw: unknown): TreeResult | null {
   if (!raw || typeof raw !== "object") return null;
   const source = raw as Record<string, unknown>;
   const rows = Array.isArray(source.items) ? source.items : [];
   const items: TreeItem[] = [];
   const seen = new Set<string>();
-  for (const row of rows.slice(0, 20000)) {
+  for (const row of rows.slice(0, MAX_TREE_ITEMS)) {
     if (!row || typeof row !== "object") continue;
     const entry = row as Record<string, unknown>;
     const id = typeof entry.id === "string" ? entry.id.slice(0, 600) : "";
@@ -450,7 +488,7 @@ export function parseTree(raw: unknown): TreeResult | null {
     string,
     unknown
   >;
-  const truncated = rows.length > 20000;
+  const truncated = rows.length > MAX_TREE_ITEMS;
   const who = (source.who && typeof source.who === "object" ? source.who : {}) as Record<
     string,
     unknown
@@ -466,7 +504,7 @@ export function parseTree(raw: unknown): TreeResult | null {
       explained: !truncated && c.explained === true,
       gapList: [
         ...(truncated
-          ? ["Güvenlik sınırı: 20.000 evraktan sonrası bu seçim ekranına alınamadı."]
+          ? [`Güvenlik sınırı: ${MAX_TREE_ITEMS.toLocaleString("tr-TR")} evraktan sonrası alınamadı.`]
           : []),
         ...strings(c.gapList, 200, 12),
       ],
@@ -475,8 +513,10 @@ export function parseTree(raw: unknown): TreeResult | null {
       unopened: num(c.unopened),
       emptyOpened: num(c.emptyOpened),
     },
-    known: strings(source.known, 600, 20000),
+    known: strings(source.known, 600, MAX_TREE_ITEMS),
     knownChecked: source.knownChecked === true,
+    identity: parseIdentity(source.identity),
+    accountRefused: text(source.accountRefused, 600),
   };
 }
 
@@ -613,6 +653,7 @@ export function parseJobStatus(raw: unknown): JobStatus | null {
             failed: num(stats.failed),
             known: num(stats.known),
             errors: strings(stats.errors, 400, 5),
+            absent: strings(stats.absent, 600, MAX_TREE_ITEMS),
           }
         : undefined,
       result: result

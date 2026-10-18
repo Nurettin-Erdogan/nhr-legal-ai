@@ -6,7 +6,7 @@
  * düzeyinde durur: başka sayfaya geçip dönünce liste, canlı ilerleme ve son rapor yerindedir. (Sekme kapatılır ya da sayfa yenilenirse
  * tarayıcı betiği durur; yeniden başlatınca zaten aktarılan evraklar atlanır.)
  */
-import type { DosyaListe } from "@/lib/uyap-bridge";
+import { listUyapDosyalari, type DosyaListe } from "@/lib/uyap-bridge";
 import { keepAwake } from "@/lib/steady-timer";
 import {
   summarize,
@@ -16,8 +16,9 @@ import {
   type FileReport,
   type SyncRun,
 } from "@/lib/uyap-sync-all";
-import { saveCaseDetail, saveSyncReport, saveAuditRun } from "@/lib/uyap-sync-api";
+import { checkUyapAccount, saveCaseDetail, saveSyncReport, saveAuditRun } from "@/lib/uyap-sync-api";
 import { auditCheckpoint } from "@/lib/uyap-run-report";
+import { reportUyapProblem } from "@/lib/uyap-diagnostics";
 
 export interface SyncProgress {
   index: number;
@@ -195,14 +196,36 @@ export async function startSync(liste: DosyaListe, only?: Set<string>, pull = tr
     verifyOnly: !pull,
     progress: { index: 0, total: targets.length, phase: "Başlıyor", name: "" },
   });
-  const release = keepAwake();
-  writeResume({ pull, pending: targets.map((item) => item.key) });
   let result: SyncRun;
   const emptyRun: SyncRun = {
     reports: targets.map(blankReport),
     summary: summarize(targets.map(blankReport)),
     aborted: false,
   };
+  // Dosyalar kimin UYAP'ından geldiyse onun altında dursun: koşu kaydı dahil hiçbir şey yazılmadan önce UYAP'ta giriş yapan
+  // kişi okunur ve kaydedilir. Liste eklentinin eski sürümüyle alındıysa kişi taşımaz (gerçekte görüldü, 2026-10-16): o zaman
+  // kişiyi okumak için liste bir kez yeniden okunur; dosya anahtarları değiştiyse orkestratör kendisi yeniden eşler.
+  let identity = liste.identity ?? null;
+  if (!identity) {
+    set({ progress: { index: 0, total: targets.length, phase: "UYAP'ta giriş yapan kişi okunuyor", name: "" } });
+    const fresh = await listUyapDosyalari().catch(() => null);
+    if (fresh?.ok && fresh.liste.identity) identity = fresh.liste.identity;
+  }
+  try {
+    await checkUyapAccount(identity);
+  } catch (cause) {
+    if (!isCurrent()) return;
+    controller = null;
+    set({
+      running: false,
+      run: { ...emptyRun, stoppedBecause: cause instanceof Error ? cause.message : "UYAP hesabı doğrulanamadı." },
+      progress: null,
+    });
+    return;
+  }
+  if (!isCurrent()) return;
+  const release = keepAwake();
+  writeResume({ pull, pending: targets.map((item) => item.key) });
   await persist(emptyRun);
   if (!isCurrent()) {
     release();
@@ -212,7 +235,9 @@ export async function startSync(liste: DosyaListe, only?: Set<string>, pull = tr
     result = await syncAll(liste.items, {
       only,
       pull,
+      identity,
       tabId: liste.tabId,
+      onProblem: (code) => void reportUyapProblem(code, { phase: "dosya" }),
       signal: runController.signal,
       // Dosya bilgileri (taraflar, safahat, hesap…) her dosyadan hemen sonra kaydedilir: koşu yarıda kalsa da alınanlar kaybolmaz.
       onDetail: async (detail) => {

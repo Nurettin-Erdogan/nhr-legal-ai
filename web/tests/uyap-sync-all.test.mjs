@@ -19,6 +19,18 @@ const sync = compile("../src/lib/uyap-sync-all.ts", {
 
 const dosya = (n, extra = {}) => ({ key: `k${n}`, esas: `2025/${n}`, birim: "Ankara İcra Dairesi", yargiTuru: "İcra", role: "", tur: "", acilis: "", durum: "", cells: [], ...extra });
 
+test('destination and pairing failure stop with checkpoints; relisting UYAP never repairs a destination', async () => {
+  for (const code of ['destination_unavailable', 'pairing_rejected']) {
+    const bridge = fakeBridge({ k1: {ids: [], startError: code}, k2: {ids: []} });
+    bridge.relist = async () => { throw new Error('must not restart UYAP for a destination error'); };
+    const result = await sync.syncAll([dosya(1), dosya(2)], {bridge, detail:false});
+    assert.equal(result.reports[0].outcome, 'failed');
+    assert.equal(result.reports[1].outcome, 'pending');
+    assert.ok(result.stoppedBecause);
+    assert.equal(bridge.calls.sleeps, 0);
+  }
+});
+
 test("stuck read is recovered once on the same tab, then freshly verified without uploading", async () => {
   const world = { k1: { ids: ["a"], treeFails: 9 } };
   const bridge = fakeBridge(world);
@@ -129,8 +141,10 @@ function fakeBridge(world, { busyFirst = 0 } = {}) {
         const spec = world[job.key];
         if (spec.detailFails) return { ok: true, status: { job: { id: jobId, kind: "detail", state: "error", phase: "", error: "UYAP yanıt vermedi", code: "query_failed" } } };
         if (spec.detailSessionLost) return { ok: false, code: "unknown_job", error: "oturum kapandı" };
-        const table = { title: "", headers: ["Rol"], rows: [["Davacı"]], declared: spec.detailPartial ? 2 : 1, complete: spec.detailPartial !== true };
-        const detail = { who: { esas: "2025/1", birim: "Ankara İcra Dairesi" }, tabs: [{ key: "taraflar", label: "Taraf Bilgileri", pairs: [], tables: [table], complete: !spec.detailPartial }], problems: spec.detailPartial ? ["Taraf Bilgileri: UYAP 2 kayıt yazıyor, 1 okundu."] : [], complete: !spec.detailPartial };
+        // detailPartialOnce: ilk okumada bir tablo eksik gelir, sonraki okumalar tamdır (UYAP'ın geçici yavaşlığı).
+        const partial = spec.detailPartial === true || (spec.detailPartialOnce > 0 && spec.detailPartialOnce-- > 0);
+        const table = { title: "", headers: ["Rol"], rows: [["Davacı"]], declared: partial ? 2 : 1, complete: !partial };
+        const detail = { who: { esas: "2025/1", birim: "Ankara İcra Dairesi" }, tabs: [{ key: "taraflar", label: "Taraf Bilgileri", pairs: [], tables: [table], complete: !partial }], problems: partial ? ["Taraf Bilgileri: UYAP 2 kayıt yazıyor, 1 okundu."] : [], complete: !partial };
         return { ok: true, status: { job: { id: jobId, kind: "detail", state: "done", phase: "" }, detail } };
       }
       if (job.kind === "tree") {
@@ -142,6 +156,8 @@ function fakeBridge(world, { busyFirst = 0 } = {}) {
           return { ok: true, status: { job: { id: jobId, kind: "tree", state: "error", phase: "", error: "UYAP bu dosyada evrak bilgisi bulunmadığını bildiriyor.", code: "empty_tree" } } };
         }
         const tree = treeOf(job.key);
+        if (spec.identity !== undefined) tree.identity = spec.identity;
+        if (spec.accountRefused) tree.accountRefused = spec.accountRefused;
         if (spec.unopenedOnce > 0) { spec.unopenedOnce -= 1; tree.counts.unopened = 1; }
         return { ok: true, status: { job: { id: jobId, kind: "tree", state: "done", phase: "" }, tree } };
       }
@@ -149,13 +165,15 @@ function fakeBridge(world, { busyFirst = 0 } = {}) {
       const spec = world[key];
       const set = stored.get(key) ?? new Set();
       let sent = 0;
+      const absent = [];
       for (const id of job.ids) {
+        if (spec.absent?.has(id)) { absent.push(id); continue; } // UYAP: "Evrak UYAP sistemine yüklenmemiş"
         if (spec.lose?.has(id)) { if (spec.lose.once) spec.lose.delete(id); continue; }
         if (!set.has(id)) { set.add(id); sent += 1; }
       }
       stored.set(key, set);
       if (spec.failPull) return { ok: true, status: { job: { id: jobId, kind: "pull", state: "error", phase: "", error: "yükleme hatası" }, run: { mode: "upload", chosen: job.ids.length, total: job.ids.length, done: sent, current: "", stats: { sent, duplicates: 0, sameContent: 0, failed: job.ids.length - sent, known: 0, errors: ["evrak 7: dosya indirilemedi"] } } } };
-      return { ok: true, status: { job: { id: jobId, kind: "pull", state: "done", phase: "" }, run: { mode: "upload", chosen: job.ids.length, total: job.ids.length, done: job.ids.length, current: "", stats: { sent, duplicates: 0, sameContent: 0, failed: 0, known: 0, errors: [] } } } };
+      return { ok: true, status: { job: { id: jobId, kind: "pull", state: "done", phase: "" }, run: { mode: "upload", chosen: job.ids.length, total: job.ids.length, done: job.ids.length, current: "", stats: { sent, duplicates: 0, sameContent: 0, failed: absent.length, known: 0, errors: [], absent } } } };
     },
     stop: async (tab, job) => { calls.stops.push([tab, job]); return { ok: true }; },
     sleep: async (ms) => { calls.sleeps += 1; calls.sleepMs.push(ms); },
@@ -303,7 +321,8 @@ test("gönderilse de sunucuya yazılmayan evrak sessizce geçilmez: dosya eksik 
   const { report } = await sync.syncDosya(dosya(1), { bridge });
   assert.equal(report.outcome, "incomplete");
   assert.deepEqual([report.found, report.stored, report.missing], [3, 2, 1]);
-  assert.equal(report.pulls, sync.MAX_PULLS_PER_FILE);
+  // İkinci aktarım hiç evrak indiremedi: aynısı üçüncü kez denenmez (canlıda boşa ~13 dk, 2026-10-17); koşu sonu turu ayrıca dener.
+  assert.equal(report.pulls, 2);
   assert.ok(report.problems.some((p) => /1 evrak JurisAI'da kayıtlı görünmüyor/.test(p)));
 });
 
@@ -589,4 +608,56 @@ test("waiting for a login ends when the user stops the run, and nothing is repor
   assert.equal(polls, 2);
   assert.deepEqual(run.reports.map((r) => r.outcome), ["failed", "pending"]);
   assert.equal(run.summary.complete, 0);
+});
+
+test("dosya bilgisi o an eksik gelen dosya koşu sonunda bir kez daha okunur; evrak yeniden aktarılmaz", async () => {
+  // Gerçek aktarımda (2026-10-16) iki dosyanın taraf tablosu iki denemede de gelmedi, dakikalar sonra ilk okumada tam geldi.
+  const bridge = fakeBridge({ k1: { ids: ["a", "b"], detailPartialOnce: 1 }, k2: { ids: ["c"] }, k3: { ids: ["d"], detailPartial: true } });
+  const saved = [];
+  const run = await sync.syncAll([1, 2, 3].map((n) => dosya(n)), { bridge, onDetail: async (detail) => { saved.push(detail.complete); return { complete: detail.complete }; } });
+  assert.deepEqual(run.reports.map((r) => r.detail.state), ["complete", "complete", "partial"], "geçici eksik düzelir, kalıcı eksik gizlenmez");
+  assert.deepEqual(run.reports.map((r) => r.outcome), ["complete", "complete", "complete"]);
+  assert.equal(bridge.calls.details, 5, "yalnız eksik kalan iki dosya yeniden okunur");
+  assert.equal(bridge.calls.pulls.length, 3, "ek okuma evrak aktarmaz");
+  assert.ok(saved.includes(true) && saved.at(-1) === false);
+  assert.equal(run.stoppedBecause, undefined);
+});
+
+test("aktarım ortasında UYAP'a başka biri girerse koşu durur; o dosyadan hiçbir şey aktarılmaz ya da kaydedilmez", async () => {
+  const me = { fingerprint: "a".repeat(64), kind: "tc", portal: "vatandas", display: "N*** E***" };
+  const other = { ...me, fingerprint: "b".repeat(64), display: "M*** K***" };
+  const bridge = fakeBridge({ k1: { ids: ["a"], identity: me }, k2: { ids: ["b"], identity: other }, k3: { ids: ["c"], identity: me } });
+  bridge.relist = async () => { throw new Error("yeniden giriş beklenmemeli"); };
+  const saved = [];
+  const run = await sync.syncAll([1, 2, 3].map((n) => dosya(n)), { bridge, identity: me, onDetail: async (detail) => { saved.push(detail); return { complete: true }; } });
+  assert.deepEqual(run.reports.map((r) => r.outcome), ["complete", "failed", "pending"]);
+  assert.match(run.stoppedBecause, /değişti/);
+  assert.deepEqual(bridge.calls.pulls, [["a"]], "ikinci kişinin dosyasından evrak çekilmedi");
+  assert.equal(saved.length, 1, "ikinci kişinin dosya bilgisi kaydedilmedi");
+});
+
+test("sunucu UYAP kişisini reddettiyse (ağaçtaki bilinen evrak denetiminde) koşu ilk dosyada durur", async () => {
+  const me = { fingerprint: "a".repeat(64), kind: "tc", portal: "vatandas", display: "N*** E***" };
+  const bridge = fakeBridge({ k1: { ids: ["a"], identity: me, accountRefused: "Bu hesaba bağlı değil." }, k2: { ids: ["b"], identity: me } });
+  const run = await sync.syncAll([1, 2].map((n) => dosya(n)), { bridge, identity: me });
+  assert.deepEqual(run.reports.map((r) => r.outcome), ["failed", "pending"]);
+  assert.equal(run.stoppedBecause, "Bu hesaba bağlı değil.");
+  assert.deepEqual(bridge.calls.pulls, []);
+});
+
+test("büyük dosya eklentinin 5 000'lik iş sınırına parçalanarak aktarılır; önceden tek evrak bile inmiyordu", async () => {
+  const ids = Array.from({ length: 12001 }, (_, i) => `e${i}`);
+  const bridge = fakeBridge({ k1: { ids } });
+  const { report } = await sync.syncDosya(dosya(1), { bridge, detail: false });
+  assert.deepEqual(bridge.calls.pulls.map((part) => part.length), [5000, 5000, 2001]);
+  assert.deepEqual([report.outcome, report.found, report.stored, report.missing, report.sent], ["complete", 12001, 12001, 0, 12001]);
+});
+
+test("UYAP'ın 'sisteme yüklenmemiş' dediği evrak yeniden istenmez, eksik sayılmaz ve ayrıca yazılır", async () => {
+  const bridge = fakeBridge({ k1: { ids: ["a", "b", "c"], absent: new Set(["b"]) } });
+  const { report } = await sync.syncDosya(dosya(1), { bridge, detail: false });
+  assert.deepEqual(bridge.calls.pulls, [["a", "b", "c"]], "yalnız bir kez denenir; doğrulama turunda yeniden istenmez");
+  assert.deepEqual([report.outcome, report.found, report.stored, report.missing, report.absent], ["complete", 2, 2, 0, 1]);
+  assert.ok(report.problems.some((line) => /UYAP'ın kendisinde yok/.test(line)), report.problems);
+  assert.equal(report.stored + report.missing, report.found, "sunucu kayıt kuralı: kayıtlı + eksik = bulunan");
 });

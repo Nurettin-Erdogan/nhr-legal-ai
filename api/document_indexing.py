@@ -66,6 +66,10 @@ def _read_source(owner_id: UUID, storage_path: str) -> bytes:
         raise DocumentProcessingError("Dosya saklandı; boyutu nedeniyle metni okunup aranabilir yapılmadı.")
     if size == 0:
         raise DocumentProcessingError("Yüklenen dosya boş.")
+    if path.suffix.lower() == ".bin":
+        # Opaque archive entries are never interpreted or read into RAM. They
+        # remain downloadable through the owner-scoped attachment endpoint.
+        raise DocumentProcessingError("Özgün dosya arşivlendi; bu tür için metin çıkarma desteği yok. İçeriği aranabilir değil.")
     return path.read_bytes()
 
 

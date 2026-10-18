@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from io import BytesIO
 
 import pytest
@@ -11,6 +10,18 @@ from api.document_processing import (
     safe_file_name,
     store_document_file,
 )
+
+
+def test_parser_nul_separators_are_safe_for_database_and_do_not_join_amounts(monkeypatch):
+    import hashlib
+    from api import document_processing as processing
+    monkeypatch.setattr(processing, "_extract_pdf", lambda *args: (
+        [processing.ExtractedSection("120\x00340 lira belge metni", 1, "Ek\x001")], False))
+    raw = b"%PDF-1.4 synthetic"
+    result = processing.process_document("ek.pdf", raw)
+    assert "120 340" in result.chunks[0].content
+    assert all("\x00" not in chunk.content and "\x00" not in (chunk.section_title or "") for chunk in result.chunks)
+    assert result.checksum_sha256 == hashlib.sha256(raw).hexdigest()
 
 
 def test_txt_document_is_validated_and_chunked():

@@ -30,6 +30,17 @@ export interface FileBrowserFolder {
   birim: string | null;
   count: number;
   matching_count: number;
+  /** Dosyanın geldiği UYAP kişisi ("unknown": kimden geldiği bilinmiyor; UYAP dışı klasörde yok). */
+  account_id?: string | null;
+  account_name?: string | null;
+}
+
+/** Belgeler'de UYAP kişisi süzgeci için sayım (kullanıcı kararı 2026-10-16: dosyalar kimin UYAP'ından geldiyse onun altında). */
+export interface FileBrowserAccount {
+  id: string;
+  name: string | null;
+  count: number;
+  files: number;
 }
 
 export interface FileBrowserCategory {
@@ -44,6 +55,8 @@ export interface FileBrowserFilters {
   folder: string;
   order: string;
   search_in?: "metadata" | "content";
+  /** Boş: hepsi; "unknown": kimden geldiği bilinmeyen UYAP evrakı; aksi halde UYAP kişisinin kimliği. */
+  account?: string;
 }
 export interface ContentSearchCoverage {
   total: number;
@@ -56,6 +69,7 @@ export interface FileBrowserResult {
   total: number;
   folders: FileBrowserFolder[];
   categories: FileBrowserCategory[];
+  accounts?: FileBrowserAccount[];
   content_coverage?: ContentSearchCoverage;
 }
 

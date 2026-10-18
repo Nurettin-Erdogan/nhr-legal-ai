@@ -42,6 +42,14 @@ class RunDetail(ReportModel):
     problems: list[Annotated[str, Field(max_length=300)]] = Field(default_factory=list, max_length=6)
 
 
+class RunTiming(ReportModel):
+    """Dosyada harcanan saniyeler (hız ölçümü); evrak içeriği taşımaz."""
+
+    tree: float = Field(ge=0, le=86_400)
+    pull: float = Field(ge=0, le=86_400)
+    detail: float = Field(ge=0, le=86_400)
+
+
 class RunFile(ReportModel):
     esas: str = Field(max_length=60)
     birim: str = Field(max_length=160)
@@ -55,6 +63,9 @@ class RunFile(ReportModel):
     pulls: int = Field(ge=0, le=100)
     problems: list[Annotated[str, Field(max_length=300)]] = Field(default_factory=list, max_length=6)
     detail: RunDetail | None = None
+    timing: RunTiming | None = None
+    # UYAP'ın "sisteme yüklenmemiş" dediği evraklar: found/missing'e girmez (içerik UYAP'ta yok).
+    absent: int = Field(default=0, ge=0, le=1_000_000)
 
     @model_validator(mode="after")
     def consistent_counts(self):

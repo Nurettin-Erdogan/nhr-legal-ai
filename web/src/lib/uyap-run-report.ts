@@ -59,6 +59,8 @@ export function auditCheckpoint(
       missing: r.missing,
       pulls: r.pulls,
       problems: warnings(r.problems),
+      ...(r.timing ? { timing: r.timing } : {}),
+      ...(r.absent ? { absent: r.absent } : {}),
       ...(r.detail
         ? {
             detail: {

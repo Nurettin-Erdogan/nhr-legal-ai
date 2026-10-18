@@ -129,7 +129,7 @@ def verify_postgres_content_search(connection):
                 SELECT * FROM jsonb_to_recordset(%s) AS fixture(
                     id uuid, owner_id uuid, file_name text, storage_path text, size_bytes bigint,
                     source text, uyap_file_no text, uyap_birim text, doc_type text, doc_date date,
-                    case_id uuid, created_at timestamptz, deleted_at timestamptz)
+                    case_id uuid, created_at timestamptz, deleted_at timestamptz, uyap_account_id uuid)
             ), documents AS (
                 SELECT * FROM jsonb_to_recordset(%s) AS fixture(id uuid, office_case_document_id uuid,
                     uploaded_by uuid, status text, deleted_at timestamptz)

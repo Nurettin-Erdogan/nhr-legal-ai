@@ -201,7 +201,7 @@
       button.textContent = "Aktarılıyor…";
     }
     try {
-      const res = await chrome.runtime.sendMessage({ type: "JURISAI_UPLOAD", payload: meta });
+      const res = await chrome.runtime.sendMessage({ type: "JURISAI_UPLOAD", payload: meta, identity: await uyapIdentity() });
       if (res?.ok) {
         if (button) {
           button.textContent = res.duplicate ? "Zaten var" : "Aktarıldı ✓";
@@ -536,6 +536,7 @@
       const res = await chrome.runtime.sendMessage({
         type: "AUTO_INGEST_CASE",
         payload: { ...meta, docUrls },
+        identity: await uyapIdentity(),
       });
       if (res?.ok) {
         bubble.done(
@@ -720,6 +721,40 @@
      ayarından bağımsızdır. Ağaç (jQuery treeview: li.expandable/collapsable, span.folder, span.file[evrak_id])
      açılır, her evrak yaprağına tıklanır, UYAP'ın ön izleme isteği arka planda yakalanıp belge indirilir. */
   let pulling = null;
+  /**
+   * UYAP'ta giriş yapan kişi (kullanıcı kararı 2026-10-16: dosyalar kimin UYAP'ından geldiyse Belgeler'de onun altında
+   * dursun). Vatandaş Portalı sayfanın kendi başlatma betiğinde giriş yapanın T.C. kimlik numarasını taşır (canlıda
+   * ölçüldü: ana sayfada ve Dosya Sorgulama'da tek numara, kontrol haneleri tutuyor). Numara bilgisayardan ÇIKMAZ: burada
+   * SHA-256 parmak izine çevrilir; sunucu onu ayrıca gizli anahtarla saklar. Numara yoksa ad soyad kullanılır. Görünen ad,
+   * UYAP'ın üst köşesindeki ad soyaddır. Kişi okunamazsa null: sunucu kimliksiz aktarımı kabul etmez.
+   */
+  async function uyapIdentity() {
+    try {
+      const tcValid = (s) => {
+        const d = [...s].map(Number);
+        if (d.length !== 11 || d[0] === 0) return false;
+        const d10 = (((d[0] + d[2] + d[4] + d[6] + d[8]) * 7 - (d[1] + d[3] + d[5] + d[7])) % 10 + 10) % 10;
+        return d10 === d[9] && d.slice(0, 10).reduce((a, b) => a + b, 0) % 10 === d[10];
+      };
+      const numbers = new Set();
+      for (const script of document.scripts) {
+        if (script.src) continue;
+        for (const m of script.textContent.matchAll(/\}\s*,\s*(?:true|false)\s*,\s*([1-9]\d{10})\s*,\s*(?:true|false)\s*,\s*\{/g))
+          if (tcValid(m[1])) numbers.add(m[1]);
+      }
+      const name = (document.querySelector("#profil_ad_soyad") || document.querySelector("#ad"))?.textContent.replace(/\s+/g, " ").trim() || "";
+      const words = name.split(" ").filter((w) => /^[A-Za-zÇĞİÖŞÜÂÎÛçğıöşüâîû][A-Za-zÇĞİÖŞÜÂÎÛçğıöşüâîû.'-]*$/.test(w)).slice(0, 8);
+      if (!words.length || numbers.size > 1) return null; // iki farklı numara: hangisinin giriş yapan olduğu bilinemez
+      const kind = numbers.size === 1 ? "tc" : "name";
+      const source = kind === "tc" ? [...numbers][0] : trLower(words.join(" "));
+      const bytes = new TextEncoder().encode(`jurisai-uyap-identity:v1:${kind}:${source}`);
+      const fingerprint = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map((b) => b.toString(16).padStart(2, "0")).join("");
+      const portal = /^vatandas\./i.test(location.hostname) ? "vatandas" : /^avukat/i.test(location.hostname) ? "avukat" : "diger";
+      return { fingerprint, kind, portal, display: words.join(" ").slice(0, 120) };
+    } catch (_) {
+      return null;
+    }
+  }
   const folderName = (text) => text.replace(/\s*\(\d+\)\s*$/, "").replace(/\s+/g, " ").trim();
 
   async function waitUntil(check, timeoutMs, stepMs = 200) {
@@ -1230,7 +1265,7 @@
       let silent = 0;
       while (true) {
         const polledAt = Date.now();
-        const answer = await send({ type: "JURISAI_PULL_FETCH_POLL", waitMs: 1000 });
+        const answer = await send({ type: "JURISAI_PULL_FETCH_POLL", waitMs: 1000, ...(payload.fetchId ? { fetchId: payload.fetchId } : {}) });
         if (answer?.pending) {
           silent = 0;
           // Eski çalışan waitMs'i tanımıyorsa sıkı mesaj döngüsü oluşmasın.
@@ -1250,8 +1285,13 @@
   function pullItemOnlyError(outcome) {
     // İndirme kesintisi ve doğrulama reddi, iç içe hata mesajında önizleme
     // reddinden söz edilse bile kalıcı evrak hatası değildir.
+    if (outcome?.code === "UYAP_DOCUMENT_ABSENT") return true;
     if (outcome?.retryable || outcome?.code === "UYAP_VALIDATION_FAILED") return false;
-    return outcome?.code === "UYAP_ACCESS_DENIED" || /Desteklenmeyen dosya türü|önizlemede vermiyor|çok büyük|sınırını aşıyor|zaten/i.test(outcome?.error || "");
+    return ["UYAP_ACCESS_DENIED", "JURISAI_DOCUMENT_REJECTED"].includes(outcome?.code) || /Desteklenmeyen dosya türü|önizlemede vermiyor|çok büyük|sınırını aşıyor|zaten/i.test(outcome?.error || "");
+  }
+
+  function pullDestinationFailure(outcome) {
+    return ["pairing_rejected", "destination_unavailable", "uyap_account_mismatch"].includes(outcome?.code);
   }
 
   function pullSessionFailure(outcome) {
@@ -1264,19 +1304,20 @@
    */
   async function runPull(selected, mode, who, { progress = null, jobId = "" } = {}) {
     const toDisk = mode === "disk";
-    const stats = { sent: 0, duplicates: 0, sameContent: 0, failed: 0, known: 0, errors: [] };
+    // absent: UYAP'ın "sisteme yüklenmemiş" dediği evrakların kimlikleri (içerik UYAP'ta yok; eksik sayılmaz).
+    const stats = { sent: 0, duplicates: 0, sameContent: 0, failed: 0, known: 0, errors: [], absent: [] };
     const spent = { clicks: 0, items: 0, capture: 0, download: 0, upload: 0, pause: 0 }; // ms; özet satırında ortalama gösterilir
     const report = (patch = {}) => {
       if (progress) Object.assign(progress, patch, { stats: { ...stats, errors: [...stats.errors] } });
     };
     // Anahtar/adres denetimi seçimden SONRA ve yalnız JurisAI'ya aktarırken yapılır (bilgisayara indirme anahtar istemez).
-    const begin = await chrome.runtime.sendMessage({ type: "JURISAI_PULL_BEGIN", mode, jobId });
+    const begin = await chrome.runtime.sendMessage({ type: "JURISAI_PULL_BEGIN", mode, jobId, identity: await uyapIdentity() });
     if (!begin?.ok) return { ok: false, error: begin?.error || "Ayarlar eksik" };
     // Servis çalışanı yeniden başlayıp aktarımı unutursa aynı iş kimliğiyle yeniden tanıtılır (bkz. pullFetch).
     const rebegin = async () => {
       if (pulling.stop) return false;
-      const again = await chrome.runtime.sendMessage({ type: "JURISAI_PULL_BEGIN", mode, jobId }).catch(() => null);
-      return !!again?.ok;
+      const again = await chrome.runtime.sendMessage({ type: "JURISAI_PULL_BEGIN", mode, jobId, identity: await uyapIdentity() }).catch(() => null);
+      return !!again?.ok || again?.code === "busy"; // eşzamanlı işçilerden biri işi zaten yeniden tanıtmış olabilir
     };
     if (pulling.stop) await chrome.runtime.sendMessage({ type: "JURISAI_PULL_CANCEL", jobId });
     // Oturumu canlı tutma. Evraklar tıklamasız yoldan (arka planda) indirilirken UYAP SAYFASINDA hiçbir etkinlik olmaz;
@@ -1298,8 +1339,16 @@
       toast("Daha önce aktarılanlar kontrol ediliyor…");
       report({ phase: "Daha önce aktarılanlar kontrol ediliyor" });
       const answer = await chrome.runtime
-        .sendMessage({ type: "JURISAI_PULL_KNOWN", ids: todo.map((item) => item.id), esas: who.esas, birim: who.birim })
+        .sendMessage({ type: "JURISAI_PULL_KNOWN", ids: todo.map((item) => item.id), esas: who.esas, birim: who.birim, identity: await uyapIdentity() })
         .catch(() => null);
+      if (answer?.code === "uyap_account_mismatch") {
+        // Bu UYAP kişisi bu JurisAI hesabına bağlı değil: tek evrak bile indirilmez.
+        clearInterval(keepAliveTimer);
+        toast(answer.error || "UYAP hesabı bu JurisAI hesabına bağlı değil.", "error");
+        report({ phase: "Durduruldu", current: "" });
+        return { ok: false, code: "uyap_account_mismatch", error: answer.error || "UYAP hesabı bu JurisAI hesabına bağlı değil.",
+          ...stats, chosen: 0, mode };
+      }
       if (answer?.ok && answer.known.length) {
         const have = new Set(answer.known);
         stats.known = todo.filter((item) => have.has(item.id)).length;
@@ -1316,12 +1365,26 @@
     // yalnız geçici hatayla kalanlar, araya bekleme konarak en çok `PULL_ROUNDS - 1` kez daha denenir; kalıcı ret (tür
     // desteklenmiyor vb.) ve oturum kaybı (art arda 5 hata) yeniden denenmez.
     const PULL_ROUNDS = 3;
+    const PULL_HOPELESS_FAILURES = 25;
+    let halted = "";
+    const parallel = Math.max(1, Math.min(3, Math.round(Number(begin.parallel) || 1)));
+    let clickChain = Promise.resolve();
+    const clickTurn = () => {
+      let release;
+      const turn = new Promise((resolve) => { release = resolve; });
+      const ready = clickChain;
+      clickChain = clickChain.then(() => turn);
+      return ready.then(() => release);
+    };
     const failedLines = new Map(); // evrak kimliği → son hata satırı (sonradan inen evrak listeden çıkar)
     let queue = todo;
     let abandoned = false;
-    // Genel hata şablonu oturum kaybı değildir. Yalnız açık giriş/oturum
-    // belirtisi veya HTTP 401, kullanıcıdan yeniden giriş istenmesini sağlar.
+    // Genel hata şablonu tek başına oturum kaybı sayılmaz: açık giriş/oturum belirtisi ya da HTTP 401 doğrudan, art arda iki
+    // genel "Hata Oluştu" sayfası ise UYAP sekmesinin kendi adresi yoklanarak (oturum açık mı) karar verilir. Gerçek
+    // aktarımda oturum dolunca UYAP giriş ekranı yerine genel hata sayfası döndürmüştü (2026-10-13).
     let sessionLost = false;
+    let portalPages = 0;
+    let destinationFailure = null;
     for (let round = 0; round < PULL_ROUNDS && queue.length && !pulling.stop && !abandoned; round += 1) {
     const again = [];
     const quick = round === 0; // ilk geçiş hızlıdır: takılan evrak bekletilmez, sonraki tura bırakılır
@@ -1335,11 +1398,22 @@
       consecutiveFailures = 0;
       gap = baseGap;
     }
-    for (let index = 0; index < queue.length && !pulling.stop; index += 1) {
+    // Tıklamasız yolda `parallel` işçi kuyruğu birlikte tüketir: UYAP'tan indirme ve JurisAI'a yükleme üst üste biner.
+    // Tıklama yolu (önizleme yakalama) sayfayı kullandığı için her zaman tek tek, sırayla yürür (`clickTurn`).
+    let nextIndex = 0;
+    let finished = 0;
+    let succeeded = 0; // bu turda inen evrak: hiç inmiyorsa UYAP bu dosyayı vermiyor demektir
+    const worker = async (slot) => {
+    for (;;) {
+      // UYAP hata vermeye başladıysa (gap büyüdü) yalnız ilk işçi sürer; başarılar gap'i normale indirince diğerleri döner.
+      while (slot > 0 && gap > baseGap && !pulling.stop && !abandoned && nextIndex < queue.length) await sleep(500);
+      if (pulling.stop || abandoned) break;
+      const index = nextIndex++;
+      if (index >= queue.length) break;
       const itemStartedAt = performance.now();
       const item = queue[index];
-      toast(`Evrak ${doneBefore + index + 1}/${todo.length} çekiliyor…`);
-      report({ done: doneBefore + index, current: item.title });
+      toast(`Evrak ${doneBefore + finished + 1}/${todo.length} çekiliyor…`);
+      report({ done: doneBefore + finished, current: item.title });
       const meta = {
         evrakAdi: item.title,
         evrakId: item.id,
@@ -1348,7 +1422,7 @@
         birim: who.birim,
         klasorYolu: item.folders.join(" / "),
       };
-      await chrome.runtime.sendMessage({ type: "JURISAI_PULL_ARM", evrakId: item.id });
+      if (parallel === 1) await chrome.runtime.sendMessage({ type: "JURISAI_PULL_ARM", evrakId: item.id });
       if (pulling.stop) break;
       // Hızlı yol: evrağın adresi sayfanın kendi bilgilerinden kurulur, tıklama ve ön izlemenin yüklenmesi beklenmez
       // (canlıda evrak başına ~2,2 sn yakalama + 1,5 sn bekleme → ~0,5 sn). Adres kurulamaz ya da belge gelmezse tıklama yoluna dönülür.
@@ -1356,13 +1430,15 @@
       let outcome = null;
       let usedDirect = false;
       if (direct) {
-        outcome = await pullFetch({ mode, direct, meta, quick }, rebegin);
+        outcome = await pullFetch({ mode, direct, meta, quick, ...(parallel > 1 ? { fetchId: `${jobId}:${round}:${slot}:${index}` } : {}) }, rebegin);
         // İlk geçişte geçici hata alan evrak tıklama yoluyla hemen yeniden denenmez; dosyanın sonundaki tura kalır.
-        usedDirect = !!outcome?.ok || pullItemOnlyError(outcome) || pullSessionFailure(outcome) || (quick && !!outcome?.retryable);
+        usedDirect = !!outcome?.ok || !!outcome?.uploadFailed || pullItemOnlyError(outcome) || pullSessionFailure(outcome) || pullDestinationFailure(outcome) || (quick && !!outcome?.retryable);
       }
       if (outcome?.code === "UYAP_CANCELLED") { pulling.stop = true; break; }
       if (!usedDirect && pulling.stop) break;
       if (!usedDirect) {
+        const releaseClick = await clickTurn();
+        try {
         await chrome.runtime.sendMessage({ type: "JURISAI_PULL_ARM", evrakId: item.id });
         if (pulling.stop) break;
         const clickedAt = Date.now();
@@ -1391,6 +1467,7 @@
             })`,
         };
         if (captured) outcome = await pullFetch({ mode, meta, quick }, rebegin);
+        } finally { releaseClick(); }
       }
       // Kullanıcı iptali evrak/oturum hatası değildir; yeniden deneme ve hata sayacı yok.
       if (outcome?.code === "UYAP_CANCELLED") { pulling.stop = true; break; }
@@ -1400,35 +1477,64 @@
         spent.upload += outcome.ms.upload || 0;
       }
       if (outcome?.ok) {
+        succeeded += 1;
         consecutiveFailures = 0;
         gap = Math.max(baseGap, Math.round(gap * 0.8));
         if (outcome.sameContent) stats.sameContent += 1;
         else if (outcome.duplicate) stats.duplicates += 1;
         else stats.sent += 1; // aktarılan ya da (bilgisayara indirme kipinde) kaydedilen
         if (failedLines.delete(item.id)) stats.failed -= 1; // önceki denemede takılmıştı, şimdi indi
+        portalPages = 0;
       } else {
         if (!failedLines.has(item.id)) stats.failed += 1;
         // Evrağın kendisine özgü ret (tür desteklenmiyor, UYAP ön izlemede vermiyor) oturum/portal sorunu değildir: art arda gelse de
         // aktarım durdurulmaz ve yavaşlatılmaz. Canlıda art arda 5 .zip eki 350 evraklık aktarımı 114. evrakta kesmişti.
         const itemOnly = pullItemOnlyError(outcome);
+        if (outcome?.code === "UYAP_DOCUMENT_ABSENT" && !stats.absent.includes(item.id)) stats.absent.push(item.id);
         if (!itemOnly) consecutiveFailures += 1;
         if (pullSessionFailure(outcome)) sessionLost = true;
+        portalPages = outcome?.code === "UYAP_PORTAL_ERROR" ? portalPages + 1 : 0;
+        if (portalPages >= 2 && !sessionLost && !pulling.stop) {
+          const probe = await chrome.runtime.sendMessage({ type: "JURISAI_PULL_SESSION_PROBE", jobId }).catch(() => null);
+          if (probe?.state === "expired") sessionLost = true;
+          portalPages = 0; // açık oturumda sonraki iki hata yeniden yoklanır
+        }
+        if (pullDestinationFailure(outcome)) destinationFailure = outcome;
         failedLines.set(item.id, `${item.title.slice(0, 90)}: ${outcome?.error || "eklenti yanıt vermedi"}`);
         if (!itemOnly && round + 1 < PULL_ROUNDS) again.push(item);
-        if (!itemOnly) gap = Math.min(20000, gap * 2); // UYAP bizi sınırlıyor olabilir: yavaşla
+        // UYAP bizi sınırlıyor olabilir: yavaşla. Evrağa özgü iç hata sayfası (oturum açık) sınırlama değildir: hız düşürülmez,
+        // yoksa böyle evrakların çok olduğu dosyada aktarım tek işçiye ve evrak başına saniyelere iniyordu (deneme: 90 evraktan
+        // 29'u hatalıyken 6 dk). Gerçek kesintiye karşı her 5 ardışık hatada mola ve "hiç inmiyorsa bırak" kuralı korur.
+        if (!itemOnly && !outcome?.errorPage) gap = Math.min(20000, gap * 2);
       }
       stats.errors = [...failedLines.values()].slice(0, 5);
-      report({ done: doneBefore + index + 1 });
-      if (sessionLost || consecutiveFailures >= 5) { abandoned = true; break; } // oturum kapanmış ya da portal yanıt vermiyor olabilir
+      finished += 1;
+      report({ done: doneBefore + finished });
+      if (sessionLost || destinationFailure) { abandoned = true; break; } // oturum ve hedef sunucu hataları ayrı kalır
+      // Takılan evrak dosyayı durdurmaz: atlanır, kalanlar sürer, takılanlar dosyanın sonunda yeniden denenir. Önceden üst üste
+      // 5 hatada bütün dosya bırakılıyordu; canlıda UYAP'ın kendi iç hatası ("AVUKATWeb bağlantı hatası") veren evraklar
+      // 47 000 evraklı dosyayı ilk birkaç evrakta durdurdu (2026-10-17). Yalnız hiçbir evrak inmiyorsa (UYAP dosyayı hiç
+      // vermiyor) boşuna sürmez. Oturum kaybı ayrıca yoklanır (portalPages).
+      if (consecutiveFailures >= PULL_HOPELESS_FAILURES && succeeded === 0) {
+        halted = `UYAP bu dosyanın evraklarını şu an vermiyor: art arda ${consecutiveFailures} evrak indirilemedi, hiçbiri inmedi. ` +
+          'UYAP düzelince "Eksik kalanları yeniden dene" ile alınır.';
+        abandoned = true;
+        break;
+      }
+      if (consecutiveFailures > 0 && consecutiveFailures % 5 === 0 && !pulling.stop)
+        await chrome.runtime.sendMessage({ type: "JURISAI_PULL_WAIT", ms: 15000, jobId }); // UYAP'a nefes
       // Tıklamasız yolda sayfa ön izleme yüklemez (evrak başına tek istek): hata yokken kısa bekleme yeter; hata görülünce `gap` büyür.
       const pause = pullPauseMs(gap, baseGap, usedDirect, !!outcome?.ok, performance.now() - itemStartedAt,
-        index + 1 < queue.length && !pulling.stop);
+        nextIndex < queue.length && !pulling.stop);
       spent.pause += pause;
       if (pause > 0) await chrome.runtime.sendMessage({ type: "JURISAI_PULL_WAIT", ms: pause, jobId });
     }
+    };
+    await Promise.all(Array.from({ length: parallel }, (_, slot) => worker(slot)));
     queue = again;
     }
     clearInterval(keepAliveTimer);
+    if (halted) stats.errors = [halted, ...stats.errors.filter((line) => line !== halted)].slice(0, 5);
     const timing = spent.items
       ? {
           items: spent.items,
@@ -1452,6 +1558,9 @@
         : "");
     toast(summary, stats.failed ? "error" : "success");
     report({ phase: pulling.stop ? "Durduruldu" : "Bitti", current: "" });
+    if (destinationFailure && !pulling.stop)
+      return { ok: false, code: destinationFailure.code, error: destinationFailure.error,
+        ...stats, chosen: todo.length, mode };
     if (sessionLost && !pulling.stop)
       return { ok: false, code: "login_required", ...stats, chosen: todo.length, mode,
         error: "UYAP oturumu kapanmış görünüyor (evrak yerine hata/giriş sayfası döndü). UYAP sekmesinde yeniden giriş yap; aktarılanlar yeniden çekilmez." };
@@ -1745,7 +1854,11 @@
   async function listDosyalar() {
     if (listing || pulling || recoveryBusy()) return { ok: false, code: "busy", error: "UYAP'ta bir listeleme veya aktarım sürüyor; bitince yeniden dene." };
     listing = true;
-    try { return await readDosyalar(); }
+    try {
+      const out = await readDosyalar();
+      if (out?.ok) out.identity = await uyapIdentity();
+      return out;
+    }
     finally { listing = false; }
   }
   async function readDosyalar() {
@@ -1974,17 +2087,23 @@
     }
     return { headers, rows };
   }
-  /** DataTables'ın AJAX ile dolmasını bekler: "N Kayıttan" yazısı, satır sayısı ve boşluk durumu iki turda değişmeden kalmalı. */
+  /**
+   * DataTables'ın AJAX ile dolmasını bekler: "N Kayıttan" yazısı, satır sayısı ve boşluk durumu art arda üç yoklamada (0,5 sn)
+   * aynı kalmalı ve yükleniyor göstergesi olmamalı. Yoklama 250 ms: okuma turunda sürenin üçte ikisi bu sekmelerde geçiyordu
+   * (canlı ölçüm 2026-10-16: 64 dosya 27 dk, dosya bilgisi sekmeleri ~%64); üst sınır yine ~20 sn.
+   */
   async function settleTable(table) {
     const wrapper = table.closest(".dataTables_wrapper");
     if (!wrapper) return table.isConnected && !detailLoading(table);
     let last = "";
-    for (let i = 0; i < 40; i += 1) {
+    let same = 0;
+    for (let i = 0; i < 80; i += 1) {
       if (pulling?.stop) throw Object.assign(new Error("İptal edildi."), { code: "aborted" });
       const state = `${declaredTableRows(table)}|${textOf(table.querySelector("tbody"))}`;
-      if (table.isConnected && !detailLoading(wrapper) && declaredTableRows(table) !== null && state === last && i >= 2) return true;
+      same = state === last ? same + 1 : 0;
+      if (table.isConnected && !detailLoading(wrapper) && declaredTableRows(table) !== null && same >= 2) return true;
       last = state;
-      await sleep(500);
+      await sleep(250);
     }
     return false;
   }
@@ -1993,7 +2112,9 @@
     const wrapper = table.closest(".dataTables_wrapper");
     let settled = await settleTable(table);
     const length = wrapper?.querySelector("select[name$='_length']");
-    if (length) {
+    // UYAP'ın yazdığı kayıtların hepsi zaten ekrandaysa sayfa boyutunu "Tümü"ne almak yeni bir yükleme beklemekten ibarettir.
+    const shown = declaredTableRows(table);
+    if (length && !(settled && shown !== null && readDetailTable(table).rows.length >= shown)) {
       const all = [...length.options].find((option) => option.value === "-1") || [...length.options].sort((a, b) => Number(b.value) - Number(a.value))[0];
       if (all && length.value !== all.value) {
         length.value = all.value;
@@ -2014,9 +2135,12 @@
     const detailButton = detailId && pane && [...pane.querySelectorAll("input[type='button']")]
       .find((button) => button.id === `makbuzDetayGoster${detailId[1]}` && trLower(button.value) === "detay");
     const headers = result.headers.map(trLower);
-    if (declared === null && !result.rows.length && !wrapper && detailButton &&
-        headers.length === 12 && headers[0] === "makbuz no" && headers[1] === "reddiyat tarihi" &&
-        headers[2] === "reddiyat nedeni" && headers[11] === "ödenecek tutar" && table.querySelector("tbody")) {
+    // Şema sütun adlarıyla tanınır: canlıda iki düzen ölçüldü — 12 sütunlu (… "Ödenecek Tutar") ve Ceza dosyalarında 9 sütunlu
+    // ("Makbuz No, Durum, Reddiyat Tarihi, Reddiyat Nedeni, …, Net Ödenecek Miktar"; 2026-10-16). Kural sunucuyla aynıdır
+    // (api/uyap_detail.py `_static_reddiyat_schema`).
+    const reddiyatSchema = headers.length >= 8 && headers.length <= 14 && headers[0] === "makbuz no" &&
+      headers.includes("reddiyat tarihi") && headers.includes("reddiyat nedeni") && /ödenecek/.test(headers[headers.length - 1]);
+    if (declared === null && !result.rows.length && !wrapper && detailButton && reddiyatSchema && table.querySelector("tbody")) {
       await sleep(1000);
       result = readDetailTable(table);
       if (table.isConnected && !detailLoading(pane) && !detailLoading(table) && !result.rows.length &&
@@ -2215,9 +2339,10 @@
       job.phase = "Daha önce aktarılanlar kontrol ediliyor";
       const who = dosyaIdentity(opened.dialog);
       const known = await chrome.runtime
-        .sendMessage({ type: "JURISAI_PULL_KNOWN", ids: prepared.items.map((item) => item.id), esas: who.esas, birim: who.birim })
+        .sendMessage({ type: "JURISAI_PULL_KNOWN", ids: prepared.items.map((item) => item.id), esas: who.esas, birim: who.birim, identity: await uyapIdentity() })
         .catch(() => null);
-      bridge.tree = { key, who, items: prepared.items, known: known?.ok ? known.known : [], knownChecked: !!known?.ok };
+      bridge.tree = { key, who, items: prepared.items, known: known?.ok ? known.known : [], knownChecked: !!known?.ok,
+        identity: await uyapIdentity(), accountRefused: known?.code === "uyap_account_mismatch" ? known.error || "" : "" };
       Object.assign(job, { state: "done", phase: "Hazır", count: prepared.items.length, finishedAt: Date.now() });
     })()
       .catch((error) =>
@@ -2295,6 +2420,8 @@
         counts: countSummary(bridge.tree.items),
         known: bridge.tree.known,
         knownChecked: bridge.tree.knownChecked,
+        identity: bridge.tree.identity || null,
+        accountRefused: bridge.tree.accountRefused || "",
       };
     }
     return out;

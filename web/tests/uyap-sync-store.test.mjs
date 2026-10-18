@@ -16,13 +16,15 @@ const report = (key, outcome = "complete") => ({ key, esas: key, birim: "A", yar
 const runReport = compile("../src/lib/uyap-run-report.ts", { "@/lib/uyap-sync-all": { summarize: reports => ({ files: reports.length }) } });
 
 /** Sahte orkestratör: her dosyada `gate` açılana kadar bekler (koşu "sürerken" durumu incelemek için). */
-function world(outcomes = {}, saveReport, saveAudit) {
+function world(outcomes = {}, saveReport, saveAudit, accountRefusal, identityOnRelist) {
   const gates = [];
   const saved = { reports: 0, details: 0, checkpoints: [] };
   const store = compile("../src/lib/uyap-sync-store.ts", {
     "@/lib/steady-timer": { keepAwake: () => () => {} },
+    "@/lib/uyap-diagnostics": { reportUyapProblem: async () => false },
+    "@/lib/uyap-bridge": { listUyapDosyalari: async () => { saved.relists = (saved.relists ?? 0) + 1; return identityOnRelist ? { ok: true, liste: { ...liste, identity: identityOnRelist } } : { ok: false }; } },
     "@/lib/uyap-run-report": runReport,
-    "@/lib/uyap-sync-api": { saveAuditRun: async checkpoint => { saved.checkpoints.push(checkpoint); return saveAudit ? await saveAudit(checkpoint) : { run: { reports: checkpoint.reports } }; }, saveCaseDetail: async () => { saved.details += 1; }, saveSyncReport: async (items) => { saved.reports += items.length; return saveReport ? await saveReport(items) : { saved: items.length, downgraded: [], unmatched: 0 }; } },
+    "@/lib/uyap-sync-api": { checkUyapAccount: async (identity) => { saved.identity = identity; saved.accountChecks = (saved.accountChecks ?? 0) + 1; if (accountRefusal) throw new Error(accountRefusal); return "same"; }, saveAuditRun: async checkpoint => { saved.checkpoints.push(checkpoint); return saveAudit ? await saveAudit(checkpoint) : { run: { reports: checkpoint.reports } }; }, saveCaseDetail: async () => { saved.details += 1; }, saveSyncReport: async (items) => { saved.reports += items.length; return saveReport ? await saveReport(items) : { saved: items.length, downgraded: [], unmatched: 0 }; } },
     "@/lib/uyap-sync-all": {
       summarize: (reports) => ({ files: reports.length }),
       blankReport: d => report(d.key, "pending"),
@@ -236,4 +238,33 @@ test("sayfa yenilenirse koşu kalan dosyalarla kaldığı yerden sürer; biten y
   assert.equal(world().store.resumeIfInterrupted(liste), false);
   assert.equal(globalThis.sessionStorage.getItem("jurisai.uyap.sync.resume"), null);
   delete globalThis.sessionStorage;
+});
+
+test("UYAP kişisi bu hesaba bağlı değilse koşu başlamaz ve koşu kaydı dahil hiçbir şey yazılmaz", async () => {
+  const { store, gates, saved } = world({}, undefined, undefined, "UYAP'ta giriş yapan kişi (M*** K***) bu JurisAI hesabına bağlı değil.");
+  await store.startSync(liste);
+  assert.equal(saved.accountChecks, 1);
+  assert.equal(gates.length, 0, "orkestratör hiç çalışmadı");
+  assert.deepEqual([saved.checkpoints.length, saved.details, saved.reports], [0, 0, 0]);
+  const state = store.getSyncState();
+  assert.equal(state.running, false);
+  assert.match(state.run.stoppedBecause, /bağlı değil/);
+});
+
+test("eski sürümle alınmış listede UYAP kişisi yoksa liste bir kez yeniden okunup kişi oradan alınır", async () => {
+  const person = { fingerprint: "a".repeat(64), kind: "tc", portal: "vatandas", display: "AYŞE YILMAZ" };
+  const { store, gates, saved } = world({}, undefined, undefined, undefined, person);
+  const done = store.startSync(liste);
+  await tick(); gates.shift()(); await tick(); gates.shift()(); await done;
+  assert.equal(saved.relists, 1);
+  assert.deepEqual(saved.identity, person);
+});
+
+test("listede UYAP kişisi varsa liste yeniden okunmaz", async () => {
+  const person = { fingerprint: "b".repeat(64), kind: "tc", portal: "vatandas", display: "MEHMET KAYA" };
+  const { store, gates, saved } = world();
+  const done = store.startSync({ ...liste, identity: person });
+  await tick(); gates.shift()(); await tick(); gates.shift()(); await done;
+  assert.equal(saved.relists, undefined);
+  assert.deepEqual(saved.identity, person);
 });

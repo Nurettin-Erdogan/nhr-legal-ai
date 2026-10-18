@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { reportUyapProblem } from "@/lib/uyap-diagnostics";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -87,6 +88,7 @@ export const UyapDosyalarim = () => {
     if (!result.ok) {
       setListe(null);
       setError({ message: result.error, code: result.code });
+      void reportUyapProblem(result.code, { phase: "liste" }); // sayfa tanınmadıysa yapı özeti (içeriksiz) kaydedilir
       return;
     }
     setListe(result.liste);

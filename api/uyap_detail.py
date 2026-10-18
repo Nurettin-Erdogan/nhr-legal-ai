@@ -76,6 +76,15 @@ class CaseDetail(BaseModel):
     complete: bool = False
 
 
+def _static_reddiyat_schema(headers: list[str]) -> bool:
+    """UYAP'ın tahsilat satırıyla birlikte gizli ürettiği reddiyat detay tablosu. Canlıda iki düzen ölçüldü: 12 sütunlu
+    ("… Ödenecek Tutar") ve Ceza dosyalarında 9 sütunlu ("Makbuz No, Durum, Reddiyat Tarihi, Reddiyat Nedeni, …, Net Ödenecek
+    Miktar"; 2026-10-16). Eklentideki kuralla aynıdır (content.js `reddiyatSchema`)."""
+    names = [header.casefold() for header in headers]
+    return (8 <= len(names) <= 14 and names[0] == "makbuz no" and "reddiyat tarihi" in names
+            and "reddiyat nedeni" in names and "ödenecek" in names[-1])
+
+
 def verified_tabs(tabs: list[DetailTab]) -> tuple[list[dict[str, Any]], bool, list[str]]:
     """Sekmeleri saklanacak biçime çevirir ve eksiksizliği SUNUCUDA yeniden hesaplar: her tabloda okunan satır sayısı UYAP'ın
     söylediğine eşit olmalı (UYAP sayı söylemiyorsa kabul). Bilinmeyen sekme anahtarı atılır (yalnız okunan sekmeler saklanır)."""
@@ -94,11 +103,8 @@ def verified_tabs(tabs: list[DetailTab]) -> tuple[list[dict[str, Any]], bool, li
             if table.empty_evidence:
                 # Sadece ölçülmüş, statik reddiyat detay şeması; diğer belirsiz boş
                 # tablolar bu istisna ile eksiksiz ilan edilemez.
-                headers = [header.casefold() for header in table.headers]
                 valid_evidence = (tab.key == "tahsilat" and table.title == "Reddiyat detayı"
-                                  and not table.rows and table.declared == 0 and len(headers) == 12
-                                  and headers[:3] == ["makbuz no", "reddiyat tarihi", "reddiyat nedeni"]
-                                  and headers[-1] == "ödenecek tutar")
+                                  and not table.rows and table.declared == 0 and _static_reddiyat_schema(table.headers))
                 has_result = has_result and valid_evidence
             if not matches:
                 problems.append(f"{tab.label or tab.key}{' / ' + table.title if table.title else ''}: "

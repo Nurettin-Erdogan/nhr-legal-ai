@@ -40,6 +40,7 @@ from api.upload_stream import (
     receive_upload,
     upload_limit,
 )
+from api.uyap_account import identity_from_headers, mark, register
 from api.uyap_cases import case_number, court_key, link_document, lock_uyap_owner
 from api.uyap_meta import (
     MAX_FILE_BYTES,
@@ -101,18 +102,47 @@ async def read_document_upload(request: Request) -> tuple[dict[str, str], str, s
         if not isinstance(file, StarletteUploadFile):
             raise HTTPException(400, "Dosya eksik")
         fields = {key: value for key, value in form.items() if isinstance(value, str)}
+        if any("\x00" in value for value in fields.values()):
+            # Identity/court fields must not be silently normalized into a
+            # different document identity. Source file bytes are not fields.
+            raise HTTPException(400, "Evrak üst verisinde geçersiz NUL karakteri var")
         name = safe_file_name((fields.get("evrakAdi") or file.filename or "uyap-evrak.pdf").strip()[:300])
-        if not is_allowed_file(name):
-            ext = re.sub(r"[^a-z0-9]", "", extension_of(name))[:10]
-            raise HTTPException(415, f"Desteklenmeyen dosya türü (.{ext})")
+        archive_only = not is_allowed_file(name)
+        if archive_only:
+            # Storage is not parsing support. Unknown UYAP attachments are
+            # opaque bytes, never executable/inline content or searchable text.
+            # Keep this fallback out of anonymous/legacy/general uploads, and
+            # require the stable case/document identity used by deduplication.
+            if not (0 < len(fields.get("evrakId", "").strip()) <= 600
+                    and case_number(fields.get("dosyaEsasNo"))
+                    and 0 < len(fields.get("birim", "").strip()) <= 160):
+                raise HTTPException(415, "Bilinmeyen tür yalnız dosya/birim ve evrak kimliğiyle arşivlenebilir")
+            if extension_of(name) != "bin":
+                name = name[:116] + ".bin"
         try:
             upload = await receive_upload(file, limit)
         except UploadTooLarge as exc:
             raise HTTPException(413, str(exc)) from exc
         if upload.size == 0:
             raise HTTPException(400, "Boş dosya")
+        if archive_only:
+            # A portal error disguised as an unknown attachment must not turn
+            # into a successful transfer. Inspect a bounded header, not the file.
+            if upload.data is not None:
+                header = upload.data[:8192]
+            else:
+                upload.stream.seek(0)
+                header = upload.stream.read(8192)
+                upload.stream.seek(0)
+            encoding = "utf-16" if header.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
+            head = header.decode(encoding, errors="replace").lstrip()
+            head = re.sub(r"^(?:\s|<!--[\s\S]*?-->)+", "", head)
+            if ("html" in (file.content_type or "").lower()
+                    or re.match(r"<(?:!doctype\s+html|html|head|body|form|script|div|table|input)\b", head, re.I)
+                    or re.match(r"(?:oturum(?:unuz)?\s+(?:sona|kapan|süresi)|giriş\s+yap|doğrulama\s+hatası)", head, re.I)):
+                raise HTTPException(415, "Bilinmeyen türdeki yanıt belge olarak doğrulanamadı; HTML/oturum yanıtı arşivlenmedi")
         handed_over = True
-        return fields, name, file.content_type, upload
+        return fields, name, "application/octet-stream" if archive_only else file.content_type, upload
     finally:
         # Başarıda dosya parçası kapatılmaz: `Upload` onun geçici dosyasını kullanır ve `discard()` ile kapatır.
         if not handed_over:
@@ -124,7 +154,7 @@ async def read_document_upload(request: Request) -> tuple[dict[str, str], str, s
 _CORS = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-UYAP-Identity, X-UYAP-Identity-Kind, X-UYAP-Portal, X-UYAP-Display",
 }
 
 
@@ -180,6 +210,29 @@ def _owner_for_token(token: str) -> tuple[UUID, UUID] | None:
         )
         connection.commit()
         return row["id"], row["owner_id"]
+
+
+async def _uyap_account(request: Request, owner_id: UUID) -> UUID | JSONResponse:
+    """Evrakın geldiği UYAP kişisi (kullanıcı kararı 2026-10-16: dosyalar kimin UYAP'ından geldiyse onun altında dursun).
+    Kişi bilinmiyorsa gövde okunmadan reddedilir; aksi halde hesabın UYAP kişileri arasına kaydedilip kimliği döner."""
+    identity = identity_from_headers(request.headers)
+    if identity is None:
+        return _reply({"error": "UYAP'ta giriş yapan kişi okunamadı; eklentiyi güncelleyip UYAP sayfasını yenileyin. "
+                                "Dosyalar kimin UYAP'ından geldiği bilinmeden aktarılmaz.",
+                       "code": "uyap_identity_required", "retryable": False}, 428)
+    try:
+        return await run_in_threadpool(register, owner_id, identity, AuditContext.from_request(request))
+    except psycopg.Error:
+        logger.exception("UYAP kişisi kaydedilemedi")
+        return _reply({"error": "Servis şu an kullanılamıyor", "retryable": True}, 503)
+
+
+async def _mark(owner_id: UUID, account_id: UUID, **target) -> None:
+    """Evrakları geldiği UYAP kişisiyle işaretler; hata aktarımı bozmaz (sonraki denetimde yeniden denenir)."""
+    try:
+        await run_in_threadpool(mark, owner_id, account_id, **target)
+    except psycopg.Error:
+        logger.warning("UYAP kişisi evraka işlenemedi", exc_info=True)
 
 
 def _schedule_index(owner_id: UUID, document_id: UUID | None, audit: AuditContext) -> None:
@@ -333,7 +386,7 @@ def _store_upload(
 ) -> tuple[str, UUID | None]:
     # Metin örneği ve ODT/UDF karşılaştırması için içerik yalnız makul boyuttaysa belleğe alınır; büyük dosya (ses/video,
     # çok sayfalı tarama paketi) hiç okunmadan saklanır.
-    sample = upload.small_bytes(IN_MEMORY_PARSE_BYTES)
+    sample = None if extension_of(file_name) == "bin" else upload.small_bytes(IN_MEMORY_PARSE_BYTES)
     excerpt = " ".join(extract_text_sample(file_name, sample).split()) if sample is not None else ""
     meta = parse_uyap_meta(overrides.get("metadata_name") or file_name, excerpt)
     raw_number = overrides.get("uyap_file_no") or meta["uyap_file_no"]
@@ -550,6 +603,9 @@ async def upload_document(
     if owner is None:
         return _reply({"error": "Geçersiz bağlantı anahtarı"}, 401)
     _, owner_id = owner
+    account_id = await _uyap_account(request, owner_id)
+    if isinstance(account_id, JSONResponse):
+        return account_id
 
     # Kimlik doğrulama önce yapılır; gövde boyut sınırı olmadan, belleğe alınmadan okunur.
     try:
@@ -583,21 +639,32 @@ async def upload_document(
     except OSError as exc:
         logger.exception("UYAP belgesi kaydedilemedi")
         if exc.errno == errno.ENOSPC:
-            return _reply({"error": "Sunucuda disk alanı kalmadı; belge kaydedilemedi"}, 507)
-        return _reply({"error": "Kayıt hatası"}, 500)
-    except psycopg.Error:
+            return _reply({"error": "Sunucuda disk alanı kalmadı; belge kaydedilemedi", "code": "storage_full", "retryable": False}, 507)
+        # Teşhis için yerel yol, evrak içeriği veya anahtar döndürülmez.
+        code = "storage_path_invalid" if exc.errno in {errno.EINVAL, errno.ENAMETOOLONG} else "storage_io_error"
+        if exc.errno in {errno.EACCES, errno.EPERM}:
+            code = "storage_permission_denied"
+        return _reply({"error": f"Belge depolanamadı ({code}); sunucu kaydı kontrol edilmeli.", "code": code, "retryable": False}, 500)
+    except psycopg.Error as exc:
         logger.exception("UYAP belgesi kaydedilemedi")
-        return _reply({"error": "Kayıt hatası"}, 500)
+        transient = exc.sqlstate in {"57014", "40001", "40P01", "55P03"} or (exc.sqlstate or "").startswith("08")
+        code = "database_temporarily_unavailable" if transient else "database_write_error"
+        return _reply({"error": f"Belge veritabanına kaydedilemedi ({code}).", "code": code, "retryable": transient}, 503 if transient else 500)
     finally:
         upload.discard()  # sahte/erken dönen `_store` olsa da geçici dosya kalmaz
+    archive_info = ({"archiveOnly": True, "searchable": False,
+                     "notice": "Özgün dosya arşivlendi; bu türün içeriği aramada kullanılamıyor."}
+                    if extension_of(file_name) == "bin" else {})
+    if outcome in {"inserted", "duplicate"} and document_id is not None:
+        await _mark(owner_id, account_id, document_id=document_id)
     if outcome == "duplicate":
-        return _reply({"ok": True, "duplicate": True, "id": str(document_id)})
+        return _reply({"ok": True, "duplicate": True, "id": str(document_id), **archive_info})
     if outcome == "changed":
         return _reply({"error": "Bu evrakın içeriği değişmiş; mevcut belge korunuyor. Sürümü ayrıca inceleyin."}, 409)
     if outcome != "inserted":
-        return _reply({"error": "Kayıt hatası"}, 500)
+        return _reply({"error": "Belge kaydı doğrulanamadı (document_write_unconfirmed).", "code": "document_write_unconfirmed", "retryable": False}, 500)
     _schedule_index(owner_id, document_id, AuditContext.from_request(request))
-    return _reply({"ok": True, "id": str(document_id), "name": unique_name})
+    return _reply({"ok": True, "id": str(document_id), "name": unique_name, **archive_info})
 
 
 
@@ -609,7 +676,7 @@ async def upload_document(
 MAX_KNOWN_REQUEST_BYTES = 2 * 1024 * 1024
 MAX_KNOWN_IDS = 5000
 MAX_KNOWN_ID_LENGTH = 600
-MAX_KNOWN_ROWS = 50000
+MAX_KNOWN_ROWS = 250000  # canlıda 20 000+ evraklı dosyalar görüldü (2026-10-17)
 
 
 class KnownRequest(BaseModel):
@@ -668,6 +735,9 @@ async def known_documents(
     if owner is None:
         return _reply({"error": "Geçersiz bağlantı anahtarı"}, 401)
     _, owner_id = owner
+    account_id = await _uyap_account(request, owner_id)
+    if isinstance(account_id, JSONResponse):
+        return account_id
 
     raw = await _read_limited_body(request, MAX_KNOWN_REQUEST_BYTES)
     if raw is None:
@@ -679,6 +749,9 @@ async def known_documents(
     try:
         # Old clients without a court must re-fetch rather than skip another court's evidence.
         keys = await run_in_threadpool(_stored_keys, owner_id, body.dosyaEsasNo, body.birim) if case_number(body.dosyaEsasNo) and court_key(body.birim) else []
+        if keys:
+            # Bu dosya bu UYAP kişisinin ağacında görüldü: kimden geldiği bilinmeyen eski evrakları onun adına işaretlenir.
+            await _mark(owner_id, account_id, esas_no=body.dosyaEsasNo, birim=body.birim)
     except psycopg.Error:
         logger.exception("Bilinen evraklar okunamadı")
         return _reply({"error": "Servis şu an kullanılamıyor"}, 503)

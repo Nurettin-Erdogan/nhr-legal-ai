@@ -39,14 +39,14 @@ def test_organization_queries_keep_owner_filters_and_use_bound_parameters():
         folder=folder_key("uyap", "2024/100", evil_birim), order="date_asc", offset=50, limit=50,
     )
     assert result["total"] == 0
-    assert len(calls) == 2
+    assert len(calls) == 3  # UYAP kişisi sayımları, klasör/kategori sayımları, satırlar
     for statement, params in calls:
         assert "owner_id = %s AND deleted_at IS NULL" in statement
         assert params[0] == owner
         assert params[1:5] == ("%Ek\\_\\%%",) * 4
         assert evil_birim not in statement
-    assert calls[1][1][-5:] == ("uyap", "2024/100", evil_birim, 50, 50)
-    assert "doc_date ASC NULLS LAST" in calls[1][0]
+    assert calls[2][1][-5:] == ("uyap", "2024/100", evil_birim, 50, 50)
+    assert "doc_date ASC NULLS LAST" in calls[2][0]
 
 
 def verify_postgres_organization(connection):
@@ -74,7 +74,7 @@ def verify_postgres_organization(connection):
             statement = statement.replace("FROM office_case_documents", """FROM jsonb_to_recordset(%s) AS office_case_documents(
                 id uuid, file_name text, storage_path text, size_bytes bigint, source text,
                 uyap_file_no text, uyap_birim text, doc_type text, doc_date date, case_id uuid,
-                created_at timestamptz, owner_id uuid, deleted_at timestamptz)""")
+                created_at timestamptz, owner_id uuid, deleted_at timestamptz, uyap_account_id uuid)""")
             return connection.execute(statement, (Jsonb(data), *params))
 
     def search(**overrides):
@@ -101,6 +101,11 @@ def verify_postgres_organization(connection):
     assert search(source="manual")["total"] == 1
     assert search(q="olmayan")["total"] == 0
     assert search(source="all")["total"] == 60
+    # Dosyalar kimin UYAP'ından geldiyse (kullanıcı kararı 2026-10-16): işaretsiz UYAP evrakı "kimden geldiği bilinmiyor".
+    assert result["accounts"] == [{"id": "unknown", "name": None, "count": 59, "files": 2}]
+    assert search(account="unknown")["total"] == 59
+    assert search(account=str(uuid4()))["total"] == 0
+    assert {item["account_id"] for item in result["folders"]} == {"unknown"}
 
 
 @pytest.mark.skipif(not os.getenv("NHR_TEST_DATABASE_URL"), reason="NHR_TEST_DATABASE_URL tanımlı değil")

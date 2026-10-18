@@ -97,6 +97,12 @@ def parse_uyap_meta(file_name: str, sample: str = "") -> UyapMeta:
 
 
 def extract_text_sample(name: str, data: bytes, limit: int = 20000) -> str:
+    # Parser çıktısındaki NUL PostgreSQL TEXT'e yazılamaz. Orijinal belge
+    # baytlarına dokunma; görünmez ayırıcıyı boşluk yap (sayı/kelime birleşmesin).
+    return _extract_text_sample(name, data, limit).replace("\x00", " ")
+
+
+def _extract_text_sample(name: str, data: bytes, limit: int = 20000) -> str:
     """Metin, UDF (içinde content.xml olan zip), PDF ve DOCX dosyalarından kısa bir metin örneği çıkarır."""
     ext = extension_of(name)
     try:

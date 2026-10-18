@@ -29,6 +29,8 @@ from api.service_records import router as service_records_router
 from api.uyap_detail import router as uyap_detail_router
 from api.uyap_sync import router as uyap_sync_router
 from api.uyap_runs import router as uyap_runs_router
+from api.uyap_account import router as uyap_account_router
+from api.uyap_diagnostics import router as uyap_diagnostics_router
 from api.office_ai import router as office_ai_router
 from api.document_jobs import router as document_jobs_router
 from api.project_documents import router as project_documents_router
@@ -195,6 +197,8 @@ app.include_router(execution_router)
 app.include_router(service_records_router)
 app.include_router(uyap_sync_router)
 app.include_router(uyap_runs_router)
+app.include_router(uyap_account_router)
+app.include_router(uyap_diagnostics_router)
 app.include_router(uyap_detail_router)
 app.include_router(office_router)
 app.include_router(office_trash_router)

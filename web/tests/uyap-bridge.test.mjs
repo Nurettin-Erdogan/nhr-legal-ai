@@ -159,7 +159,7 @@ test("the dosya list is parsed defensively", async () => {
   assert.deepEqual(liste.items[2].cells, ["çok boşluklu"]);
   assert.equal(liste.pages, 3);
   assert.equal(liste.page, 1);
-  assert.deepEqual(bridge.parseDosyaListe(null), { items: [], types: [], errors: [], complete: false, pages: null, page: null });
+  assert.deepEqual(bridge.parseDosyaListe(null), { items: [], types: [], errors: [], complete: false, pages: null, page: null, identity: null });
   assert.equal(bridge.parseDosyaListe({ pages: -1, page: "2" }).pages, null);
   assert.deepEqual(bridge.otherCells(liste.items[0]), ["Ceza"]);
 });
@@ -248,7 +248,7 @@ test("a job status is parsed defensively", () => {
   assert.equal(status.job.state, "running"); // bilinmeyen durum çalışıyor sayılır
   assert.equal(status.job.kind, "pull");
   assert.equal(status.run.mode, "disk");
-  assert.deepEqual(status.run.stats, { sent: 1, duplicates: 0, sameContent: 0, failed: 0, known: 0, errors: ["e1"] });
+  assert.deepEqual(status.run.stats, { sent: 1, duplicates: 0, sameContent: 0, failed: 0, known: 0, errors: ["e1"], absent: [] });
   assert.equal(status.run.result.stopped, true);
 });
 
@@ -389,11 +389,14 @@ test("oversized selection is refused instead of silently dropping the remaining 
 });
 
 test("an oversized tree cannot claim that all evidence has been loaded", () => {
-  const tree = bridge.parseTree({ items: Array.from({ length: 20001 }, (_, i) => ({ id: String(i) })), counts: { matches: true, explained: true } });
-  assert.equal(tree.items.length, 20000);
+  // Sınır 200 000 (canlıda 20 000+ evraklı ceza dosyaları görüldü, 2026-10-17); 20 001 evrak artık kesilmez.
+  assert.equal(bridge.parseTree({ items: Array.from({ length: 20001 }, (_, i) => ({ id: String(i) })), counts: { matches: true } }).items.length, 20001);
+  const limit = bridge.MAX_TREE_ITEMS;
+  const tree = bridge.parseTree({ items: Array.from({ length: limit + 1 }, (_, i) => ({ id: String(i) })), counts: { matches: true, explained: true } });
+  assert.equal(tree.items.length, limit);
   assert.equal(tree.counts.matches, false);
   assert.equal(tree.counts.explained, false);
-  assert.match(tree.counts.gapList[0], /20.000/);
+  assert.match(tree.counts.gapList[0], /200.000/);
 });
 
 test("detail completeness is checked against the parsed tables and empty unloaded panes", () => {
@@ -405,4 +408,20 @@ test("detail completeness is checked against the parsed tables and empty unloade
   assert.equal(bridge.parseDetail(payload({ ...empty, tables: [{ ...table, declared: 1 }] })).complete, true);
   assert.equal(bridge.parseDetail(payload({ ...empty, tables: [{ ...table, rows: [], declared: 0 }] })).complete, true);
   assert.equal(bridge.parseDetail(payload({ ...empty, tables: [{ ...table, rows: [], declared: null }] })).complete, false);
+});
+
+test("UYAP kişisi parmak izi + ad soyadla gelir; kimlik numarası ya da rakam/biçim taşıyan ad geçmez", () => {
+  const ok = { fingerprint: "a".repeat(64), kind: "tc", portal: "vatandas", display: "AYŞE YILMAZ" };
+  assert.deepEqual(bridge.parseIdentity(ok), ok);
+  assert.equal(bridge.parseIdentity({ ...ok, fingerprint: "12345678901" }), null);
+  assert.equal(bridge.parseIdentity({ ...ok, display: "12345678901" }), null);
+  assert.equal(bridge.parseIdentity({ ...ok, display: "<b>Ayşe</b>" }), null);
+  assert.equal(bridge.parseIdentity({ ...ok, kind: "email" }), null);
+  // 2.26.37'nin ilk derlemesi adı maskeli gönderiyordu: güncellenmemiş eklenti "kişi okunamadı"ya düşmesin.
+  assert.equal(bridge.parseIdentity({ ...ok, display: "Y*** Ü***" }).display, "Y*** Ü***");
+  assert.equal(bridge.parseIdentity({ ...ok, portal: "x" }).portal, "diger");
+  assert.equal(bridge.sameIdentity(ok, { ...ok }), true);
+  assert.equal(bridge.sameIdentity(ok, { ...ok, fingerprint: "b".repeat(64) }), false);
+  assert.equal(bridge.sameIdentity(ok, null), false);
+  assert.equal(bridge.parseDosyaListe({ items: [], identity: ok }).identity.display, "AYŞE YILMAZ");
 });

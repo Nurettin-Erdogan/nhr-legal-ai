@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { useAuth } from "@/components/AuthProvider";
 import { UyapDosyalarim } from "@/components/UyapDosyalarim";
 import { UyapCaseLinks } from "@/components/UyapCaseLinks";
+import { UyapAccountBinding } from "@/components/UyapAccountBinding";
 import { setExtensionKey } from "@/lib/uyap-bridge";
 import { supabase } from "@/integrations/supabase/client";
 import { expandDroppedFiles, importEntries, type ImportResult } from "@/lib/uyap-import";
@@ -196,6 +197,7 @@ const UyapConnect = () => {
       title="UYAP'a Bağlan"
       subtitle="UYAP'ta kendi oturumunu aç; belgeleri JurisAI hesabına sen onaylayarak aktar."
     >
+      <UyapAccountBinding />
       <UyapDosyalarim />
       <UyapCaseLinks />
 

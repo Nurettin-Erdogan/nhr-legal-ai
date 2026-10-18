@@ -24,12 +24,12 @@ const templates = [
 ];
 const blob = html => new Blob([html], { type: 'text/html; charset=utf-8' });
 
-test('three known passive UYAP KEP templates are recognized with matching tree metadata', async () => {
+test('complete passive KEP templates are recognized independently of tree metadata', async () => {
   for (const html of templates) {
     assert.equal(await isUyapKepDocument(blob(html), meta), true);
     assert.equal(await isUyapKepDocument(blob(html), { evrakTuru: 'KEP Cevabı' }), true);
-    assert.equal(await isUyapKepDocument(blob(html), { evrakTuru: 'Karar' }), false);
-    assert.equal(await isUyapKepDocument(blob(html), null), false);
+    assert.equal(await isUyapKepDocument(blob(html), { evrakTuru: 'Karar' }), true);
+    assert.equal(await isUyapKepDocument(blob(html), null), true);
   }
 });
 
@@ -43,14 +43,14 @@ test('generic HTML, incomplete envelopes and keyword-only pages are never docume
   ]) assert.equal(await isUyapKepDocument(blob(html), meta), false, html);
 });
 
-test('KEP attached only as Ek needs both narrow attachment metadata and a complete passive KEP template', async () => {
+test('KEP recognition depends on complete passive content, not arbitrary Ek labels', async () => {
   for (const html of templates) {
     for (const name of ['Ek', 'Ek 1', '  Ek 23  ']) {
       assert.equal(await isUyapKepDocument(blob(html), { evrakTuru: 'Ek', evrakAdi: name }), true);
     }
     for (const metadata of [{ evrakTuru: 'Karar', evrakAdi: 'Ek 1' },
       { evrakTuru: 'Ek', evrakAdi: 'Ek karar' }, { evrakAdi: 'Ek 1' }]) {
-      assert.equal(await isUyapKepDocument(blob(html), metadata), false);
+      assert.equal(await isUyapKepDocument(blob(html), metadata), true);
     }
   }
   for (const html of ['<html><body>Ek 1 KEP</body></html>', '<html><body>KEP İletisi: kurum@banka.com.tr</body></html>']) {
@@ -78,10 +78,10 @@ test('login/error pages and active content fail even if receipt or KEP markers m
 test('HTML entities and Turkish uppercase letters do not cause a valid receipt to be retried', async () => {
   const receipt = blob('<html><body>VEKALET&nbsp;PULU&#160;MAKBUZU ADALET BAKANLI&#x11e;I Makbuz&nbsp;No 123</body></html>');
   assert.equal(await isUyapReceipt(receipt, { evrakTuru: 'Makbuz' }), true);
-  assert.equal(await isUyapReceipt(receipt, { evrakTuru: 'Karar' }), false);
+  assert.equal(await isUyapReceipt(receipt, { evrakTuru: 'Karar' }), true);
 });
 
-test('a passive receipt attached as Ek is accepted only with a matching attachment type and narrow title', async () => {
+test('a complete passive receipt is recognized independently of attachment titles', async () => {
   const receipt = blob('<html><body>VEKALET PULU MAKBUZU T.C. ADALET BAKANLIĞI Makbuz No 123</body></html>');
   for (const name of ['Ek', 'Ek 1', 'Ek 75', '  Ek 23  ']) {
     assert.equal(await isUyapReceipt(receipt, { evrakTuru: 'Ek', evrakAdi: name }), true, name);
@@ -91,7 +91,7 @@ test('a passive receipt attached as Ek is accepted only with a matching attachme
     { evrakTuru: 'Ek', evrakAdi: 'Giriş' },
     { evrakTuru: 'Ek', evrakAdi: 'Ek karar' },
     { evrakAdi: 'Ek 75' }, null,
-  ]) assert.equal(await isUyapReceipt(receipt, metadata), false);
+  ]) assert.equal(await isUyapReceipt(receipt, metadata), true);
   assert.equal(await isUyapReceipt(blob('<html><body>Ek 75</body></html>'), { evrakTuru: 'Ek', evrakAdi: 'Ek 75' }), false);
 });
 
@@ -101,7 +101,7 @@ test('the portal variants of KEP subject/date headings need not contain colons',
   assert.equal(await isUyapKepDocument(blob('<html><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><body><div>KEP Paketi:<br>kurum@hs01.kep.tr tarafından 01.01.2025 tarihinde Cevap konulu ileti</div></body></html>'), meta), true);
 });
 
-test('unmatched metadata and oversized HTML are rejected before reading the body', async () => {
+test('oversized HTML is rejected before reading the body', async () => {
   const unreadable = { size: 2 * 1024 * 1024, text: () => { throw Error('body must not be read'); } };
   assert.equal(await isUyapKepDocument(unreadable, meta), false);
   assert.equal(await isUyapReceipt(unreadable, { evrakTuru: 'Makbuz' }), false);

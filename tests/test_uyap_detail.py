@@ -106,6 +106,22 @@ def test_static_reddiyat_evidence_is_scoped_and_persisted(key, valid):
     assert stored[0]["tables"][0]["empty_evidence"] == "uyap_static_reddiyat_detail"
 
 
+@pytest.mark.parametrize("headers,valid", [
+    # Ceza dosyalarında canlıda ölçülen 9 sütunlu düzen (2026-10-16).
+    (["Makbuz No", "Durum", "Reddiyat Tarihi", "Reddiyat Nedeni", "Ödenecek Kişi", "Ödenecek Miktar",
+      "Gelir Vergisi", "Damga Vergisi", "Net Ödenecek Miktar"], True),
+    # Benzer görünen ama reddiyat detayı olmayan tablolar istisnadan yararlanamaz.
+    (["Makbuz No", "Tahsilat Tarihi", "Yatırılan Miktar", "Ödenebilir Miktar", "A", "B", "C", "D"], False),
+    (["Dosya No", "Reddiyat Tarihi", "Reddiyat Nedeni", "Ödenecek Kişi", "A", "B", "C", "Ödenecek Tutar"], False),
+    (["Makbuz No", "Reddiyat Tarihi", "Reddiyat Nedeni", "Ödenecek Tutar"], False),
+])
+def test_static_reddiyat_schema_is_recognized_by_column_names(headers, valid):
+    table = uyap_detail.DetailTable(title="Reddiyat detayı", headers=headers, rows=[], declared=0, complete=True,
+                                    empty_evidence="uyap_static_reddiyat_detail")
+    _, complete, _ = uyap_detail.verified_tabs([uyap_detail.DetailTab(key="tahsilat", tables=[table], complete=True)])
+    assert complete is valid
+
+
 def _world(db, monkeypatch):  # noqa: F811
     @contextlib.contextmanager
     def as_user(user_id: str):
