@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Database, Loader2, RefreshCw, ShieldCheck, TriangleAlert } from "lucide-react";
+import { Database, Loader2, RefreshCw } from "lucide-react";
 import { getCorpusStats, type CorpusStats } from "@/lib/legal-api";
 
 const number = new Intl.NumberFormat("tr-TR");
@@ -11,24 +11,13 @@ function format(value: number | undefined): string {
   return typeof value === "number" && Number.isFinite(value) ? number.format(value) : "—";
 }
 
-function SourceRow({
-  label,
-  official,
-  archive = 0,
-}: {
-  label: string;
-  official: number;
-  archive?: number;
-}) {
+// Uygulamada yalnız resmî portaldan doğrulanmış kararlar aranır ve sayılır (kullanıcı kararı 2026-10-18); doğrulama bekleyen
+// toplu kayıtlar veritabanında durur, doğrulanınca bu sayaçlara kendiliğinden girer.
+function SourceRow({ label, count }: { label: string; count: number }) {
   return (
     <div className="flex items-center justify-between gap-4 border-b border-border/60 py-2 last:border-0">
       <span className="text-sm font-medium">{label}</span>
-      <div className="flex flex-wrap justify-end gap-2 text-xs">
-        <span className="text-emerald-700 dark:text-emerald-400">{format(official)} resmî</span>
-        {archive > 0 && (
-          <span className="text-amber-700 dark:text-amber-400">{format(archive)} doğrulanmadı</span>
-        )}
-      </div>
+      <span className="text-xs tabular-nums text-muted-foreground">{format(count)}</span>
     </div>
   );
 }
@@ -77,7 +66,6 @@ export const CaseLawDatabasePanel = () => {
 
   if (!stats) return null;
 
-  const courtTotal = stats.decision_count + stats.seed_count;
   const embeddingTotal = stats.embeddings.ready + stats.embeddings.pending;
   const embeddingPercent = embeddingTotal
     ? Math.min(100, (stats.embeddings.ready / embeddingTotal) * 100)
@@ -93,7 +81,7 @@ export const CaseLawDatabasePanel = () => {
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="font-semibold">JurisAI Türk Hukuku Korpusu</h2>
-              <Badge variant="secondary">{format(courtTotal)} yargı kararı</Badge>
+              <Badge variant="secondary">{format(stats.decision_count)} yargı kararı</Badge>
               <Badge variant="outline">canlı</Badge>
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
@@ -107,66 +95,30 @@ export const CaseLawDatabasePanel = () => {
         </Button>
       </div>
 
-      <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="mt-5 grid gap-3 sm:grid-cols-2">
         <div className="rounded-xl border bg-card p-4">
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" /> Resmî doğrulanmış karar
-          </div>
+          <div className="text-xs text-muted-foreground">Yargı kararı</div>
           <div className="mt-2 text-2xl font-semibold tabular-nums">
             {format(stats.decision_count)}
           </div>
-        </div>
-        <div className="rounded-xl border bg-card p-4">
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <TriangleAlert className="h-3.5 w-3.5 text-amber-600" /> Doğrulanmamış arşiv
-          </div>
-          <div className="mt-2 text-2xl font-semibold tabular-nums">{format(stats.seed_count)}</div>
         </div>
         <div className="rounded-xl border bg-card p-4">
           <div className="text-xs text-muted-foreground">Mevzuat maddesi</div>
           <div className="mt-2 text-2xl font-semibold tabular-nums">
             {format(stats.legislation_verification.bedesten)}
           </div>
-          <div className="mt-1 text-[11px] text-muted-foreground">
-            {format(stats.legislation_count)} çift doğrulanmış
-          </div>
-        </div>
-        <div className="rounded-xl border bg-card p-4">
-          <div className="text-xs text-muted-foreground">Aranabilir metin parçası</div>
-          <div className="mt-2 text-2xl font-semibold tabular-nums">
-            {format(stats.chunk_count)}
-          </div>
         </div>
       </div>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-[1.2fr_1fr]">
         <div className="rounded-xl border bg-card px-4 py-2">
-          <SourceRow
-            label="Yargıtay"
-            official={stats.court_decisions.yargitay}
-            archive={stats.third_party.yargitay}
-          />
-          <SourceRow
-            label="Danıştay"
-            official={stats.court_decisions.danistay}
-            archive={stats.third_party.danistay}
-          />
-          <SourceRow
-            label="AYM"
-            official={stats.court_decisions.anayasa_mahkemesi}
-            archive={stats.third_party.aym_norm_denetimi}
-          />
-          <SourceRow
-            label="İstinaf / Emsal"
-            official={stats.court_decisions.istinaf_emsal}
-            archive={stats.third_party.istinaf_emsal}
-          />
-          <SourceRow label="KDK" official={stats.administrative.kamu_denetciligi_kurumu} />
-          <SourceRow label="Sayıştay" official={stats.administrative.sayistay} />
-          <SourceRow
-            label="Uyuşmazlık Mahkemesi"
-            official={stats.administrative.uyusmazlik_mahkemesi}
-          />
+          <SourceRow label="Yargıtay" count={stats.court_decisions.yargitay} />
+          <SourceRow label="Danıştay" count={stats.court_decisions.danistay} />
+          <SourceRow label="AYM" count={stats.court_decisions.anayasa_mahkemesi} />
+          <SourceRow label="İstinaf / Emsal" count={stats.court_decisions.istinaf_emsal} />
+          <SourceRow label="KDK" count={stats.administrative.kamu_denetciligi_kurumu} />
+          <SourceRow label="Sayıştay" count={stats.administrative.sayistay} />
+          <SourceRow label="Uyuşmazlık Mahkemesi" count={stats.administrative.uyusmazlik_mahkemesi} />
         </div>
 
         <div className="rounded-xl border bg-card p-4">
@@ -202,11 +154,6 @@ export const CaseLawDatabasePanel = () => {
         </div>
       </div>
 
-      <div className="mt-4 flex items-start gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
-        <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-        Üçüncü taraf hazır corpus ayrı tutulur ve resmî doğrulama yapılmadan resmî kaynak olarak
-        gösterilmez.
-      </div>
     </Card>
   );
 };

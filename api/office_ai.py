@@ -154,9 +154,8 @@ def _sources_footer(contexts: list[RAGContext]) -> str:
         return ""
     lines = []
     for index, context in enumerate(contexts, start=1):
-        # Etiket kuralı: resmî metinle karşılaştırılmış kayıt "Resmî metin ✓"; karşılaştırılmamış kayıt olumsuz ibare de ✓ de almaz.
-        badge = " (Resmî metin ✓)" if context.verification == "official" else ""
-        lines.append(f"- [K{index}] {context.reference_line}{badge}")
+        # Etiket kuralı (2026-10-18): yalnız doğrulanmış kaynak kullanılır; doğrulama rozeti ya da ✓ yazılmaz.
+        lines.append(f"- [K{index}] {context.reference_line}")
     return "\n\n**Kaynaklar**\n" + "\n".join(lines)
 
 

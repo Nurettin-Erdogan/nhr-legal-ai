@@ -85,9 +85,10 @@ def test_official_tier_is_ranked_in_full_and_never_sampled(connection):  # noqa:
     best = _add_decision(connection, 1, official=True, repeats=9)
     for n in range(2, 7):
         _add_decision(connection, n, official=True, repeats=1)
-    # Seed sınırı 0 olsa bile resmî katman eksiksiz puanlanır.
+    # Seed sınırı 0 olsa bile resmî katman eksiksiz puanlanır. Embedding'siz katman atlanınca sonuç kısmidir: orada
+    # embedding'i henüz hazırlanmamış resmî parçalar da olabilir.
     rows = _tiered(connection, 3, 0)
-    assert len(rows) == 3 and all(r["capped"] for r in rows)  # toplu katman atlandı => kısmi
+    assert len(rows) == 3 and all(r["capped"] for r in rows)
     top = connection.execute(
         "SELECT legal_source_id FROM legal_chunks WHERE id = %s", (rows[0]["chunk_id"],)
     ).fetchone()["legal_source_id"]
@@ -96,17 +97,12 @@ def test_official_tier_is_ranked_in_full_and_never_sampled(connection):  # noqa:
 
 
 @db_required
-def test_seed_tier_is_capped_and_flagged(connection):  # noqa: F811
+def test_unverified_bulk_decisions_are_never_returned_whatever_the_seed_cap(connection):  # noqa: F811
+    """Uygulamada yalnız doğrulanmış kayıtlar (kullanıcı kararı 2026-10-18): toplu kayıt hiçbir sınırla dönmez."""
     for n in range(1, 5):
         _add_decision(connection, n, official=False)
-    capped = _tiered(connection, 10, 2)
-    assert len(capped) == 2 and all(r["capped"] for r in capped)
-    uncapped = _tiered(connection, 10, 10)
-    assert len(uncapped) == 4 and not any(r["capped"] for r in uncapped)
-    skipped = _tiered(connection, 10, 0)  # zaman aşımı yedeği: toplu katman taranmaz, sonuç kısmi
-    assert skipped == []
-    exactly = _tiered(connection, 10, 4)
-    assert len(exactly) == 4 and not any(r["capped"] for r in exactly)  # sınıra tam eşit = kısmi değil
+    for seed_cap in (0, 2, 4, 10):
+        assert _tiered(connection, 10, seed_cap) == []
 
 
 @db_required
@@ -121,7 +117,7 @@ def test_both_tiers_merge_by_rank_and_match_the_full_function_when_not_capped(co
             "SELECT * FROM legal_rag_current_lexical_hits(plainto_tsquery('turkish', %s), 10)", (TOKEN,)
         ).fetchall()
     assert [(r["chunk_id"], r["rank"]) for r in tiered] == [(r["chunk_id"], r["rank"]) for r in full]
-    assert len(tiered) == 3 and not any(r["capped"] for r in tiered)
+    assert len(tiered) == 1 and not any(r["capped"] for r in tiered)  # yalnız doğrulanmış karar
 
 
 @db_required
@@ -142,15 +138,16 @@ def test_trust_predicate_still_applies_in_both_tiers(connection):  # noqa: F811
         ).fetchone()["legal_source_id"]
         for r in rows
     }
-    assert sources == {seed}
+    assert sources == set()  # resmî kayıt silinmiş, diğeri güncel değil, toplu kayıt hiç aranmaz
+    assert seed
 
 
 @db_required
-def test_search_reports_partial_when_the_seed_tier_is_capped(connection, monkeypatch):  # noqa: F811
+def test_search_never_returns_unverified_bulk_decisions(connection, monkeypatch):  # noqa: F811
     for n in range(1, 4):
         _add_decision(connection, n, official=False)
+    official = _add_decision(connection, 9, official=True)
     legal._search_cache.clear()
-    monkeypatch.setattr(legal, "_SEARCH_SEED_CAP", 2)
 
     @contextmanager
     def database_connection():
@@ -159,11 +156,8 @@ def test_search_reports_partial_when_the_seed_tier_is_capped(connection, monkeyp
     monkeypatch.setattr(legal, "database_connection", database_connection)
     try:
         response = legal.search_legal_sources(q=TOKEN, limit=10, offset=0, as_of=None)
-        assert response.partial is True and response.total == 2
-        legal._search_cache.clear()
-        monkeypatch.setattr(legal, "_SEARCH_SEED_CAP", 50)
-        response = legal.search_legal_sources(q=TOKEN, limit=10, offset=0, as_of=None)
-        assert response.partial is False and response.total == 3
+        assert response.partial is False and response.total == 1
+        assert [str(result.id) for result in response.results] == [str(official)]
     finally:
         legal._search_cache.clear()
 

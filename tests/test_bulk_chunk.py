@@ -18,10 +18,12 @@ def test_chunk_rows_use_bulk_seed_metadata():
     assert metadata["external_id"] == "yargitay:9"
 
 
-def test_search_and_rag_include_pending_bulk_seed_not_unverified_legislation():
-    for fragment in (_VERIFIED_SOURCE_FILTER, RAG_FILTER, _CURRENT_SEARCH_SQL):
-        assert "bulk_seed" in fragment
-        assert "ingest_status = 'pending'" in fragment
+def test_search_and_rag_use_only_verified_records():
+    """Doğrulanmamış toplu kayıt ve doğrulanmamış mevzuat aranmaz (kullanıcı kararı 2026-10-18)."""
+    assert _VERIFIED_SOURCE_FILTER in _CURRENT_SEARCH_SQL  # arama aynı süzgeci uygular (sıralama sütunu ayrıca bakar)
+    for fragment in (_VERIFIED_SOURCE_FILTER, RAG_FILTER):
+        assert "ls.ingest_status = 'ready'" in fragment
+        assert "ingest_status = 'pending'" not in fragment and "ingestion_method = 'bulk_seed'" not in fragment
         assert "verified_against_gazette" in fragment
         assert "verified_against_mbs" in fragment
     assert "legal_rag_current_lexical_hits" in LEXICAL_RETRIEVAL_SQL

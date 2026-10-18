@@ -95,7 +95,8 @@ def test_the_default_cap_applies_to_three_argument_calls_and_zero_removes_it(con
 
 
 @db_required
-def test_seed_eligibility_is_still_checked_when_looked_up_in_rank_order(connection):  # noqa: F811
+def test_no_unverified_bulk_decision_is_returned_even_in_rank_order(connection):  # noqa: F811
+    """Toplu kayıt (silinmiş, eski sürüm ya da güncel) hiçbir zaman dönmez (kullanıcı kararı 2026-10-18)."""
     kept = _add_decision(connection, 1, official=False, repeats=1)
     removed = _add_decision(connection, 2, official=False, repeats=9)  # en yüksek puanlı ama silinmiş
     stale = _add_decision(connection, 3, official=False, repeats=5)  # güncel sürüm değil
@@ -108,7 +109,7 @@ def test_seed_eligibility_is_still_checked_when_looked_up_in_rank_order(connecti
         connection.execute("SELECT legal_source_id FROM legal_chunks WHERE id = %s", (r["chunk_id"],)).fetchone()["legal_source_id"]
         for r in rows
     ]
-    assert sources == [kept]
+    assert sources == [] and kept
 
 
 @db_required
@@ -119,8 +120,7 @@ def test_both_tiers_still_merge_by_rank(connection):  # noqa: F811
 
     rows = _tiered(connection, 10, 100, 100)
 
-    assert len(rows) == 3 and not any(r["capped"] for r in rows)
-    assert [r["rank"] for r in rows] == sorted((r["rank"] for r in rows), reverse=True)
+    assert len(rows) == 1 and not any(r["capped"] for r in rows)  # yalnız doğrulanmış karar
 
 
 @db_required

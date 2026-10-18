@@ -213,7 +213,7 @@ export const AIRunner = ({
         const refs = r.citations
           .map(
             (c) =>
-              `- ${c.marker} ${c.reference}${c.verification === "user_document" ? " (kullanıcı belgesi)" : c.verification === "official" ? " (Resmî metin ✓)" : ""}${c.source_url ? ` — ${c.source_url}` : ""}`,
+              `- ${c.marker} ${c.reference}${c.verification === "user_document" ? " (kullanıcı belgesi)" : ""}${c.source_url ? ` — ${c.source_url}` : ""}`,
           )
           .join("\n");
         const warn = r.grounded ? "" : "\n\n> Bu cevap getirilen kaynaklarla doğrulanamadı.";

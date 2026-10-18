@@ -33,17 +33,20 @@ getirilen kaynaklara dayandığı kod tarafında doğrulanır.
 
 **Doğrulanmamış kaynak "resmî" diye sunulmaz.** Korpusta üçüncü taraf derlemeden
 gelen kayıtlar da var (2026-09-20 itibarıyla ~10,2 milyon Yargıtay/Danıştay kararı,
-`ingestion_method='bulk_seed'`, `ingest_status='pending'`). Bunlar aranabilir ve
-atıf yapılabilir, ama her yerde ayrı gösterilir: arayüz sayacında ayrı satır,
-modele verilen kaynak metninde uyarı satırı, cevaptaki atıfta resmî kayıtlardan ayrı
-etiket. Etiket ifadesi (kullanıcı kararı 2026-10-15): resmî metinle karşılaştırılmış
-kayıt "Resmî metin ✓"; karşılaştırılmamış kayıt olumsuz ibare olmadan kaynak ve
-künyeyle ("Yargıtay kararı · E./K. no") ve kararı resmî portalda açan "Resmî sitede
-aç" bağlantısıyla gösterilir. Karşılaştırılmamış kayıt hiçbir yerde "doğrulandı",
-"resmî" ya da ✓ ile gösterilmez.
+`ingestion_method='bulk_seed'`, `ingest_status='pending'`). Kullanıcı kararı
+2026-10-18: **uygulamada yalnız doğrulanmış kayıtlar aranır, gösterilir ve atıf
+yapılır.** Doğrulanmamış toplu kayıtlar veritabanında durur ama arama, asistan,
+araştırma ve kaynak okuyucu onları döndürmez (migration 058, `api/legal.py`
+`_VERIFIED_SOURCE_FILTER`); doğrulanıp `ready` olunca kendiliğinden görünür.
+Her görünen kaynak doğrulanmış olduğundan arayüzdeki "Resmî metin ✓ /
+doğrulanmamış" ayrımı kaldırıldı: karar künyesiyle ("Yargıtay kararı · E./K. no")
+ve resmî portalda açan "Resmî sitede aç" bağlantısıyla gösterilir; yalnız
+kullanıcının kendi belgesi "kullanıcı belgesi" diye ayrılır. Resmî olmayan bir kayıt
+(ör. eski bir sohbette kalmış atıf) hiçbir yerde "doğrulandı", "resmî" ya da ✓ ile
+gösterilmez.
 Bir kayıt ancak resmî portaldan çekilip metni eşleştiğinde `ready` olur
-([docs/ingestion-bulk-mrfg.md](docs/ingestion-bulk-mrfg.md)). Bu ayrımı silen
-değişiklik yapılmaz.
+([docs/ingestion-bulk-mrfg.md](docs/ingestion-bulk-mrfg.md)). Doğrulanmamış kaydı
+yeniden uygulamaya açmak kullanıcı kararı olmadan yapılmaz.
 
 **AI katmanı sağlayıcıdan bağımsız kalır.** Yerel üretim DeepSeek (Ollama)
 üzerinden gider; üretim ve embedding çağrıları arayüz arkasında tutulur. Model

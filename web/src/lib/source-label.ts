@@ -1,18 +1,14 @@
 /**
- * Kaynak etiketi: bir karar/mevzuat kaydının doğrulama durumunun ekranda ve kopyalanan metinde nasıl yazılacağı.
+ * Kaynak etiketi: bir karar/mevzuat kaydının ekranda ve kopyalanan metinde nasıl yazılacağı.
  *
- * Kural (AGENTS.md, kullanıcı kararı 2026-10-15):
- *   - Resmî metinle karşılaştırılmış kayıt (`official`): "Resmî metin ✓".
- *   - Karşılaştırılmamış kayıt (`third_party`, toplu derleme): olumsuz ibare YOK. Künyesiyle ("Yargıtay kararı · E./K.") ve kararı
- *     resmî portalda açan "Resmî sitede aç" bağlantısıyla gösterilir. Hiçbir yerde "resmî", "doğrulandı" ya da ✓ ile gösterilmez.
- *   - Kullanıcının kendi belgesi: "kullanıcı belgesi".
- * Ayrım kalkmıyor: resmî kayıt ✓ taşır, karşılaştırılmamış kayıt taşımaz. Durum her istekte sunucudan gelir (bir karar bugün
- * karşılaştırılmamış, yarın resmî olabilir); burada saklanmaz.
+ * Kural (AGENTS.md, kullanıcı kararı 2026-10-18): uygulamada yalnız resmî metinle karşılaştırılmış kayıtlar aranır ve gösterilir.
+ * Her kaynak doğrulanmış olduğundan "doğrulanmış / doğrulanmamış" ayrımı ekrandan kalktı: kayıt künyesiyle ("Yargıtay kararı ·
+ * E./K.") ve kararı resmî portalda açan "Resmî sitede aç" bağlantısıyla gösterilir, ✓ rozeti yoktur.
+ *   - Kullanıcının kendi belgesi hukuk kaynağı değildir; "kullanıcı belgesi" diye ayrılır.
+ *   - Resmî olmayan bir kayıt (eski bir sohbette kalmış olabilir) hiçbir yerde "resmî", "doğrulandı" ya da ✓ ile gösterilmez.
  */
 
 export type SourceVerification = "official" | "third_party" | "user_document" | "unknown" | string;
-
-export const OFFICIAL_TAG = "Resmî metin ✓";
 
 // Yalnız resmî karar arama portallarına bağlantı verilir (kaydın `source_url`'i başka bir yeri gösteriyorsa bağlantı yok).
 const PORTALS: ReadonlyArray<[RegExp, string]> = [
@@ -37,19 +33,17 @@ export function decisionSourceName(url: string | null | undefined, courtName?: s
   return "Karar";
 }
 
-/** Ekranda gösterilecek rozet; karşılaştırılmamış ya da durumu bilinmeyen kayıtta rozet yoktur (olumsuz ibare yazılmaz). */
-export function verificationTag(verification: SourceVerification): { label: string; tone: "official" | "document" } | null {
-  if (verification === "official") return { label: OFFICIAL_TAG, tone: "official" };
+/** Ekranda gösterilecek rozet: yalnız kullanıcı belgesi ayrılır; hukuk kaynaklarında doğrulama rozeti yoktur. */
+export function verificationTag(verification: SourceVerification): { label: string; tone: "document" } | null {
   if (verification === "user_document") return { label: "kullanıcı belgesi", tone: "document" };
   return null;
 }
 
 /**
- * Kopyalanan/dışa aktarılan atıf satırının eki. Resmî kayıt "(Resmî metin ✓)", kullanıcı belgesi "(kullanıcı belgesi)";
- * karşılaştırılmamış kayıt resmî portal adresiyle ("— resmî sitede: …") ayrışır, ✓ almaz.
+ * Kopyalanan/dışa aktarılan atıf satırının eki: kullanıcı belgesi "(kullanıcı belgesi)"; karar resmî portal adresiyle
+ * ("— resmî sitede: …"). Doğrulama ibaresi ya da ✓ yazılmaz.
  */
 export function citationSuffix(verification: SourceVerification, url?: string | null): string {
-  if (verification === "official") return ` (${OFFICIAL_TAG})`;
   if (verification === "user_document") return " (kullanıcı belgesi)";
   const portal = officialPortalUrl(url);
   return portal ? ` — resmî sitede: ${portal}` : "";

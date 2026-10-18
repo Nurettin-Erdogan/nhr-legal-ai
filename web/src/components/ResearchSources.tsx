@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { OFFICIAL_TAG, decisionSourceName } from "@/lib/source-label";
+import { decisionSourceName } from "@/lib/source-label";
 import { Button } from "@/components/ui/button";
 import { SourceReader } from "@/components/SourceReader";
 
@@ -120,17 +120,7 @@ export function ResearchSources({
             <p className="font-medium">
               {index + 1}. {source.reference}
             </p>
-            <span
-              className={
-                source.verification === "official"
-                  ? "text-emerald-700 dark:text-emerald-400"
-                  : "text-foreground/80"
-              }
-            >
-              {source.verification === "official"
-                ? OFFICIAL_TAG
-                : decisionSourceName(source.source_url)}
-            </span>
+            <span className="text-foreground/80">{decisionSourceName(source.source_url)}</span>
             <SourceReader
               sourceId={source.source_id}
               reference={source.reference}

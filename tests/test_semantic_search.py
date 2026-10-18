@@ -75,10 +75,10 @@ def test_a_case_description_returns_matching_decisions_with_their_fields_and_ver
     assert response.partial is True  # en iyi ~60 kaynakla sınırlı: korpusun tamamı değil
 
 
-def test_third_party_records_are_listed_but_labelled_unverified(connection, semantic):
+def test_unverified_bulk_records_are_not_listed(connection, semantic):
+    """Doğrulanmamış toplu kayıt aramada çıkmaz (kullanıcı kararı 2026-10-18)."""
     third = _decision(connection, "ucuncu", f"{TOKEN} işçi kıdem tazminatı kararı.", status="pending", method="bulk_seed")
-    hit = next(hit for hit in _search(f"{TOKEN} işçi kıdem tazminatı kararı arıyorum").results if hit.id == third)
-    assert hit.verification == "third_party"  # aranır, ama resmî diye sunulmaz
+    assert third not in [hit.id for hit in _search(f"{TOKEN} işçi kıdem tazminatı kararı arıyorum").results]
 
 
 @pytest.mark.parametrize("change", [{"current": False}, {"deleted": True}])

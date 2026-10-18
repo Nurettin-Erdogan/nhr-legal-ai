@@ -128,15 +128,16 @@ export const yearOf = (hit: SearchHit): number | null => {
 };
 
 /**
- * Kart rozeti (kural: `@/lib/source-label`, AGENTS.md 2026-10-15). Resmî metinle karşılaştırılmış kayıt "Resmî metin ✓";
- * karşılaştırılmamış ya da durumu bilinmeyen kayıt olumsuz ibare olmadan kaynak adıyla gösterilir ve ✓ almaz.
+ * Kart rozeti (kural: `@/lib/source-label`, AGENTS.md 2026-10-18): kaynak adı ("Yargıtay kararı", "Mevzuat"). Uygulamada yalnız
+ * doğrulanmış kayıtlar gösterildiğinden doğrulama rozeti yoktur.
  */
 export function verificationBadge(
-  verification: Verification,
+  _verification: Verification,
   sourceUrl?: string | null,
   courtName?: string | null,
-): { label: string; tone: "ok" | "neutral" } {
-  if (verification === "official") return { label: "Resmî metin ✓", tone: "ok" };
+  sourceType?: string | null,
+): { label: string; tone: "neutral" } {
+  if (sourceType === "legislation") return { label: "Mevzuat", tone: "neutral" };
   const url = (sourceUrl ?? "").trim();
   const court = (courtName ?? "").toLocaleLowerCase("tr-TR");
   if (/^https:\/\/karararama\.yargitay\.gov\.tr\//i.test(url) || court.includes("yargıtay"))
@@ -153,15 +154,13 @@ export interface Filters {
   authority: string;
   sourceType: string;
   year: string;
-  onlyOfficial: boolean;
-  sort: "relevance" | "newest" | "official_first";
+  sort: "relevance" | "newest";
 }
 
 export const DEFAULT_FILTERS: Filters = {
   authority: "",
   sourceType: "",
   year: "",
-  onlyOfficial: false,
   sort: "relevance",
 };
 
@@ -172,19 +171,14 @@ export function filterAndSort(hits: SearchHit[], filters: Filters): SearchHit[] 
   const kept = hits
     .map((hit, index) => ({ hit, index }))
     .filter(({ hit }) => {
-      if (filters.onlyOfficial && hit.verification !== "official") return false;
       if (filters.authority && (hit.authority ?? "") !== filters.authority) return false;
       if (filters.sourceType && hit.sourceType !== filters.sourceType) return false;
       if (filters.year && String(yearOf(hit) ?? "") !== filters.year) return false;
       return true;
     });
-  const rankOf = (hit: SearchHit) => (hit.verification === "official" ? 0 : 1);
   kept.sort((a, b) => {
     if (filters.sort === "newest") {
       const diff = dateKey(b.hit).localeCompare(dateKey(a.hit));
-      if (diff) return diff;
-    } else if (filters.sort === "official_first") {
-      const diff = rankOf(a.hit) - rankOf(b.hit);
       if (diff) return diff;
     }
     return a.index - b.index;
@@ -359,7 +353,8 @@ export async function loadSourceDetail(id: string, signal?: AbortSignal): Promis
   if (!response.ok)
     throw new SearchError(
       response.status === 404
-        ? "Kaynak bulunamadı."
+        ? // Eski bir sohbetteki atıf, uygulamadan kaldırılmış doğrulanmamış bir kayda gidebilir (2026-10-18).
+          "Kaynak bulunamadı. Bu kayıt kaldırılmış ya da henüz resmî metinle doğrulanmamış olabilir."
         : `Kaynak metni alınamadı (${response.status}).`,
       response.status,
     );

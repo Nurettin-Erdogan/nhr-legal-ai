@@ -122,8 +122,8 @@ test("user document citations are labelled as such, never as official or merely 
     }),
   );
   assert.match(html, /kullanıcı belgesi/);
-  // Karşılaştırılmamış kayıt olumsuz ibare de ✓ de almaz (AGENTS.md, 2026-10-15); resmî kayıt "Resmî metin ✓" alır.
-  assert.doesNotMatch(html, /doğrulanmadı/);
+  // Doğrulama rozeti yoktur (AGENTS.md, 2026-10-18): ne olumsuz ibare ne ✓.
+  assert.doesNotMatch(html, /doğrulanmadı|Resmî metin|✓/);
   assert.match(html, /bir tarafın iddiasıdır; hukuki dayanak ya da resmî kaynak değildir/);
 });
 

@@ -22,7 +22,7 @@ import {
 import { toast } from "sonner";
 import { citationSuffix } from "@/lib/source-label";
 import { SourceReader } from "@/components/SourceReader";
-import { Copy, Loader2, Search, ShieldCheck } from "lucide-react";
+import { Copy, Loader2, Search } from "lucide-react";
 
 const PAGE_SIZE = 10;
 
@@ -46,7 +46,7 @@ function Highlighted({ content, query }: { content: string; query: string }) {
 }
 
 function Card({ hit, query }: { hit: SearchHit; query: string }) {
-  const badge = verificationBadge(hit.verification, hit.sourceUrl, hit.courtName);
+  const badge = verificationBadge(hit.verification, hit.sourceUrl, hit.courtName, hit.sourceType);
   const meta = [
     hit.sourceType === "legislation"
       ? [hit.lawName, hit.articleNo && `m. ${hit.articleNo}`, hit.articleTitle]
@@ -87,11 +87,7 @@ function Card({ hit, query }: { hit: SearchHit; query: string }) {
         {meta.map((part) => (
           <span key={String(part)}>{part}</span>
         ))}
-        <span
-          className={`inline-flex items-center gap-1 font-medium ${badge.tone === "ok" ? "text-emerald-700 dark:text-emerald-400" : "text-foreground/80"}`}
-          data-testid="decision-source-tag"
-        >
-          {badge.tone === "ok" && <ShieldCheck className="h-3.5 w-3.5" />}
+        <span className="font-medium text-foreground/80" data-testid="decision-source-tag">
           {badge.label}
         </span>
       </div>
@@ -325,9 +321,6 @@ export function DecisionSearch({
             {hits.length > 0 && (
               <span className="text-muted-foreground">{hits.length} gösteriliyor</span>
             )}
-            {hits.length > facets.unverified && (
-              <Badge variant="outline">{hits.length - facets.unverified} Resmî metin ✓</Badge>
-            )}
           </div>
           {page.partial && (
             <p
@@ -396,17 +389,8 @@ export function DecisionSearch({
                 onChange={(event) => set("sort", event.target.value as Filters["sort"])}
               >
                 <option value="relevance">İlgi sırası</option>
-                <option value="official_first">Doğrulanmış önce</option>
                 <option value="newest">En yeni önce</option>
               </select>
-              <label className="flex items-center gap-1.5">
-                <input
-                  type="checkbox"
-                  checked={filters.onlyOfficial}
-                  onChange={(event) => set("onlyOfficial", event.target.checked)}
-                />
-                Yalnız resmî doğrulanmış
-              </label>
             </div>
           )}
           {hiddenByFilter > 0 && (

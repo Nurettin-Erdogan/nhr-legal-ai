@@ -132,11 +132,8 @@ _VERIFIED_SOURCE_FILTER = """
             )
         )
     )
-    OR (
-        ls.ingestion_method = 'bulk_seed'
-        AND ls.ingest_status = 'pending'
-        AND ls.source_type = 'court_decision'
-    )
+    -- Doğrulanmamış toplu kayıtlar (`bulk_seed` + `pending`) şimdilik aranmaz ve gösterilmez (kullanıcı kararı 2026-10-18):
+    -- doğrulandıkça `ready` olup bu koşula kendiliğinden girer.
 )
 """
 

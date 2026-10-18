@@ -298,9 +298,9 @@ async def run_job(
         job.stage = "Tamamlanamadı."
 
 
-# Kaynak etiketi (AGENTS.md, kullanıcı kararı 2026-10-15): resmî metinle karşılaştırılmış kayıt "Resmî metin ✓"; karşılaştırılmamış
-# kayıt olumsuz ibare de ✓ de almaz (künyesiyle durur). Modele verilen kaynak metnindeki uyarı satırı ayrıdır ve aynen kalır.
-_BADGE = {"official": " (Resmî metin ✓)", "user_document": " (kullanıcı belgesi)"}
+# Kaynak etiketi (AGENTS.md, kullanıcı kararı 2026-10-18): uygulamada yalnız doğrulanmış kaynaklar kullanıldığından doğrulama
+# rozeti yazılmaz; yalnız kullanıcının kendi belgesi ayrılır. Modele verilen kaynak metnindeki uyarı satırı ayrıdır ve aynen kalır.
+_BADGE = {"user_document": " (kullanıcı belgesi)"}
 
 
 def render_markdown(question: str, steps: list[StepResult], *, topic: str | None = None, hints: list[dict[str, Any]] | None = None) -> str:

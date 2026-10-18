@@ -215,7 +215,7 @@ search_query AS (
 """
 
 # Bedesten maddeleri resmî kataloglardan biriyle (Resmî Gazete ya da MBS) eşleşince atıf alabilir (kullanıcı kararı 2026-10-15).
-# Tohum (bulk_seed/pending) kararlar da aranır; kullanıcı sorduğunda canlı doğrulanır.
+# Doğrulanmamış toplu kararlar şimdilik aranmaz (kullanıcı kararı 2026-10-18); doğrulandıkça `ready` olarak girer.
 _VERIFIED_SOURCE_FILTER = """
 (
     (
@@ -231,11 +231,7 @@ _VERIFIED_SOURCE_FILTER = """
             )
         )
     )
-    OR (
-        ls.ingestion_method = 'bulk_seed'
-        AND ls.ingest_status = 'pending'
-        AND ls.source_type = 'court_decision'
-    )
+    -- Doğrulanmamış toplu kayıtlar (`bulk_seed` + `pending`) şimdilik modele verilmez (kullanıcı kararı 2026-10-18).
 )
 """
 

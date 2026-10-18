@@ -44,10 +44,10 @@ test("a missing or unknown verification is never shown as official", () => {
   }
   assert.equal(hit({ verification: "third_party" }).verification, "third_party");
   assert.equal(hit({ verification: "official" }).verification, "official");
-  // AGENTS.md (2026-10-15): resmî metinle karşılaştırılmış kayıt "Resmî metin ✓"; karşılaştırılmamış kayıt olumsuz ibare olmadan
-  // kaynak adıyla gösterilir ve hiçbir zaman ✓ ya da "resmî" almaz.
-  assert.deepEqual(search.verificationBadge("official"), { label: "Resmî metin ✓", tone: "ok" });
+  // AGENTS.md (2026-10-18): uygulamada yalnız doğrulanmış kayıtlar; kart kaynak adını gösterir, doğrulama rozeti ya da ✓ yoktur.
   for (const [args, label] of [
+    [["official", "https://karararama.yargitay.gov.tr/getDokuman?id=1"], "Yargıtay kararı"],
+    [["official", null, null, "legislation"], "Mevzuat"],
     [["third_party", "https://karararama.yargitay.gov.tr/getDokuman?id=1"], "Yargıtay kararı"],
     [["third_party", "https://karararama.danistay.gov.tr/getDokuman?id=2"], "Danıştay kararı"],
     [["third_party", null, "Yargıtay 9. Hukuk Dairesi"], "Yargıtay kararı"],
@@ -154,13 +154,10 @@ test("filters combine and sorting is stable", () => {
   const ids = (filters) =>
     search.filterAndSort(hits, { ...search.DEFAULT_FILTERS, ...filters }).map((item) => item.id);
   assert.deepEqual(ids({}), ["a", "b", "c", "d"]);
-  assert.deepEqual(ids({ onlyOfficial: true }), ["b", "c"]);
   assert.deepEqual(ids({ authority: "Yargıtay" }), ["a", "c"]);
-  assert.deepEqual(ids({ authority: "Yargıtay", onlyOfficial: true }), ["c"]);
   assert.deepEqual(ids({ year: "2022" }), ["b", "c"]);
   assert.deepEqual(ids({ sourceType: "legislation" }), ["d"]);
   assert.deepEqual(ids({ sort: "newest" }), ["b", "c", "a", "d"]);
-  assert.deepEqual(ids({ sort: "official_first" }), ["b", "c", "a", "d"]);
   assert.deepEqual(ids({ authority: "Yok" }), []);
 });
 

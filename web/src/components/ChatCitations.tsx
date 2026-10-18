@@ -21,20 +21,11 @@ export interface ChatCitation {
 }
 
 /**
- * Atıf rozeti (kural: `@/lib/source-label`): resmî kayıtta "Resmî metin ✓", kullanıcı belgesinde "kullanıcı belgesi".
- * Karşılaştırılmamış kayıtta olumsuz rozet de ✓ de yoktur; kararı resmî portalda açan bağlantı gösterilir.
+ * Atıf rozeti (kural: `@/lib/source-label`, 2026-10-18): kullanıcı belgesinde "kullanıcı belgesi"; kararda resmî portalda açan
+ * bağlantı. Uygulamada yalnız doğrulanmış kaynaklar kullanıldığından doğrulama rozeti yoktur.
  */
 function CitationBadge({ verification, url }: { verification: string; url?: string | null }) {
   const tag = verificationTag(verification);
-  if (tag?.tone === "official")
-    return (
-      <span
-        className="rounded px-1.5 py-0.5 bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 text-[10px] font-medium"
-        data-testid="citation-official"
-      >
-        {tag.label}
-      </span>
-    );
   if (tag)
     return (
       <span className="rounded px-1.5 py-0.5 bg-sky-500/15 text-sky-700 dark:text-sky-400 text-[10px] font-medium">

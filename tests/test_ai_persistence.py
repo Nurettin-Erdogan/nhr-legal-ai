@@ -225,7 +225,8 @@ def test_retrieval_excludes_unverified_legislation(connection):
     assert not any(context.source_type == "legislation" for context in contexts)
 
 
-def test_retrieval_includes_pending_bulk_seed(connection):
+def test_retrieval_never_includes_unverified_bulk_records(connection):
+    """Doğrulanmamış toplu karar modele verilmez (kullanıcı kararı 2026-10-18)."""
     pending_token = "PYTESTBULKSEEDX"
     source_id = connection.execute(
         """
@@ -261,8 +262,7 @@ def test_retrieval_includes_pending_bulk_seed(connection):
     )
     contexts = retrieve_contexts(connection, question=pending_token, top_k=10)
     matched = [context for context in contexts if pending_token in context.content]
-    assert matched
-    assert all(context.verification == "third_party" for context in matched)
+    assert matched == []
 
 
 def test_retrieval_builds_readable_references_per_source_type(connection):

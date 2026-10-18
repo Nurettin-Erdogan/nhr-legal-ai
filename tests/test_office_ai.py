@@ -70,8 +70,8 @@ def test_sources_footer_marks_unverified_third_party_sources():
     footer = office_ai._sources_footer([_context(), _context(verification="third_party")])
 
     assert "[K1]" in footer and "[K2]" in footer
-    # Resmî kayıt "Resmî metin ✓" taşır; karşılaştırılmamış kayıt olumsuz ibare de ✓ de almaz (AGENTS.md, 2026-10-15).
-    assert footer.count("(Resmî metin ✓)") == 1 and "doğrulanmadı" not in footer
+    # Doğrulama rozeti yazılmaz (AGENTS.md, 2026-10-18): ne ✓ ne olumsuz ibare.
+    assert "✓" not in footer and "Resmî metin" not in footer and "doğrulanmadı" not in footer
 
 
 def test_unknown_module_is_rejected_and_login_required():

@@ -140,7 +140,8 @@ def test_source_detail_returns_legislation_and_chunks(connection, monkeypatch):
     assert TOKEN in source.raw_text
 
 
-def test_source_reader_keeps_pending_bulk_decision_separate(connection, monkeypatch):
+def test_source_reader_does_not_open_an_unverified_bulk_decision(connection, monkeypatch):
+    """Uygulamada yalnız doğrulanmış kayıtlar (kullanıcı kararı 2026-10-18)."""
     _seed_court(connection, court_name="Yargıtay", authority="Yargıtay", suffix="reader-pending")
     source_id = connection.execute(
         "SELECT id FROM legal_sources WHERE external_id = %s",
@@ -149,7 +150,9 @@ def test_source_reader_keeps_pending_bulk_decision_separate(connection, monkeypa
     assert source_id is not None
     connection.execute("UPDATE legal_sources SET ingestion_method='bulk_seed',ingest_status='pending' WHERE id=%s", (source_id["id"],))
     _use_connection(monkeypatch, connection)
-    assert legal.legal_source_detail(source_id["id"]).verification == "third_party"
+    with pytest.raises(legal.HTTPException) as exc:
+        legal.legal_source_detail(source_id["id"])
+    assert exc.value.status_code == 404
 
 
 def test_source_reader_rejects_a_deleted_source(connection, monkeypatch):

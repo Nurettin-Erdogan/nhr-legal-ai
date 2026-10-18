@@ -54,10 +54,11 @@ def test_filtered_high_rank_does_not_displace_valid_lower_rank(connection,field)
 
 
 @db_required
-def test_pending_seed_searchable_but_not_promoted_and_unverified_law_excluded(connection):
+def test_unverified_bulk_decision_and_unverified_law_are_both_excluded(connection):
+    """Uygulamada yalnız doğrulanmış kayıtlar (kullanıcı kararı 2026-10-18); toplu kayıt silinmez, `pending` kalır."""
     _seed_decision(connection)
     _seed_legislation(connection)
     connection.execute("UPDATE legal_sources SET ingest_status='pending',ingestion_method='bulk_seed' WHERE source_type='court_decision' AND raw_text LIKE %s", (TOKEN+'%',))
     connection.execute("UPDATE legal_sources SET metadata='{}' WHERE source_type='legislation' AND raw_text LIKE %s", (TOKEN+'%',))
-    assert len(hits(connection))==1
+    assert len(hits(connection))==0
     assert connection.execute("SELECT ingest_status FROM legal_sources WHERE source_type='court_decision' AND raw_text LIKE %s",(TOKEN+'%',)).fetchone()['ingest_status']=='pending'

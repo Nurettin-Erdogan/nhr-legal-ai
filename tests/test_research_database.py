@@ -45,10 +45,11 @@ def test_ineligible_sources_do_not_leak_through_definer_function(connection, fie
     assert page(connection) == []
 
 
-def test_third_party_remains_searchable_without_being_promoted(connection):
+def test_unverified_bulk_records_are_not_searchable_and_stay_unpromoted(connection):
+    """Uygulamada yalnız doğrulanmış kayıtlar (kullanıcı kararı 2026-10-18, migration 058); kayıt silinmez, `pending` kalır."""
     _seed_decision(connection)
     connection.execute("UPDATE legal_sources SET ingest_status='pending',ingestion_method='bulk_seed' WHERE raw_text LIKE %s", (TOKEN+'%',))
-    assert page(connection)[0]['total'] == 1
+    assert page(connection) == []
     assert connection.execute('SELECT ingest_status FROM legal_sources WHERE raw_text LIKE %s', (TOKEN+'%',)).fetchone()['ingest_status'] == 'pending'
 
 
@@ -129,8 +130,8 @@ def test_bounded_page_never_reads_private_documents_or_unverified_laws(connectio
     assert bounded_page(connection, *PLAIN, params=(TOKEN, TOKEN))[0]['total'] == 1
 
 
-def test_verified_sources_come_first_even_when_an_unverified_seed_scores_higher(connection):
-    """Sayfa yalnız doğrulanmış sonuçları gösterir; yüksek puanlı doğrulanmamış toplu kayıtlar ilk sayfaları doldurmamalı."""
+def test_a_higher_scoring_unverified_bulk_record_never_appears(connection):
+    """Sayfa yalnız doğrulanmış sonuçları gösterir; yüksek puanlı doğrulanmamış toplu kayıt hiç görünmez (2026-10-18)."""
     _seed_decision(connection)  # resmî, TOKEN bir kez geçer
     verified = connection.execute("SELECT id FROM legal_sources WHERE raw_text LIKE %s", (TOKEN + '%',)).fetchone()['id']
     seed = connection.execute(
@@ -140,7 +141,4 @@ def test_verified_sources_come_first_even_when_an_unverified_seed_scores_higher(
     ).fetchone()['id']
     connection.execute("INSERT INTO legal_chunks(legal_source_id, chunk_index, content) VALUES (%s, 0, %s)", (seed, f"{TOKEN} " * 6))
     rows = bounded_page(connection, *PLAIN, params=(TOKEN, TOKEN))
-    by_source = {row['source_id']: row for row in rows}
-    assert set(by_source) == {verified, seed} and by_source[seed]['rank'] > by_source[verified]['rank']  # tohum daha yüksek puanlı
-    assert [row['source_id'] for row in rows] == [verified, seed]  # ama doğrulanmış olan önce
-    assert bounded_page(connection, *PLAIN, limit=1, params=(TOKEN, TOKEN))[0]['source_id'] == verified
+    assert [row['source_id'] for row in rows] == [verified] and seed

@@ -151,7 +151,7 @@ test("chunk-only, absent and historical records are explicitly distinguished", a
     const tree = view.render();
     if (record.isCurrent === false) {
       assert.match(textOf(tree), /tarihsel/);
-      assert.equal(byTestId(tree, "reader-verification").props.children, "Resmî metin ✓");
+      assert.doesNotMatch(textOf(tree), /Resmî metin|✓/);
     } else
       assert.match(
         textOf(tree),

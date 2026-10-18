@@ -107,8 +107,9 @@ test("the section says these are not the basis of the answer and shows each pass
   assert.ok(html.includes(official.reference));
   assert.ok(html.includes("ihtiyaç nedeniyle tahliye"));
   assert.ok(html.includes('data-testid="source-reader-trigger"'));
-  assert.ok(!html.includes('href="https://karararama.yargitay.gov.tr/getDokuman?id=1"'));
-  assert.ok(!html.includes("doğrulanmadı"));
+  // Doğrulama rozeti yok (2026-10-18); karar resmî portalda açılabilir.
+  assert.ok(html.includes('href="https://karararama.yargitay.gov.tr/getDokuman?id=1"'));
+  assert.ok(!html.includes("doğrulanmadı") && !html.includes("Resmî metin") && !html.includes("✓"));
 });
 
 test("a user's own document carries its label and has no link", () => {
