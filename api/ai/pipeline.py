@@ -38,7 +38,7 @@ from api.ai.live_verify import verify_third_party_contexts
 from api.ai.consulted_relevance import relevant_chunk_ids
 from api.ai.discovery import candidate_pool_size, select_answer_contexts, search_summary
 from api.ai.fast_statute import try_fast_statute
-from api.ai.relevance import case_law_requested, documents_answer, documents_named_in
+from api.ai.relevance import case_law_requested, documents_answer, documents_named_in, missing_document_references
 from api.ai.trust import usable_as_evidence, verified_contexts
 from api.ai.turkish_text import restore_turkish
 from api.ai.on_demand_verify import (
@@ -531,6 +531,10 @@ def _retrieve(
                 # bir kararın genel cümleleriyle cevap veriliyordu (ölçüldü: 2026-10-10).
                 file_only = True
             named: list[RAGContext] = []
+            if missing_document_references(search_question, document_contexts):
+                # Retrieval is bounded: do not claim the document is absent from the whole account.
+                # Fail closed rather than substituting an unrelated document or public court decision.
+                raise HTTPException(422, "Adını belirttiğiniz belge bu aramada bulunamadı. Belgeyi seçip yeniden sorun; metninin okunmuş olduğundan emin olun.")
             if case_id is not None or selected or request.office_project_id:
                 named = documents_named_in(search_question, document_contexts)
                 if named:

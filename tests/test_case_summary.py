@@ -142,7 +142,7 @@ def _echo_generate(calls: list):
         calls.append(prompt)
         if "bölüm özetleri" in system:
             return "- Kıdem tazminatı 340.000 TL hesaplanmıştır."
-        return "- " + _text_of(prompt).split(".")[0][:120] + "."
+        return "- " + _text_of(prompt).split(". ")[0][:120] + "."  # ilk cümle (tarihteki noktadan bölünmez)
 
     return generate
 
@@ -263,7 +263,7 @@ def world(db, monkeypatch):  # noqa: F811
             raise HTTPException(status_code=503, detail="Model şu an yanıt vermiyor")
         if state.reply is not None:
             return state.reply
-        return "- " + text.split(".")[0][:120] + "."
+        return "- " + text.split(". ")[0][:120] + "."  # ilk cümle (tarihteki noktadan bölünmez)
 
     monkeypatch.setattr(office_ai, "_generate", lambda system, prompt: _pair(fake_generate(system, prompt)))
     db.state = state

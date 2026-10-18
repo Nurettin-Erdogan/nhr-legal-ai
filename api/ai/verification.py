@@ -84,6 +84,16 @@ def verify_answer(answer: str, contexts: list[RAGContext], *, question: str = ""
     unsupported = list(uncited_claims(text, len(cited_contexts)))
     unsupported.extend(_unsupported_numeric_claims(text, cited_contexts))
     unsupported.extend(unsupported_source_claims(text, cited_contexts))
+    if question and any(context.source_type == 'document' for context in contexts):
+        from api.ai.relevance import missing_document_references
+        from api.ai.search_plan import normalize
+        if missing_document_references(question, cited_contexts):
+            unsupported.append('Adıyla sorulan belgeye ait kanıt yanıtta bulunmuyor.')
+        q = normalize(question)
+        if (re.search(r'\b(?:iki|2)\s+belge', q)
+                and any(term in q for term in ('karşılaştır', 'fark', 'nelerdir', 'neler'))
+                and len({c.source_id for c in cited_contexts if c.source_type == 'document'}) < 2):
+            unsupported.append('İki belge sorulan karşılaştırma iki ayrı belgeden kanıtla desteklenmiyor.')
     if question:
         from api.ai.authority import answer_uses_primary_basis
         if not answer_uses_primary_basis(question, cited_contexts,

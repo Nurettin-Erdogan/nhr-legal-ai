@@ -70,6 +70,141 @@ GENERIC_QUESTION_WORDS = frozenset((
 ))
 
 
+_PAYMENT_STATUS_RE = re.compile(
+    r"\b(?:öden(?:miş|di|memiş|medi|mektedir|memektedir|iyor|miyor)\w*|"
+    r"öde(?:miş|di|memiş|medi|mektedir|memektedir|miyor)\w*|"
+    r"yatırıl(?:mış|dı|mamış|madı)\w*|tahsil\s+edil(?:miş|di|memiş|medi)\w*|"
+    r"ödeme(?:si|sinin)?\s+(?:yapıl(?:mış|dı|mamış|madı)\w*|yok\w*))"
+)
+_NEGATIVE_PAYMENT_RE = re.compile(r"memiş|medi|memekte|mıyor|miyor|muyor|müyor|mamış|madı|yok")
+_CONDITIONAL_PAYMENT_RE = re.compile(
+    r"\b(?:öden|öde|yatırıl)\w*(?:mişse|mışsa|memişse|mamışsa|diğinde|dığında|mediğinde|madığında|seydi|saydı)\b"
+    r"|\b(?:halinde|takdirde|aksi halde)\b"
+)
+_SHORT_PREDICATE_RE = re.compile(r"\b(?:yoktur|yok|değildir|bulunmamaktadır|bulunmuyor)\b")
+_SUBJECT_SUFFIX_RE = re.compile(
+    r"(?:larının|lerinin|larını|lerini|larında|lerinde|nun|nün|nın|nin|ları|leri|lar|ler)$"
+)
+_FACT_RELATION_PREFIXES = (
+    "tarih", "tutar", "bedel", "miktar", "ödeme", "öden", "öde", "yatır", "tahsil", "durum", "süre",
+    "başlang", "belge", "evrak", "karşılaştır", "karşılastır", "incele", "odaklan", "özetle", "raporla",
+    "çekil", "veril", "hesapla", "bulun", "belirt", "göster", "yazıl", "yazan", "aylık", "günlük", "yıllık", "brüt",
+)
+_DOCUMENT_KINDS = ("vekaletname", "ihtarname", "sözleşme", "kontrat", "rapor", "dilekçe",
+                   "makbuz", "tutanak", "mazbata", "tebligat", "fatura", "bordro", "protokol")
+
+
+def short_document_fact(text: str) -> bool:
+    """Allow short factual predicates, not arbitrary two-word document headings."""
+    value = normalize(text)
+    return bool(_PAYMENT_STATUS_RE.search(value) or _SHORT_PREDICATE_RE.search(value))
+
+
+def payment_polarity_supported(claim: str, source: str) -> bool:
+    """Do not turn an unpaid fact into a paid fact (or vice versa).
+
+    This is a narrow subject/polarity guard, not verification of tense, chronology
+    or conditional entailment; the separate model checker remains mandatory.
+    Conflicting states for the same subject are not resolved by guessing.
+    """
+    required = {_NEGATIVE_PAYMENT_RE.search(match.group()) is not None
+                for match in _PAYMENT_STATUS_RE.finditer(normalize(claim))}
+    if not required:
+        return True
+    from api.ai.source_support import _document_units
+    subjects = _fact_subjects(claim)
+    known = set()
+    conditional_claim = bool(_CONDITIONAL_PAYMENT_RE.search(normalize(claim)))
+    for unit in _document_units(source):
+        value = normalize(unit)
+        if subjects and sum(stem in value for stem in subjects) < min(2, len(subjects)):
+            continue
+        if bool(_CONDITIONAL_PAYMENT_RE.search(value)) != conditional_claim:
+            continue
+        known.update(_NEGATIVE_PAYMENT_RE.search(match.group()) is not None
+                     for match in _PAYMENT_STATUS_RE.finditer(value))
+    return required == known
+
+
+def _fact_kinds(question: str) -> set[str]:
+    from api.ai.passages import is_duration_question
+    q = normalize(question)
+    kinds = set()
+    if is_duration_question(q):
+        kinds.add("duration")
+    if any(term in q for term in ("tarih", "ne zaman", "hangi gün")):
+        kinds.add("date")
+    if re.search(r"tutar\w*|bedel\w*|miktar\w*|kaç (?:tl|lira)|ücret", q) or ("ne kadar" in q and not kinds):
+        kinds.add("amount")
+    if _PAYMENT_STATUS_RE.search(q) or re.search(r"ödeme\s+durum", q):
+        kinds.add("payment_status")
+    return kinds
+
+
+def _fact_subjects(question: str) -> set[str]:
+    """Small lexical subject guard, not a semantic/legal truth classifier.
+
+    Generic relations (payment/date/amount) cannot stand in for the requested subject.
+    Noun suffix normalization keeps e.g. 'depozitonun' and 'nafakanın' attached to their subjects.
+    """
+    words = re.findall(r"\w+", _PAYMENT_STATUS_RE.sub(" ", normalize(question)))
+    subjects = set()
+    for word in words:
+        if (len(word) < 4 or word.isdigit() or word in GENERIC_QUESTION_WORDS
+                or word in _QUANTITY_QUESTION_WORDS or word in _DOCUMENT_GENERIC_VERBS
+                or word.startswith(_FACT_RELATION_PREFIXES) or word.startswith(_DOCUMENT_KINDS)):
+            continue
+        word = _SUBJECT_SUFFIX_RE.sub("", word)
+        subjects.add(word[:max(4, len(word) - 2)])
+    roles = {"davac", "daval", "kirac", "işçi", "borçl", "alaca"}
+    return subjects - roles if subjects - roles else subjects
+
+
+def _fact_relevance(question: str, text: str) -> bool | None:
+    """Reject wrong subject/value types before permissive short-fact matching."""
+    kinds = _fact_kinds(question)
+    if not kinds:
+        return None
+    from api.ai.passages import contains_duration
+    value = normalize(_CITATION_MARKER_RE.sub(" ", text))
+    matches = {
+        "amount": bool(_AMOUNT_VALUE_RE.search(value) or re.search(r"[₺€$]\s*\d[\d.,]*", value)),
+        "date": bool(_DATE_VALUE_RE.search(value) or re.search(r"\bher ayın\s+\d+\.?\s*gün", value)),
+        "duration": contains_duration(value),
+        "payment_status": bool(_PAYMENT_STATUS_RE.search(value)) and not _CONDITIONAL_PAYMENT_RE.search(value),
+    }
+    if not any(matches[kind] for kind in kinds):
+        return False
+    subjects = _fact_subjects(question)
+    if subjects:
+        # Each evidence line can answer one conjunct (rent AND deposit); do not
+        # require both subjects to occur in a single source sentence.
+        multiple = bool(re.search(r"\b(?:ve|veya|ile)\b", normalize(question)))
+        return sum(stem in value for stem in subjects) >= (1 if multiple else min(2, len(subjects)))
+    return None
+
+
+def analysis_scope_relevant(instruction: str, text: str) -> bool:
+    """Code guard for explicit narrow scopes; arbitrary instructions still need the model checker.
+
+    Only the first restricted clause is used; later exclusions are not promoted to desired subjects.
+    This only filters output and never makes an instruction into evidence.
+    """
+    match = re.search(r"\b(?:yalnızca|yalnız|sadece)\s+(.+)", normalize(instruction))
+    if not match:
+        return True
+    scope = re.split(r"[.!?](?:\s|$)", match.group(1), maxsplit=1)[0]
+    subjects = _fact_subjects(scope)
+    if subjects and not any(stem in normalize(text) for stem in subjects):
+        return False
+    # A single bullet can mix a relevant fact with an unrelated second fact.
+    # Do not rescue that bullet just because its first clause names the topic.
+    for clause in re.split(r";\s*|,(?!\d)\s*|\s+ve\s+", normalize(text)):
+        if _fact_subjects(clause) and re.search(r"\d", clause) and _fact_relevance(scope, clause) is False:
+            return False
+    return _fact_relevance(scope, text) is not False
+
+
 def document_passage_relevant(question: str, text: str, *, document_hint: str = '') -> bool:
     """Kullanıcı belgesi cümlesi için alaka: konu-niyeti (mevzuat) kapısı uygulanmaz.
 
@@ -85,6 +220,12 @@ def document_passage_relevant(question: str, text: str, *, document_hint: str = 
     """
     q = normalize(question)
     value = normalize(text)
+    references = explicit_document_references(question)
+    if references and document_hint and not any(reference in normalize(document_hint) for reference in references):
+        return False
+    fact = _fact_relevance(question, text)
+    if fact is not None:
+        return fact
     # Tutar sorusunda süre değil tutar içeren cümle aranır (passage_relevant ile aynı kural).
     if any(t in q for t in ('kaç lira', 'harcı ne kadar', 'harç tutarı')):
         return bool(re.search(r'\b(?:tl|lira|harç|harcı|ücret)', value))
@@ -95,7 +236,7 @@ def document_passage_relevant(question: str, text: str, *, document_hint: str = 
     value = _CITATION_MARKER_RE.sub(' ', value)
     # Kısa olgu cümlesi ("Depozito 37.000 TL'dir.") sorunun yalnız bir sözcüğünü taşır. İki parçalı soruda ("kira bedeli ne kadar
     # ve depozito nedir?") ikinci parçanın cevabı bu yüzden eleniyor, cevap yarım kalıyordu (ölçüldü: 2026-10-05).
-    short_fact = len(re.findall(r'\w+', value)) <= 9 and bool(re.search(r'\d', value))
+    short_fact = len(re.findall(r'\w+', value)) <= 9 and (bool(re.search(r'\d', value)) or short_document_fact(value))
     hint = normalize(document_hint)
     named = named_stems(question, stems, hint)
     remaining = stems - named
@@ -125,7 +266,7 @@ _DATE_VALUE_RE = re.compile(
     r'\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b'
     r'|\b\d{1,2}\s+(?:ocak|şubat|mart|nisan|mayıs|haziran|temmuz|ağustos|eylül|ekim|kasım|aralık)\b'
 )
-_AMOUNT_VALUE_RE = re.compile(r'\d[\d.,]*\s*(?:tl|lira|₺|usd|eur|euro|dolar)\b')
+_AMOUNT_VALUE_RE = re.compile(r'\d[\d.,]*\s*(?:(?:tl|lira|usd|eur|euro|dolar)\b|[₺€$])')
 # Belgede ne yazdığını soran, kendisi konu taşımayan fiiller: cümlede aranmaz.
 _DOCUMENT_GENERIC_VERBS = frozenset((
     'yazıyor', 'yazmaktadır', 'yazılmış', 'yazılı', 'diyor', 'geçiyor', 'geçmektedir', 'belirtilmiş', 'belirtiliyor',
@@ -211,6 +352,17 @@ def documents_named_in(question: str, contexts) -> list:
     if not bases:
         return []
     return [context for context in contexts if any(base in normalize(document_hint(context)) for base in bases)]
+
+
+def explicit_document_references(question: str) -> set[str]:
+    """Unambiguous document kinds, not every locative ('mahkemede', 'Türkiye'de')."""
+    return {kind for kind in _DOCUMENT_KINDS
+            if any(base.startswith(kind) or kind.startswith(base) for base in document_reference_bases(question))}
+
+
+def missing_document_references(question: str, contexts) -> set[str]:
+    hints = [normalize(document_hint(context)) for context in contexts if context.source_type == "document"]
+    return {kind for kind in explicit_document_references(question) if not any(kind in hint for hint in hints)}
 
 
 def documents_answer(question: str, contexts) -> bool:

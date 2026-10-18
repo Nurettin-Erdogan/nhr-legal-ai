@@ -1,5 +1,9 @@
 # AI kabul denetimi — 15.10.2026
 
+Takip çalışması: [AI olgu ve kapsam güvenliği düzeltmeleri](ai-fact-safety-20261015.md).
+Aşağıdaki sonuçlar düzeltme öncesi denetimin tarihsel kaydıdır; genel ticari
+kabul kararı, sınırlı regresyonların düzelmesiyle otomatik olarak değişmez.
+
 ## Karar
 
 Otomatik regresyonlar başarılı olsa da **AI kalite kabulü tamamlanmış değildir**.

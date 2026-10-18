@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from api.ai.passages import sentence_score
 from api.ai.source_support import _sentences, source_sentences
-from api.ai.relevance import document_hint, document_question_stems, named_stems, passage_relevant
+from api.ai.relevance import document_hint, document_question_stems, named_stems, passage_relevant, short_document_fact
 from api.ai.search_plan import normalize
 
 SELECTION_INSTRUCTION = """Türk hukuku kaynak seçicisisin. Soruya cevap veren kaynak cümlelerini seç.
@@ -84,10 +84,11 @@ def evidence_candidates(question, contexts, *, per_source_chars=1200, total_char
         sentences = sorted(in_source, key=lambda s: sentence_score(s, question), reverse=True)
         for sentence in sentences:
             # Belgedeki "Etiket: değer" satırı kısa olur ("Muhatap: Mehmet Kaya"); cümle için aranan dört sözcük şartı ona uygulanmaz.
-            minimum_words = 2 if is_document and ':' in sentence else 4
+            minimum_words = 2 if is_document and (':' in sentence or short_document_fact(sentence)) else 4
             # Konuyu düzenleyen maddenin cümlesi sorunun sözcüklerini taşımak zorunda değildir (bkz. topic_statute_terms).
             on_topic = bool(topic_terms) and on_statute_topic(sentence, topic_terms)
-            if (sentence in seen or len(re.findall(r"\w+", sentence)) < minimum_words
+            evidence_key = (context.source_id, sentence)
+            if (evidence_key in seen or len(re.findall(r"\w+", sentence)) < minimum_words
                     or not (on_topic or passage_relevant(
                         question, sentence, source_type=context.source_type, document_hint=hint))):
                 continue
@@ -97,7 +98,7 @@ def evidence_candidates(question, contexts, *, per_source_chars=1200, total_char
             source_chars = per_source_chars * (TOPIC_STATUTE_SOURCE_FACTOR if on_topic else 1)
             if score <= 0 or used + len(sentence) > source_chars:
                 continue
-            seen.add(sentence)
+            seen.add(evidence_key)
             used += len(sentence)
             candidates.append((on_topic, score + (1 if context.verification == 'official' else 0), marker,
                                position[sentence], sentence))

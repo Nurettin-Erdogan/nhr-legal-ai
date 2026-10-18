@@ -411,30 +411,41 @@ function ScopedLegalChat({
                         Önceki sorunuza göre şöyle anlaşıldı: “{m.interpretedQuestion}”
                       </p>
                     )}
-                    {m.role === "assistant" && (m.summary?.length ?? 0) > 0 && (
-                      <div
-                        className="mb-3 rounded-xl border border-primary/20 bg-primary/5 p-3"
-                        data-testid="answer-summary"
-                      >
-                        <p className="text-xs font-semibold uppercase tracking-wide text-primary">
-                          Kısa özet
-                        </p>
-                        <ul className="mt-1.5 list-disc space-y-1 pl-5 text-sm">
-                          {m.summary?.map((item) => (
-                            <li key={item}>{item}</li>
-                          ))}
-                        </ul>
-                        <p className="mt-2 text-[11px] text-muted-foreground">
-                          Yapay zekâ özetidir ve eksik olabilir; koşul ve istisnalar için aşağıdaki
-                          madde metnini esas alın.
-                        </p>
+                    {m.role === "assistant" && (m.summary?.length ?? 0) > 0 ? (
+                      // Önce sorunun doğrudan cevabı, sonra koşullar; resmî madde metni açılır "Dayanak" bölümünde (2026-10-18:
+                      // kullanıcı cevabın kanun metninin satır satır kopyası olmasından yakındı). Her cümle sunucuda kaynakla
+                      // denetlendi; hiçbiri geçmezse özet gelmez ve cevap eskisi gibi madde metnidir.
+                      <>
+                        <div className="space-y-2 text-sm" data-testid="answer-summary">
+                          <p className="font-medium leading-relaxed">{m.summary?.[0]}</p>
+                          {(m.summary?.length ?? 0) > 1 && (
+                            <ul className="list-disc space-y-1 pl-5">
+                              {m.summary?.slice(1).map((item) => (
+                                <li key={item}>{item}</li>
+                              ))}
+                            </ul>
+                          )}
+                          <p className="text-[11px] text-muted-foreground">
+                            Bu açıklama aşağıdaki resmî metne dayanılarak yapay zekâ tarafından yazıldı ve
+                            kaynakla denetlendi; koşul ve istisnaların tamamı için metni esas alın.
+                          </p>
+                        </div>
+                        <details className="mt-3 rounded-lg border border-border bg-background/40 p-2" data-testid="answer-basis">
+                          <summary className="cursor-pointer text-xs font-semibold text-primary">
+                            Dayanak: madde metnini göster
+                          </summary>
+                          <div className="prose prose-sm dark:prose-invert mt-2 max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                          </div>
+                        </details>
+                      </>
+                    ) : (
+                      <div className="prose prose-sm dark:prose-invert max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+                        <CollapsibleAnswer length={m.role === "assistant" ? m.content.length : 0}>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                        </CollapsibleAnswer>
                       </div>
                     )}
-                    <div className="prose prose-sm dark:prose-invert max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
-                      <CollapsibleAnswer length={m.role === "assistant" ? m.content.length : 0}>
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
-                      </CollapsibleAnswer>
-                    </div>
                     {m.role === "assistant" && m.grounded === false && (
                       <p className="mt-2 text-xs flex items-center gap-1 text-amber-700 dark:text-amber-400">
                         <ShieldAlert className="h-3.5 w-3.5" /> Bu cevap getirilen kaynaklarla

@@ -23,17 +23,55 @@ from collections.abc import Awaitable, Callable
 from api import case_summary
 from api.ai.verification import VerifiedAnswer
 
-MIN_ANSWER_CHARS = 1400  # bundan kısa cevap zaten okunur; özet gereksizdir (arayüzün daraltma eşiğiyle aynı)
+MIN_ANSWER_CHARS = 300  # kısa madde de doğrudan cevapla açıklanır; çok kısa (tek satır) alıntı zaten cevaptır
 MAX_SOURCE_CHARS = 7000  # yerel modelin bağlam penceresi (4096 belirteç) için üst sınır
 MAX_BULLETS = 5
 
+# Önce sorunun doğrudan cevabı, sonra koşullar: kullanıcı "TÜFE'nin üzerinde zam yapılabilir mi?" diye sordu, cevap madde
+# metninin satır satır kopyası ve soruyla ilgisiz fıkraların özeti oldu ("yapay zekâ gibi anlaşılır cevap vermiyor", 2026-10-18).
 SYSTEM = (
-    "Türk hukuku asistanısın. Aşağıdaki KANUN MADDESİ metnine dayanarak SORU'yu kısa maddelerle cevapla. "
+    "Türk hukuku asistanısın. SORU'yu aşağıdaki KANUN MADDESİ'ne dayanarak, bir avukatın müvekkiline anlatacağı gibi açık ve "
+    "sade Türkçeyle cevapla. İlk madde sorunun DOĞRUDAN cevabı olsun; soru evet/hayır sorusuysa 'Evet,' ya da 'Hayır,' diye başla. "
+    "Sonraki maddelerde yalnız cevabı etkileyen koşul ve istisnaları yaz; soruyla ilgisiz fıkraları yazma. "
     "YALNIZCA madde metninde yazanları kullan; metinde olmayan süre, oran, koşul, kanun ya da sonuç EKLEME. "
     "Koşulları ve istisnaları değiştirme; kendi yorumunu katma. Her madde tek, KISA bir cümle olsun (en çok 30 sözcük) ve '- ' ile "
-    "başlasın; en çok 5 madde. Uzun sayımları aynen kopyalama, kısaca özetle. "
+    "başlasın; en çok 4 madde. "
     "Madde metni soruyu cevaplamıyorsa yalnız '- Madde bu soruyu doğrudan düzenlemiyor.' yaz. Başlık ya da giriş yazma."
 )
+_YEAR = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
+
+
+_AMOUNT_QUESTION = re.compile(r"ne kadar|kaç |hangi süre|oranı ne|yüzde kaç")
+_HAS_AMOUNT = re.compile(r"\d|yüzde|on dört|yirmi|otuz|kırk|elli|altmış|doksan|iki |üç |dört |beş |altı |sekiz ")
+_YES_NO = re.compile(r"^\s*(evet|hayır)\s*[,.:;]\s*", re.IGNORECASE)
+_NEGATIVE = re.compile(r"\b\w+(?:amaz|emez|maz|mez|amıyor|emiyor)\b|\bdeğil|\byasak|\bolanaksız|\bmümkün değil", re.IGNORECASE)
+
+
+def coherent_polarity(bullet: str) -> str:
+    """Baştaki "Evet,"/"Hayır," cümlenin hükmüyle çelişiyorsa o sözcük atılır; hüküm cümlesi aynen kalır.
+
+    Yerel model "TÜFE'nin üzerinde zam yapabilir mi?" sorusuna "Evet, ev sahibi TÜFE'nin üzerinde zam yapamaz" yazdı
+    (2026-10-18). Hangisinin doğru olduğunu kod bilemez; çelişkili kısa cevabı göstermemek yeter.
+    """
+    match = _YES_NO.match(bullet)
+    if not match:
+        return bullet
+    rest = bullet[match.end():].strip()
+    negative = bool(_NEGATIVE.search(rest.replace("İ", "i").lower()))
+    if (match.group(1).lower() == "evet") == negative and rest:
+        first = {"i": "İ", "ı": "I"}.get(rest[0], rest[0].upper())  # Türkçe büyük harf: işveren -> İşveren
+        return first + rest[1:]
+    return bullet
+
+
+def checked_text(bullet: str, question: str, source: str) -> str:
+    """Denetlenecek metin: sorudaki yıl ("2026 yılında") maddeyi düşürmez; kaynakta olmayan başka her sayı yine düşürür.
+
+    Model soruyu çerçeve olarak tekrar edince ("2026 yılında kira bedeli …") doğru cümle "kaynakta olmayan sayı" diye eleniyordu
+    (2026-10-18). Yıl kullanıcının sorusundan gelir, kaynak hakkında bir iddia değildir.
+    """
+    years = {year for year in _YEAR.findall(question) if year not in source}
+    return _YEAR.sub(lambda match: "" if match.group() in years else match.group(), bullet) if years else bullet
 
 _MARKER = re.compile(r"\s*\[\s*K\s*\d+\s*\]", re.IGNORECASE)
 _NO_ANSWER = re.compile(r"doğrudan düzenlemiyor|cevaplamıyor|yer almıyor", re.IGNORECASE)
@@ -80,13 +118,22 @@ async def build(question: str, answer: VerifiedAnswer, generate: Generate) -> tu
         raw = complete_lines(getattr(exc, "partial", "") or "")
         if not raw:
             return ()
-    bullets = [bullet for bullet in case_summary.parse_bullets(raw) if not _NO_ANSWER.search(bullet)]
-    bullets = [bullet for bullet in dict.fromkeys(bullets) if case_summary.bullet_supported(bullet, source)][:MAX_BULLETS]
+    bullets = [coherent_polarity(bullet) for bullet in case_summary.parse_bullets(raw) if not _NO_ANSWER.search(bullet)]
+    bullets = [bullet for bullet in dict.fromkeys(bullets)
+               if case_summary.bullet_supported(checked_text(bullet, question, source), source)][:MAX_BULLETS]
     if not bullets:
         return ()
     windows, _coverage = case_summary.split_windows(source, size=case_summary.WINDOW_CHARS, limit=4)
     try:
-        kept, _rejected = await case_summary.check_bullets(bullets, windows, generate)
+        # Denetçi soruyu da görür: kaynağa uygun ama soruyu cevaplamayan madde (kıdem süresi sorusuna "askerlikte tazminat")
+        # kısa cevap diye gösterilmez; hiçbiri kalmazsa cevap eskisi gibi madde metnidir (2026-10-18).
+        kept, _rejected = await case_summary.check_bullets(bullets, windows, generate, instruction=f"SORU: {question.strip()}")
     except Exception:  # noqa: BLE001
+        return ()
+    # Süre/miktar soran soruya süresiz "cevap" gösterilmez (kıdem için "ne kadar çalışmak gerekir?" sorusuna yalnız askerlik
+    # istisnası kaldı, 2026-10-18): o zaman cevap eskisi gibi madde metnidir.
+    from api.ai.passages import contains_duration, is_duration_question
+    asks_amount = is_duration_question(question) or bool(_AMOUNT_QUESTION.search(question.lower()))
+    if kept and asks_amount and not any(contains_duration(bullet) or _HAS_AMOUNT.search(bullet.lower()) for bullet in kept):
         return ()
     return tuple(kept)
