@@ -1129,10 +1129,38 @@ def retrieve_contexts(
                                          seconds=round(monotonic()-tick, 3)))
 
     law_nos, articles = question_law_numbers(question), question_article_numbers(question)
-    explicit = bool(law_nos and articles)
+    # Multiple explicitly requested articles must not disappear behind the
+    # first one (e.g. 4857 m.18 AND m.20). With multiple named laws there is
+    # no reliable general pairing, so fall back to the ordinary search rather
+    # than inventing statute/article associations.
+    exact_references = (
+        tuple((law_nos[0], article) for article in dict.fromkeys(articles))
+        if law_nos and articles and len(set(law_nos)) == 1 else ()
+    )
+    explicit = bool(exact_references)
     intent = question_intent(question)
-    reference = (law_nos[0], articles[0]) if explicit else (intent.statute if intent else None)
+    reference = (exact_references[0] if len(exact_references) == 1
+                 else (intent.statute if not law_nos and intent else None))
     statute = []
+    if 1 < len(exact_references) <= 4:
+        grouped = [
+            run('statute', STATUTE_RETRIEVAL_SQL,
+                dict(law_no=law_no, article_no=article_no,
+                     as_of=as_of, top_k=min(max(top_k, 8), 12)), '3s')
+            for law_no, article_no in exact_references
+        ]
+        # Interleave to protect every explicitly requested article from the
+        # first article's multi-chunk result exhausting the response budget.
+        for position in range(max(map(len, grouped), default=0)):
+            for group in grouped:
+                if position < len(group):
+                    statute.append(group[position])
+        info['seconds'] = round(monotonic()-started, 3)
+        if errors and not completed:
+            raise errors[0]
+        if len([group for group in grouped if group]) != len(grouped):
+            info['partial'] = True
+        return statute[:top_k]
     if reference:
         statute = run('statute', STATUTE_RETRIEVAL_SQL, dict(law_no=reference[0],
                       article_no=reference[1], as_of=as_of, top_k=max(top_k, 8)), '3s')
