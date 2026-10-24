@@ -15,13 +15,22 @@ def primary_legislation_markers(question, contexts):
     # Lazy import avoids the retrieval -> relevance -> rag import cycle.
     from api.ai.retrieval import question_law_numbers, question_article_numbers
     laws, articles = question_law_numbers(question), question_article_numbers(question)
-    intent = question_intent(question)
-    reference = (laws[0], articles[0]) if laws and articles else (intent.statute if intent else None)
-    if reference is None:
-        return set()
+    if laws and articles:
+        # "4857 m. 18 ve m. 20" iki açık kaynağa ihtiyaç duyar. Eskiden
+        # yalnız ilk maddeye kilitlenip diğerini kanıttan siliyorduk.
+        # Birden fazla kanun açıkça yazılmışsa hangi maddenin hangi kanuna
+        # ait olduğunu burada güvenle çıkaramayız; yanlış eşleme dayatmayız.
+        if len(set(laws)) != 1:
+            return set()
+        references = {(laws[0], article) for article in articles}
+    else:
+        intent = question_intent(question)
+        if intent is None or intent.statute is None:
+            return set()
+        references = {intent.statute}
     return {i for i, c in enumerate(contexts, 1)
             if c.source_type == 'legislation' and c.verification == 'official'
-            and (c.law_no, c.article_no) == reference}
+            and (c.law_no, c.article_no) in references}
 
 
 def answer_uses_primary_basis(question, cited_contexts, available_contexts):
