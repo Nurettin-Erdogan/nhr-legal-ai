@@ -166,11 +166,20 @@ def resume_question(question: str, history: Sequence[HistoryTurn],
     inputs = user_inputs(question, history, prior_questions)
     if len(inputs) < 2:
         return None
-    for previous in inputs:
-        normalized = _norm(previous)
-        if _PERSONAL.search(normalized) and _OUTCOME.search(normalized):
-            return f"{previous.rstrip(' ?.')} — {question}"
-    return None
+    # A clarification is not limited to an amount/compensation request.
+    # "İşe iade şartları ve süresi?" -> clarification -> "dün" must retain
+    # the *whole* original user question, not search for the word "dün".
+    # For a second clarification, find the last substantive earlier user
+    # question rather than reusing the previous one-word reply.
+    anchor = next(
+        (previous for previous in reversed(inputs[:-1])
+         if ("?" in previous or len(_norm(previous).split()) >= 5)
+         and len(_norm(previous).split()) >= 3),
+        None,
+    )
+    if anchor is None:
+        return None
+    return f"{anchor.rstrip(' ?.')} — {question}"
 
 
 def personal_outcome_topic(question: str, history: Sequence[HistoryTurn] = (),

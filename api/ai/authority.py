@@ -39,9 +39,20 @@ def answer_uses_primary_basis(question, cited_contexts, available_contexts):
         return True
     primary_ids = {available_contexts[i-1].chunk_id for i in markers}
     # Kullanıcı belgesine atıf mevzuat dayanağının yerine geçmez ama onu da bozmaz.
-    return bool(cited_contexts) and all(
+    if not cited_contexts or not all(
         c.chunk_id in primary_ids or c.source_type == 'document' for c in cited_contexts
-    )
+    ):
+        return False
+    # If two requested articles are actually available, citing only one
+    # cannot be presented as a complete answer to both. This operates solely
+    # on exact law/article metadata from verified corpus records.
+    required = {(available_contexts[i-1].law_no, available_contexts[i-1].article_no)
+                for i in markers}
+    if len(required) > 1:
+        cited = {(c.law_no, c.article_no) for c in cited_contexts
+                 if c.source_type == 'legislation'}
+        return required <= cited
+    return True
 
 
 def topic_statute_terms(question, contexts):
