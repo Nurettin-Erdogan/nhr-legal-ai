@@ -242,6 +242,18 @@ def accept_rewrite(candidate: object, question: str, prior_questions: tuple[str,
     return rewritten
 
 
+def needs_standalone_rewrite(question: str) -> bool:
+    """Only ambiguous follow-ups need a paid/model-dependent rewriting call.
+
+    Independent new questions already have their own search terms. Sending every
+    such question to the model adds latency, can consume cloud tokens and may
+    accidentally pull the previous topic into a new question.
+    """
+    content = [word for word in distinctive_question_words(question)
+               if word not in _REFERENTIAL_WORDS]
+    return bool(_REFERENTIAL_RE.search(question)) or len(content) < 2
+
+
 def standalone_question(provider: Any, question: str, prior_questions: tuple[str, ...]) -> str | None:
     """Takip sorusunu önceki sorulara göre tek başına anlaşılır hâle getirir; emin olunamazsa None.
 

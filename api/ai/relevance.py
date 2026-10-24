@@ -39,7 +39,9 @@ def question_intent(question: str) -> Intent | None:
         # deadline from a different lease regime merely because ANN found it.
         return Intent('rent_default', (('kira', 'kiracı'), ('öde', 'ifa', 'temerrü', 'yazılı')),
                       ('6098', '315'))
-    if 'kıdem' in q and 'tazminat' in q:
+    # Birden fazla tazminat/hak birlikte sorulursa tek bir maddeyi zorunlu tek
+    # dayanak yapma. İlgili her madde yine doğrulanmış korpustan getirilir.
+    if 'kıdem' in q and 'tazminat' in q and not any(term in q for term in ('ihbar', 'işe iade')):
         return Intent('severance', (('kıdem tazminat',), ('işçi', 'hizmet ak', 'iş sözleş', 'fesih', 'feshed')),
                       ('1475', '14'))
     if (re.search(r'çalıştım|çalışıyorum|çalışıyordum|işveren|işyer|işten|maaş|ücretim', q)
@@ -52,6 +54,11 @@ def question_intent(question: str) -> Intent | None:
     if 'itirazın iptal' in q:
         return Intent('objection_annulment', (('itirazın iptal',),), ('2004', '67'))
     if 'işe iade' in q and (re.search(r'\bsüre', q) or any(t in q for t in ('ne zaman', 'kaç gün', 'kaç ay', 'kaç hafta'))):
+        # Süreyle birlikte şart/hak sahipliği de sorulmuşsa yalnız m. 20'ye
+        # kilitlenme: m. 18 koşullarının kaynak havuzuna girmesine izin ver.
+        # Basit süre sorularındaki hızlı, güncel m. 20 yolu korunur.
+        if re.search(r'şart\w*|koşul\w*|hak kazan\w*', q):
+            return None
         # İşe iade için başvuru usulü 2017'de değişti (önce arabulucu, sonra dava). Sözcük araması bu soruya yalnız eski
         # usulü anlatan 2015-2016 kararlarını getiriyordu (ölçüldü: 2026-10-06); güncel kural İş Kanunu m. 20'dedir.
         return Intent('reinstatement_deadline', (('işe iade', 'arabulucu', 'iş mahkemesi'), ('ay içinde', 'hafta içinde')),
