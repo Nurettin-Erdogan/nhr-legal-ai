@@ -42,6 +42,7 @@ class HistoryTurn:
 
     question: str
     answer: str
+    answer_kind: str = "legal"
 
 
 @dataclass(frozen=True, slots=True)

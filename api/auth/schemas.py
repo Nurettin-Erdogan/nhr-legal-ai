@@ -40,3 +40,5 @@ class AuthResponse(BaseModel):
 class AuthStatusResponse(BaseModel):
     configured: bool
     registration_enabled: bool
+    # "open" (herkes) | "allowlist" (yalnız erişim listesindeki e-postalar) — migration 062, yönetici panelinden seçilir.
+    access_mode: str = "open"

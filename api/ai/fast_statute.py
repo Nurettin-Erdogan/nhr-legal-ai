@@ -31,6 +31,8 @@ def fast_reference(question):
     from api.ai.passages import is_duration_question
     if intent.name == 'rent_increase':
         return intent.statute
+    if intent.name == 'rent_default':
+        return intent.statute
     if intent.name == 'severance' and re.search(r'\b(?:şart\w*|koşul\w*|hak kazan\w*)', q):
         return intent.statute
     if intent.name == 'objection_annulment' and is_duration_question(q):

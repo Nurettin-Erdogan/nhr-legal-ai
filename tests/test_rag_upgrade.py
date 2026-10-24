@@ -82,7 +82,8 @@ def test_hybrid_has_separate_bounded_branch_and_model_identity(monkeypatch):
         lambda c, sql, params, **kw: calls.append((sql, params, kw)) or [])
     retrieval.retrieve_contexts(object(), question='Sözleşme uyuşmazlığı', top_k=6,
                                 query_embedding=[0.1]*768, embedding_model='nomic-embed-text')
-    assert len(calls) == 2
+    assert len(calls) == 3  # shared ANN, legislation-only ANN (migration 060), lexical
+    assert calls[1][0] == retrieval.LEGISLATION_SEMANTIC_SQL and calls[1][2]['timeout'] == '2s'
     assert calls[0][0] == retrieval.SEMANTIC_RETRIEVAL_SQL
     assert calls[0][1]['embedding_model'] == 'nomic-embed-text'
     assert calls[0][2]['timeout'] == '3s'

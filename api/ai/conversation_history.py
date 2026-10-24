@@ -22,7 +22,7 @@ from api.ai.retrieval import distinctive_question_words
 MAX_HISTORY_TURNS = 2
 _QUESTION_CLIP = 300
 _ANSWER_CLIP = 350
-_FETCH_ROWS = 12
+_FETCH_ROWS = 32
 
 _MARKER_RE = re.compile(r"\s*\[\s*K\s*\d+\s*\]", re.IGNORECASE)
 _SPACE_RE = re.compile(r"\s+")
@@ -91,8 +91,10 @@ def history_turns_from_rows(
 ) -> tuple[HistoryTurn, ...]:
     """Eskiden yeniye sıralı satırlardan (soru, cevap) çiftleri çıkarır.
 
-    Kaynağa dayanmayan cevaplar (`grounded=false`) modele geri verilmez: "kaynak
-    yetersiz" gibi bir cevabı bağlam yapmak sonraki turu da o yöne çeker.
+    Kaynak yetersizliği yanıtları modele geri verilmez: böyle bir cevabı bağlam
+    yapmak sonraki turu da o yöne çeker. Sunucunun netleştirme olarak kaydettiği
+    sorular ise hukuki iddia değildir; kullanıcının sonraki yanıtını anlamak için
+    korunur. Hiçbir geçmiş cevap hukuki kanıt hâline gelmez.
     """
     turns: list[HistoryTurn] = []
     pending_question: str | None = None
@@ -103,18 +105,23 @@ def history_turns_from_rows(
         elif role == "assistant" and pending_question is not None:
             metadata = row.get("metadata") or {}
             answer = strip_markers(str(row["content"]))
-            if metadata.get("grounded") is not False and answer:
+            kind = metadata.get("answer_kind")
+            # An input question is deliberately ungrounded: it asserts no law.
+            # Dropping it made the user's next short reply lose its meaning.
+            clarification = kind == "clarification" and metadata.get("grounded") is False
+            if (metadata.get("grounded") is not False or clarification) and answer:
                 turns.append(
                     HistoryTurn(
                         question=_clip(pending_question, _QUESTION_CLIP),
                         answer=_clip(answer, _ANSWER_CLIP),
+                        answer_kind="clarification" if clarification else "legal",
                     )
                 )
             pending_question = None
     return tuple(turns[-max_turns:]) if max_turns > 0 else ()
 
 
-MAX_PRIOR_QUESTIONS = 3
+MAX_PRIOR_QUESTIONS = 8
 
 REWRITE_INSTRUCTION = """Türkçe hukuk sohbetinde bir takip sorusunu tek başına anlaşılır hâle getirirsin.
 ÖNCEKİ SORULAR yalnız konuyu anlamak içindir. YENİ SORU'daki "bu, bunun, o, peki, aynı" gibi göndermeleri
@@ -157,8 +164,23 @@ _WORD_RE_LOCAL = re.compile(r"[0-9a-zçğıöşüâîû]+")
 
 
 def prior_questions_from_rows(rows: Iterable[Mapping[str, Any]], *, limit: int = MAX_PRIOR_QUESTIONS) -> tuple[str, ...]:
-    """Eskiden yeniye sıralı satırlardan son kullanıcı sorularını çıkarır (cevabın durumundan bağımsız)."""
-    questions = [_clip(str(row["content"]), _QUESTION_CLIP) for row in rows if row["role"] == "user"]
+    """Legal follow-ups keep their topic even after several social turns.
+
+    Insufficient-source questions still matter. Only explicitly server-tagged
+    conversation exchanges are skipped; old/unknown metadata remains legal.
+    """
+    questions: list[str] = []
+    pending_social_candidate = False
+    for row in rows:
+        if row["role"] == "user":
+            questions.append(_clip(str(row["content"]), _QUESTION_CLIP))
+            pending_social_candidate = True
+        elif row["role"] == "assistant" and pending_social_candidate:
+            if (row.get("metadata") or {}).get("answer_kind") == "conversation":
+                from api.ai.arithmetic import arithmetic_reply
+                if arithmetic_reply(questions[-1]) is None:
+                    questions.pop()
+            pending_social_candidate = False
     return tuple(questions[-limit:]) if limit > 0 else ()
 
 
@@ -231,7 +253,7 @@ def standalone_question(provider: Any, question: str, prior_questions: tuple[str
     import json
 
     prompt = json.dumps(
-        {"önceki_sorular": list(prior_questions[-MAX_PRIOR_QUESTIONS:]), "yeni_soru": question}, ensure_ascii=False
+        {"önceki_sorular": list(prior_questions[-3:]), "yeni_soru": question}, ensure_ascii=False
     )
     try:
         raw = provider.generate(system_instruction=REWRITE_INSTRUCTION, prompt=prompt).strip()

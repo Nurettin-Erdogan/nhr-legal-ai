@@ -7,9 +7,9 @@ import psycopg
 
 from api.ai.embeddings import vector_literal
 from api.ai.rag import RAGContext
-from api.ai.search_plan import plan_search
+from api.ai.search_plan import normalize, plan_search
 from api.ai.passages import is_duration_question, sentence_score
-from api.ai.relevance import question_intent, intent_tsquery, focused_intent_tsquery, relevant_contexts
+from api.ai.relevance import question_intent, intent_tsquery, focused_intent_tsquery, relevant_contexts, semantic_search_text
 from api.ai.seed_tier import seed_tier
 from api.ai.workspace_scope import project_document_predicate
 
@@ -1015,10 +1015,55 @@ ORDER BY nearest.distance, chunk.id
 """
 
 
+# Mevzuat için ayrı anlam araması (migration 060): ortak dizinde en yakın adaylar hep mahkeme kararı olduğundan genel
+# soruda asıl madde (ör. TBK m. 72) hiç aday olmuyordu (ölçüldü: 2026-10-22). Kopya tablo yalnız aday bulur; sonuç
+# legal_sources'a geri bağlanıp aynı resmî/güncel/sürüm süzgeçlerinden geçer.
+LEGISLATION_SEMANTIC_SQL = f"""
+WITH nearest AS MATERIALIZED (
+    SELECT vector.chunk_id AS id, vector.embedding <=> %(embedding)s::vector AS distance
+    FROM legislation_chunk_vectors vector
+    WHERE vector.embedding_model = %(embedding_model)s
+    ORDER BY vector.embedding <=> %(embedding)s::vector
+    LIMIT %(legislation_limit)s
+)
+SELECT {_SELECT_COLUMNS}, (1.0 - nearest.distance)::real AS rank
+FROM nearest
+JOIN legal_chunks chunk ON chunk.id = nearest.id
+JOIN legal_sources ls ON ls.id = chunk.legal_source_id
+{_DETAIL_JOINS}
+WHERE ls.deleted_at IS NULL
+  AND ls.source_type = 'legislation'
+  AND {_VERIFIED_SOURCE_FILTER}
+  AND {_TEMPORAL_FILTER}
+ORDER BY nearest.distance, chunk.id
+"""
+LEGISLATION_M3_SQL = LEGISLATION_SEMANTIC_SQL.replace(
+    "SELECT vector.chunk_id AS id, vector.embedding <=> %(embedding)s::vector AS distance",
+    "SELECT vector.chunk_id AS id, vector.embedding_m3 <=> %(legislation_embedding)s::vector AS distance",
+).replace(
+    "WHERE vector.embedding_model = %(embedding_model)s",
+    "WHERE vector.embedding_m3 IS NOT NULL",
+).replace(
+    "ORDER BY vector.embedding <=> %(embedding)s::vector",
+    "ORDER BY vector.embedding_m3 <=> %(legislation_embedding)s::vector",
+)
+_LEGISLATION_SEMANTIC_LIMIT = 40  # = default hnsw.ef_search; TBK m. 72 was 5th of 40 for its question
+_LEGISLATION_PREFERRED = 2
+_SECONDARY_REGULATION = re.compile(
+    r"tebli[gğ]|yönetmeli[kğ]|genelge|talimat|yönerge|esaslar|kararnamesi|kurul kararı|bakanlar kurulu kararı"
+    r"|cumhurbaşkanı kararı|program|tarife", re.IGNORECASE)
+_SECONDARY_ASKED = re.compile(r"tebli[gğ]|yönetmeli[kğ]|genelge|talimat|yönerge|tarife|kurul karar")
+
+
+def _is_secondary_regulation(context: RAGContext) -> bool:
+    return bool(_SECONDARY_REGULATION.search(context.law_name or context.title or ""))
+
+
 def retrieve_contexts(
     connection: psycopg.Connection, *, question: str, top_k: int,
     query_embedding: list[float] | None = None, embedding_model: str | None = None,
     as_of: date | None = None, lexical_mode: str = "auto", diagnostics: dict | None = None,
+    legislation_embedding: list[float] | None = None,
 ) -> list[RAGContext]:
     """Selective full-corpus lexical + optional ANN search; never unbounded OR.
 
@@ -1112,6 +1157,26 @@ def retrieve_contexts(
                        dict(params, embedding=vector_literal(query_embedding),
                             embedding_model=embedding_model,
                             candidate_limit=min(192, max(96, top_k * 12))), '3s')
+    legislative = []
+    m3: list[RAGContext] = []
+    if query_embedding is not None and embedding_model and not statute:
+        try:
+            legislative = run('legislation_semantic', LEGISLATION_SEMANTIC_SQL,
+                              dict(params, embedding=vector_literal(query_embedding), embedding_model=embedding_model,
+                                   legislation_limit=_LEGISLATION_SEMANTIC_LIMIT), '2s')
+        except psycopg.errors.UndefinedTable:
+            legislative = []  # migration 060 not applied yet: the shared ANN branch still runs
+    if legislation_embedding is not None and not statute:
+        # Independent model: a shared-vector outage must not discard a valid M3 query.
+        try:
+            m3 = run('legislation_m3', LEGISLATION_M3_SQL,
+                     dict(params, legislation_embedding=vector_literal(legislation_embedding),
+                          legislation_limit=_LEGISLATION_SEMANTIC_LIMIT), '2s')
+        except (psycopg.errors.UndefinedColumn, psycopg.errors.UndefinedTable):
+            m3 = []
+        seen = {c.chunk_id for c in m3}
+        legislative = m3 + [c for c in legislative if c.chunk_id not in seen]
+        info['legislation_m3_candidates'] = len(m3)
     # Embedding coverage is incomplete. Always query the text index as well:
     # finding a few ANN hits is not evidence that the remaining corpus is empty.
     # Each branch retains a deadline; a failed branch cannot erase other hits.
@@ -1162,6 +1227,41 @@ def retrieve_contexts(
         preferred = sorted(provisions, key=lambda c: _hit_quality_score(question, c), reverse=True)[:2]
         ids = {c.chunk_id for c in preferred}
         ranked = (preferred + [c for c in ranked if c.chunk_id not in ids])[:top_k]
+    elif legislative:
+        # The closest relevant provisions keep a place next to the many matching decisions; "relevant" is the same
+        # term-overlap gate every other branch passes, so a near-but-unrelated article is not forced in.
+        # Ordered by term fit first: the embedding model ranks "HMK m. 16 yetki" above "TBK m. 72 zamanaşımı" for a
+        # limitation question, while the question's own terms put TBK m. 72 first (measured 2026-10-22).
+        # Provisions the other branches already found compete in the same pool and keep their slots: the shared ANN
+        # found TBK m. 315 for "kiracı kirayı ödemezse", which the legislation-only ANN ranked outside its top 40.
+        already = [c for c in ranked if c.source_type == "legislation"]
+        known = {c.chunk_id for c in already}
+        # Scored against the question plus its legal vocabulary ("işten çıkarmak" -> "iş sözleşmesinin feshi").
+        scored = semantic_search_text(question)
+        relevant = [c for c in relevant_contexts(question, legislative) if c.chunk_id not in known]
+        m3_ids = {c.chunk_id for c in m3}
+        by_terms = sorted(relevant, key=lambda c: (-_hit_quality_score(scored, c), -(c.rank or 0)))
+        if any(c.chunk_id in m3_ids for c in relevant):
+            # bge-m3's order and the term-score order are fused (either alone misplaced the article: terms put
+            # "6736 m. 11" above İş K. m. 34, bge-m3 put banking interest communiqués first — 2026-10-22).
+            m3_position = {c.chunk_id: position for position, c in enumerate(m3, 1)}
+            term_position = {c.chunk_id: position for position, c in enumerate(by_terms, 1)}
+            fused = lambda c: (1 / (10 + m3_position.get(c.chunk_id, 100)) +  # noqa: E731
+                               1 / (10 + term_position.get(c.chunk_id, 100)))
+            ordered = sorted(relevant, key=lambda c: -fused(c))
+        else:
+            ordered = by_terms
+        # A general question is answered by a statute first; a communiqué or regulation only when the question asks for one.
+        if not _SECONDARY_ASKED.search(normalize(question)):
+            ordered = sorted(ordered, key=lambda c: _is_secondary_regulation(c))  # stable: keeps the order within groups
+        added = ordered[:_LEGISLATION_PREFERRED]
+        preferred = sorted(already + added, key=lambda c: -_hit_quality_score(scored, c))
+        ids = {c.chunk_id for c in preferred}
+        # The added provisions extend the list instead of pushing out decisions the answer may rest on (the nafaka
+        # answer lost its two Yargıtay decisions when the list length stayed fixed).
+        ranked = (preferred + [c for c in ranked if c.chunk_id not in ids and c.source_type != "legislation"]
+                  )[:top_k + len(added)]
+    info['legislation_candidates'] = len(legislative)
     info['seconds'] = round(monotonic()-started, 3)
     info['returned'] = len(ranked)
     if not ranked and errors:

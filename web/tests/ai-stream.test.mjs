@@ -24,11 +24,14 @@ function compile(file, deps = {}) {
 }
 const summaryModel = compile("../src/lib/search-summary.ts");
 const scopeModel = compile("../src/lib/document-scope.ts");
-const { askAssistant, getConversationDetail, listConversations } = compile("../src/lib/ai-api.ts", {
-  "@/lib/auth-api": { inMemoryAccessToken: () => "" },
-  "./search-summary": summaryModel,
-  "./document-scope": scopeModel,
-});
+const { askAssistant, getConversationDetail, listConversations, parseAnswerKind } = compile(
+  "../src/lib/ai-api.ts",
+  {
+    "@/lib/auth-api": { inMemoryAccessToken: () => "" },
+    "./search-summary": summaryModel,
+    "./document-scope": scopeModel,
+  },
+);
 const summary = {
   candidate_documents: 29,
   verified_documents: 12,
@@ -106,6 +109,93 @@ test("disconnection without done event is an error", async (t) => {
 test("legacy answer does not fabricate candidate counters", async (t) => {
   mockStream(t, JSON.stringify({ stage: "done", result: { answer: "Yanıt", citations: [] } }));
   assert.equal((await askAssistant("Örnek soru", {})).search_summary, undefined);
+});
+
+test("only recognized answer kinds can opt out of legacy legal presentation", () => {
+  for (const kind of ["conversation", "clarification", "insufficient_sources", "legal"]) {
+    assert.equal(parseAnswerKind(kind), kind);
+  }
+  for (const kind of [undefined, null, "friendly", "CONVERSATION", {}, false]) {
+    assert.equal(parseAnswerKind(kind), "legal");
+  }
+});
+
+test("preview and done events retain the server-owned answer kind", async (t) => {
+  const preview = {
+    answer: "Merhaba!",
+    answer_kind: "conversation",
+    citations: [],
+    grounded: false,
+  };
+  const done = { ...preview, answer: "Merhaba! Nasıl yardımcı olabilirim?" };
+  mockStream(
+    t,
+    JSON.stringify({ stage: "answer_ready", preview }) +
+      "\n" +
+      JSON.stringify({ stage: "done", result: done }),
+  );
+  const seen = [];
+  const result = await askAssistant("Merhaba", { onPreview: (value) => seen.push(value) });
+  assert.equal(seen[0].answer_kind, "conversation");
+  assert.equal(result.answer_kind, "conversation");
+});
+
+test("unknown or missing progress answer kinds remain legal", async (t) => {
+  mockStream(
+    t,
+    JSON.stringify({ stage: "answer_ready", preview: { answer: "Yanıt", answer_kind: "bypass" } }) +
+      "\n" +
+      JSON.stringify({ stage: "done", result: { answer: "Yanıt", citations: [] } }),
+  );
+  const seen = [];
+  const result = await askAssistant("Örnek soru", { onPreview: (value) => seen.push(value) });
+  assert.equal(seen[0].answer_kind, "legal");
+  assert.equal(result.answer_kind, "legal");
+});
+
+test("conversation history preserves answer kinds and treats unknown old metadata as legal", async (t) => {
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async () =>
+      new Response(
+        JSON.stringify({
+          messages: [
+            {
+              role: "assistant",
+              content: "Merhaba!",
+              answer_kind: "conversation",
+              grounded: false,
+            },
+            {
+              role: "assistant",
+              content: "Hangi ay?",
+              answer_kind: "clarification",
+              grounded: false,
+            },
+            {
+              role: "assistant",
+              content: "Yetersiz kaynak",
+              answer_kind: "insufficient_sources",
+              grounded: false,
+            },
+            { role: "assistant", content: "Eski cevap", grounded: false },
+            {
+              role: "assistant",
+              content: "Bozuk metadata",
+              answer_kind: "bypass",
+              grounded: false,
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+  );
+  const detail = await getConversationDetail("conversation");
+  assert.deepEqual(
+    detail.messages.map((message) => message.answerKind),
+    ["conversation", "clarification", "insufficient_sources", "legal", "legal"],
+  );
 });
 
 test("case-scoped question sends case_id and surfaces which documents could not be read", async (t) => {

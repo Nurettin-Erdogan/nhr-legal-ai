@@ -29,6 +29,9 @@ export interface ResearchStep {
   error: string | null;
   /** Cevap önceki başlıkla aynıysa tekrarlanmaz; neden burada (hata değildir). */
   note: string | null;
+  /** Gerçekte cevap veren model; eski raporlarda bulunmayabilir. */
+  provider?: string | null;
+  model?: string | null;
 }
 
 export type JobState = "running" | "done" | "failed";
@@ -102,6 +105,8 @@ function parseStep(raw: unknown): ResearchStep | null {
       : [],
     error: typeof raw.error === "string" && raw.error ? raw.error : null,
     note: typeof raw.note === "string" && raw.note ? raw.note : null,
+    provider: typeof raw.provider === "string" && raw.provider ? raw.provider : null,
+    model: typeof raw.model === "string" && raw.model ? raw.model : null,
   };
 }
 

@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from api.audit import CONVERSATION_DELETE, AuditContext, record_event
 from api.auth.routes import current_user_id
 from api.db import authenticated_database_connection
+from api.ai.answer_kind import AnswerKind, stored_answer_kind
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ class ConversationMessage(BaseModel):
     created_at: datetime
     model_name: str | None = None
     grounded: bool | None = None
+    answer_kind: AnswerKind = "legal"
     document_scope: dict | None = None
     unverified_markers: list[str] = Field(default_factory=list)
     citations: list[ConversationCitation] = Field(default_factory=list)
@@ -194,6 +196,7 @@ def build_messages(
                 created_at=row["created_at"],
                 model_name=row["model_name"],
                 grounded=metadata.get("grounded") if assistant else None,
+                answer_kind=stored_answer_kind(metadata.get("answer_kind")) if assistant else "legal",
                 document_scope=metadata.get("document_scope") if assistant else None,
                 unverified_markers=list(metadata.get("unverified_markers") or [])
                 if assistant

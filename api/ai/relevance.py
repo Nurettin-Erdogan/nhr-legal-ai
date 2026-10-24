@@ -32,9 +32,23 @@ def question_intent(question: str) -> Intent | None:
     if 'kira' in q and (any(t in q for t in ('tüfe', 'artış', 'artır')) or re.search(r'\bzam(?!an)', q)):
         return Intent('rent_increase', (('kira',), ('tüfe', 'tüketici fiyat', 'artış', 'artır')),
                       ('6098', '344'))
+    if ('kira' in q and re.search(r'öde(?:mez|medi|miyor)|ödenme|temerrüt', q)
+            and not re.search(r'ürün|hasılat|tarla|tarım|icra|ödeme emri|iki\s+.*ihtar', q)):
+        # Reuse the existing corpus lookup hint (statute_hints.kira_temerrut).
+        # General residential/non-payment questions must not borrow the longer
+        # deadline from a different lease regime merely because ANN found it.
+        return Intent('rent_default', (('kira', 'kiracı'), ('öde', 'ifa', 'temerrü', 'yazılı')),
+                      ('6098', '315'))
     if 'kıdem' in q and 'tazminat' in q:
         return Intent('severance', (('kıdem tazminat',), ('işçi', 'hizmet ak', 'iş sözleş', 'fesih', 'feshed')),
                       ('1475', '14'))
+    if (re.search(r'çalıştım|çalışıyorum|çalışıyordum|işveren|işyer|işten|maaş|ücretim', q)
+            and re.search(r'çıkarıldım|çıkardı|işten çıkar|işten at|kovuldum', q)):
+        # Everyday employment narrative, not a conclusion about entitlement.
+        # Do not select one sole primary provision: several possible components
+        # need their own retrieved sources and case conditions.
+        return Intent('employment_termination', (('işçi', 'işveren', 'iş sözleş', 'hizmet ak'),
+                                                 ('fesih', 'feshed', 'bildirim', 'kıdem', 'tazminat')))
     if 'itirazın iptal' in q:
         return Intent('objection_annulment', (('itirazın iptal',),), ('2004', '67'))
     if 'işe iade' in q and (re.search(r'\bsüre', q) or any(t in q for t in ('ne zaman', 'kaç gün', 'kaç ay', 'kaç hafta'))):
@@ -79,7 +93,11 @@ _PAYMENT_STATUS_RE = re.compile(
 _NEGATIVE_PAYMENT_RE = re.compile(r"memiş|medi|memekte|mıyor|miyor|muyor|müyor|mamış|madı|yok")
 _CONDITIONAL_PAYMENT_RE = re.compile(
     r"\b(?:öden|öde|yatırıl)\w*(?:mişse|mışsa|memişse|mamışsa|diğinde|dığında|mediğinde|madığında|seydi|saydı)\b"
-    r"|\b(?:halinde|takdirde|aksi halde)\b"
+    r"|\b(?:halinde|hâlinde|takdirde|aksi halde)\b"
+    # A conditional payment rule may attach its condition to a different verb:
+    # "iki ihtara sebep olmuşsa" and "sebep olması halinde" are both conditions,
+    # not an assertion that the tenant actually failed to pay.
+    r"|\b\w+(?:mişse|mışsa|muşsa|müşse)\b"
 )
 _SHORT_PREDICATE_RE = re.compile(r"\b(?:yoktur|yok|değildir|bulunmamaktadır|bulunmuyor)\b")
 _SUBJECT_SUFFIX_RE = re.compile(
@@ -485,4 +503,26 @@ def semantic_search_text(question: str) -> str:
         'constitutional_application': 'Anayasa Mahkemesi bireysel başvuru süresi başvuru yollarının tüketilmesi',
     }
     hint = hints.get(intent.name, '') if intent else ''
+    q = normalize(question)
+    everyday = [terms for pattern, terms in _EVERYDAY_LEGAL_TERMS if pattern.search(q)]
+    hint = ' '.join(part for part in [hint, *everyday] if part)
     return f'{question}\nArama kavramları: {hint}' if hint else question
+
+
+# Gündelik anlatım → kanun dili (yalnız arama içindir; cevap yine yalnız kaynak metinden yazılır). "İşveren işçiyi haklı sebep
+# olmadan işten çıkarırsa" sorusu İş K. m. 17-21'e ulaşmıyor, kaynak eksikliği bildiriyordu (ölçüldü: 2026-10-22).
+_EVERYDAY_LEGAL_TERMS = tuple((re.compile(pattern), terms) for pattern, terms in (
+    (r"(?:çalıştım|çalışıyordum|maaş\w*|ücretim).{0,100}(?:çıkarıldım|kovuldum)|"
+     r"(?:çıkarıldım|kovuldum).{0,100}(?:çalıştım|maaş\w*|ücretim)",
+     "iş sözleşmesinin feshi işçi işveren ücret kıdem tazminatı bildirim süresi"),
+    (r"işten (?:çıkar|at|kov|uzaklaştır)\w*|\bkovul\w*|\bkovma\w*", "iş sözleşmesinin feshi işverenin feshi bildirim süresi"),
+    (r"sebep(?:siz| olmadan| göstermeden)|nedensiz|haksız yere|gerekçesiz", "geçerli sebep olmaksızın fesih feshin geçersizliği işe iade kıdem tazminatı ihbar tazminatı bildirim süresi"),
+    (r"\bistifa\w*", "işçinin feshi iş sözleşmesinin işçi tarafından feshi"),
+    (r"\bev sahib\w*", "kiraya veren"),
+    (r"evden çıkar\w*|\btahliye\w*", "kiralananın tahliyesi"),
+    (r"\bmaaş\w*", "ücret"),
+    (r"\bmesai\w*", "fazla çalışma ücreti"),
+    (r"\bzam\b(?!an)|\bzammı\b", "artış"),
+    (r"\bmiras\w*", "mirasçılık tereke"),
+    (r"\bkaza\w*", "haksız fiil tazminat"),
+))

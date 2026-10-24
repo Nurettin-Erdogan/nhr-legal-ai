@@ -19,6 +19,7 @@ import { Route as SifreSifirlaRouteImport } from './routes/sifre-sifirla'
 import { Route as SssRouteImport } from './routes/sss'
 import { Route as AuthCallbackRouteImport } from './routes/auth/callback'
 import { Route as AuthenticatedDashboardIndexRouteImport } from './routes/_authenticated/dashboard.index'
+import { Route as AuthenticatedDashboardAdminRouteImport } from './routes/_authenticated/dashboard.admin'
 import { Route as AuthenticatedDashboardAgentResearchRouteImport } from './routes/_authenticated/dashboard.agent-research'
 import { Route as AuthenticatedDashboardAiRouteImport } from './routes/_authenticated/dashboard.ai'
 import { Route as AuthenticatedDashboardApplicationsRouteImport } from './routes/_authenticated/dashboard.applications'
@@ -102,6 +103,12 @@ const AuthenticatedDashboardIndexRoute =
   AuthenticatedDashboardIndexRouteImport.update({
     id: '/dashboard/',
     path: '/dashboard/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedDashboardAdminRoute =
+  AuthenticatedDashboardAdminRouteImport.update({
+    id: '/dashboard/admin',
+    path: '/dashboard/admin',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
 const AuthenticatedDashboardAgentResearchRoute =
@@ -318,6 +325,7 @@ export interface FileRoutesByFullPath {
   '/sifre-sifirla': typeof SifreSifirlaRoute
   '/sss': typeof SssRoute
   '/auth/callback': typeof AuthCallbackRoute
+  '/dashboard/admin': typeof AuthenticatedDashboardAdminRoute
   '/dashboard/agent-research': typeof AuthenticatedDashboardAgentResearchRoute
   '/dashboard/ai': typeof AuthenticatedDashboardAiRoute
   '/dashboard/applications': typeof AuthenticatedDashboardApplicationsRoute
@@ -363,6 +371,7 @@ export interface FileRoutesByTo {
   '/sifre-sifirla': typeof SifreSifirlaRoute
   '/sss': typeof SssRoute
   '/auth/callback': typeof AuthCallbackRoute
+  '/dashboard/admin': typeof AuthenticatedDashboardAdminRoute
   '/dashboard/agent-research': typeof AuthenticatedDashboardAgentResearchRoute
   '/dashboard/ai': typeof AuthenticatedDashboardAiRoute
   '/dashboard/applications': typeof AuthenticatedDashboardApplicationsRoute
@@ -410,6 +419,7 @@ export interface FileRoutesById {
   '/sifre-sifirla': typeof SifreSifirlaRoute
   '/sss': typeof SssRoute
   '/auth/callback': typeof AuthCallbackRoute
+  '/_authenticated/dashboard/admin': typeof AuthenticatedDashboardAdminRoute
   '/_authenticated/dashboard/agent-research': typeof AuthenticatedDashboardAgentResearchRoute
   '/_authenticated/dashboard/ai': typeof AuthenticatedDashboardAiRoute
   '/_authenticated/dashboard/applications': typeof AuthenticatedDashboardApplicationsRoute
@@ -457,6 +467,7 @@ export interface FileRouteTypes {
     | '/sifre-sifirla'
     | '/sss'
     | '/auth/callback'
+    | '/dashboard/admin'
     | '/dashboard/agent-research'
     | '/dashboard/ai'
     | '/dashboard/applications'
@@ -502,6 +513,7 @@ export interface FileRouteTypes {
     | '/sifre-sifirla'
     | '/sss'
     | '/auth/callback'
+    | '/dashboard/admin'
     | '/dashboard/agent-research'
     | '/dashboard/ai'
     | '/dashboard/applications'
@@ -548,6 +560,7 @@ export interface FileRouteTypes {
     | '/sifre-sifirla'
     | '/sss'
     | '/auth/callback'
+    | '/_authenticated/dashboard/admin'
     | '/_authenticated/dashboard/agent-research'
     | '/_authenticated/dashboard/ai'
     | '/_authenticated/dashboard/applications'
@@ -666,6 +679,13 @@ declare module '@tanstack/react-router' {
       path: '/dashboard'
       fullPath: '/dashboard/'
       preLoaderRoute: typeof AuthenticatedDashboardIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/dashboard/admin': {
+      id: '/_authenticated/dashboard/admin'
+      path: '/dashboard/admin'
+      fullPath: '/dashboard/admin'
+      preLoaderRoute: typeof AuthenticatedDashboardAdminRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/dashboard/agent-research': {
@@ -910,6 +930,7 @@ declare module '@tanstack/react-router' {
 }
 
 interface AuthenticatedRouteRouteChildren {
+  AuthenticatedDashboardAdminRoute: typeof AuthenticatedDashboardAdminRoute
   AuthenticatedDashboardAgentResearchRoute: typeof AuthenticatedDashboardAgentResearchRoute
   AuthenticatedDashboardAiRoute: typeof AuthenticatedDashboardAiRoute
   AuthenticatedDashboardApplicationsRoute: typeof AuthenticatedDashboardApplicationsRoute
@@ -948,6 +969,7 @@ interface AuthenticatedRouteRouteChildren {
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
+  AuthenticatedDashboardAdminRoute: AuthenticatedDashboardAdminRoute,
   AuthenticatedDashboardAgentResearchRoute:
     AuthenticatedDashboardAgentResearchRoute,
   AuthenticatedDashboardAiRoute: AuthenticatedDashboardAiRoute,

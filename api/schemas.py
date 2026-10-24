@@ -6,6 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
+from api.ai.answer_kind import AnswerKind
+
 
 class HealthResponse(BaseModel):
     status: str
@@ -160,7 +162,7 @@ class AIStatusResponse(BaseModel):
 
 
 class AIAnswerRequest(BaseModel):
-    question: str = Field(min_length=5, max_length=2000)
+    question: str = Field(min_length=1, max_length=2000)
     conversation_id: UUID | None = None
     project_id: UUID | None = None
     # Büro davası: dava belgeleri (UYAP dahil) kullanıcının özel belgeleri olarak aranır.
@@ -173,6 +175,9 @@ class AIAnswerRequest(BaseModel):
 
     @model_validator(mode="after")
     def _single_document_scope(self) -> "AIAnswerRequest":
+        self.question = self.question.strip()
+        if not self.question:
+            raise ValueError("Soru boş olamaz")
         if sum(value is not None for value in (self.project_id, self.case_id, self.office_project_id)) > 1:
             raise ValueError("project_id, case_id ve office_project_id birlikte verilemez")
         if self.selected_document_ids and self.project_id is not None:
@@ -219,6 +224,7 @@ class AIAnswerResponse(BaseModel):
     # Cevabın dayanağı değildir; kullanıcının ilgili kararları kendisinin okuyabilmesi içindir.
     consulted_sources: list[AICitation] = Field(default_factory=list)
     grounded: bool
+    answer_kind: AnswerKind = "legal"
     unverified_markers: list[str] = Field(default_factory=list)
     conversation_id: UUID | None = None
     message_id: UUID | None = None

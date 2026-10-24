@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from urllib.parse import quote
 
 from dotenv import dotenv_values, load_dotenv
 
 from api.ai.providers import LOCAL_OLLAMA_PROVIDERS
+from api.ai.cloud_provider import DEEPSEEK_DEFAULT_MODEL, DEEPSEEK_MAX_COMPLETION_TOKENS
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +36,34 @@ class Settings:
     document_storage_dir: str
     max_document_size_bytes: int
     rag_explanations: bool = False
+    # Mevzuat için ikinci anlam vektörü (migration 061; boş = kapalı). Ölçüm: ilk 5'te doğru madde 12/18 -> 17/18.
+    legislation_embedding_model: str = ""
+    # Doğal cevap + ayrı iddia denetimi. Kapalıysa eski tam alıntı akışı kullanılır.
+    rag_natural_answers: bool = True
+    rag_synthesis_context_chars: int = 24000
+    # Bulut modeli (varsayılan kapalı): yalnız genel hukuk sorularında kullanılır; bkz. api/ai/cloud_provider.py.
+    cloud_ai_provider: str = ""
+    cloud_ai_model: str = ""
+    cloud_ai_api_key: str = field(default="", repr=False)
+    cloud_ai_max_output_tokens: int = 1024
+    cloud_ai_timeout_seconds: float = 60.0
+    cloud_ai_reasoning_effort: str = "low"
+    # Ayrı, sunucu tarafı araştırma profili; genel sohbeti veya özel belge akışını değiştirmez.
+    deep_research_cloud_enabled: bool = False
+    deep_research_ai_model: str = "deepseek-v4-pro"
+    deep_research_ai_api_key: str = field(default="", repr=False)
+    deep_research_ai_provider: str = "deepseek"
+    deep_research_ai_max_output_tokens: int = 0
+    deep_research_ai_timeout_seconds: float = 180.0
+    deep_research_ai_reasoning_effort: str = "max"
+
+
+def _cloud_output_tokens(name: str, *, deepseek: bool) -> int:
+    value = int(os.getenv(name, "0" if deepseek else "1024"))
+    if deepseek:
+        # Yalnız sağlayıcının teknik aralığı. 0 = uygulama kotası yok.
+        return max(0, min(value, DEEPSEEK_MAX_COMPLETION_TOKENS))
+    return max(256, min(value, 8192))
 
 
 def _database_url() -> str:
@@ -64,6 +93,11 @@ def get_settings() -> Settings:
         "CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
     )
     ai_provider = os.getenv("AI_PROVIDER", "deepseek").strip().lower()
+    cloud_provider = os.getenv("CLOUD_AI_PROVIDER", "").strip().lower()
+    cloud_key_name = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY",
+                      "deepseek": "DEEPSEEK_API_KEY", "openrouter": "OPENROUTER_API_KEY"}.get(cloud_provider, "")
+    research_provider = os.getenv("DEEP_RESEARCH_AI_PROVIDER", "deepseek").strip().lower()
+    research_key_name = "OPENROUTER_API_KEY" if research_provider == "openrouter" else "DEEPSEEK_API_KEY"
     return Settings(
         database_url=_database_url(),
         admin_database_url=(
@@ -74,6 +108,8 @@ def get_settings() -> Settings:
         cors_origins=tuple(value.strip() for value in origins.split(",") if value.strip()),
         ai_provider=ai_provider,
         rag_explanations=os.getenv("RAG_EXPLANATIONS", "false").lower() in {"1", "true", "yes"},
+        rag_natural_answers=os.getenv("RAG_NATURAL_ANSWERS", "true").lower() in {"1", "true", "yes"},
+        rag_synthesis_context_chars=max(4000, min(int(os.getenv("RAG_SYNTHESIS_CONTEXT_CHARS", "24000")), 64000)),
         ai_model=os.getenv("AI_MODEL", "deepseek-r1:8b").strip(),
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip(),
         ollama_timeout_seconds=max(
@@ -113,4 +149,23 @@ def get_settings() -> Settings:
         )
         * 1024
         * 1024,
+        cloud_ai_provider=cloud_provider,
+        legislation_embedding_model=os.getenv("LEGISLATION_EMBEDDING_MODEL", "bge-m3").strip(),
+        cloud_ai_model=os.getenv("CLOUD_AI_MODEL", DEEPSEEK_DEFAULT_MODEL if cloud_provider == "deepseek" else "").strip(),
+        cloud_ai_api_key=(os.getenv(cloud_key_name) or file_values.get(cloud_key_name) or "").strip() if cloud_key_name else "",
+        cloud_ai_max_output_tokens=_cloud_output_tokens("CLOUD_AI_MAX_OUTPUT_TOKENS", deepseek=cloud_provider in {"deepseek", "openrouter"}),
+        cloud_ai_timeout_seconds=max(5.0, min(float(os.getenv(
+            "CLOUD_AI_TIMEOUT_SECONDS", "90" if cloud_provider == "deepseek" else "60"
+        )), 300.0)),
+        cloud_ai_reasoning_effort=os.getenv("CLOUD_AI_REASONING_EFFORT", "low").strip().lower(),
+        deep_research_cloud_enabled=os.getenv("DEEP_RESEARCH_CLOUD_ENABLED", "false").lower()
+        in {"1", "true", "yes"},
+        deep_research_ai_model=os.getenv("DEEP_RESEARCH_AI_MODEL", "deepseek-v4-pro").strip() or "deepseek-v4-pro",
+        deep_research_ai_provider=research_provider,
+        deep_research_ai_api_key=(os.getenv(research_key_name) or file_values.get(research_key_name) or "").strip(),
+        deep_research_ai_max_output_tokens=_cloud_output_tokens("DEEP_RESEARCH_AI_MAX_OUTPUT_TOKENS", deepseek=True),
+        deep_research_ai_timeout_seconds=max(5.0, min(float(os.getenv(
+            "DEEP_RESEARCH_AI_TIMEOUT_SECONDS", "180"
+        )), 300.0)),
+        deep_research_ai_reasoning_effort=os.getenv("DEEP_RESEARCH_AI_REASONING_EFFORT", "max").strip().lower(),
     )

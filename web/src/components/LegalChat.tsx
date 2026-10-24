@@ -22,7 +22,7 @@ import { Link, useSearchParam } from "@/lib/router-compat";
 import { useAuth } from "@/components/AuthProvider";
 import { ResearchSources } from "@/components/ResearchSources";
 import { SearchSummary } from "@/components/SearchSummary";
-import { shouldAutoResearch, type SearchSummaryData } from "@/lib/search-summary";
+import { type SearchSummaryData } from "@/lib/search-summary";
 import {
   askAssistant,
   deleteConversation,
@@ -176,13 +176,13 @@ function ScopedLegalChat({
 
   const send = async (text?: string) => {
     const question = (text ?? input).trim();
-    if (question.length < 5 || loading || opening) return;
+    if (!question || loading || opening) return;
     setMessages((p) => [...p, { role: "user", content: question }]);
     setInput("");
     setLoading(true);
     setRequestSummary(undefined);
     setRequestError("");
-    setStage(STAGE_LABELS.searching);
+    setStage("Yanıt hazırlanıyor…");
     const asMessage = (result: AnswerResult): ChatMessage => ({
       id: result.message_id ?? undefined,
       role: "assistant",
@@ -190,6 +190,7 @@ function ScopedLegalChat({
       citations: result.citations,
       consultedSources: parseConsultedSources(result.consulted_sources),
       grounded: result.grounded,
+      answerKind: result.answer_kind,
       unverifiedMarkers: result.unverified_markers,
       searchSummary: result.search_summary,
       documentScope: result.document_scope ?? undefined,
@@ -238,17 +239,23 @@ function ScopedLegalChat({
   return (
     <div
       className={cn(
-        "grid gap-4",
-        compact ? "grid-cols-1 h-[600px]" : "lg:grid-cols-[280px_1fr] h-[calc(100vh-220px)]",
+        "grid min-h-0 min-w-0 gap-4",
+        compact
+          ? "grid-cols-1 grid-rows-1 h-[600px]"
+          : "grid-cols-1 grid-rows-[auto_minmax(0,1fr)] lg:grid-cols-[280px_minmax(0,1fr)] lg:grid-rows-1 h-[calc(100dvh-220px)]",
       )}
       aria-label={title}
+      data-testid="chat-layout"
     >
       {!compact && (
-        <div className="rounded-2xl bg-card border border-border p-3 flex flex-col">
-          <Button onClick={newChat} variant="elite" size="sm" className="mb-3">
+        <div
+          className="min-h-0 min-w-0 max-h-40 lg:max-h-none overflow-hidden rounded-2xl bg-card border border-border p-3 flex flex-col"
+          data-testid="chat-history-panel"
+        >
+          <Button onClick={newChat} variant="elite" size="sm" className="mb-3 shrink-0">
             <Plus className="h-4 w-4" /> Yeni Sohbet
           </Button>
-          <ScrollArea className="flex-1">
+          <ScrollArea className="min-h-0 flex-1" data-testid="chat-history-list">
             <div className="space-y-1">
               {conversations.map((c) => (
                 <div
@@ -281,9 +288,12 @@ function ScopedLegalChat({
         </div>
       )}
 
-      <div className="rounded-2xl bg-card border border-border flex flex-col overflow-hidden">
+      <div
+        className="min-h-0 min-w-0 rounded-2xl bg-card border border-border flex flex-col overflow-hidden"
+        data-testid="chat-main"
+      >
         {compact && (
-          <div className="border-b border-border p-3 flex flex-wrap gap-2 items-center">
+          <div className="shrink-0 border-b border-border p-3 flex flex-wrap gap-2 items-center">
             <label className="text-xs flex-1 min-w-48">
               {officeProjectId ? "Bu projenin sohbetleri" : "Bu davanın sohbetleri"} (son 50)
               <select
@@ -321,12 +331,14 @@ function ScopedLegalChat({
             )}
           </div>
         )}
-        {(activeScope.caseId ||
+        {Boolean(
+          activeScope.caseId ||
           activeScope.officeProjectId ||
           activeScope.projectId ||
-          activeScope.selectedDocumentIds?.length) && (
+          activeScope.selectedDocumentIds?.length,
+        ) && (
           <div
-            className="border-b border-border px-4 py-2 text-xs text-muted-foreground"
+            className="shrink-0 border-b border-border px-4 py-2 text-xs text-muted-foreground"
             role="status"
           >
             {activeScope.officeProjectId
@@ -354,7 +366,11 @@ function ScopedLegalChat({
             )}
           </div>
         )}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto p-6">
+        <div
+          ref={scrollRef}
+          className="min-h-0 flex-1 overflow-y-auto p-6"
+          data-testid="chat-messages"
+        >
           {messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center min-h-full text-center max-w-lg mx-auto">
               <div className="h-16 w-16 rounded-2xl bg-gradient-gold flex items-center justify-center mb-4">
@@ -363,7 +379,7 @@ function ScopedLegalChat({
               <h3 className="font-serif text-2xl font-semibold mb-2">
                 Size nasıl yardımcı olabilirim?
               </h3>
-              <p className="text-sm text-muted-foreground mb-6">{intro}</p>
+              {intro && <p className="text-sm text-muted-foreground mb-6">{intro}</p>}
               <div className="grid sm:grid-cols-2 gap-2 w-full">
                 {examples.map((s) => (
                   <button
@@ -403,14 +419,6 @@ function ScopedLegalChat({
                       m.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted/50",
                     )}
                   >
-                    {m.role === "assistant" && m.interpretedQuestion && (
-                      <p
-                        className="mb-2 text-xs text-muted-foreground"
-                        data-testid="interpreted-question"
-                      >
-                        Önceki sorunuza göre şöyle anlaşıldı: “{m.interpretedQuestion}”
-                      </p>
-                    )}
                     {m.role === "assistant" && (m.summary?.length ?? 0) > 0 ? (
                       // Önce sorunun doğrudan cevabı, sonra koşullar; resmî madde metni açılır "Dayanak" bölümünde (2026-10-18:
                       // kullanıcı cevabın kanun metninin satır satır kopyası olmasından yakındı). Her cümle sunucuda kaynakla
@@ -425,19 +433,7 @@ function ScopedLegalChat({
                               ))}
                             </ul>
                           )}
-                          <p className="text-[11px] text-muted-foreground">
-                            Bu açıklama aşağıdaki resmî metne dayanılarak yapay zekâ tarafından yazıldı ve
-                            kaynakla denetlendi; koşul ve istisnaların tamamı için metni esas alın.
-                          </p>
                         </div>
-                        <details className="mt-3 rounded-lg border border-border bg-background/40 p-2" data-testid="answer-basis">
-                          <summary className="cursor-pointer text-xs font-semibold text-primary">
-                            Dayanak: madde metnini göster
-                          </summary>
-                          <div className="prose prose-sm dark:prose-invert mt-2 max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
-                          </div>
-                        </details>
                       </>
                     ) : (
                       <div className="prose prose-sm dark:prose-invert max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
@@ -446,43 +442,80 @@ function ScopedLegalChat({
                         </CollapsibleAnswer>
                       </div>
                     )}
-                    {m.role === "assistant" && m.grounded === false && (
-                      <p className="mt-2 text-xs flex items-center gap-1 text-amber-700 dark:text-amber-400">
-                        <ShieldAlert className="h-3.5 w-3.5" /> Bu cevap getirilen kaynaklarla
-                        doğrulanamadı.
-                      </p>
-                    )}
+                    {m.role === "assistant" &&
+                      m.grounded === false &&
+                      (!m.answerKind ||
+                        m.answerKind === "legal" ||
+                        (m.citations?.length ?? 0) > 0 ||
+                        (m.unverifiedMarkers?.length ?? 0) > 0) && (
+                        <p className="mt-2 text-xs flex items-center gap-1 text-amber-700 dark:text-amber-400">
+                          <ShieldAlert className="h-3.5 w-3.5" /> Bu cevap getirilen kaynaklarla
+                          doğrulanamadı.
+                        </p>
+                      )}
                     {m.role === "assistant" && (m.unverifiedMarkers?.length ?? 0) > 0 && (
                       <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
                         Doğrulanamayan atıflar: {m.unverifiedMarkers?.join(", ")}
                       </p>
                     )}
-                    {m.citations && <CitationList citations={m.citations} />}
-                    {m.role === "assistant" && m.consultedSources && (
-                      <ConsultedSourceList sources={m.consultedSources} />
-                    )}
                     {m.role === "assistant" && m.documentScope && (
                       <DocumentScopeNotice scope={m.documentScope} />
                     )}
-                    {m.role === "assistant" && m.searchSummary && (
-                      <SearchSummary
-                        summary={m.searchSummary}
-                        citedCount={
-                          new Set((m.citations ?? []).map((c) => c.source_id ?? c.reference)).size
-                        }
-                      />
+                    {m.role === "assistant" && m.searchSummary?.retrieval_partial && (
+                      <p role="status" className="mt-2 text-xs text-amber-700 dark:text-amber-400">
+                        Kaynak taraması kısmen tamamlandı; bazı kaynaklar incelenemedi.
+                      </p>
                     )}
-                    {m.role === "user" && (
-                      <ResearchSources
-                        question={m.content}
-                        autoLoad={shouldAutoResearch(
-                          i,
-                          messages.length,
-                          loading,
-                          messages[i + 1]?.searchSummary,
-                        )}
-                      />
-                    )}
+                    {m.role === "assistant" &&
+                      Boolean(
+                        (m.citations?.length ?? 0) > 0 ||
+                        (m.consultedSources?.length ?? 0) > 0 ||
+                        (m.summary?.length ?? 0) > 0 ||
+                        ((!m.answerKind ||
+                          m.answerKind === "legal" ||
+                          m.answerKind === "insufficient_sources") &&
+                          m.searchSummary),
+                      ) && (
+                        <details className="mt-3 text-xs" data-testid="answer-details">
+                          <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+                            Kaynaklar
+                          </summary>
+                          {m.interpretedQuestion && (
+                            <p
+                              className="mt-2 text-muted-foreground"
+                              data-testid="interpreted-question"
+                            >
+                              Aranan soru: {m.interpretedQuestion}
+                            </p>
+                          )}
+                          {(m.summary?.length ?? 0) > 0 && (
+                            <div className="mt-3" data-testid="answer-basis">
+                              <p className="font-medium">Dayanak metni</p>
+                              <div className="prose prose-sm dark:prose-invert mt-2 max-w-none">
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                  {m.content}
+                                </ReactMarkdown>
+                              </div>
+                            </div>
+                          )}
+                          {m.citations && <CitationList citations={m.citations} />}
+                          {m.consultedSources && (
+                            <ConsultedSourceList sources={m.consultedSources} />
+                          )}
+                          {m.searchSummary && (
+                            <SearchSummary
+                              summary={m.searchSummary}
+                              citedCount={
+                                new Set((m.citations ?? []).map((c) => c.source_id ?? c.reference))
+                                  .size
+                              }
+                            />
+                          )}
+                          {messages[i - 1]?.role === "user" && (
+                            <ResearchSources question={messages[i - 1].content} autoLoad={false} />
+                          )}
+                        </details>
+                      )}
                   </div>
                 </div>
               ))}
@@ -496,7 +529,11 @@ function ScopedLegalChat({
                   </div>
                 </div>
               )}
-              {requestSummary && <SearchSummary summary={requestSummary} />}
+              {requestSummary?.retrieval_partial && (
+                <p role="status" className="text-xs text-amber-700 dark:text-amber-400">
+                  Kaynak taraması kısmen tamamlandı.
+                </p>
+              )}
               {requestError && (
                 <p role="alert" className="text-sm text-destructive">
                   {requestError}
@@ -506,7 +543,7 @@ function ScopedLegalChat({
           )}
         </div>
 
-        <div className="border-t border-border p-4">
+        <div className="shrink-0 border-t border-border p-4" data-testid="chat-composer">
           <div className="max-w-3xl mx-auto flex gap-2">
             <Textarea
               value={input}
@@ -517,14 +554,14 @@ function ScopedLegalChat({
                   send();
                 }
               }}
-              placeholder="Sorunuzu yazın… (Enter = gönder, Shift+Enter = yeni satır)"
+              placeholder="Sorunuzu yazın…"
               rows={2}
               className="resize-none"
               disabled={loading}
             />
             <Button
               onClick={() => send()}
-              disabled={loading || input.trim().length < 5}
+              disabled={loading || opening || !input.trim()}
               variant="elite"
               size="lg"
             >
@@ -535,9 +572,6 @@ function ScopedLegalChat({
               )}
             </Button>
           </div>
-          <p className="text-[10px] text-muted-foreground text-center mt-2">
-            Cevaplar yalnızca getirilen kaynaklara dayanır; hukuki danışmanlık yerine geçmez.
-          </p>
         </div>
       </div>
     </div>

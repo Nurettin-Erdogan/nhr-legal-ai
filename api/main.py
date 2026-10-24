@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.account import router as account_router
 from api.admin_audit import router as admin_audit_router
 from api.admin_ingestion import router as admin_ingestion_router
+from api.admin_panel import router as admin_panel_router
 from api.ai.providers import AIProviderError, LOCAL_OLLAMA_PROVIDERS, create_provider
 from api.ai.routes import router as ai_router
 from api.auth.routes import router as auth_router
@@ -209,6 +210,7 @@ app.include_router(integrations_router)
 app.include_router(office_public_router)
 app.include_router(admin_ingestion_router)
 app.include_router(admin_audit_router)
+app.include_router(admin_panel_router)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["system"])

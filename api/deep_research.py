@@ -126,6 +126,9 @@ class StepResult:
     error: str | None = None
     # Cevap önceki bir başlıkla aynıysa tekrar gösterilmez; neden burada yazılır (hata değildir).
     note: str | None = None
+    # Gerçekte cevap veren model (bulut hatasında yerel olabilir); düşünme metni saklanmaz.
+    provider: str | None = None
+    model: str | None = None
 
     def as_dict(self, *, with_question: bool = False) -> dict[str, Any]:
         data = {
@@ -136,6 +139,8 @@ class StepResult:
             "citations": self.citations,
             "error": self.error,
             "note": self.note,
+            "provider": self.provider,
+            "model": self.model,
         }
         if with_question:
             data["question"] = self.question
@@ -260,6 +265,8 @@ async def run_job(
             try:
                 response = await answer(question, job.conversation_id)
                 step.answer = response.answer
+                step.provider = getattr(response, "provider", None)
+                step.model = getattr(response, "model", None)
                 fingerprint = " ".join(response.answer.split())
                 if fingerprint in seen:
                     # Tanınan konularda (ör. kıdem tazminatı) hat her eksende aynı kanun metnini döndürebilir: tekrarlanmaz.

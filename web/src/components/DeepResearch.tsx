@@ -26,6 +26,11 @@ export function StepCard({ step, index }: { step: ResearchStep; index: number })
       <h3 className="font-semibold">
         {index}. {step.title}
       </h3>
+      {step.model && (
+        <p className="text-xs text-muted-foreground" data-testid="research-model">
+          Yanıt modeli: {step.model}
+        </p>
+      )}
       {step.error ? (
         <p role="alert" className="text-sm text-destructive">
           Bu başlık tamamlanamadı: {step.error}

@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 
 from api.ai.rag import RAGContext, uncited_claims
+from api.ai.answer_kind import AnswerKind
 from api.ai.source_support import unsupported_source_claims
 
 _MARKER_PATTERN = re.compile(r"\[\s*K\s*(\d+)\s*\]", re.IGNORECASE)
@@ -36,6 +37,7 @@ class VerifiedAnswer:
     # Uzun kanun maddesi cevabının üstünde gösterilen, denetlenmiş yapay zekâ özeti (bkz. api.ai.statute_summary). Cevap metni
     # ve atıflar bundan bağımsızdır; `grounded` hesabına girmez.
     summary: tuple[str, ...] = ()
+    answer_kind: AnswerKind = "legal"
 
     @property
     def grounded(self) -> bool:

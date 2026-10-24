@@ -10,6 +10,15 @@ import { parseSearchSummary, type SearchSummaryData } from "./search-summary";
 
 const API_BASE_URL = (import.meta.env.VITE_API_URL ?? "http://localhost:8766").replace(/\/$/, "");
 
+export type AnswerKind = "conversation" | "clarification" | "legal" | "insufficient_sources";
+
+/** Eski veya tanınmayan cevaplar kaynak denetiminden muaf tutulmaz. */
+export function parseAnswerKind(value: unknown): AnswerKind {
+  return value === "conversation" || value === "clarification" || value === "insufficient_sources"
+    ? value
+    : "legal";
+}
+
 export interface Citation {
   marker: string;
   source_id: string | null;
@@ -29,6 +38,7 @@ export interface ChatMessage {
   /** Cevapta alıntılanmayan ama incelenen doğrulanmış kaynaklar (canlı cevapta; geçmişte yok). */
   consultedSources?: ConsultedSource[];
   grounded?: boolean | null;
+  answerKind?: AnswerKind;
   unverifiedMarkers?: string[];
   searchSummary?: SearchSummaryData;
   /** Dava kapsamlı cevapta: belgelerin ne kadarı cevaba katılabildi. */
@@ -52,6 +62,7 @@ export interface ConversationSummary {
 
 export interface AnswerResult {
   answer: string;
+  answer_kind?: AnswerKind;
   grounded: boolean;
   unverified_markers: string[];
   conversation_id: string | null;
@@ -132,6 +143,7 @@ export async function getConversationDetail(
       role: string;
       content: string;
       grounded: boolean | null;
+      answer_kind?: unknown;
       document_scope?: unknown;
       unverified_markers: string[];
       citations: Citation[];
@@ -146,6 +158,7 @@ export async function getConversationDetail(
       content: m.content,
       citations: m.citations,
       grounded: m.grounded,
+      answerKind: parseAnswerKind(m.answer_kind),
       documentScope: parseDocumentScope(m.document_scope),
       unverifiedMarkers: m.unverified_markers,
       summary: Array.isArray(m.summary)
@@ -246,6 +259,7 @@ export async function askAssistant(
     if (event.preview) {
       opts.onPreview?.({
         ...event.preview,
+        answer_kind: parseAnswerKind(event.preview.answer_kind),
         search_summary: parseSearchSummary(event.preview.search_summary),
         document_scope: parseDocumentScope(event.preview.document_scope),
       });
@@ -253,6 +267,7 @@ export async function askAssistant(
     if (event.stage === "done" && event.result) {
       result = {
         ...event.result,
+        answer_kind: parseAnswerKind(event.result.answer_kind),
         search_summary: parseSearchSummary(event.result.search_summary),
         document_scope: parseDocumentScope(event.result.document_scope),
       };

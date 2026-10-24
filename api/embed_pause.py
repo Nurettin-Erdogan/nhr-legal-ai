@@ -9,14 +9,20 @@ from __future__ import annotations
 import logging
 import sys
 import time
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
-PAUSE_FILE = Path(__file__).resolve().parents[1] / "data" / "campaign" / "PAUSE_EMBED"
+_DEFAULT_PAUSE_FILE = Path(__file__).resolve().parents[1] / "data" / "campaign" / "PAUSE_EMBED"
+PAUSE_FILE = _DEFAULT_PAUSE_FILE
 _STALE_SECONDS = 600.0
+_local_generation_lock = threading.RLock()
+_local_generation_users = 0
+_local_generation_owns_pause = False
 
 
 def embeddings_paused() -> bool:
@@ -43,10 +49,36 @@ def pause_embeddings(reason: str = "assistant") -> None:
 
 
 def resume_embeddings() -> None:
+    if "pytest" in sys.modules and PAUSE_FILE == _DEFAULT_PAUSE_FILE:
+        return
     try:
         PAUSE_FILE.unlink(missing_ok=True)
     except OSError:
         logger.warning("Embedding duraklatma dosyası silinemedi", exc_info=True)
+
+
+@contextmanager
+def local_generation_pause():
+    """Pause only while a cloud fallback actually uses the local GPU.
+
+    Overlapping fallback calls share the flag; a pre-existing worker/operator
+    pause belongs to its creator and is never cleared by this scope.
+    """
+    global _local_generation_users, _local_generation_owns_pause
+    with _local_generation_lock:
+        if not _local_generation_users:
+            _local_generation_owns_pause = not PAUSE_FILE.exists()
+            if _local_generation_owns_pause:
+                pause_embeddings('assistant-fallback')
+        _local_generation_users += 1
+    try:
+        yield
+    finally:
+        with _local_generation_lock:
+            _local_generation_users -= 1
+            if not _local_generation_users and _local_generation_owns_pause:
+                resume_embeddings()
+                _local_generation_owns_pause = False
 
 
 def wait_if_embeddings_paused(*, sleeper=time.sleep, interval: float = 0.4) -> None:

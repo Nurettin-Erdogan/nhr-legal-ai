@@ -33,11 +33,12 @@ class _Result:
 
 
 class FakeUsers:
-    """`users.sessions_valid_after` için asgari sahte bağlantı; sorgu sayısını da tutar."""
+    """`users.sessions_valid_after` ve erişim denetimi için asgari sahte bağlantı; sorgu sayısını da tutar."""
 
-    def __init__(self, valid_after: datetime | None = None, *, fail: bool = False):
+    def __init__(self, valid_after: datetime | None = None, *, fail: bool = False, allowed: bool = True):
         self.valid_after = valid_after
         self.fail = fail
+        self.allowed = allowed
         self.reads = 0
         self.writes = 0
 
@@ -47,7 +48,13 @@ class FakeUsers:
             raise psycopg.OperationalError("veritabanı yok")
         yield self
 
+    @contextmanager
+    def transaction(self):
+        yield self
+
     def execute(self, sql, params=None):
+        if "app_user_access_allowed" in sql:
+            return _Result({"allowed": self.allowed})
         if sql.lstrip().upper().startswith("SELECT"):
             self.reads += 1
             return _Result({"sessions_valid_after": self.valid_after})
@@ -58,10 +65,10 @@ class FakeUsers:
 
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch):
-    routes._sessions_valid_after_cache.clear()
+    routes._session_cache.clear()
     monkeypatch.setattr(routes, "_auth_secret", lambda: SECRET)
     yield
-    routes._sessions_valid_after_cache.clear()
+    routes._session_cache.clear()
 
 
 def _use(monkeypatch, users: FakeUsers) -> None:
@@ -99,7 +106,7 @@ def test_token_issued_before_logout_is_revoked_and_a_later_one_is_not(monkeypatc
     _use(monkeypatch, FakeUsers(revoked_at))
     with pytest.raises(TokenError, match="sonlandırıldı"):
         routes.resolve_session(_token(issued_ago=3600))
-    routes._sessions_valid_after_cache.clear()
+    routes._session_cache.clear()
     assert routes.resolve_session(_token(issued_ago=5)) == USER  # çıkıştan sonra yeni giriş
 
 
@@ -109,6 +116,26 @@ def test_validity_is_cached_to_avoid_a_database_read_per_request(monkeypatch):
     for _ in range(20):
         routes.resolve_session(_token())
     assert users.reads == 1
+
+
+def test_a_session_without_access_is_refused_and_the_refusal_is_not_cached(monkeypatch):
+    # Erişim listesinden çıkarılan ya da askıya alınan hesabın jetonu süresi dolmadan da geçmez (migration 062).
+    users = FakeUsers(None, allowed=False)
+    _use(monkeypatch, users)
+    with pytest.raises(TokenError, match="erişimi yok"):
+        routes.resolve_session(_token())
+    users.allowed = True  # yönetici listeye ekledi: bir sonraki istek beklemeden geçer
+    assert routes.resolve_session(_token()) == USER
+
+
+def test_losing_access_ends_an_open_session_once_the_short_cache_expires(monkeypatch):
+    users = FakeUsers(None)
+    _use(monkeypatch, users)
+    assert routes.resolve_session(_token()) == USER
+    users.allowed = False
+    monkeypatch.setattr(routes, "SESSION_CACHE_SECONDS", 0.0)
+    with pytest.raises(TokenError, match="erişimi yok"):
+        routes.resolve_session(_token())
 
 
 def test_revoking_clears_the_local_cache_so_logout_takes_effect_at_once(monkeypatch):

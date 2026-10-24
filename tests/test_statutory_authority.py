@@ -101,6 +101,27 @@ def test_rule_only_answer_discloses_missing_procedural_steps():
     assert result.contexts == answer.contexts and result.grounded
 
 
+def test_actual_written_notice_step_is_not_mislabelled_as_missing_in_a_general_rent_answer():
+    from dataclasses import replace
+    from tests.factories import legislation_context
+    content = "Kiraya veren kiracıya yazılı bir süre verip ödenmezse sözleşmeyi feshedeceğini bildirebilir."
+    context = replace(legislation_context(content=content), law_no="6098", article_no="315")
+    question = "Kiracı kirayı ödemezse ev sahibi ne yapabilir?"
+    answer = verify_answer(content + " [K1]", [context], question=question)
+    assert answer.grounded
+    assert with_coverage_notice(answer, question).text == answer.text
+
+
+def test_notice_step_does_not_claim_to_cover_an_explicit_court_procedure_request():
+    from dataclasses import replace
+    from tests.factories import legislation_context
+    content = "Kiraya veren kiracıya yazılı bir süre verip ödenmezse sözleşmeyi feshedeceğini bildirebilir."
+    context = replace(legislation_context(content=content), law_no="6098", article_no="315")
+    answer = verify_answer(content + " [K1]", [context])
+    result = with_coverage_notice(answer, "Kiracı kirayı ödemiyorsa mahkemede ne yapabilirim?")
+    assert "başvuru adımlarını bu kaynaklarla doğrulayamadım" in result.text
+
+
 def test_model_source_counter_reflects_primary_selection_not_discovery_pool():
     from api.ai.discovery import select_answer_contexts, search_summary
     pool = [old_case(), statute()]

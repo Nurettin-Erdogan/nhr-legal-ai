@@ -70,6 +70,12 @@ TOPICS: tuple[Topic, ...] = (
     Topic("haksiz_fesih_tazminat", (("haksız fesih", "haksız fesh", "haksız olarak fesh", "haksız şekilde fesh"),
                                     ("işçi", "iş sözleşme", "iş akd", "hizmet akd", "işveren")),
           (_h("4857", "17", "bildirim", anchor="Bildirim şartına uymayan taraf"), _h("1475", "14", "kıdem tazminat", anchor="her geçen tam yıl için işverence işçiye 30 günlük ücreti tutarında kıdem tazminatı ödenir"))),
+    # The same already-validated retrieval hints for everyday first-person
+    # narratives. These are candidate sources, never an entitlement decision.
+    Topic("isten_cikarilma_anlatimi", (("çalıştım", "çalışıyordum", "işveren", "işyer", "işten", "maaş", "ücretim"),
+                                       ("çıkarıldım", "çıkardı", "işten çıkar", "işten at", "kovuldum")),
+          (_h("4857", "17", "bildirim", anchor="Bildirim şartına uymayan taraf"),
+           _h("1475", "14", "kıdem tazminat", anchor="her geçen tam yıl için işverence işçiye 30 günlük ücreti tutarında kıdem tazminatı ödenir"))),
     Topic("esit_davranma", (("eşit davranma", "eşit işlem borc", "ayrımcılık tazminat"),), (_h("4857", "5", "ayrım yapılamaz", "eşit davranma", anchor="ayrım yapılamaz"),)),
     Topic("is_arabuluculuk", (("arabulucu",), ("işçi", "işe iade", "işveren", "iş mahkeme", "işçilik", "iş uyuşmazl", "iş davas", "iş hukuk")),
           (_h("7036", "3", "arabulucu", anchor="arabulucuya başvurulmuş olması dava şartıdır"),)),

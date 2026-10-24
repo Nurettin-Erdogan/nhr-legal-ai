@@ -42,7 +42,7 @@ _stats_cache: tuple[float, CorpusStats] | None = None
 # yoksa (hiç hesaplanmadıysa) uç 503 "hazırlanıyor" der ve hesap başlar. Önbellek yalnız bellekteyken her yeniden başlatma
 # ucu bozuyordu (korpus paneli ve "Karar Hukuku" kutusu boş kalıyordu).
 _STATS_FILE = Path(__file__).resolve().parents[1] / "data" / "cache" / "corpus_stats.json"
-_STATS_REFRESH_SECONDS = 600.0
+_STATS_REFRESH_SECONDS = 21600.0
 _STATS_REFRESH_TIMEOUT = "900s"
 _stats_lock = threading.Lock()
 _stats_refreshing = False
@@ -96,10 +96,14 @@ _SHARD_PROGRESS_DIR = Path(__file__).resolve().parents[1] / "data" / "cache"
 # immediately instead of blocking on multi-minute count(*) scans of ~20M chunks.
 _SLOW_COUNTS_FILE = Path(__file__).resolve().parents[1] / "data" / "cache" / "slow_counts.json"
 
-_SLOW_COUNTS_TTL_SECONDS = 600.0
+_SLOW_COUNTS_TTL_SECONDS = 21600.0
 # Üçüncü taraf sayısı ağır (10M satır filtresi): chunk sayımı 15 sn'de bir, bu 10 dk'da bir.
-_SEED_COUNT_TTL_SECONDS = 600.0
+_SEED_COUNT_TTL_SECONDS = 21600.0
 _seed_count_at = 0.0
+# Ağır sayım başarısız olursa (zaman aşımı/iptal) her istekte yeniden denenmez: aksi halde pano 30 sn'de bir yenilenirken
+# aynı 10M satırlık sayım üst üste başlayıp diski kilitliyordu (2026-10-23 gece, veri çekimi durdu).
+_SLOW_RETRY_BACKOFF_SECONDS = 3600.0
+_slow_attempt_at: dict[str, float] = {"seed": time.monotonic(), "official": time.monotonic()}  # açılışta ilk saat çalıştırılmaz
 _SLOW_COUNTS_TIMEOUT = "900s"
 _SEED_BREAKDOWN_KEYS = ("seed_yargitay", "seed_danistay", "seed_aym_norm", "seed_emsal")
 # Embedding yalnız resmî (`ingest_status = 'ready'`) kayıtlara yapılır; "bekleyen" yalnız onların
@@ -476,15 +480,20 @@ def _read_embed_progress_ready() -> int | None:
     return read_ready()
 
 
-def _with_live_chunks(stats: CorpusStats) -> CorpusStats:
+def _with_live_chunks(stats: CorpusStats, ready_counter: int | None = None) -> CorpusStats:
     live = _live_chunk_estimate()
     if not live:
         return stats
-    ready = _live_embedded_count() or _read_embed_progress_ready() or stats.embeddings.ready
+    if ready_counter is not None:
+        # Tetikleyici sayacı (migration 059) kesin sayımdır; bekleyen `_apply_counters` içinde hesaplandı.
+        ready = ready_counter
+        pending = stats.embeddings.pending
+    else:
+        ready = _live_embedded_count() or _read_embed_progress_ready() or stats.embeddings.ready
+        # Bekleyen sayısı yavaş sayımdan gelir ve yalnız resmî parçaları kapsar; toplu arşivin
+        # embedding'i yapılmadığı için `toplam - hazır` "bekleyen" olarak gösterilmez.
+        pending = stats.embeddings.pending if _official_pending_at else max(live, ready) - ready
     total = max(live, ready)
-    # Bekleyen sayısı yavaş sayımdan gelir ve yalnız resmî parçaları kapsar; toplu arşivin
-    # embedding'i yapılmadığı için `toplam - hazır` "bekleyen" olarak gösterilmez.
-    pending = stats.embeddings.pending if _official_pending_at else total - ready
     return stats.model_copy(
         update={
             "chunk_count": total,
@@ -493,9 +502,98 @@ def _with_live_chunks(stats: CorpusStats) -> CorpusStats:
     )
 
 
+# Panel sayıları tabloyu taramadan, tetikleyicilerin tuttuğu sayaçlardan okunur (migration 059; `corpus_counts()`).
+# Önceki yöntem legal_sources üzerinde count(*) idi: nhr_runtime ile RLS yüzünden yük altında 10-15 dk sürüyor, 10 dakikada
+# bir tekrarlanıp diski dolduruyor ve sayfa eski sayıyı gösteriyordu (2026-10-21). Sayaç yoksa (migration/rebuild yapılmadı)
+# `None` döner ve eski önbellek yolu çalışır.
+_COUNTERS_TTL_SECONDS = 5.0
+_counters_cache: tuple[float, dict[str, int]] | None = None
+_PENDING_BASE_FILE = Path(__file__).resolve().parents[1] / "data" / "cache" / "embedding_pending_base.json"
+
+
+def _live_counters() -> dict[str, int] | None:
+    global _counters_cache
+    if "pytest" in sys.modules:
+        return None
+    now = time.monotonic()
+    cached = _counters_cache
+    if cached is not None and now - cached[0] < _COUNTERS_TTL_SECONDS:
+        return cached[1] or None
+    try:
+        with database_connection() as connection:
+            connection.execute("SET LOCAL statement_timeout = '3s'")
+            rows = connection.execute("SELECT key, n FROM corpus_counts()").fetchall()
+    except psycopg.Error:
+        return cached[1] or None if cached is not None else None
+    counts = {str(row["key"]): int(row["n"]) for row in rows}
+    _counters_cache = (now, counts)
+    return counts or None
+
+
+def _read_pending_base() -> tuple[int, int] | None:
+    """Son ağır sayımın (bekleyen resmî parça, o andaki hazır sayacı) çifti."""
+    try:
+        raw = json.loads(_PENDING_BASE_FILE.read_text(encoding="utf-8"))
+        return int(raw["pending"]), int(raw["embedded"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _sum_counter(counts: dict[str, int], prefix: str, *, only: set[str] | None = None, exclude: set[str] | None = None) -> int:
+    total = 0
+    for key, value in counts.items():
+        if not key.startswith(prefix):
+            continue
+        authority = key[len(prefix):]
+        if only is not None and authority not in only:
+            continue
+        if exclude is not None and authority in exclude:
+            continue
+        total += value
+    return max(total, 0)
+
+
+def _apply_counters(stats: CorpusStats, counts: dict[str, int]) -> CorpusStats:
+    """Önbellekteki istatistiğin sayı alanlarını canlı sayaçlarla değiştirir; tarih/doğrulama kırılımı gibi alanlar kalır."""
+    main = {"Yargıtay", "Danıştay", "Anayasa Mahkemesi"}
+    decisions = _sum_counter(counts, "src|court_decision|")
+    other = _sum_counter(counts, "src|other|")
+    legislation = _sum_counter(counts, "src|legislation|")
+    update: dict[str, object] = {
+        "decision_count": decisions,
+        "other_count": other,
+        "legislation_count": legislation,
+        "source_count": decisions + other + legislation,
+        "court_decisions": CourtDecisionBreakdown(
+            yargitay=_sum_counter(counts, "src|court_decision|", only={"Yargıtay"}),
+            danistay=_sum_counter(counts, "src|court_decision|", only={"Danıştay"}),
+            anayasa_mahkemesi=_sum_counter(counts, "src|court_decision|", only={"Anayasa Mahkemesi"}),
+            istinaf_emsal=_sum_counter(counts, "src|court_decision|", exclude=main),
+        ),
+        "administrative": AdministrativeBreakdown(
+            kamu_denetciligi_kurumu=_sum_counter(counts, "src|other|", only={"Kamu Denetçiliği Kurumu"}),
+            sayistay=_sum_counter(counts, "src|other|", only={"Sayıştay"}),
+            uyusmazlik_mahkemesi=_sum_counter(counts, "src|other|", only={"Uyuşmazlık Mahkemesi"}),
+        ),
+    }
+    embedded = counts.get("chunks|embedded")
+    if embedded is not None:
+        base = _read_pending_base()
+        # Bekleyen: son ağır sayımdaki bekleyenden, o günden beri hazırlanan parçalar düşülür (kaynak yeni 'ready' olunca
+        # eklenen parçalar bir sonraki ağır sayımda tabana yansır).
+        pending = max(base[0] - max(embedded - base[1], 0), 0) if base is not None else stats.embeddings.pending
+        update["embeddings"] = stats.embeddings.model_copy(update={"ready": embedded, "pending": pending})
+    return stats.model_copy(update=update)
+
+
 @router.get("/stats", response_model=CorpusStats)
 def corpus_stats() -> CorpusStats:
-    return _with_live_chunks(_corpus_stats_cached())
+    stats = _corpus_stats_cached()
+    counters = _live_counters()
+    if counters:
+        stats = _apply_counters(stats, counters)
+        return _with_live_chunks(stats, counters.get("chunks|embedded"))
+    return _with_live_chunks(stats)
 
 
 def _stats_in_background() -> bool:
@@ -644,11 +742,17 @@ def _load_slow_counts(previous: dict[str, int] | None = None) -> dict[str, int]:
         # Canlı sayaç/ilerleme dosyası yoksa (yeni kurulum, dosya silinmiş) eski kısmi indeks
         # sayımına düşülür; aksi halde istatistik ucu anahtar eksikliğiyle çöker.
         queries.append(("chunk", _CHUNK_COUNTS_SQL))
-    if "seed_count" not in counts or time.monotonic() - _seed_count_at >= _SEED_COUNT_TTL_SECONDS:
+    now_mono = time.monotonic()
+    if ("seed_count" not in counts or now_mono - _seed_count_at >= _SEED_COUNT_TTL_SECONDS) and (
+        now_mono - _slow_attempt_at.get("seed", -1e9) >= _SLOW_RETRY_BACKOFF_SECONDS
+    ):
         queries.append(("seed", _SEED_COUNT_SQL))
-    if "official_pending" not in counts or time.monotonic() - _official_pending_at >= _SEED_COUNT_TTL_SECONDS:
+    if ("official_pending" not in counts or now_mono - _official_pending_at >= _SEED_COUNT_TTL_SECONDS) and (
+        now_mono - _slow_attempt_at.get("official", -1e9) >= _SLOW_RETRY_BACKOFF_SECONDS
+    ):
         queries.append(("official", _OFFICIAL_PENDING_SQL))
     for label, sql in queries:
+        _slow_attempt_at[label] = time.monotonic()
         try:
             with database_connection() as connection:
                 connection.execute(f"SET LOCAL statement_timeout = '{_SLOW_COUNTS_TIMEOUT}'")

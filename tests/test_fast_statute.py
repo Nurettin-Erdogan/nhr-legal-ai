@@ -34,6 +34,22 @@ def test_ambiguous_case_law_and_historical_questions_keep_full_search(question):
     assert fast_reference(question) is None
 
 
+def test_nonpayment_lookup_does_not_mix_general_and_product_leases():
+    from api.ai.relevance import question_intent
+    from api.ai.authority import answer_uses_primary_basis
+    question = 'Kiracı kirayı ödemezse ev sahibi ne yapabilir?'
+    assert fast_reference(question) == ('6098', '315')
+    for special in ('Ürün kirası ödenmezse ne olur?', 'Tarla kirası ödenmezse ne olur?',
+                    'Kira ödenmezse icra takibi nasıl yapılır?'):
+        assert question_intent(special) is None
+        assert fast_reference(special) is None
+    general = replace(legislation_context(), law_no='6098', article_no='315')
+    product = replace(general, chunk_id=uuid4(), article_no='362')
+    assert answer_uses_primary_basis(question, [general], [general, product])
+    assert not answer_uses_primary_basis(question, [product], [general, product])
+    assert not answer_uses_primary_basis(question, [general, product], [general, product])
+
+
 @pytest.mark.parametrize('options', [
     {'as_of': date(2020,1,1)}, {'project_id': uuid4()}, {'conversation_id': uuid4()},
 ])

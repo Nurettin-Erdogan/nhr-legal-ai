@@ -18,6 +18,8 @@ import signal
 import sys
 import threading
 import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -29,6 +31,8 @@ sys.path.insert(0, str(ROOT))
 load_dotenv(ROOT / ".env")
 
 STOP = False
+WRITE_WORKERS = int(os.getenv("EMBED_WRITE_WORKERS", "4"))
+WRITE_QUEUE = int(os.getenv("EMBED_WRITE_QUEUE", "8"))
 SHARD_PROGRESS_DIR = ROOT / "data" / "cache"
 
 
@@ -114,6 +118,26 @@ def main() -> int:
     done = 0
     skipped = 0
     started = time.time()
+    writers = ThreadPoolExecutor(max_workers=WRITE_WORKERS)
+    pending: deque = deque()
+    local = threading.local()
+
+    def write_batch(params: list) -> None:
+        connection_w = getattr(local, "connection", None)
+        if connection_w is None or connection_w.closed:
+            connection_w = psycopg.connect(url, autocommit=True)
+            connection_w.execute("SET synchronous_commit = off")
+            local.connection = connection_w
+        with connection_w.transaction(), connection_w.cursor() as cur:
+            cur.executemany(
+                "UPDATE legal_chunks SET embedding = %s::vector, embedding_model = %s, "
+                "embedding_created_at = NOW() WHERE id = %s AND embedding IS NULL",
+                params,
+            )
+
+    def drain_writes() -> None:
+        while pending:
+            pending.popleft().result()
 
     def source_ids_for(connection: psycopg.Connection, since: str | None) -> list:
         # since=None: tüm resmî kayıtlar; aksi hâlde yalnız o zamandan beri değişenler (yeni
@@ -132,8 +156,19 @@ def main() -> int:
             ).fetchall()
         ]
 
-    def run_pass(connection: psycopg.Connection, source_ids: list) -> None:
+    resume_path = ROOT / "data" / "campaign" / f"embed-official-resume-{shard}of{shards}.json"
+
+    def run_pass(connection: psycopg.Connection, source_ids: list, *, resumable: bool = False) -> None:
         nonlocal done, skipped
+        # Yeniden başlatmada tam taramayı baştan yapmamak için son tamamlanan kaynak kimliği saklanır (2026-10-19:
+        # her başlatmada 160 bin kaynak yeniden taranıyor, ilk ~20 dk hiç parça üretilmiyordu).
+        if resumable and resume_path.exists():
+            try:
+                last_id = json.loads(resume_path.read_text(encoding="utf-8")).get("last_id")
+            except (OSError, ValueError):
+                last_id = None
+            if last_id:
+                source_ids = [sid for sid in source_ids if str(sid) > last_id]
         print(f"resmî kaynak: {len(source_ids):,}; model={provider.model}", flush=True)
         for offset in range(0, len(source_ids), args.sources_per_group):
             if STOP or (args.limit and done >= args.limit):
@@ -167,14 +202,17 @@ def main() -> int:
                     raise RuntimeError("Embedding sayısı/boyutu beklenenle eşleşmiyor")
                 if not batch:
                     continue
-                with connection.transaction(), connection.cursor() as cur:
-                    cur.executemany(
-                        "UPDATE legal_chunks SET embedding = %s::vector, embedding_model = %s, "
-                        "embedding_created_at = NOW() WHERE id = %s",
-                        [(vector_literal(v), provider.model, row[0]) for row, v in zip(batch, vectors, strict=True)],
-                    )
+                # Yazma darboğazı (2026-10-19): her UPDATE tüm dizinleri (HNSW + GIN) günceller, tek bağlantıyla ~6 parça/sn;
+                # GPU %5 boşta. Vektörler üretilirken yazmalar paralel bağlantılarla yapılır.
+                params = [(vector_literal(v), provider.model, row[0]) for row, v in zip(batch, vectors, strict=True)]
+                while len(pending) >= WRITE_QUEUE:
+                    pending.popleft().result()
+                pending.append(writers.submit(write_batch, params))
                 done += len(batch)
                 write_shard_progress(shard, started, done)  # API sayacı her partide ilerler
+            drain_writes()
+            if resumable and group:
+                resume_path.write_text(json.dumps({"last_id": str(group[-1])}), encoding="utf-8")
             elapsed = time.time() - started
             print(
                 f"{time.strftime('%H:%M:%S')} kaynak {offset + len(group):,}/{len(source_ids):,} | "
@@ -249,8 +287,9 @@ def main() -> int:
         threading.Thread(target=base_loop, name="embed-base-count", daemon=True).start()
 
     with psycopg.connect(url, autocommit=True) as connection:
-        connection.execute("SET statement_timeout = '120s'")
-        run_pass(connection, source_ids_for(connection, None))
+        connection.execute("SET statement_timeout = '900s'")
+        run_pass(connection, source_ids_for(connection, None), resumable=True)
+        resume_path.unlink(missing_ok=True)  # tam tur bitti: sonraki tam tarama baştan
         last_full = time.time()
         last_light = time.time()
         while args.loop and not STOP:
@@ -261,6 +300,7 @@ def main() -> int:
             if now - last_light >= args.loop_interval:
                 if now - last_full >= args.full_every_hours * 3600:
                     ids, last_full = source_ids_for(connection, None), now
+                    resume_path.unlink(missing_ok=True)
                 else:
                     since = datetime.fromtimestamp(last_light - 600, UTC).isoformat()
                     ids = source_ids_for(connection, since)

@@ -117,6 +117,7 @@ def record_exchange(
             Jsonb(
                 {
                     "grounded": answer.grounded,
+                    "answer_kind": answer.answer_kind,
                     "unverified_markers": list(answer.unverified_markers),
                     "as_of": as_of.isoformat() if as_of else None,
                     **({"document_scope": document_scope} if document_scope is not None else {}),

@@ -48,9 +48,14 @@ Bir kayıt ancak resmî portaldan çekilip metni eşleştiğinde `ready` olur
 ([docs/ingestion-bulk-mrfg.md](docs/ingestion-bulk-mrfg.md)). Doğrulanmamış kaydı
 yeniden uygulamaya açmak kullanıcı kararı olmadan yapılmaz.
 
-**AI katmanı sağlayıcıdan bağımsız kalır.** Yerel üretim DeepSeek (Ollama)
-üzerinden gider; üretim ve embedding çağrıları arayüz arkasında tutulur. Model
-sıfırdan eğitilmez.
+**AI katmanı sağlayıcıdan bağımsız kalır.** Yerel üretim Ollama üzerinden gider
+(şu an `qwen3.5:4b`); üretim ve embedding çağrıları arayüz arkasında tutulur. Model
+sıfırdan eğitilmez. İsteğe bağlı bulut modeli (`CLOUD_AI_PROVIDER`, varsayılan
+kapalı) yalnız genel hukuk sorularında kullanılır: dava, proje ya da seçili belge
+kapsamındaki soru ve kullanıcı belgesi içeren kaynak listesi hiçbir zaman buluta
+gitmez ([api/ai/cloud_provider.py](api/ai/cloud_provider.py)); cevap yine aynı kod
+denetiminden geçer. Mevzuat anlam araması ayrıca yerel `bge-m3` gömme modelini kullanır
+(migration 061, `scripts/embed_legislation_m3.py`); sunucuda Ollama'ya bu model de kurulmalıdır.
 
 **Güvenlik ve KVKK sonradan eklenmez.** Kullanıcı izolasyonu, RLS, denetim
 kaydı ve secret yönetimi mimarinin parçasıdır. Yeni bir tablo veya uç nokta

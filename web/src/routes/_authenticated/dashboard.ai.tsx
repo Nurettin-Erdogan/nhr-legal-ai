@@ -3,10 +3,7 @@ import { DashboardLayout } from "@/components/DashboardLayout";
 import { AssistantWorkspace } from "@/components/AssistantWorkspace";
 
 const AIAssistant = () => (
-  <DashboardLayout
-    title="Hukuk Asistanı"
-    subtitle="Araştırma, belge analizi ve özetler tek çalışma alanında"
-  >
+  <DashboardLayout title="Hukuk Asistanı">
     <AssistantWorkspace />
   </DashboardLayout>
 );

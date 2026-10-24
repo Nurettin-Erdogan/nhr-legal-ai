@@ -49,6 +49,7 @@ def answer_cache_key(
 ) -> str:
     material = "\n".join(
         (
+            "natural-sourced-answer-v2",
             normalize_question(question),
             "" if project_id is None else str(project_id),
             "" if as_of is None else as_of.isoformat(),

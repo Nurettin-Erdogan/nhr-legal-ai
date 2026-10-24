@@ -72,23 +72,27 @@ function chatHarness(initialProps, overrides = {}) {
     sonner: { toast: { error: (message) => calls.errors.push(message) } },
     "@/lib/ai-api": {
       STAGE_LABELS: {},
-      listConversations: async (scope) => {
-        calls.list.push(scope);
-        return [{ id: "saved", title: "Kayıtlı sohbet" }];
-      },
+      listConversations:
+        overrides.listConversations ??
+        (async (scope) => {
+          calls.list.push(scope);
+          return [{ id: "saved", title: "Kayıtlı sohbet" }];
+        }),
       getConversationDetail:
         overrides.getConversationDetail ??
         (async () => ({ scope: savedScope, messages: [{ role: "user", content: "ESKİ_SORU" }] })),
       deleteConversation: async () => {},
-      askAssistant: async (...args) => {
-        calls.ask.push(args);
-        return {
-          answer: "Doğrulanmış cevap",
-          conversation_id: "saved",
-          citations: [],
-          grounded: true,
-        };
-      },
+      askAssistant:
+        overrides.askAssistant ??
+        (async (...args) => {
+          calls.ask.push(args);
+          return {
+            answer: "Doğrulanmış cevap",
+            conversation_id: "saved",
+            citations: [],
+            grounded: true,
+          };
+        }),
     },
   };
   const source = readFileSync(new URL("../src/components/LegalChat.tsx", import.meta.url), "utf8");
@@ -243,4 +247,235 @@ test("late history response after account change cannot repopulate the new accou
   await settle();
   assert.ok(!nodes(view.render()).some((node) => node.type === "Markdown"));
   assert.deepEqual(view.calls.errors, []);
+});
+
+test("normal chat has no stray zero or automatic source panel in the question bubble", async () => {
+  const view = chatHarness({});
+  view.render();
+  await settle();
+  typeQuestion(view, "18 bin kira alıyorum, en fazla ne kadar artış yapabilirim?");
+  await submit(view);
+  const tree = view.render();
+  const all = nodes(tree);
+  assert.ok(!all.some((node) => node.props?.["data-testid"] === "answer-details"));
+  assert.ok(!all.some((node) => node.type === "ResearchSources" && node.props.autoLoad));
+  assert.equal(all.filter((node) => node.type === "ResearchSources").length, 0);
+  assert.ok(
+    !all.some((node) => Array.isArray(node.props?.children) && node.props.children.includes(0)),
+  );
+});
+
+test("the answer is visible first, while basis and diagnostics stay inside one closed sources disclosure", async () => {
+  const view = chatHarness(
+    {},
+    {
+      askAssistant: async () => ({
+        answer: "KANUN_METNİ [K1]",
+        summary: ["Kira hangi ay/yıl yenileniyor?"],
+        citations: [{ marker: "K1", reference: "TBK 344", verification: "official" }],
+        grounded: true,
+        interpreted_question: "YORUMLANAN_SORU",
+        search_summary: { retrieval_partial: true },
+      }),
+    },
+  );
+  view.render();
+  await settle();
+  typeQuestion(view);
+  await submit(view);
+  const all = nodes(view.render());
+  const answer = all.find((node) => node.props?.["data-testid"] === "answer-summary");
+  const details = all.find((node) => node.props?.["data-testid"] === "answer-details");
+  assert.ok(answer && details && all.indexOf(answer) < all.indexOf(details));
+  assert.ok(nodes(details).some((node) => node.props?.["data-testid"] === "answer-basis"));
+  assert.ok(nodes(details).some((node) => node.type === "CitationList"));
+  assert.ok(nodes(details).some((node) => node.type === "SearchSummary"));
+  assert.ok(all.some((node) => node.props?.role === "status"));
+  assert.ok(
+    !all.some(
+      (node) =>
+        node.props?.children ===
+        "Bu açıklama aşağıdaki resmî metne dayanılarak yapay zekâ tarafından yazıldı",
+    ),
+  );
+});
+
+for (const answerKind of ["conversation", "clarification", "insufficient_sources"]) {
+  test(`${answerKind} replies do not show a failed-grounding warning or an empty sources menu`, async () => {
+    const view = chatHarness(
+      {},
+      {
+        askAssistant: async () => ({
+          answer:
+            answerKind === "conversation"
+              ? "Merhaba! Nasıl yardımcı olabilirim?"
+              : "Hangi ay yenileniyor?",
+          answer_kind: answerKind,
+          grounded: false,
+          citations: [],
+          unverified_markers: [],
+        }),
+      },
+    );
+    view.render();
+    await settle();
+    typeQuestion(view, "Merhaba");
+    await submit(view);
+    const all = nodes(view.render());
+    assert.ok(
+      all.some((node) => node.type === "Markdown" && /Merhaba!|Hangi ay/.test(node.props.children)),
+    );
+    assert.ok(!all.some((node) => node.type === "ShieldAlert"));
+    assert.ok(!all.some((node) => node.props?.["data-testid"] === "answer-details"));
+    assert.ok(!all.some((node) => node.type === "ResearchSources"));
+  });
+}
+
+for (const answerKind of [undefined, "legal"]) {
+  test(`${answerKind ?? "legacy"} unsupported legal replies retain the grounding warning`, async () => {
+    const view = chatHarness(
+      {},
+      {
+        askAssistant: async () => ({
+          answer: "Bu iddia kaynaklarla doğrulanamadı.",
+          answer_kind: answerKind,
+          grounded: false,
+          citations: [],
+          unverified_markers: [],
+        }),
+      },
+    );
+    view.render();
+    await settle();
+    typeQuestion(view);
+    await submit(view);
+    assert.ok(nodes(view.render()).some((node) => node.type === "ShieldAlert"));
+  });
+}
+
+test("a conversation label cannot conceal a failed real citation or unverified marker", async () => {
+  const view = chatHarness(
+    {},
+    {
+      askAssistant: async () => ({
+        answer: "Yanıt [K9]",
+        answer_kind: "conversation",
+        grounded: false,
+        citations: [{ marker: "K9", reference: "Eski kaynak", verification: "third_party" }],
+        unverified_markers: ["K9"],
+      }),
+    },
+  );
+  view.render();
+  await settle();
+  typeQuestion(view);
+  await submit(view);
+  const all = nodes(view.render());
+  assert.ok(all.some((node) => node.type === "ShieldAlert"));
+  const details = all.find((node) => node.props?.["data-testid"] === "answer-details");
+  assert.ok(details);
+  assert.ok(nodes(details).some((node) => node.type === "CitationList"));
+  assert.ok(
+    all.some((node) => node.type === "p" && JSON.stringify(node.props.children).includes("K9")),
+  );
+});
+
+test("short social messages can be sent, while whitespace cannot", async () => {
+  const view = chatHarness({});
+  view.render();
+  await settle();
+  typeQuestion(view, "   ");
+  assert.equal(
+    nodes(view.render()).find((node) => node.type === "Button" && node.props.size === "lg").props
+      .disabled,
+    true,
+  );
+  await submit(view);
+  assert.equal(view.calls.ask.length, 0);
+  typeQuestion(view, "sa");
+  assert.equal(
+    nodes(view.render()).find((node) => node.type === "Button" && node.props.size === "lg").props
+      .disabled,
+    false,
+  );
+  await submit(view);
+  assert.equal(view.calls.ask[0][0], "sa");
+});
+
+test("persisted conversation and clarification replies remain clean after history is reopened", async () => {
+  const view = chatHarness(
+    { compact: true, caseId: "case-a" },
+    {
+      getConversationDetail: async () => ({
+        scope: { caseId: "case-a" },
+        messages: [
+          { role: "assistant", content: "Merhaba!", answerKind: "conversation", grounded: false },
+          {
+            role: "assistant",
+            content: "Hangi ay yenileniyor?",
+            answerKind: "clarification",
+            grounded: false,
+          },
+        ],
+      }),
+    },
+  );
+  view.render();
+  await settle();
+  nodes(view.render())
+    .find((node) => node.type === "select")
+    .props.onChange({ target: { value: "saved" } });
+  await settle();
+  const all = nodes(view.render());
+  assert.equal(all.filter((node) => node.type === "Markdown").length, 2);
+  assert.ok(!all.some((node) => node.type === "ShieldAlert"));
+  assert.ok(!all.some((node) => node.props?.["data-testid"] === "answer-details"));
+});
+
+test("a long history stays inside a bounded sidebar and cannot displace the composer", async () => {
+  const view = chatHarness(
+    {},
+    {
+      listConversations: async () =>
+        Array.from({ length: 50 }, (_, index) => ({
+          id: `history-${index}`,
+          title: `Uzun sohbet geçmişi ${index}`,
+        })),
+    },
+  );
+  view.render();
+  await settle();
+  const all = nodes(view.render());
+  const byId = (id) => all.find((node) => node.props?.["data-testid"] === id);
+  const layout = byId("chat-layout");
+  const sidebar = byId("chat-history-panel");
+  const history = byId("chat-history-list");
+  assert.match(layout.props.className, /min-h-0/);
+  assert.match(layout.props.className, /lg:grid-rows-1/);
+  assert.match(layout.props.className, /280px_minmax\(0,1fr\)/);
+  assert.match(sidebar.props.className, /min-h-0/);
+  assert.match(sidebar.props.className, /overflow-hidden/);
+  assert.match(history.props.className, /min-h-0 flex-1/);
+  assert.equal(nodes(history).filter((node) => node.type === "MessageSquare").length, 50);
+  assert.match(byId("chat-main").props.className, /min-h-0 min-w-0/);
+  assert.match(byId("chat-messages").props.className, /min-h-0 flex-1 overflow-y-auto/);
+  const composer = byId("chat-composer");
+  assert.match(composer.props.className, /shrink-0/);
+  assert.ok(nodes(composer).some((node) => node.type === "Textarea"));
+  assert.ok(!nodes(history).includes(composer));
+});
+
+test("narrow layouts bound history separately and use dynamic viewport height", () => {
+  const all = nodes(chatHarness({}).render());
+  const layout = all.find((node) => node.props?.["data-testid"] === "chat-layout");
+  const sidebar = all.find((node) => node.props?.["data-testid"] === "chat-history-panel");
+  assert.match(layout.props.className, /grid-rows-\[auto_minmax\(0,1fr\)\]/);
+  assert.match(layout.props.className, /100dvh-220px/);
+  assert.match(sidebar.props.className, /max-h-40 lg:max-h-none/);
+  const compact = nodes(chatHarness({ compact: true }).render());
+  assert.ok(!compact.some((node) => node.props?.["data-testid"] === "chat-history-panel"));
+  assert.match(
+    compact.find((node) => node.props?.["data-testid"] === "chat-layout").props.className,
+    /grid-rows-1 h-\[600px\]/,
+  );
 });

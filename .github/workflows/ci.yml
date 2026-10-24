@@ -34,6 +34,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - name: Install Python dependencies
         run: pip install -r requirements.txt
+      - name: Expose migrations at the docker-compose path
+        # init/*.sql dosyaları migration'ları docker-compose'daki gibi `\i /nhr-database/...` ile çağırır;
+        # bu yol CI'da yoktu ve python işi 2026-09-28'den beri şema adımında düşüyordu.
+        run: sudo ln -sfn "$GITHUB_WORKSPACE/database" /nhr-database
       - name: Apply database schema
         env:
           PGPASSWORD: ci-test-only

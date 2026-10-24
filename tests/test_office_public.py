@@ -79,6 +79,28 @@ def test_ingest_rejects_unknown_token(monkeypatch):
     assert not stored
 
 
+def test_a_valid_key_of_an_account_without_access_cannot_write_anything(monkeypatch):
+    # Erişim listesinden çıkarılan ya da askıya alınan avukatın eklentisi hiçbir uçtan belge yazamaz (migration 062).
+    client, stored = _client(monkeypatch)
+
+    def blocked(token):
+        raise office_public.OwnerAccessDenied
+
+    monkeypatch.setattr(office_public, "_owner_for_token", blocked)
+    bearer = {"Authorization": f"Bearer {TOKEN}"}
+    responses = [
+        client.post("/api/public/uyap-ingest",
+                    json={"token": TOKEN, "files": [{"name": "a.pdf", "contentBase64": _b64(b"%PDF")}]}),
+        client.post("/api/public/v1/documents/upload", data={"evrakId": "1"},
+                    files={"file": ("a.pdf", b"%PDF", "application/pdf")}, headers=bearer),
+        client.post("/api/public/v1/documents/known", json={"evrakIds": ["1"]}, headers=bearer),
+    ]
+    for response in responses:
+        assert response.status_code == 403 and response.json()["code"] == "access_denied"
+        assert response.json()["retryable"] is False
+    assert not stored and not client.identity_checks
+
+
 def test_ingest_stores_allowed_files_for_the_token_owner(monkeypatch):
     client, stored = _client(monkeypatch)
 

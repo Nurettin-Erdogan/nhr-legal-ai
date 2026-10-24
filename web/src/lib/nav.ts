@@ -39,6 +39,8 @@ export const NAV_GROUPS: NavGroup[] = [
 ];
 
 export const ACCOUNT_NAV: NavEntry = { to: "/dashboard/settings", label: "Ayarlar" };
+/** Yalnız yönetici rolündeki kullanıcıya gösterilir (yetki sunucuda ayrıca denetlenir). */
+export const ADMIN_NAV: NavEntry = { to: "/dashboard/admin", label: "Yönetim" };
 export const NAV_ITEMS: NavEntry[] = [...NAV_GROUPS.flatMap((group) => group.items), ACCOUNT_NAV];
 
 /** Alt ekranlar ana menüde kendi çalışma alanlarını etkin tutar. Eski adresler de erişilebilir. */

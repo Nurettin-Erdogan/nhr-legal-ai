@@ -15,8 +15,10 @@ from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from psycopg.errors import UniqueViolation
 
+from api.access import DEFAULT_MODE, DENIED, AccessDenied, access_mode, registration_gate, user_allowed
 from api.audit import (
     AUTH_LOGIN,
+    AUTH_LOGIN_BLOCKED,
     AUTH_LOGIN_FAILED,
     AUTH_LOGOUT,
     AUTH_REGISTER,
@@ -130,42 +132,69 @@ def _issue_auth_response(response: Response, row: dict) -> AuthResponse:
 # Çıkışta oturum iptali. Jetonlar durumsuzdur; `users.sessions_valid_after`dan ÖNCE verilmiş jetonlar
 # geçersiz sayılır. Değer kısa süre bellekte tutulur ki her istek veritabanına gitmesin; çıkış yapan
 # işçi kendi önbelleğini hemen temizler, diğer işçilerde en fazla SESSION_CACHE_SECONDS gecikir.
+# Erişim (api/access.py) de burada sorulur: erişim listesinden çıkarılan, askıya alınan ya da erişim modu değişince dışarıda
+# kalan hesabın açık oturumu da reddedilir. Önbelleğe yalnız erişimi OLAN hesap yazılır: erişim yeni verilen kişi girişten
+# hemen sonra eski bir "erişim yok" kaydına takılmaz.
 SESSION_CACHE_SECONDS = 5.0
 _SESSION_CACHE_LIMIT = 10_000
-_sessions_valid_after_cache: dict[UUID, tuple[int, float]] = {}
+_session_cache: dict[UUID, tuple[int, float]] = {}
 
 
-def _sessions_valid_after(user_id: UUID) -> int:
-    cached = _sessions_valid_after_cache.get(user_id)
+def _session_state(user_id: UUID) -> tuple[int, bool]:
+    """(Bu andan önce verilmiş jetonlar geçersiz: unix saniyesi, hesabın erişimi var mı)."""
+    cached = _session_cache.get(user_id)
     now = monotonic()
     if cached is not None and now - cached[1] < SESSION_CACHE_SECONDS:
-        return cached[0]
+        return cached[0], True
     with admin_database_connection() as connection:
         row = connection.execute(
             "SELECT sessions_valid_after FROM users WHERE id = %s", (user_id,)
         ).fetchone()
+        allowed = row is not None and user_allowed(connection, user_id)
     stamp = row.get("sessions_valid_after") if row else None
     value = int(stamp.timestamp()) if stamp else 0
-    if len(_sessions_valid_after_cache) >= _SESSION_CACHE_LIMIT:
-        _sessions_valid_after_cache.clear()
-    _sessions_valid_after_cache[user_id] = (value, now)
-    return value
+    if allowed:
+        if len(_session_cache) >= _SESSION_CACHE_LIMIT:
+            _session_cache.clear()
+        _session_cache[user_id] = (value, now)
+    return value, allowed
 
 
 def resolve_session(token: str) -> UUID:
-    """Jetonu çözer ve çıkışla iptal edilmediğini doğrular. TokenError / psycopg.Error / RuntimeError atar."""
+    """Jetonu çözer; çıkışla iptal edilmediğini ve hesabın erişimi olduğunu doğrular.
+    TokenError / psycopg.Error / RuntimeError atar."""
     user_id, issued_at = decode_access_token_claims(token, secret=_auth_secret())
-    if issued_at < _sessions_valid_after(user_id):
+    valid_after, allowed = _session_state(user_id)
+    if issued_at < valid_after:
         raise TokenError("Oturum sonlandırıldı; yeniden giriş yapın")
+    if not allowed:
+        raise TokenError("Bu hesabın uygulamaya erişimi yok; yöneticinizle görüşün")
     return user_id
 
 
 def revoke_sessions(user_id: UUID) -> None:
-    _sessions_valid_after_cache.pop(user_id, None)
+    _session_cache.pop(user_id, None)
     with admin_database_connection() as connection:
         connection.execute(
             "UPDATE users SET sessions_valid_after = now() WHERE id = %s", (user_id,)
         )
+
+
+def revoke_sessions_without_access(user_ids: list[UUID] | None = None) -> int:
+    """Erişimi kalmayan hesapların açık oturumlarını kapatır (erişim listesi ya da modu değişince). `user_ids` verilmezse
+    bütün hesaplara bakılır. Erişim geri verilse bile eski jetonlar canlanmaz. Dönüş: oturumu kapatılan hesap sayısı."""
+    with admin_database_connection() as connection, connection.transaction():
+        rows = connection.execute(
+            "SELECT id FROM users WHERE deleted_at IS NULL AND NOT public.app_user_access_allowed(id) "
+            "AND (%(ids)s::uuid[] IS NULL OR id = ANY(%(ids)s::uuid[]))",
+            {"ids": user_ids},
+        ).fetchall()
+        denied = [row["id"] for row in rows]
+        if denied:
+            connection.execute("UPDATE users SET sessions_valid_after = now() WHERE id = ANY(%s)", (denied,))
+    for user_id in denied:
+        _session_cache.pop(user_id, None)
+    return len(denied)
 
 
 def current_user_id(
@@ -214,9 +243,16 @@ def optional_current_user_id(
 @router.get("/status", response_model=AuthStatusResponse)
 def auth_status() -> AuthStatusResponse:
     settings = get_settings()
+    mode = DEFAULT_MODE
+    try:
+        with admin_database_connection() as connection:
+            mode = access_mode(connection)
+    except (psycopg.Error, RuntimeError):
+        pass  # okunamazsa varsayılan gösterilir; asıl karar kayıt ve giriş anında yeniden verilir
     return AuthStatusResponse(
         configured=bool(settings.jwt_secret and len(settings.jwt_secret) >= 32),
         registration_enabled=settings.allow_registration,
+        access_mode=mode,
     )
 
 
@@ -237,6 +273,11 @@ def register(
     email = str(request.email).strip().lower()
     try:
         with admin_database_connection() as connection, connection.transaction():
+            try:
+                # Yöneticinin seçtiği erişim (herkes / yalnız listedeki e-postalar) aynı transaction'da denetlenir.
+                registration_gate(connection, email)
+            except AccessDenied as exc:
+                raise HTTPException(status_code=403, detail=exc.detail) from exc
             row = connection.execute(
                 """
                 INSERT INTO users (email, password_hash, full_name, terms_accepted_at, terms_version)
@@ -325,6 +366,7 @@ def login(
     email = str(request.email).strip().lower()
     context = AuditContext.from_request(http_request)
     failure: str | None = None
+    blocked = False
     try:
         with admin_database_connection() as connection, connection.transaction():
             retry_after = _login_throttle(connection, email, context.ip_address)
@@ -346,6 +388,9 @@ def login(
                 # Hata fırlatmak transaction'ı geri alacağından başarısızlık burada yalnız
                 # işaretlenir; kayıt ve 401 transaction bittikten sonra yapılır.
                 failure = "account_inactive" if row and valid else "invalid_credentials"
+            elif not user_allowed(connection, row["id"]):
+                # Parola doğru, yani kim olduğu doğrulandı: nedeni söylenir (erişim listesinde değil).
+                blocked = True
             else:
                 connection.execute(
                     "UPDATE users SET last_login_at = NOW() WHERE id = %s", (row["id"],)
@@ -371,6 +416,11 @@ def login(
         )
         # Hesap yok / parola yanlış / hesap pasif aynı yanıtı verir (kullanıcı sayımı yapılamaz).
         raise HTTPException(status_code=401, detail="E-posta veya parola hatalı")
+    if blocked:
+        record_event_standalone(
+            action=AUTH_LOGIN_BLOCKED, actor_user_id=row["id"], context=context, entity_type="user", entity_id=row["id"]
+        )
+        raise HTTPException(status_code=403, detail=DENIED)
 
     return _issue_auth_response(response, row)
 
@@ -548,9 +598,19 @@ def _google_user(
                 ).fetchone()
                 if not row or row["status"] != "active":
                     raise GoogleOAuthError("Linked account is unavailable")
+                if not user_allowed(connection, row["id"]):
+                    record_event_standalone(
+                        action=AUTH_LOGIN_BLOCKED, actor_user_id=row["id"], context=context, entity_type="user",
+                        entity_id=row["id"], metadata={"method": "google"},
+                    )
+                    raise AccessDenied()
             else:
-                if not get_settings().allow_registration:
-                    raise GoogleOAuthError("Registration disabled")
+                try:
+                    registration_gate(connection, email)
+                except AccessDenied as exc:
+                    if exc.reason != "not_listed":
+                        raise GoogleOAuthError("Registration disabled") from exc
+                    raise
                 existing = connection.execute(
                     "SELECT 1 FROM users WHERE lower(email) = %s AND deleted_at IS NULL", (email,)
                 ).fetchone()
@@ -627,6 +687,8 @@ def google_callback(
         )
     except GoogleAccountExists:
         return _google_result_redirect("account_exists")
+    except AccessDenied:
+        return _google_result_redirect("access_denied")
     except GoogleOAuthError:
         return _google_result_redirect("failed")
     response = _google_result_redirect(linked=bool(link_user_id))

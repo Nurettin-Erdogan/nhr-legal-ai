@@ -73,6 +73,25 @@ def test_history_skips_ungrounded_answers():
     assert [turn.question for turn in turns] == [QUESTION]
 
 
+def test_history_keeps_server_tagged_clarification_but_not_refusal_or_social_text():
+    turns = history_turns_from_rows([
+        _row("user", "Ben çıkarıldım ne kadar alırım?"),
+        _row("assistant", "Son brüt ücretiniz nedir?", grounded=False, answer_kind="clarification"),
+        _row("user", "Önceki cevap?"),
+        _row("assistant", "Kaynak yok.", grounded=False, answer_kind="insufficient_sources"),
+        _row("user", "selam"),
+        _row("assistant", "Merhaba!", grounded=False, answer_kind="conversation"),
+    ])
+    assert turns == (HistoryTurn("Ben çıkarıldım ne kadar alırım?", "Son brüt ücretiniz nedir?", "clarification"),)
+
+
+def test_explicit_arithmetic_user_input_is_not_lost_as_a_social_greeting():
+    from api.ai.conversation_history import prior_questions_from_rows
+    rows = [_row("user", "18000 * 1,20"), _row("assistant", "21.600", grounded=False, answer_kind="conversation"),
+            _row("user", "teşekkürler"), _row("assistant", "Rica ederim", grounded=False, answer_kind="conversation")]
+    assert prior_questions_from_rows(rows) == ("18000 * 1,20",)
+
+
 def test_history_keeps_only_the_latest_turns_and_ignores_unanswered_question():
     rows = []
     for number in range(5):

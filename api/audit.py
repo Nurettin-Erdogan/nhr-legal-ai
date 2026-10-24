@@ -42,6 +42,7 @@ AUTH_LOGIN = "auth.login"
 AUTH_LOGIN_FAILED = "auth.login_failed"
 AUTH_REGISTER = "auth.register"
 AUTH_LOGOUT = "auth.logout"
+AUTH_LOGIN_BLOCKED = "auth.login_blocked"  # parola doğru ama hesabın erişimi yok (erişim listesi, migration 062)
 PROJECT_CREATE = "project.create"
 DOCUMENT_UPLOAD = "document.upload"
 CONVERSATION_DELETE = "conversation.delete"

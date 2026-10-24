@@ -165,7 +165,8 @@ def world(db, monkeypatch):  # noqa: F811
     research.registry.clear()
     state = SimpleNamespace(questions=[], gate=None, fail=False)
 
-    async def fake_answer(user_id, question, conversation_id):
+    async def fake_answer(user_id, question, conversation_id, *, generation_profile="default"):
+        assert generation_profile == "deep_research"
         state.questions.append(question)
         if state.gate is not None:
             await state.gate.wait()

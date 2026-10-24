@@ -38,7 +38,7 @@ from ingestion.text import html_to_text, normalize_text  # noqa: E402
 JOBS = ROOT / "jobs"          # şerit 'emsal' için ROOT / "jobs-emsal" (main içinde seçilir)
 OUT = ROOT / "out"
 PART_SIZE = 200
-FLOOR = 4.4
+FLOOR = float(os.getenv("FETCH_FLOOR", "4.4"))  # systemd Environment=FETCH_FLOOR=3.9 ile deneme
 STOP = False
 log = logging.getLogger("fetch_worker")
 
@@ -50,7 +50,7 @@ def _stop(_signum: int, _frame: object) -> None:
 
 class Fetcher:
     def __init__(self) -> None:
-        self.client = BedestenClient(min_interval=4.5, timeout=30.0)
+        self.client = BedestenClient(min_interval=FLOOR + 0.1, timeout=30.0)
         self.streak = 0
         self.requests = 0
         self.limited = 0

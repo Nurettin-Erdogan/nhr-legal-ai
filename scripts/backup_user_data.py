@@ -22,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -34,11 +35,15 @@ USER_TABLES = (
     "office_ai_outputs", "office_basvurular", "office_calendar_events", "office_call_settings", "office_calls", "office_case_documents",
     "office_cases", "office_clients", "office_feedback", "office_legal_documents", "office_project_notes", "office_projects", "office_reminders", "office_uyap_audit_runs",
     "office_risk_analyses", "office_tasks", "office_uyap_ingest_tokens", "office_uyap_sync_runs",
+    "auth_password_resets", "office_document_jobs", "office_project_documents", "office_uyap_accounts",
+    "office_uyap_case_detail", "office_uyap_case_sync", "office_uyap_diagnostics",
 )
 CORPUS_TABLES = (
     "bulk_seed_fulltext_queue", "bulk_seed_inventory", "court_decision_details", "legal_chunks", "legal_source_quarantine",
     "legal_source_revisions", "legal_sources", "legislation_details", "legislation_identities", "seed_verification_queue",
     "source_coverage_windows", "source_sync_checkpoints", "source_sync_runs",
+    # Rebuilt from the corpus (counters, migration 059) or copies of corpus vectors (migration 060/061).
+    "corpus_counters", "corpus_counter_deltas", "legislation_chunk_vectors",
 )
 _BACKUP_DIR = re.compile(r"^jurisai-\d{8}-\d{6}$")
 _SAFE_IDENT = re.compile(r"^[a-z_][a-z0-9_]*$")
@@ -130,8 +135,19 @@ def main() -> int:
     target.mkdir(parents=True, exist_ok=False)
     dump = target / "user-data.dump"
     counts = table_counts(container, user, database, tables)
-    with dump.open("wb") as handle:
-        docker(container, "pg_dump", "-U", user, "-d", database, "-Fc", "-Z", "6", *[arg for name in tables for arg in ("-t", f"public.{name}")], stdout=handle)
+    dump_args = ("pg_dump", "-U", user, "-d", database, "-Fc", "-Z", "6", *[arg for name in tables for arg in ("-t", f"public.{name}")])
+    for attempt in (1, 2):
+        # The nightly run failed silently on 2026-10-23/24 while bulk embedding loaded the database: the error is now
+        # printed and the dump retried once after a minute.
+        with dump.open("wb") as handle:
+            result = docker(container, *dump_args, stdout=handle, check=False)
+        if result.returncode == 0:
+            break
+        print(f"HATA: pg_dump başarısız (deneme {attempt}): {result.stderr.decode('utf-8', 'replace').strip()[-800:]}",
+              file=sys.stderr, flush=True)
+        if attempt == 2:
+            return 3
+        time.sleep(60)
     manifest: dict = {
         "created_at": datetime.now().astimezone().isoformat(),
         "database": database,

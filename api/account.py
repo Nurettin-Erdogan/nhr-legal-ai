@@ -313,6 +313,10 @@ def purge_user_data(connection, user_id: UUID) -> dict[str, int]:
         counts[table] = connection.execute(
             sql.SQL("DELETE FROM {} WHERE {} = %s").format(sql.Identifier(table), sql.Identifier(column)), (user_id,)
         ).rowcount
+    # Erişim listesindeki satır kişinin e-postasını taşır; hesapla birlikte silinir (geri dönerse yönetici yeniden ekler).
+    counts["access_allowlist"] = connection.execute(
+        "DELETE FROM access_allowlist WHERE email = (SELECT lower(email) FROM users WHERE id = %s)", (user_id,)
+    ).rowcount
     # Hesap satırı anonimleşir: kişisel veri kalmaz, e-posta yeniden kullanılabilir, oturumlar kapanır.
     connection.execute(
         "UPDATE users SET email = %s, full_name = NULL, password_hash = NULL, status = 'inactive', deleted_at = now(), "
@@ -361,7 +365,7 @@ def delete_account(
     if failed:
         record_event_standalone(action=PASSWORD_CHANGE_FAILED, actor_user_id=user_id, context=context, entity_type="user", entity_id=user_id)
         raise HTTPException(status_code=403, detail="Parola hatalı")
-    auth_routes._sessions_valid_after_cache.pop(user_id, None)
+    auth_routes._session_cache.pop(user_id, None)
     remove_user_files(user_id)
     response = Response(status_code=204)
     response.delete_cookie(auth_routes.COOKIE_NAME, path="/")

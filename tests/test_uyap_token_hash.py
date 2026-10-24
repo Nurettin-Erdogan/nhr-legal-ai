@@ -54,6 +54,37 @@ def test_lookup_uses_the_digest_never_the_plain_value(monkeypatch):
     assert TOKEN not in str(seen)
 
 
+def test_a_valid_key_whose_owner_lost_access_is_refused_before_anything_is_written(monkeypatch):
+    writes: list[str] = []
+
+    class _Result:
+        def __init__(self, row):
+            self.row = row
+
+        def fetchone(self):
+            return self.row
+
+    class _Connection:
+        def execute(self, sql, params=()):
+            if sql.lstrip().startswith("SELECT"):
+                return _Result({"id": uuid4(), "owner_id": uuid4(), "revoked": False})
+            writes.append(sql)
+            return _Result(None)
+
+        def commit(self):
+            pass
+
+    @contextlib.contextmanager
+    def admin():
+        yield _Connection()
+
+    monkeypatch.setattr(office_public, "admin_database_connection", admin)
+    monkeypatch.setattr(office_public, "user_allowed", lambda connection, owner_id: False)
+    with pytest.raises(office_public.OwnerAccessDenied):
+        office_public._owner_for_token(TOKEN)
+    assert writes == []  # son kullanım zamanı bile yazılmaz
+
+
 def test_generic_office_route_cannot_write_the_digest_columns():
     assert {"token_hash", "token_prefix"} <= office._TABLE_PROTECTED_COLUMNS["uyap_ingest_tokens"]
 

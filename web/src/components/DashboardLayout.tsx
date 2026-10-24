@@ -18,11 +18,14 @@ import {
   ListChecks,
   FileText,
   ChevronDown,
+  ShieldCheck,
   type LucideIcon,
 } from "lucide-react";
+import { isAdmin } from "@/lib/admin-panel";
 import {
   NAV_COLLAPSED_KEY,
   ACCOUNT_NAV,
+  ADMIN_NAV,
   NAV_GROUPS,
   activeNavPath,
   isNavGroupCollapsed,
@@ -87,7 +90,7 @@ export const DashboardLayout = ({
     "/dashboard/reports",
     "/dashboard/staff",
   ].includes(location.pathname);
-  const { profile, user, signOut } = useAuth();
+  const { profile, user, roles, signOut } = useAuth();
   const navigate = useNavigate();
 
   const initials = (() => {
@@ -191,6 +194,22 @@ export const DashboardLayout = ({
         >
           <Settings className="h-[18px] w-[18px]" /> {ACCOUNT_NAV.label}
         </Link>
+        {isAdmin(roles) && (
+          <Link
+            to={ADMIN_NAV.to}
+            onClick={() => setMobileOpen(false)}
+            aria-current={activePath === ADMIN_NAV.to ? "page" : undefined}
+            data-testid="admin-nav"
+            className={cn(
+              "mt-1 flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium",
+              activePath === ADMIN_NAV.to
+                ? "bg-secondary text-primary"
+                : "text-muted-foreground hover:bg-muted",
+            )}
+          >
+            <ShieldCheck className="h-[18px] w-[18px]" /> {ADMIN_NAV.label}
+          </Link>
+        )}
       </div>
     </nav>
   );

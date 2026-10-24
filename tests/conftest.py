@@ -72,11 +72,11 @@ def session_revocation_disabled_by_default(request, monkeypatch):
     """
     from api.auth import routes
 
-    routes._sessions_valid_after_cache.clear()
+    routes._session_cache.clear()
     if request.node.get_closest_marker("real_sessions") is None:
-        monkeypatch.setattr(routes, "_sessions_valid_after", lambda user_id: 0)
+        monkeypatch.setattr(routes, "_session_state", lambda user_id: (0, True))
     yield
-    routes._sessions_valid_after_cache.clear()
+    routes._session_cache.clear()
 
 
 @pytest.fixture(autouse=True)

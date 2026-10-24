@@ -63,7 +63,7 @@ export function AssistantWorkspace() {
           key={user?.id}
           title="Hukuk Asistanı"
           examples={examples}
-          intro="Sorunuzu sorun veya yukarıdan çalışma modunu seçin. Yanıtların kaynakları ve doğrulama durumu gösterilir."
+          intro=""
         />
       </div>
       {mode === "deep" && <DeepResearch key={user?.id} examples={examples} />}

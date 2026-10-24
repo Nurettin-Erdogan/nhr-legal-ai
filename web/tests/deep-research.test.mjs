@@ -110,6 +110,20 @@ test("live and saved research citations preserve source identity and excerpt for
   }
 });
 
+test("research shows the actual model, including local fallback, without inventing it for old reports", () => {
+  const parsed = lib.parseResearchState({
+    job: { id: "j", steps: [step({ provider: "deepseek", model: "deepseek-v4-pro" })] },
+    latest: { id: "r", steps: [step({ provider: "qwen", model: "local-qwen" }), step()] },
+  });
+  assert.equal(parsed.job.steps[0].provider, "deepseek");
+  assert.equal(parsed.job.steps[0].model, "deepseek-v4-pro");
+  assert.equal(parsed.latest.steps[0].model, "local-qwen");
+  assert.equal(parsed.latest.steps[1].model, null);
+  const component = readFileSync(new URL("../src/components/DeepResearch.tsx", import.meta.url), "utf8");
+  assert.match(component, /step\.model &&/);
+  assert.match(component, /Yanıt modeli: \{step\.model\}/);
+});
+
 test("a malformed state is rejected and an unknown job state keeps polling", () => {
   assert.equal(lib.parseResearchState(null), null);
   assert.equal(lib.parseResearchState({ job: { state: "running" }, latest: null }), null);

@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field, ValidationError
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
+from api.access import DENIED, user_allowed
 from api.audit import AuditContext, record_event
 from api.db import admin_database_connection, authenticated_database_connection
 from api.document_indexing import schedule_index
@@ -192,8 +193,18 @@ def normalized_repackable_text(file_name: str, data: bytes) -> str | None:
         return None
 
 
+class OwnerAccessDenied(Exception):
+    """Anahtar geçerli ama sahibinin uygulamaya erişimi yok (erişim listesi dışında ya da askıda)."""
+
+
+def _access_denied_reply() -> JSONResponse:
+    # Eklenti 401/403'ü "bağlantı anahtarı geçersiz veya yükleme izni yok" diye gösterir ve yeniden denemez.
+    return _reply({"error": DENIED, "code": "access_denied", "retryable": False}, 403)
+
+
 def _owner_for_token(token: str) -> tuple[UUID, UUID] | None:
-    """(anahtar kimliği, sahip kimliği) döndürür; anahtar yoksa ya da iptal edilmişse None."""
+    """(anahtar kimliği, sahip kimliği) döndürür; anahtar yoksa ya da iptal edilmişse None. Anahtar geçerli ama sahibinin
+    erişimi yoksa (erişim listesinden çıkarılmış, askıya alınmış) `OwnerAccessDenied` atar: eklenti o hesaba belge yazamaz."""
     if not 20 <= len(token) <= 200:
         return None
     with admin_database_connection() as connection:
@@ -204,6 +215,8 @@ def _owner_for_token(token: str) -> tuple[UUID, UUID] | None:
         if row is None or row["revoked"]:
             # Sabit süreli karşılaştırma gerekmez (veritabanı araması); yine de ayrım sızdırılmaz.
             return None
+        if not user_allowed(connection, row["owner_id"]):
+            raise OwnerAccessDenied
         connection.execute(
             "UPDATE office_uyap_ingest_tokens SET last_used_at = %s WHERE id = %s",
             (datetime.now(timezone.utc), row["id"]),
@@ -526,6 +539,8 @@ async def uyap_ingest(request: Request) -> JSONResponse:
 def _ingest(body: IngestRequest, request: Request) -> JSONResponse:
     try:
         owner = _owner_for_token(body.token)
+    except OwnerAccessDenied:
+        return _access_denied_reply()
     except psycopg.Error:
         logger.exception("UYAP anahtarı doğrulanamadı")
         return _reply({"error": "Servis şu an kullanılamıyor"}, 503)
@@ -597,6 +612,8 @@ async def upload_document(
         return _reply({"error": "Bağlantı anahtarı eksik"}, 401)
     try:
         owner = await run_in_threadpool(_owner_for_token, token)
+    except OwnerAccessDenied:
+        return _access_denied_reply()
     except psycopg.Error:
         logger.exception("UYAP anahtarı doğrulanamadı")
         return _reply({"error": "Servis şu an kullanılamıyor"}, 503)
@@ -729,6 +746,8 @@ async def known_documents(
         return _reply({"error": "Bağlantı anahtarı eksik"}, 401)
     try:
         owner = await run_in_threadpool(_owner_for_token, token)
+    except OwnerAccessDenied:
+        return _access_denied_reply()
     except psycopg.Error:
         logger.exception("UYAP anahtarı doğrulanamadı")
         return _reply({"error": "Servis şu an kullanılamıyor"}, 503)

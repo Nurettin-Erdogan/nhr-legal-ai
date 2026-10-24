@@ -650,11 +650,16 @@ class DeepResearchRequest(BaseModel):
     question: str = Field(min_length=deep_research.MIN_QUESTION_CHARS, max_length=deep_research.MAX_QUESTION_CHARS)
 
 
-async def _deep_answer(user_id: UUID, question: str, conversation_id: UUID | None):
+async def _deep_answer(
+    user_id: UUID, question: str, conversation_id: UUID | None, *, generation_profile="default",
+):
     # Adımlar tek sohbette toplanır (ilk adım sohbeti açar); her cevap kendi atıf doğrulamasından geçer.
     from api.ai.pipeline import execute_answer
 
-    response, _timings = await execute_answer(AIAnswerRequest(question=question, conversation_id=conversation_id), user_id)
+    response, _timings = await execute_answer(
+        AIAnswerRequest(question=question, conversation_id=conversation_id), user_id,
+        generation_profile=generation_profile,
+    )
     return response
 
 
@@ -683,7 +688,9 @@ async def _deep_run(job: deep_research.ResearchJob) -> None:
         finished.saved_id = await asyncio.to_thread(_save_deep_research, finished)
 
     await deep_research.run_job(
-        job, lambda question, conversation_id: _deep_answer(job.owner_id, question, conversation_id), on_done=save,
+        job, lambda question, conversation_id: _deep_answer(
+            job.owner_id, question, conversation_id, generation_profile="deep_research",
+        ), on_done=save,
         condense=_condense_topic, statute_hints=_statute_hints_async,
     )
 

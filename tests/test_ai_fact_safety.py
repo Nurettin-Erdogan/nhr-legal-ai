@@ -75,6 +75,15 @@ def test_present_negative_payment_fact_remains_a_relevant_status():
     assert case_summary.bullet_supported("Depozito ödenmemektedir.", "Depozito ödenmemektedir.")
 
 
+def test_conditional_payment_rule_recognizes_the_condition_on_a_different_verb():
+    from api.ai.relevance import payment_polarity_supported
+    source = 'Kiracı kira bedelini ödemediği için iki ihtara sebep olmuşsa sözleşme sona erdirilebilir.'
+    claim = 'Kiracının kira bedelini ödemediği için iki ihtara sebep olması halinde sözleşme sona erdirilebilir.'
+    assert payment_polarity_supported(claim, source)
+    assert not payment_polarity_supported('Kiracı kira bedelini ödemediği için iki ihtara sebep olmuştur.', source)
+    assert not payment_polarity_supported(claim.replace('ödemediği', 'ödediği'), source)
+
+
 def test_negative_payment_paraphrase_is_checked_for_both_scope_and_polarity():
     from api.ai.relevance import analysis_scope_relevant
     claim = "Depozito ödemesi yapılmamıştır."

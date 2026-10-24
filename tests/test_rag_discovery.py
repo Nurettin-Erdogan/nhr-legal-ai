@@ -39,15 +39,34 @@ def test_semantic_hit_never_suppresses_unembedded_text_hit(monkeypatch):
     semantic, unembedded = source(1), source(2, pending=True)
     def execute(conn, sql, params, **kwargs):
         calls.append((sql, params))
+        if sql == retrieval.LEGISLATION_SEMANTIC_SQL:
+            return []
         return [semantic] if sql == retrieval.SEMANTIC_RETRIEVAL_SQL else [unembedded]
     monkeypatch.setattr(retrieval, '_execute_retrieval', execute)
     stats = {}
     result = retrieval.retrieve_contexts(object(), question=QUESTION, top_k=48,
         query_embedding=[0.1]*768, embedding_model='test-model', diagnostics=stats)
     assert {c.source_id for c in result} == {semantic.source_id, unembedded.source_id}
-    assert len(calls) == 2 and calls[0][1]['candidate_limit'] <= 192
+    assert len(calls) == 3 and calls[0][1]['candidate_limit'] <= 192  # + legislation-only ANN (migration 060)
     assert stats['lexical_candidates'] == stats['semantic_candidates'] == 1
     assert stats['exhaustive'] is False
+
+
+def test_m3_search_survives_a_failed_shared_query_embedding(monkeypatch):
+    calls = []
+
+    def execute(conn, sql, params, **kwargs):
+        calls.append(sql)
+        return []
+
+    monkeypatch.setattr(retrieval, '_execute_retrieval', execute)
+    stats = {}
+    retrieval.retrieve_contexts(object(), question=QUESTION, top_k=4,
+        query_embedding=None, embedding_model='test-model', legislation_embedding=[0.2]*1024,
+        diagnostics=stats)
+    assert retrieval.LEGISLATION_M3_SQL in calls
+    assert retrieval.SEMANTIC_RETRIEVAL_SQL not in calls
+    assert stats['legislation_m3_candidates'] == 0
 
 
 def test_lexical_timeout_preserves_semantic_hits_and_reports_partial(monkeypatch):

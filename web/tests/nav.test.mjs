@@ -41,7 +41,9 @@ test("every menu entry points at a real page and no page is listed twice", () =>
 test("the working pages are reachable from the menu and unfinished ones are not listed", () => {
   const listed = new Set(nav.NAV_ITEMS.map((item) => item.to));
   assert.equal(nav.NAV_GROUPS.flatMap((group) => group.items).length, 11);
-  const reachable = new Set([...listed, ...Object.keys(nav.NAV_PARENTS)]);
+  // Yönetim yalnız yöneticiye ayrı bağlantıyla gösterilir; avukatın menü listesinde yer almaz.
+  assert.ok(!listed.has(nav.ADMIN_NAV.to), "Yönetim herkesin menüsünde olmamalı");
+  const reachable = new Set([...listed, ...Object.keys(nav.NAV_PARENTS), nav.ADMIN_NAV.to]);
   for (const must of [
     "clients",
     "tasks",

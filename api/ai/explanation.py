@@ -62,8 +62,19 @@ def with_coverage_notice(answer: VerifiedAnswer, question: str) -> VerifiedAnswe
     if _CASE_FINDING.search(answer.text):
         notices.append('Aşağıdaki alıntılar olay özelindeki değerlendirmeler içeriyor; genel koşulların eksiksiz listesi olarak okunmamalıdır.')
     from api.ai.search_plan import normalize
+    from api.ai.relevance import question_intent
+    q, text = normalize(question), normalize(answer.text)
+    intent = question_intent(question)
+    written_notice_answered = bool(
+        intent is not None and intent.name == "rent_default"
+        and not re.search(r"mahkeme|dava|icra|başvur|dilekçe|adım|harç|yetki|görev", q)
+        and any(c.source_type == "legislation" and c.verification == "official"
+                and (c.law_no, c.article_no) == ("6098", "315") for c in answer.contexts)
+        and re.search(r"yazılı.{0,260}bildir", text)
+    )
     if (re.search(r'\bne yap\w*|\bnasıl (?:itiraz|başvur)', normalize(question))
             and all(c.source_type == 'legislation' for c in answer.contexts)
+            and not written_notice_answered
             and not re.search(r'\b(?:başvur\w*|itiraz\w*|dava aç\w*|arabulucu\w*|ihtar\w*)', normalize(answer.text))):
         notices.append('Aşağıda mevzuat dayanağı yer alıyor; somut durumda izlenecek başvuru adımlarını bu kaynaklarla doğrulayamadım.')
     stale = stale_decisions_notice(answer)
