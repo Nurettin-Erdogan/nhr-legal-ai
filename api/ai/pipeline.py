@@ -27,6 +27,7 @@ from api.ai.cache import (
 from api.ai.conversation_history import (
     ConversationNotFound,
     load_conversation_context,
+    needs_standalone_rewrite,
     retrieval_question,
     standalone_question,
 )
@@ -898,7 +899,10 @@ async def _execute_answer_body(
     interpreted: str | None = None
     from api.ai.dialogue import resume_question
     interpreted = resume_question(request.question, history, prior_questions)
-    if prior_questions and interpreted is None:
+    # Yeni ve tek başına anlaşılır sorularda (ör. kira artışından işe iade
+    # konusuna geçiş) önceki sohbeti modele yeniden yazdırma: hem gereksiz
+    # bulut çağrısını hem de yanlış konu taşıma riskini azaltır.
+    if prior_questions and interpreted is None and needs_standalone_rewrite(request.question):
         rewrite_started = monotonic()
         async with _generation_lock:
             interpreted = await asyncio.to_thread(
