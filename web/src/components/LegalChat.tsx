@@ -18,9 +18,9 @@ import ReactMarkdown from "react-markdown";
 import { CollapsibleAnswer } from "@/components/CollapsibleAnswer";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
-import { Link, useSearchParam } from "@/lib/router-compat";
-import { useAuth } from "@/components/AuthProvider";
-import { ResearchSources } from "@/components/ResearchSources";
+import { Link } from "@/lib/router-compat";
+import { useSearchParam } from "@/lib/router-hooks";
+import { useAuth } from "@/components/AuthContext";
 import { SearchSummary } from "@/components/SearchSummary";
 import { type SearchSummaryData } from "@/lib/search-summary";
 import {
@@ -82,6 +82,12 @@ function ScopedLegalChat({
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
+  const [reasoningEffort, setReasoningEffort] = useState<"low" | "medium" | "high">("low");
+  const publicChat =
+    !activeScope.caseId &&
+    !activeScope.projectId &&
+    !activeScope.officeProjectId &&
+    !activeScope.selectedDocumentIds?.length;
   // Üst çubuktaki genel aramadan gelen metin soru kutusuna yazılır; kullanıcı düzenleyip kendisi gönderir.
   const urlQuestion = useSearchParam("q");
   useEffect(() => {
@@ -197,11 +203,16 @@ function ScopedLegalChat({
       interpretedQuestion:
         typeof result.interpreted_question === "string" ? result.interpreted_question : undefined,
       summary: Array.isArray(result.summary) ? result.summary : undefined,
+      verificationNote:
+        typeof result.verification_note === "string" && result.verification_note
+          ? result.verification_note
+          : undefined,
     });
     // Özet beklenirken doğrulanmış cevap önizleme olarak gösterilir; kalıcı cevap gelince onun yerini alır.
     let previewShown = false;
     try {
       const result = await askAssistant(question, {
+        reasoningEffort: publicChat ? reasoningEffort : undefined,
         conversationId: activeId,
         ...activeScope,
         onStage: (s) => {
@@ -211,10 +222,14 @@ function ScopedLegalChat({
           if (alive.current) setRequestSummary(summary);
         },
         onPreview: (preview) => {
-          if (!alive.current || previewShown) return;
-          previewShown = true;
+          if (!alive.current) return;
           setRequestSummary(undefined);
-          setMessages((p) => [...p, asMessage(preview)]);
+          // Doğrulanan bölümler geldikçe önizleme yerinde güncellenir; kalıcı cevap gelince onun yerini alır.
+          if (previewShown) setMessages((p) => [...p.slice(0, -1), asMessage(preview)]);
+          else {
+            previewShown = true;
+            setMessages((p) => [...p, asMessage(preview)]);
+          }
         },
       });
       if (!alive.current) return;
@@ -442,6 +457,23 @@ function ScopedLegalChat({
                         </CollapsibleAnswer>
                       </div>
                     )}
+                    {m.role === "assistant" && m.verificationNote && (
+                      <p
+                        className="mt-2 text-xs text-muted-foreground border-l-2 border-border pl-2"
+                        data-testid="verification-note"
+                      >
+                        {m.verificationNote}
+                      </p>
+                    )}
+                    {m.role === "assistant" && m.answerKind === "general_information" && (
+                      <p
+                        className="mt-2 text-xs text-muted-foreground"
+                        data-testid="general-information-label"
+                        title="Kaynakla doğrulanmış hukuki görüş değildir"
+                      >
+                        Genel bilgi
+                      </p>
+                    )}
                     {m.role === "assistant" &&
                       m.grounded === false &&
                       (!m.answerKind ||
@@ -460,11 +492,6 @@ function ScopedLegalChat({
                     )}
                     {m.role === "assistant" && m.documentScope && (
                       <DocumentScopeNotice scope={m.documentScope} />
-                    )}
-                    {m.role === "assistant" && m.searchSummary?.retrieval_partial && (
-                      <p role="status" className="mt-2 text-xs text-amber-700 dark:text-amber-400">
-                        Kaynak taraması kısmen tamamlandı; bazı kaynaklar incelenemedi.
-                      </p>
                     )}
                     {m.role === "assistant" &&
                       Boolean(
@@ -500,19 +527,17 @@ function ScopedLegalChat({
                           )}
                           {m.citations && <CitationList citations={m.citations} />}
                           {m.consultedSources && (
-                            <ConsultedSourceList sources={m.consultedSources} />
+                            <ConsultedSourceList sources={m.consultedSources} collapsible={false} />
                           )}
                           {m.searchSummary && (
                             <SearchSummary
+                              compact
                               summary={m.searchSummary}
                               citedCount={
                                 new Set((m.citations ?? []).map((c) => c.source_id ?? c.reference))
                                   .size
                               }
                             />
-                          )}
-                          {messages[i - 1]?.role === "user" && (
-                            <ResearchSources question={messages[i - 1].content} autoLoad={false} />
                           )}
                         </details>
                       )}
@@ -529,11 +554,6 @@ function ScopedLegalChat({
                   </div>
                 </div>
               )}
-              {requestSummary?.retrieval_partial && (
-                <p role="status" className="text-xs text-amber-700 dark:text-amber-400">
-                  Kaynak taraması kısmen tamamlandı.
-                </p>
-              )}
               {requestError && (
                 <p role="alert" className="text-sm text-destructive">
                   {requestError}
@@ -544,6 +564,30 @@ function ScopedLegalChat({
         </div>
 
         <div className="shrink-0 border-t border-border p-4" data-testid="chat-composer">
+          {publicChat && (
+            <div className="max-w-3xl mx-auto mb-2 flex flex-wrap items-center gap-2 text-xs">
+              <label htmlFor="chat-reasoning-effort">Düşünme düzeyi</label>
+              <select
+                id="chat-reasoning-effort"
+                value={reasoningEffort}
+                disabled={loading || opening}
+                onChange={(e) => setReasoningEffort(e.target.value as "low" | "medium" | "high")}
+                aria-describedby="chat-reasoning-help"
+                className="rounded-lg border border-border bg-background px-2 py-1.5 text-foreground"
+              >
+                <option value="low">Hızlı</option>
+                <option value="medium">Dengeli</option>
+                <option value="high">Yüksek</option>
+              </select>
+              <span id="chat-reasoning-help" className="text-muted-foreground">
+                {reasoningEffort === "high"
+                  ? "Daha fazla düşünme; süre ve token tüketimi artabilir."
+                  : reasoningEffort === "medium"
+                    ? "Hız ve düşünme dengesi."
+                    : "Daha az düşünme; hızlı yanıt önceliği."}
+              </span>
+            </div>
+          )}
           <div className="max-w-3xl mx-auto flex gap-2">
             <Textarea
               value={input}

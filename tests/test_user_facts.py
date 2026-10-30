@@ -26,6 +26,20 @@ def test_exact_screenshot_inputs_have_typed_values_and_literal_provenance():
     assert facts.prompt_records[-1]["value"]["legal_service_determined"] is False
 
 
+def test_combined_goal_salary_and_dates_do_not_mistake_exit_pay_for_a_date_label():
+    facts = collect_user_facts(f"{FIRST}, {DETAILS}, {LAST}")
+    assert facts.amount == Decimal("50000") and facts.gross is True
+    assert facts.start_date == date(2005, 11, 12) and facts.end_date == date(2016, 3, 13)
+    assert (facts.duration.years, facts.duration.months, facts.duration.days) == (10, 4, 1)
+    assert facts.issues == ()
+
+
+def test_explicit_date_labels_still_override_order_with_other_goal_text_before_them():
+    facts = collect_user_facts(f"{FIRST}, brüt 50000 TL, çıkış tarihi: 13.03.2016, giriş: 12.11.2005")
+    assert facts.start_date == date(2005, 11, 12) and facts.end_date == date(2016, 3, 13)
+    assert facts.issues == ()
+
+
 @pytest.mark.parametrize("dates", [
     "12 Kasım 2005 13 Mart 2016", "12 KASIM 2005 13 MART 2016",
     "12 kasim 2005 13 mart 2016", "12.11.2005 13.03.2016",

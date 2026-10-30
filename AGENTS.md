@@ -31,9 +31,26 @@ mevzuat maddesi veya hukuki sonuç uydurulamaz. Kaynak yetersizse bu açıkça
 söylenir. Bu kural model promptunda kalmaz; üretilen cevabın gerçekten
 getirilen kaynaklara dayandığı kod tarafında doğrulanır.
 
+**Normal sohbette genel bilgi istisnası (kullanıcı kararı 2026-10-26).** Önce kaynaklar aranır ve kaynaklı doğal cevap tercih edilir.
+Yalnız tek başına anlaşılır basit kavram tanımlarında, kaynakla cevap üretilemezse modelin genel bilgisiyle kısa açıklama verilebilir
+(`api/ai/general_information.py`); bu cevap `general_information`, `grounded=false`, atıfsızdır ve arayüzde "Genel bilgi" olarak
+işaretlenir. Model bilgisi hiçbir zaman doğrulanmış kaynak veya sonraki hukuki iddiaların kanıtı sayılmaz. Süre, güncel oran/tutar,
+hesaplama, kişisel hak/sonuç ve kanun/karar atfı bu istisnaya girmez; kod denetimi devam eder. Özel belge/dava/proje ve derin araştırma
+bu yolu kullanmaz. Normal sohbette denetlenmemiş taslak yayınlanmaz; denetimden geçmiş son cevap bir kez gösterilir.
+
+**Genel sohbetin cevap düzeni (kullanıcı kararı 2026-10-25).** Model, soru için bulunmuş doğrulanmış kanun ve karar kaynaklarını
+okuyup yalnız onlara dayanarak akıcı paragraflar yazar; her cümleyi dayandığı kaynak cümlelerine bağlar
+([api/ai/free_answer.py](api/ai/free_answer.py)). Kod her cümleyi denetler (alıntı gerçekten o kaynakta mı, sayı/birim, eklenen
+alt/üst sınır, mutlaklık, ödeme yönü) ve bağımsız bir denetçi model kaynağa karşı sınar; kaynaktan kopan cümle cevaptan sessizce
+çıkarılır, bu kaynaklı cevap yolunda gösterilen her cümle kanıtlıdır; metinde [K1] gibi işaret bulunmaz (kullanıcı kararı 2026-10-25), kullanılan kaynaklar
+cevabın altındaki kaynak listesinde durur. İlk (doğrudan cevap) cümle kanıtlanamazsa yalnız kanıtlı cümlelerden yeniden kurulur
+ve aynı denetimden geçer. Yeterli cümle kalmazsa cevap
+verilmez, "doğrulayamadım" denir. Bu düzen yalnız bulut modeline gidebilen genel sorularda geçerlidir; kullanıcının kendi belgesi,
+davası ya da projesi kapsamındaki sorular buluta gitmez ve kaynakla-sınırlı sentez yolunu (api/ai/synthesis.py) kullanır.
+
 **Doğrulanmamış kaynak "resmî" diye sunulmaz.** Korpusta üçüncü taraf derlemeden
-gelen kayıtlar da var (2026-09-20 itibarıyla ~10,2 milyon Yargıtay/Danıştay kararı,
-`ingestion_method='bulk_seed'`, `ingest_status='pending'`). Kullanıcı kararı
+gelen kayıtlar da var (`ingestion_method='bulk_seed'`, `ingest_status='pending'`; 2026-09-20'de ~10,2 milyondu,
+2026-10-25 itibarıyla ~124 bin kaldı — kararların geri kalanı, ~11,1 milyon, resmî portallardan doğrulanmış `ready`). Kullanıcı kararı
 2026-10-18: **uygulamada yalnız doğrulanmış kayıtlar aranır, gösterilir ve atıf
 yapılır.** Doğrulanmamış toplu kayıtlar veritabanında durur ama arama, asistan,
 araştırma ve kaynak okuyucu onları döndürmez (migration 058, `api/legal.py`
@@ -47,6 +64,8 @@ gösterilmez.
 Bir kayıt ancak resmî portaldan çekilip metni eşleştiğinde `ready` olur
 ([docs/ingestion-bulk-mrfg.md](docs/ingestion-bulk-mrfg.md)). Doğrulanmamış kaydı
 yeniden uygulamaya açmak kullanıcı kararı olmadan yapılmaz.
+
+**Resmî internet araştırması (kullanıcı kararı 2026-10-27).** Genel hukuk sorularında yerel korpusa ek olarak yalnız açık izin listesindeki resmî kamu kaynaklarından araştırma yapılabilir. Katalog ve URL politikası `api/ai/official_sources.py`, kapsam ve güvenlik şartları `docs/official-web-source-policy.md` içindedir. Tüm `.gov.tr` adresleri veya alt alan adları otomatik izinli değildir. Arama özeti kanıt sayılmaz; tam resmî metin, kimlik, tarih ve yürürlük ayrıca doğrulanır. Resmî olmayan siteye fallback, CAPTCHA/hız sınırı aşma ve özel dava/belge/kişi bilgisini dış aramaya gönderme yoktur. Bu karar kaynak-destek ve özel kapsam/bulut kurallarını kaldırmaz. `OFFICIAL_WEB_RESEARCH_ENABLED` ile normal genel sohbette MBS ve Yargıtay adaptörleri bağlandı; diğer katalog kurumları henüz canlı araştırılmış sayılmaz. Ham sorular yerine yalnız sayısal mevzuat referansları ve sabit hukuk terimleri dışarı gider; özel kapsam ve tarihsel sorular web hattına girmez. Kaynak önce kalıcı korpusa alınır, sonra mevcut cevap/atıf denetimiyle kullanılır; farklı mevcut metin sohbetten otomatik değiştirilmez.
 
 **AI katmanı sağlayıcıdan bağımsız kalır.** Yerel üretim Ollama üzerinden gider
 (şu an `qwen3.5:4b`); üretim ve embedding çağrıları arayüz arkasında tutulur. Model
@@ -64,6 +83,13 @@ eklenirken erişim kontrolü aynı commit'te düşünülür. Uygulama veritaban�
 ve kimlik doğrulama öncesi sorgular içindir. Kullanıcıya ait tablolara satır
 eklerken kimliği uygulamada üret, `RETURNING id` kullanma — gerekçesi
 [docs/database-setup.md](docs/database-setup.md) içinde.
+
+**Uygulamaya yalnız erişim listesindekiler girer.** Kullanıcı kararı 2026-10-24: "bu
+uygulamaya sadece benim mailini eklediğim kişiler girmesi lazım". Erişim modu `allowlist`
+(migration 062, Yönetim → Erişim); listede olmayan hesap kayıt olamaz, şifreyle ya da Google ile
+giremez, açık oturumu her istekte reddedilir, UYAP eklentisi anahtarı da kabul edilmez
+([api/access.py](api/access.py)). Yöneticiler her zaman girer. Yeni bir giriş yolu eklenirse
+aynı denetimden geçirilir.
 
 **`main` dalına doğrudan push veya merge yapılmaz.** Geliştirme
 `feature/legal-ai` üzerinde sürer.

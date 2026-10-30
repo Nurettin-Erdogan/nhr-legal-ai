@@ -44,6 +44,9 @@ _AVAILABILITY_TTL_SECONDS = 30.0
 _availability_cache: dict[tuple[str, str], tuple[float, bool]] = {}
 _clients: dict[tuple[str, float], httpx.Client] = {}
 _clients_lock = threading.Lock()
+# Shared by direct local generation and cloud-to-local fallback. Reentrant
+# because fallback delegates to OllamaProvider.generate in the same thread.
+LOCAL_GENERATION_LOCK = threading.RLock()
 
 
 def _visible_answer(content: object) -> str:
@@ -154,9 +157,17 @@ class OllamaProvider:
                 client.close()
 
     def generate(self, *, system_instruction: str, prompt: str) -> str:
-        if "r1" in self.model.lower():
-            return self._generate_r1(system_instruction=system_instruction, prompt=prompt)
-        return self._generate_chat(system_instruction=system_instruction, prompt=prompt)
+        with LOCAL_GENERATION_LOCK:
+            if "r1" in self.model.lower():
+                return self._generate_r1(system_instruction=system_instruction, prompt=prompt)
+            return self._generate_chat(system_instruction=system_instruction, prompt=prompt)
+
+    def generate_structured(self, *, system_instruction: str, prompt: str, schema: dict) -> str:
+        """Constrain syntax only; callers still verify every semantic claim."""
+        with LOCAL_GENERATION_LOCK:
+            payload = self._chat_payload(system_instruction=system_instruction, prompt=prompt)
+            payload['format'] = schema
+            return self._complete('/api/chat', payload, answer_key='message')
 
     def _chat_payload(self, *, system_instruction: str, prompt: str) -> dict[str, object]:
         return {

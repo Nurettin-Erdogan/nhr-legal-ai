@@ -35,6 +35,17 @@ def _handle_stop(*_args) -> None:
     _stop = True
 
 
+# Güncel mevzuat parçalarından kopya tabloda satırı olmayanlar (yeni sürümler, eski model vektörü yok; migration 064). Her çalıştırmada
+# idempotent olarak eklenir; sonra aşağıdaki sorgu bunları da doldurur.
+ENSURE_ROWS_SQL = """
+INSERT INTO legislation_chunk_vectors (chunk_id, legal_source_id, embedding_model)
+SELECT chunk.id, chunk.legal_source_id, ''
+FROM legal_sources ls
+JOIN legal_chunks chunk ON chunk.legal_source_id = ls.id
+WHERE ls.source_type = 'legislation' AND ls.deleted_at IS NULL AND ls.is_current AND ls.ingest_status = 'ready'
+ON CONFLICT (chunk_id) DO NOTHING
+"""
+
 PENDING_SQL = """
 SELECT vector.chunk_id, chunk.content
 FROM legislation_chunk_vectors vector
@@ -61,6 +72,8 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _handle_stop)
     done, started = 0, time.time()
     with psycopg.connect(url, autocommit=True) as connection:
+        added = connection.execute(ENSURE_ROWS_SQL).rowcount
+        print(f"kopya tabloya eklenen eksik satır: {added}", flush=True)
         remaining = connection.execute(
             "SELECT count(*) FROM legislation_chunk_vectors WHERE embedding_m3 IS NULL").fetchone()[0]
         print(f"bekleyen {remaining} parça", flush=True)

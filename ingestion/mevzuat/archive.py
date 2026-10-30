@@ -42,6 +42,19 @@ class LegislationArchive:
     def contains(self, external_id: str) -> bool:
         return external_id in self._external_ids
 
+    def contains_portal_article(self, external_id: str, portal_article_id: str) -> bool:
+        """A numeric alias cannot hide a different lettered portal node."""
+        if not self.contains(external_id):
+            return False
+        path = self.root / self._file_name(external_id)
+        if not path.exists():
+            return False
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        from ingestion.mevzuat.identity import primary_article, canonical_article
+        heading = primary_article(payload.get("raw_text") or "")
+        return (str((payload.get("metadata") or {}).get("madde_id")) == portal_article_id
+                and (not heading or heading == canonical_article(payload["article_no"])))
+
     def __contains__(self, external_id: str) -> bool:
         return external_id in self._external_ids
 

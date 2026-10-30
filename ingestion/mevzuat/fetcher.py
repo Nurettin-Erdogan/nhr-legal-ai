@@ -107,7 +107,7 @@ class MevzuatFetcher:
                     external_id = article_external_id(
                         law_no, article_no, portal_type=portal_type
                     )
-                    if self.archive.contains(external_id) and not self.config.refresh_existing:
+                    if self.archive.contains_portal_article(external_id, madde_id) and not self.config.refresh_existing:
                         stats.duplicates += 1
                         continue
                     try:

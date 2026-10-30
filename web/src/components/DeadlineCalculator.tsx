@@ -1,9 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { db } from "@/lib/db";
-import { useAuth } from "@/components/AuthProvider";
+import { useAuth } from "@/components/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { DEADLINE_RULES, calculateDeadline, formatDateTr, ruleById, startCandidates, weekdayName, type StartCandidate } from "@/lib/deadlines";
+import {
+  DEADLINE_RULES,
+  calculateDeadline,
+  formatDateTr,
+  ruleById,
+  startCandidates,
+  weekdayName,
+  type StartCandidate,
+} from "@/lib/deadlines";
 import { loadCaseDetail } from "@/lib/uyap-sync-api";
 import { ServiceRecordCandidates } from "@/components/ServiceRecordCandidates";
 
@@ -24,7 +32,8 @@ export function DeadlineCalculator({ caseId, onSaved }: { caseId: string; onSave
     const controller = new AbortController();
     void loadCaseDetail(caseId, controller.signal).then((stored) => {
       const table = stored?.detail.tabs.find((tab) => tab.key === "safahat")?.tables[0];
-      if (!controller.signal.aborted && table) setCandidates(startCandidates(table.headers, table.rows));
+      if (!controller.signal.aborted && table)
+        setCandidates(startCandidates(table.headers, table.rows));
     });
     return () => controller.abort();
   }, [caseId]);
@@ -56,7 +65,10 @@ export function DeadlineCalculator({ caseId, onSaved }: { caseId: string; onSave
     });
     setBusy(false);
     if (error) return setMessage({ kind: "error", text: error.message || "Takvime eklenemedi." });
-    setMessage({ kind: "ok", text: `Takvime eklendi: ${formatDateTr(result.end)} (1 gün önce hatırlatılır).` });
+    setMessage({
+      kind: "ok",
+      text: `Takvime eklendi: ${formatDateTr(result.end)} (1 gün önce hatırlatılır).`,
+    });
     onSaved();
   };
 
@@ -80,11 +92,17 @@ export function DeadlineCalculator({ caseId, onSaved }: { caseId: string; onSave
         </label>
         <label className="space-y-1 text-xs text-muted-foreground">
           {rule.startLabel}
-          <Input type="date" value={start} onChange={(event) => setStart(event.target.value)} data-testid="deadline-start" />
+          <Input
+            type="date"
+            value={start}
+            onChange={(event) => setStart(event.target.value)}
+            data-testid="deadline-start"
+          />
         </label>
       </div>
       <p className="text-xs text-muted-foreground">
-        <span className="font-medium">{rule.law}:</span> “{rule.quote}” — süre {rule.amount} {rule.unit}.
+        <span className="font-medium">{rule.law}:</span> “{rule.quote}” — süre {rule.amount}{" "}
+        {rule.unit}.
       </p>
 
       {/* Tebliğ mazbatasından okunan günler safahattan daha kesindir (safahat işlem tarihidir); önce onlar sunulur. */}
@@ -93,12 +111,17 @@ export function DeadlineCalculator({ caseId, onSaved }: { caseId: string; onSave
       {candidates.length > 0 && (
         <div>
           <p className="mb-1 text-xs text-muted-foreground">
-            Safahatta olası başlangıçlar (safahat tarihi işlem tarihidir, gerçek tebliğ günü olmayabilir; seçince tarihi doldurur, siz doğrulayın):
+            Safahatta olası başlangıçlar (safahat tarihi işlem tarihidir, gerçek tebliğ günü
+            olmayabilir; seçince tarihi doldurur, siz doğrulayın):
           </p>
           <ul className="flex flex-wrap gap-2" data-testid="deadline-candidates">
             {candidates.map((item) => (
               <li key={`${item.date}-${item.label}`}>
-                <button type="button" className="rounded-md border px-2 py-1 text-left text-xs hover:bg-secondary" onClick={() => setStart(item.date)}>
+                <button
+                  type="button"
+                  className="rounded-md border px-2 py-1 text-left text-xs hover:bg-secondary"
+                  onClick={() => setStart(item.date)}
+                >
                   {formatDateTr(item.date)} · {item.label}
                 </button>
               </li>
@@ -124,22 +147,37 @@ export function DeadlineCalculator({ caseId, onSaved }: { caseId: string; onSave
           </ol>
           {result.recessEnd && (
             <p className="text-sm" data-testid="deadline-recess">
-              İş adli tatile tabi ise (HMK m. 104): <span className="font-medium">{formatDateTr(result.recessEnd)} {weekdayName(result.recessEnd)}</span>
+              İş adli tatile tabi ise (HMK m. 104):{" "}
+              <span className="font-medium">
+                {formatDateTr(result.recessEnd)} {weekdayName(result.recessEnd)}
+              </span>
             </p>
           )}
           {result.warnings.length > 0 && (
-            <ul role="note" className="list-disc space-y-1 pl-5 text-xs text-amber-700 dark:text-amber-300">
+            <ul
+              role="note"
+              className="list-disc space-y-1 pl-5 text-xs text-amber-700 dark:text-amber-300"
+            >
               {result.warnings.map((warning) => (
                 <li key={warning}>{warning}</li>
               ))}
             </ul>
           )}
           <div className="flex flex-wrap items-center gap-3">
-            <Button type="button" size="sm" disabled={busy} onClick={() => void addToCalendar()} data-testid="deadline-add">
+            <Button
+              type="button"
+              size="sm"
+              disabled={busy}
+              onClick={() => void addToCalendar()}
+              data-testid="deadline-add"
+            >
               {busy ? "Ekleniyor…" : "Takvime ekle"}
             </Button>
             {message && (
-              <span role={message.kind === "error" ? "alert" : "status"} className={`text-xs ${message.kind === "error" ? "text-destructive" : "text-emerald-700 dark:text-emerald-400"}`}>
+              <span
+                role={message.kind === "error" ? "alert" : "status"}
+                className={`text-xs ${message.kind === "error" ? "text-destructive" : "text-emerald-700 dark:text-emerald-400"}`}
+              >
                 {message.text}
               </span>
             )}
@@ -147,9 +185,10 @@ export function DeadlineCalculator({ caseId, onSaved }: { caseId: string; onSave
         </div>
       )}
       <p className="text-xs text-muted-foreground">
-        Hesap yardımcı bir araçtır, hukuki görüş değildir: hangi sürenin uygulandığı, başlangıç tarihi ve özel hâller (adli tatil, tutuklu işler, özel
-        kanun hükümleri) avukatın sorumluluğundadır. Süre kuralları ve dayanakları resmî mevzuat metniyle doğrulanmıştır; bayram tarihleri Diyanet
-        takvimine göre girilmiştir.
+        Hesap yardımcı bir araçtır, hukuki görüş değildir: hangi sürenin uygulandığı, başlangıç
+        tarihi ve özel hâller (adli tatil, tutuklu işler, özel kanun hükümleri) avukatın
+        sorumluluğundadır. Süre kuralları ve dayanakları resmî mevzuat metniyle doğrulanmıştır;
+        bayram tarihleri Diyanet takvimine göre girilmiştir.
       </p>
     </div>
   );

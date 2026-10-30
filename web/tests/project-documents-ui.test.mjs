@@ -46,7 +46,7 @@ function panel(overrides = {}) {
     "ProjectDocuments",
     { projectId: "project" },
     {
-      "@/components/AuthProvider": { useAuth: () => ({ user: { id: owner } }) },
+      "@/components/AuthContext": { useAuth: () => ({ user: { id: owner } }) },
       "@/lib/router-compat": { Link: "Link" },
       "@/lib/project-documents": {
         getProjectDocuments: overrides.load ?? (async () => page),

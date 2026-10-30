@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DashboardLayout } from "@/components/DashboardLayout";
-import { useSearchParam } from "@/lib/router-compat";
+import { useSearchParam } from "@/lib/router-hooks";
 import { DocumentTrash } from "@/components/DocumentTrash";
 import { DocumentWorkflowActions } from "@/components/DocumentWorkflowActions";
 import { GoogleDriveImport } from "@/components/GoogleDriveImport";
@@ -192,7 +192,7 @@ const Files = () => {
       setCategories(documents.categories);
       setAccounts(documents.accounts ?? []);
       setContentCoverage(documents.content_coverage ?? null);
-      if (searchIn === "content" && searchTerm.length >= 2)
+      if (fileBrowserFilters.search_in === "content" && fileBrowserFilters.q.length >= 2)
         setOpenedFolders(
           new Set(
             documents.folders.filter((item) => item.matching_count > 0).map((item) => item.key),
@@ -220,7 +220,9 @@ const Files = () => {
     // Sıra: kişiler (sayım sırasıyla), sonra kimden geldiği bilinmeyen UYAP dosyaları, en son UYAP dışı klasörler.
     const rank = (item: DocumentFolder) => {
       if (item.source !== "uyap") return accounts.length + 2;
-      const index = accounts.findIndex((a) => a.id === (item.account_id || "unknown") && a.id !== "unknown");
+      const index = accounts.findIndex(
+        (a) => a.id === (item.account_id || "unknown") && a.id !== "unknown",
+      );
       return index >= 0 ? index : accounts.length + 1;
     };
     let previous = "";
@@ -447,7 +449,7 @@ const Files = () => {
           </Button>
           <UyapSyncDialog onSynced={load} />
           <FileUploadDialog onUploaded={load} />
-          <GoogleDriveImport onImported={()=>void load()} />
+          <GoogleDriveImport onImported={() => void load()} />
         </div>
       }
     >
@@ -600,7 +602,10 @@ const Files = () => {
               )}
               {accounts.map((item) => (
                 <option key={item.id} value={item.id}>
-                  {item.id === "unknown" ? "Kimden geldiği bilinmiyor" : item.name || "Adı okunamadı"} ({item.files} dosya)
+                  {item.id === "unknown"
+                    ? "Kimden geldiği bilinmiyor"
+                    : item.name || "Adı okunamadı"}{" "}
+                  ({item.files} dosya)
                 </option>
               ))}
             </select>
@@ -708,7 +713,10 @@ const Files = () => {
             </Button>
             {selectedDocumentIds.size > 0 && (
               <>
-                <DocumentWorkflowActions ids={[...selectedDocumentIds]} disabled={batchTrashBusy || selectingAll} />
+                <DocumentWorkflowActions
+                  ids={[...selectedDocumentIds]}
+                  disabled={batchTrashBusy || selectingAll}
+                />
                 <Button
                   size="sm"
                   variant="ghost"
@@ -762,7 +770,11 @@ const Files = () => {
                   <Fragment key={group.key}>
                     {grouped && group.heading && (
                       <tr className="border-t-2 border-border" data-testid="uyap-account-heading">
-                        <th colSpan={5} scope="colgroup" className="px-6 pt-5 pb-2 text-left text-sm font-semibold text-primary">
+                        <th
+                          colSpan={5}
+                          scope="colgroup"
+                          className="px-6 pt-5 pb-2 text-left text-sm font-semibold text-primary"
+                        >
                           {group.heading}
                         </th>
                       </tr>

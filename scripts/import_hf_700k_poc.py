@@ -435,6 +435,7 @@ def main() -> None:
             cursor.execute(_INSERT_DETAILS_SQL)
             cursor.execute(_INSERT_REVISIONS_SQL)
             quarantined = cursor.execute(_INSERT_QUARANTINE_SQL).rowcount
+            print(f"quarantine rows inserted: {quarantined}")
             counts = cursor.execute(
                 """
                 SELECT

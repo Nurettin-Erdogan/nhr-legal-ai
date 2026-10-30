@@ -16,8 +16,11 @@ const waiting = new Map<number, () => void>();
 function ticker(): Worker | null {
   if (worker !== undefined) return worker;
   try {
-    if (typeof Worker === "undefined" || typeof Blob === "undefined" || typeof URL === "undefined") throw new Error("worker yok");
-    const created = new Worker(URL.createObjectURL(new Blob([SOURCE], { type: "text/javascript" })));
+    if (typeof Worker === "undefined" || typeof Blob === "undefined" || typeof URL === "undefined")
+      throw new Error("worker yok");
+    const created = new Worker(
+      URL.createObjectURL(new Blob([SOURCE], { type: "text/javascript" })),
+    );
     created.onmessage = (event: MessageEvent) => {
       const resolve = waiting.get(event.data as number);
       if (resolve) {
@@ -57,9 +60,19 @@ export function keepAwake(): () => void {
   let released = false;
   let lock: { release: () => Promise<void> } | null = null;
   const request = async () => {
-    if (released || typeof navigator === "undefined" || typeof document === "undefined" || document.visibilityState !== "visible") return;
+    if (
+      released ||
+      typeof navigator === "undefined" ||
+      typeof document === "undefined" ||
+      document.visibilityState !== "visible"
+    )
+      return;
     try {
-      const api = (navigator as unknown as { wakeLock?: { request: (type: "screen") => Promise<{ release: () => Promise<void> }> } }).wakeLock;
+      const api = (
+        navigator as unknown as {
+          wakeLock?: { request: (type: "screen") => Promise<{ release: () => Promise<void> }> };
+        }
+      ).wakeLock;
       lock = (await api?.request("screen")) ?? null;
       if (released) void lock?.release().catch(() => undefined);
     } catch {
@@ -71,7 +84,8 @@ export function keepAwake(): () => void {
   void request();
   return () => {
     released = true;
-    if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisible);
+    if (typeof document !== "undefined")
+      document.removeEventListener("visibilitychange", onVisible);
     void lock?.release().catch(() => undefined);
   };
 }

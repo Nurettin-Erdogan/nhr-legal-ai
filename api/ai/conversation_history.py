@@ -21,8 +21,15 @@ from api.ai.retrieval import distinctive_question_words
 # Yerel modelin bağlamı dar (num_ctx 3072); iki tur ~450 token tutar.
 MAX_HISTORY_TURNS = 2
 _QUESTION_CLIP = 300
+# Do not reuse the small local-model display excerpt as user-fact storage.
+# AIAnswerRequest accepts up to 2000 characters; salary/date corrections can be
+# at the end of that valid message and must survive the next request.
+_PRIOR_QUESTION_CLIP = 2000
 _ANSWER_CLIP = 350
 _FETCH_ROWS = 32
+# User-event memory is rebuilt from persisted, nondeleted user messages under
+# the same conversation RLS. It is distinct from the small model transcript.
+MEMORY_USER_MESSAGES = 512
 
 _MARKER_RE = re.compile(r"\s*\[\s*K\s*\d+\s*\]", re.IGNORECASE)
 _SPACE_RE = re.compile(r"\s+")
@@ -52,6 +59,14 @@ FROM messages
 WHERE conversation_id = %s
   AND deleted_at IS NULL
   AND role IN ('user', 'assistant')
+ORDER BY created_at DESC, id DESC
+LIMIT %s
+"""
+
+_MEMORY_SQL = """
+SELECT role, content, metadata
+FROM messages
+WHERE conversation_id = %s AND deleted_at IS NULL AND role = 'user'
 ORDER BY created_at DESC, id DESC
 LIMIT %s
 """
@@ -106,6 +121,9 @@ def history_turns_from_rows(
             metadata = row.get("metadata") or {}
             answer = strip_markers(str(row["content"]))
             kind = metadata.get("answer_kind")
+            if kind == "general_information":
+                pending_question = None
+                continue  # model background knowledge is never legal-history evidence
             # An input question is deliberately ungrounded: it asserts no law.
             # Dropping it made the user's next short reply lose its meaning.
             clarification = kind == "clarification" and metadata.get("grounded") is False
@@ -173,12 +191,15 @@ def prior_questions_from_rows(rows: Iterable[Mapping[str, Any]], *, limit: int =
     pending_social_candidate = False
     for row in rows:
         if row["role"] == "user":
-            questions.append(_clip(str(row["content"]), _QUESTION_CLIP))
+            questions.append(_clip(str(row["content"]), _PRIOR_QUESTION_CLIP))
             pending_social_candidate = True
         elif row["role"] == "assistant" and pending_social_candidate:
             if (row.get("metadata") or {}).get("answer_kind") == "conversation":
                 from api.ai.arithmetic import arithmetic_reply
-                if arithmetic_reply(questions[-1]) is None:
+                from api.ai.conversation_intent import conversation_reply
+                # Only an actual social turn is disposable. A server-tagged
+                # percentage calculation carries user facts for later followups.
+                if arithmetic_reply(questions[-1]) is None and conversation_reply(questions[-1]) is not None:
                     questions.pop()
             pending_social_candidate = False
     return tuple(questions[-limit:]) if limit > 0 else ()
@@ -309,10 +330,12 @@ def load_conversation_context(
         raise ConversationNotFound(str(conversation_id))
     rows = connection.execute(_MESSAGES_SQL, (conversation_id, _FETCH_ROWS)).fetchall()
     ordered = list(reversed(rows))
+    memory_rows = connection.execute(_MEMORY_SQL, (conversation_id, MEMORY_USER_MESSAGES)).fetchall()
+    memory_questions = prior_questions_from_rows(list(reversed(memory_rows)), limit=MEMORY_USER_MESSAGES)
     return ConversationContext(
         project_id=conversation["project_id"],
         turns=history_turns_from_rows(ordered),
-        questions=prior_questions_from_rows(ordered),
+        questions=memory_questions or prior_questions_from_rows(ordered),
         case_id=conversation.get("case_id"),
         office_project_id=conversation.get("office_project_id"),
         selected_document_ids=tuple(conversation.get("selected_document_ids") or ()),

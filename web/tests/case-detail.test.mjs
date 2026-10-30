@@ -88,9 +88,11 @@ function fake(overrides = {}) {
         },
         then(resolve, reject) {
           const result = responses[table];
-          return Promise.resolve(query.offset !== undefined && Array.isArray(result.data)
-            ? { ...result, data: result.data.slice(query.offset, query.offset + query.limit) }
-            : result).then(resolve, reject);
+          return Promise.resolve(
+            query.offset !== undefined && Array.isArray(result.data)
+              ? { ...result, data: result.data.slice(query.offset, query.offset + query.limit) }
+              : result,
+          ).then(resolve, reject);
         },
       };
     },
@@ -168,12 +170,18 @@ test("large sections explicitly disclose the 50 row window", async () => {
   assert.doesNotMatch(html, /Görev 50</);
 });
 test("all UYAP case documents load in bounded batches, not only the first 50", async () => {
-  const documents = Array.from({ length: 1051 }, (_, i) => ({ id: `doc-${i}`, file_name: `evrak-${i}.pdf` }));
+  const documents = Array.from({ length: 1051 }, (_, i) => ({
+    id: `doc-${i}`,
+    file_name: `evrak-${i}.pdf`,
+  }));
   const client = fake({ case_documents: { data: documents, error: null } });
   const data = await model.loadCaseDetail(id, client);
   assert.equal(data.documents.rows.length, 1051);
   assert.equal(data.documents.hasMore, false);
-  assert.deepEqual(client.requests.filter(x => x.table === "case_documents").map(x => x.offset), [0, 1000]);
+  assert.deepEqual(
+    client.requests.filter((x) => x.table === "case_documents").map((x) => x.offset),
+    [0, 1000],
+  );
   assert.equal(data.documents.rows.at(-1).id, "doc-1050");
 });
 test("summary uses actual records, no invented AI success or activities", async () => {

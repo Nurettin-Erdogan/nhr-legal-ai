@@ -39,7 +39,7 @@ def test_every_api_method_passes_the_browser_cors_preflight():
         if method in http_methods and method not in allowed
     )
     assert blocked == []
-    assert len(paths) > 50 and "/api/admin/registration" in paths  # tarama boş geçmesin
+    assert len(paths) > 50 and "/api/admin/access" in paths  # tarama boş geçmesin
 
 
 def test_hsts_is_sent_only_when_the_deployment_uses_secure_cookies(monkeypatch):

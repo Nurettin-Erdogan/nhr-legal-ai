@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Search, X } from "lucide-react";
-import { useNavigate } from "@/lib/router-compat";
+import { useNavigate } from "@/lib/router-hooks";
 import {
   buildSearchRows,
   groupRows,

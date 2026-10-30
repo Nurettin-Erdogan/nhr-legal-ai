@@ -1,5 +1,5 @@
-import asyncio
 """Account-independent archive contract: original bytes != parsed/searchable text."""
+import asyncio
 from uuid import uuid4
 
 import pytest

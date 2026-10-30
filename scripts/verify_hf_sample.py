@@ -3,8 +3,14 @@
 python scripts/verify_hf_sample.py --source yargitay --n 30 --delay 8
 Çıktı: data/eval/hf-verify/<source>.jsonl
 """
+
 from __future__ import annotations
-import argparse, json, random, re, sys, time
+import argparse
+import json
+import random
+import re
+import sys
+import time
 from pathlib import Path
 from urllib.request import Request, urlopen
 from urllib.parse import quote
@@ -20,7 +26,9 @@ MASK = re.compile(r"\[(TCKN|IBAN|KART|TELEFON|EPOSTA)\]")
 def _get(url: str) -> dict:
     for attempt in range(6):
         try:
-            with urlopen(Request(url, headers={"User-Agent": "nhr-verify"}), timeout=60) as r:
+            with urlopen(
+                Request(url, headers={"User-Agent": "nhr-verify"}), timeout=60
+            ) as r:
                 return json.load(r)
         except Exception:  # noqa: BLE001
             if attempt == 5:
@@ -61,25 +69,47 @@ def main() -> int:
     with out.open("a", encoding="utf-8") as fh:
         while done < a.n:
             row = hf_rows(a.source, rnd.randrange(total))[0]
-            rec = {"document_id": row["document_id"], "court": row["court"], "esas": row["esas_no"], "karar": row["karar_no"],
-                   "tarih": row["karar_tarihi"], "hf_len": row["text_len"], "masked": row["masked_count"]}
+            rec = {
+                "document_id": row["document_id"],
+                "court": row["court"],
+                "esas": row["esas_no"],
+                "karar": row["karar_no"],
+                "tarih": row["karar_tarihi"],
+                "hf_len": row["text_len"],
+                "masked": row["masked_count"],
+            }
             try:
                 html = client.fetch_document_html(row["document_id"])
                 if a.source == "danistay":
                     from ingestion.danistay.scraper import extract_decision_text
+
                     off = extract_decision_text(html)
                 else:
                     off = normalize_text(html_to_text(html))
                 a_, b_ = norm(row["text"]), norm(off)
-                rec.update(official_len=len(off), exact=a_ == b_, contains=(a_ in b_ or b_ in a_),
-                           ratio=round(min(len(a_), len(b_)) / max(len(a_), len(b_), 1), 4))
+                rec.update(
+                    official_len=len(off),
+                    exact=a_ == b_,
+                    contains=(a_ in b_ or b_ in a_),
+                    ratio=round(min(len(a_), len(b_)) / max(len(a_), len(b_), 1), 4),
+                )
             except Exception as e:  # noqa: BLE001
                 rec["error"] = str(e)[:160]
                 if "CAPTCHA" in str(e).upper() or "captcha" in type(e).__name__.lower():
-                    fh.write(json.dumps(rec, ensure_ascii=False) + "\n"); print("CAPTCHA; duruldu"); return 3
-            fh.write(json.dumps(rec, ensure_ascii=False) + "\n"); fh.flush()
+                    fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                    print("CAPTCHA; duruldu")
+                    return 3
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            fh.flush()
             done += 1
-            print(done, {k: rec.get(k) for k in ("exact", "contains", "ratio", "masked", "error")}, flush=True)
+            print(
+                done,
+                {
+                    k: rec.get(k)
+                    for k in ("exact", "contains", "ratio", "masked", "error")
+                },
+                flush=True,
+            )
             time.sleep(a.delay)
     return 0
 

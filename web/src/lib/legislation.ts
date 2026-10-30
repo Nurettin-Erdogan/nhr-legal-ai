@@ -4,7 +4,8 @@
  * Sunucu yalnız resmî doğrulanmış güncel mevzuatı listeler (Resmî Gazete + MBS). Madde metni `/api/legal/sources/{id}` ile okunur.
  */
 
-export type LegislationType = "constitution" | "law" | "decree" | "regulation" | "communique" | "other";
+export type LegislationType =
+  "constitution" | "law" | "decree" | "regulation" | "communique" | "other";
 
 export interface LawSummary {
   lawNo: string;
@@ -49,28 +50,52 @@ export const TYPE_LABELS: Record<LegislationType, string> = {
   other: "Diğer",
 };
 
-export const TYPE_FILTERS: LegislationType[] = ["law", "regulation", "decree", "communique", "constitution", "other"];
+export const TYPE_FILTERS: LegislationType[] = [
+  "law",
+  "regulation",
+  "decree",
+  "communique",
+  "constitution",
+  "other",
+];
 
 const TYPES = new Set<string>(Object.keys(TYPE_LABELS));
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-const str = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.replace(/\s+/g, " ").trim() : null);
-const count = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : 0);
-const kind = (value: unknown): LegislationType => (typeof value === "string" && TYPES.has(value) ? (value as LegislationType) : "other");
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+const str = (value: unknown): string | null =>
+  typeof value === "string" && value.trim() ? value.replace(/\s+/g, " ").trim() : null;
+const count = (value: unknown): number =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : 0;
+const kind = (value: unknown): LegislationType =>
+  typeof value === "string" && TYPES.has(value) ? (value as LegislationType) : "other";
 
 function parseLaw(raw: unknown): LawSummary | null {
   if (!isRecord(raw)) return null;
   const lawNo = str(raw.law_no);
   const lawName = str(raw.law_name);
   if (!lawNo || !lawName) return null;
-  return { lawNo, lawName, legislationType: kind(raw.legislation_type), articles: count(raw.articles), latestVersion: str(raw.latest_version), gazetteDate: str(raw.gazette_date) };
+  return {
+    lawNo,
+    lawName,
+    legislationType: kind(raw.legislation_type),
+    articles: count(raw.articles),
+    latestVersion: str(raw.latest_version),
+    gazetteDate: str(raw.gazette_date),
+  };
 }
 
 /** Geçersiz yanıtta `null`: yarım bir liste "sonuç yok" gibi gösterilmez. */
 export function parseLawPage(raw: unknown): LawPage | null {
   if (!isRecord(raw) || !Array.isArray(raw.results)) return null;
-  const reference = isRecord(raw.article_reference) && str(raw.article_reference.law_no) && str(raw.article_reference.article_no)
-    ? { lawNo: str(raw.article_reference.law_no)!, articleNo: str(raw.article_reference.article_no)! }
-    : null;
+  const reference =
+    isRecord(raw.article_reference) &&
+    str(raw.article_reference.law_no) &&
+    str(raw.article_reference.article_no)
+      ? {
+          lawNo: str(raw.article_reference.law_no)!,
+          articleNo: str(raw.article_reference.article_no)!,
+        }
+      : null;
   return {
     query: typeof raw.query === "string" ? raw.query : "",
     total: count(raw.total),
@@ -96,7 +121,14 @@ export function parseLawDetail(raw: unknown): LawDetail | null {
     truncated: raw.truncated === true,
     articles: raw.articles.flatMap((item): ArticleEntry[] =>
       isRecord(item) && typeof item.id === "string" && item.id
-        ? [{ id: item.id, articleNo: str(item.article_no), articleTitle: str(item.article_title), versionDate: str(item.version_date) }]
+        ? [
+            {
+              id: item.id,
+              articleNo: str(item.article_no),
+              articleTitle: str(item.article_title),
+              versionDate: str(item.version_date),
+            },
+          ]
         : [],
     ),
   };
@@ -123,7 +155,12 @@ export function filterArticles(articles: ArticleEntry[], query: string): Article
   return articles.filter((article) => {
     const number = fold(article.articleNo ?? "");
     const title = fold(article.articleTitle ?? "");
-    return number === wanted || number.startsWith(`${wanted}/`) || title.includes(wanted) || (/\D/.test(wanted) && number.includes(wanted));
+    return (
+      number === wanted ||
+      number.startsWith(`${wanted}/`) ||
+      title.includes(wanted) ||
+      (/\D/.test(wanted) && number.includes(wanted))
+    );
   });
 }
 
@@ -133,13 +170,24 @@ export function findArticle(articles: ArticleEntry[], articleNo: string): Articl
 }
 
 export function articleLabel(article: ArticleEntry): string {
-  const number = article.articleNo ? (/^\d/.test(article.articleNo) ? `Madde ${article.articleNo}` : article.articleNo) : "Madde";
+  const number = article.articleNo
+    ? /^\d/.test(article.articleNo)
+      ? `Madde ${article.articleNo}`
+      : article.articleNo
+    : "Madde";
   return article.articleTitle ? `${number} — ${article.articleTitle.replace(/:\s*$/, "")}` : number;
 }
 
 /** Atıf satırı: "İŞ KANUNU (4857) m. 18". Madde numarası "Geçici Madde 1" gibi ise olduğu gibi yazılır. */
-export function citationFor(law: Pick<LawSummary, "lawNo" | "lawName">, article: ArticleEntry): string {
-  const number = article.articleNo ? (/^\d/.test(article.articleNo) ? `m. ${article.articleNo}` : article.articleNo) : "";
+export function citationFor(
+  law: Pick<LawSummary, "lawNo" | "lawName">,
+  article: ArticleEntry,
+): string {
+  const number = article.articleNo
+    ? /^\d/.test(article.articleNo)
+      ? `m. ${article.articleNo}`
+      : article.articleNo
+    : "";
   return [`${law.lawName} (${law.lawNo})`, number].filter(Boolean).join(" ");
 }
 
@@ -175,13 +223,31 @@ async function call(path: string, signal?: AbortSignal): Promise<unknown> {
     } catch {
       /* JSON değil */
     }
-    throw new LegislationError(detail || (response.status === 404 ? "Mevzuat bulunamadı." : `İstek tamamlanamadı (${response.status}).`), response.status);
+    throw new LegislationError(
+      detail ||
+        (response.status === 404
+          ? "Mevzuat bulunamadı."
+          : `İstek tamamlanamadı (${response.status}).`),
+      response.status,
+    );
   }
   return response.json().catch(() => null);
 }
 
-export async function searchLaws(query: string, options: { kind?: LegislationType | ""; offset?: number; limit?: number; signal?: AbortSignal } = {}): Promise<LawPage> {
-  const params = new URLSearchParams({ q: query.trim(), limit: String(options.limit ?? 30), offset: String(options.offset ?? 0) });
+export async function searchLaws(
+  query: string,
+  options: {
+    kind?: LegislationType | "";
+    offset?: number;
+    limit?: number;
+    signal?: AbortSignal;
+  } = {},
+): Promise<LawPage> {
+  const params = new URLSearchParams({
+    q: query.trim(),
+    limit: String(options.limit ?? 30),
+    offset: String(options.offset ?? 0),
+  });
   if (options.kind) params.set("kind", options.kind);
   const page = parseLawPage(await call(`/api/legal/laws?${params}`, options.signal));
   if (!page) throw new LegislationError("Mevzuat servisinden geçersiz yanıt geldi.");

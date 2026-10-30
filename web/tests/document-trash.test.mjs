@@ -34,6 +34,7 @@ const trash = compile("../src/lib/document-trash.ts", {
 const { DocumentTrash } = compile("../src/components/DocumentTrash.tsx", {
   "@/components/ui/button": { Button: (props) => createElement("button", props) },
   "@/lib/document-trash": trash,
+  "@/lib/confirmation": { confirmAction: async () => true },
 });
 
 const id = "11111111-1111-4111-8111-111111111111";
@@ -92,7 +93,11 @@ test("a malformed document id never reaches the network", async (t) => {
 });
 
 test("server error details are surfaced to the user", async (t) => {
-  mockFetch(t, { ok: false, status: 409, json: async () => ({ detail: "Belge önce çöp kutusuna taşınmalı" }) });
+  mockFetch(t, {
+    ok: false,
+    status: 409,
+    json: async () => ({ detail: "Belge önce çöp kutusuna taşınmalı" }),
+  });
   await assert.rejects(trash.deleteDocumentForever(id), (error) => {
     assert.match(error.message, /önce çöp kutusuna taşınmalı/);
     assert.equal(error.status, 409);
@@ -106,7 +111,15 @@ test("listing is scoped to a case and parsed defensively", async (t) => {
     ok({
       retention_days: 30,
       documents: [
-        { id, file_name: "rapor.pdf", case_id: id, size_bytes: 10, deleted_at: "2026-10-01T10:00:00Z", days_left: 29, cited_answers: 2 },
+        {
+          id,
+          file_name: "rapor.pdf",
+          case_id: id,
+          size_bytes: 10,
+          deleted_at: "2026-10-01T10:00:00Z",
+          days_left: 29,
+          cited_answers: 2,
+        },
         { id: "x" },
         "bozuk",
       ],

@@ -56,7 +56,8 @@ function SSSPage() {
                   {s.a}
                   {s.dayanak && (
                     <p className="mt-2 text-xs" data-testid="faq-basis">
-                      <span className="font-medium text-foreground">Dayanak:</span> {basisLabel(s.dayanak)}
+                      <span className="font-medium text-foreground">Dayanak:</span>{" "}
+                      {basisLabel(s.dayanak)}
                     </p>
                   )}
                 </AccordionContent>
@@ -65,7 +66,11 @@ function SSSPage() {
           </Accordion>
         </div>
 
-        <p className="mt-4 text-xs leading-relaxed text-muted-foreground" role="note" data-testid="faq-note">
+        <p
+          className="mt-4 text-xs leading-relaxed text-muted-foreground"
+          role="note"
+          data-testid="faq-note"
+        >
           {FAQ_NOTE}
         </p>
 

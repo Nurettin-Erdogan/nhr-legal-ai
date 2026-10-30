@@ -312,7 +312,7 @@ _BADGE = {"user_document": " (kullanıcı belgesi)"}
 
 def render_markdown(question: str, steps: list[StepResult], *, topic: str | None = None, hints: list[dict[str, Any]] | None = None) -> str:
     """Raporu okunur metin olarak birleştirir. Model metni eklenmez; adım cevapları kendi atıflarıyla gelir."""
-    lines = [f"# Derin araştırma raporu", "", f"**Soru:** {' '.join(question.split())}", ""]
+    lines = ["# Derin araştırma raporu", "", f"**Soru:** {' '.join(question.split())}", ""]
     if topic:
         lines.extend([f"**Araştırılan konu:** {topic}", ""])
     if hints:

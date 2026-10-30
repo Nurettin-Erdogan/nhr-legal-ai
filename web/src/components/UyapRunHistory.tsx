@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { useAuth } from "@/components/AuthProvider";
+import { useAuth } from "@/components/AuthContext";
 import { loadAuditRuns } from "@/lib/uyap-sync-api";
 import { getSyncState, subscribeSync } from "@/lib/uyap-sync-store";
 import { fullyVerified, reportText } from "@/lib/uyap-sync-all";

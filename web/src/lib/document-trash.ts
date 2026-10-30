@@ -148,7 +148,10 @@ export async function trashDocuments(ids: string[]): Promise<BatchTrashResult> {
           } catch (itemError) {
             // Aynı anda başka bir sekmede çöpe alınan ya da erişilemeyen
             // belgeler toplu sonuçta "bulunamadı" sayılır; başka hatalar gizlenmez.
-            if (!(itemError instanceof Error) || (itemError as Error & { status?: number }).status !== 404) {
+            if (
+              !(itemError instanceof Error) ||
+              (itemError as Error & { status?: number }).status !== 404
+            ) {
               throw itemError;
             }
           }

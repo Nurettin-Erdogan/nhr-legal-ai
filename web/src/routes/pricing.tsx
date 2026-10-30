@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { Sparkles } from "lucide-react";
-import { useNavigate } from "@/lib/router-compat";
+import { useNavigate } from "@/lib/router-hooks";
 import { SiteHeader } from "@/components/SiteHeader";
 import { SiteFooter } from "@/components/SiteFooter";
 
@@ -18,8 +18,8 @@ const Pricing = () => {
           </div>
           <h1 className="font-serif text-3xl font-semibold">Şu an ücretsiz</h1>
           <p className="mt-3 text-muted-foreground">
-            Tüm özellikler şimdilik herkese açık ve ücretsizdir. Ücretli planlar eklenirse önceden duyurulur; mevcut
-            kullanıcılardan habersiz ücret alınmaz.
+            Tüm özellikler şimdilik herkese açık ve ücretsizdir. Ücretli planlar eklenirse önceden
+            duyurulur; mevcut kullanıcılardan habersiz ücret alınmaz.
           </p>
           <Button className="mt-8 w-full" variant="elite" onClick={() => navigate("/dashboard")}>
             Panele Git

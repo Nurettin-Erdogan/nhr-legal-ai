@@ -33,10 +33,10 @@ import {
 import { Plus, Search, Phone, Mail, MoreHorizontal, Pencil, Trash2, Loader2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/components/AuthProvider";
+import { useAuth } from "@/components/AuthContext";
 import { toast } from "sonner";
 import { clientFormProblem } from "@/lib/client-form";
-import { useSearchParam } from "@/lib/router-compat";
+import { useSearchParam } from "@/lib/router-hooks";
 import { z } from "zod";
 import {
   DropdownMenu,
@@ -155,7 +155,8 @@ const Clients = () => {
       email: parsed.data.email || null,
       phone: parsed.data.phone || null,
       // Tipe göre yalnız görünen numara kaydedilir (tip değiştirilince gizlenen eski değer kayıtta kalmasın).
-      national_id: parsed.data.client_type === "individual" ? parsed.data.national_id || null : null,
+      national_id:
+        parsed.data.client_type === "individual" ? parsed.data.national_id || null : null,
       tax_id: parsed.data.client_type === "corporate" ? parsed.data.tax_id || null : null,
       address: parsed.data.address || null,
       notes: parsed.data.notes || null,
@@ -195,8 +196,8 @@ const Clients = () => {
       if (
         query &&
         !`${c.full_name} ${c.email ?? ""} ${c.phone ?? ""}`
-          .toLowerCase()
-          .includes(query.toLowerCase())
+          .toLocaleLowerCase("tr")
+          .includes(query.trim().toLocaleLowerCase("tr"))
       )
         return false;
       return true;
@@ -362,11 +363,31 @@ const Clients = () => {
           </div>
         ) : filtered.length === 0 ? (
           <div className="py-20 text-center">
-            <div className="text-muted-foreground mb-4">Henüz müvekkil yok.</div>
-            <Button variant="elite" size="sm" onClick={openCreate}>
-              <Plus className="h-4 w-4" />
-              İlk müvekkili ekle
-            </Button>
+            {data.length > 0 ? (
+              <>
+                <div className="text-muted-foreground mb-4">
+                  Aramanızla eşleşen müvekkil bulunamadı.
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setQuery("");
+                    setFilter("all");
+                  }}
+                >
+                  Aramayı ve süzgeci temizle
+                </Button>
+              </>
+            ) : (
+              <>
+                <div className="text-muted-foreground mb-4">Henüz müvekkil yok.</div>
+                <Button variant="elite" size="sm" onClick={openCreate}>
+                  <Plus className="h-4 w-4" />
+                  İlk müvekkili ekle
+                </Button>
+              </>
+            )}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -388,7 +409,7 @@ const Clients = () => {
                   >
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-3">
-                        <div className="h-9 w-9 rounded-full bg-gradient-gold flex items-center justify-center font-serif font-semibold text-primary text-xs">
+                        <div className="h-9 w-9 rounded-full bg-gradient-gold flex items-center justify-center font-serif font-semibold text-white text-xs">
                           {c.full_name
                             .split(" ")
                             .map((n) => n[0])

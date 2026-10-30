@@ -62,8 +62,9 @@ function chatHarness(initialProps, overrides = {}) {
         }
       },
     },
-    "@/components/AuthProvider": { useAuth: () => ({ user: owner ? { id: owner } : null }) },
+    "@/components/AuthContext": { useAuth: () => ({ user: owner ? { id: owner } : null }) },
     "@/lib/router-compat": { Link: "Link", useSearchParam: () => "" },
+    "@/lib/router-hooks": { useSearchParam: () => "" },
     "@/lib/utils": { cn: (...values) => values.join(" ") },
     "@/lib/search-summary": { shouldAutoResearch: () => false },
     "@/lib/consulted-sources": { parseConsultedSources: () => [] },
@@ -160,6 +161,31 @@ function submit(view) {
     .find((node) => node.type === "Button" && node.props.size === "lg")
     .props.onClick();
 }
+
+test("public chat sends the selected reasoning level", async () => {
+  const view = chatHarness({});
+  view.render();
+  await settle();
+  const selector = nodes(view.render()).find((node) => node.props?.id === "chat-reasoning-effort");
+  assert.equal(selector.props.value, "low");
+  selector.props.onChange({ target: { value: "high" } });
+  typeQuestion(view, "Hukuki soru");
+  await submit(view);
+  assert.equal(view.calls.ask[0][1].reasoningEffort, "high");
+});
+
+test("private chat hides cloud reasoning selector and does not send an override", async () => {
+  const view = chatHarness({ caseId: "case-a" });
+  view.render();
+  await settle();
+  assert.equal(
+    nodes(view.render()).some((node) => node.props?.id === "chat-reasoning-effort"),
+    false,
+  );
+  typeQuestion(view);
+  await submit(view);
+  assert.equal(view.calls.ask[0][1].reasoningEffort, undefined);
+});
 
 test("compact case chat lists, reopens and continues with the persisted case and document selection", async () => {
   const view = chatHarness({ compact: true, caseId: "case-a" });
@@ -290,7 +316,13 @@ test("the answer is visible first, while basis and diagnostics stay inside one c
   assert.ok(nodes(details).some((node) => node.props?.["data-testid"] === "answer-basis"));
   assert.ok(nodes(details).some((node) => node.type === "CitationList"));
   assert.ok(nodes(details).some((node) => node.type === "SearchSummary"));
-  assert.ok(all.some((node) => node.props?.role === "status"));
+  assert.equal(details.props.open, undefined);
+  assert.ok(
+    nodes(details).some((node) => node.type === "SearchSummary" && node.props.compact === true),
+  );
+  assert.ok(!all.some((node) => node.type === "ResearchSources"));
+  // "Kaynak taraması kısmen tamamlandı" uyarısı kullanıcı kararıyla kaldırıldı (2026-10-25): ayrıntı yalnız kaynak panelinde kalır.
+  assert.ok(!JSON.stringify(all.map((node) => node.props?.children)).includes("kısmen tamamlandı"));
   assert.ok(
     !all.some(
       (node) =>
@@ -300,7 +332,12 @@ test("the answer is visible first, while basis and diagnostics stay inside one c
   );
 });
 
-for (const answerKind of ["conversation", "clarification", "insufficient_sources"]) {
+for (const answerKind of [
+  "conversation",
+  "clarification",
+  "insufficient_sources",
+  "general_information",
+]) {
   test(`${answerKind} replies do not show a failed-grounding warning or an empty sources menu`, async () => {
     const view = chatHarness(
       {},
@@ -328,6 +365,9 @@ for (const answerKind of ["conversation", "clarification", "insufficient_sources
     assert.ok(!all.some((node) => node.type === "ShieldAlert"));
     assert.ok(!all.some((node) => node.props?.["data-testid"] === "answer-details"));
     assert.ok(!all.some((node) => node.type === "ResearchSources"));
+    if (answerKind === "general_information") {
+      assert.ok(all.some((node) => node.props?.["data-testid"] === "general-information-label"));
+    }
   });
 }
 

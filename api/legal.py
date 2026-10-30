@@ -11,11 +11,12 @@ from pathlib import Path
 from uuid import UUID
 
 import psycopg
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi import Path as PathParam
 from psycopg.errors import QueryCanceled
 from starlette.concurrency import run_in_threadpool
 
+from api.auth.routes import current_user_id
 from api.ai.seed_tier import seed_tier
 from api.ai.turkish_text import restore_turkish
 from api.db import database_connection
@@ -30,7 +31,9 @@ from api.schemas import (
     ThirdPartyBreakdown,
 )
 
-router = APIRouter(prefix="/api/legal", tags=["legal"])
+# Hukuk korpusu yalnız oturum açmış (ve erişim listesindeki, api/access.py) kullanıcıya açık: arayüz zaten girişi şart koşuyordu,
+# API oturumsuz isteği de cevaplıyordu (2026-10-24).
+router = APIRouter(prefix="/api/legal", tags=["legal"], dependencies=[Depends(current_user_id)])
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +131,8 @@ _VERIFIED_SOURCE_FILTER = """
 (
     (
         ls.ingest_status = 'ready'
+        -- Yürürlükten kaldırılmış hükümler derlemesi (MBS türü MULGA) güncel mevzuat olarak aranmaz ve gösterilmez.
+        AND ls.metadata->>'mevzuat_tur' IS DISTINCT FROM 'MULGA'
         AND (
             ls.source_type <> 'legislation'
             OR (
@@ -206,6 +211,11 @@ CASE WHEN rank >= 0.35 * max(rank) OVER () THEN
     END
 ELSE 4 END
 """
+# Aranan ifade bir kanun maddesinin başlığıyla başlıyorsa ("kıdem tazminatı" -> İŞ KANUNU m. 14 — Kıdem tazminatı) o madde, ifadeyi
+# yalnız başlık ortasında geçiren maddelerden (m. 112) önce gelir. Yalnız sırayı etkiler; kayıt eklenmez/çıkarılmaz.
+_HEADING_MATCH_SQL = """
+CASE WHEN source_type = 'legislation' AND article_title ILIKE %(query)s || '%%' THEN 0 ELSE 1 END
+"""
 # Katmanlı sıra sayfalar arasında tutarlı kalsın diye ilk sayfalar aynı aday havuzundan çıkar.
 _SEARCH_MIN_CANDIDATES = 300
 
@@ -238,6 +248,7 @@ ranked AS (
 SELECT ranked.*, count(*) OVER () AS total, {partial_sql} AS partial
 FROM ranked
 ORDER BY {_AUTHORITY_ORDER_SQL},
+         {_HEADING_MATCH_SQL},
          seed_pending,
          rank DESC,
          COALESCE(decision_date, official_gazette_date, version_date) DESC NULLS LAST,
@@ -907,6 +918,7 @@ def _load_corpus_stats(timeout: str = "8s") -> CorpusStats:
                 )::int AS uyusmazlik_count,
                 max(ls.published_at) FILTER (
                     WHERE ls.source_type = 'court_decision'
+                      AND ls.published_at <= now()
                 )::date AS latest_decision_date
             FROM legal_sources ls
             WHERE ls.deleted_at IS NULL
@@ -1002,6 +1014,7 @@ JOIN LATERAL (
     SELECT c.content FROM legal_chunks c WHERE c.legal_source_id = ls.id ORDER BY c.chunk_index LIMIT 1
 ) chunk ON true
 WHERE legislation.law_no = %(law_no)s AND legislation.article_no = %(article_no)s
+  AND legislation.legislation_type IN ('law', 'constitution', 'decree')
   AND ls.source_type = 'legislation' AND ls.deleted_at IS NULL AND ls.is_current
   AND {_VERIFIED_SOURCE_FILTER}
 LIMIT 1
@@ -1315,6 +1328,9 @@ async def list_laws(
         raise _database_unavailable(exc) from exc
     found = legislation_browse.search_laws(laws, q, kind)
     reference = legislation_browse.parse_reference(q)
+    named = None if reference else legislation_browse.parse_named_reference(laws, q)
+    if named:
+        reference = (named[0].law_no, named[1])
     return {
         "query": q,
         "total": len(found),

@@ -1,4 +1,4 @@
-import { useAuth } from "@/components/AuthProvider";
+import { useAuth } from "@/components/AuthContext";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -9,7 +9,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { DOCUMENT_MODES, saveDocumentContext, workflowPath } from "@/lib/document-workflow";
-import { useNavigate } from "@/lib/router-compat";
+import { useNavigate } from "@/lib/router-hooks";
 import { Sparkles, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 

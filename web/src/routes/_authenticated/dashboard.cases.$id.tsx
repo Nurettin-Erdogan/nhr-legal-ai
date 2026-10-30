@@ -15,13 +15,17 @@ import { DocumentTrash } from "@/components/DocumentTrash";
 import { DocumentWorkflowActions } from "@/components/DocumentWorkflowActions";
 import { trashDocument } from "@/lib/document-trash";
 import { Button } from "@/components/ui/button";
-import { useParams, useSearchParam, Link } from "@/lib/router-compat";
+import { Link } from "@/lib/router-compat";
+import { useParams, useSearchParam } from "@/lib/router-hooks";
 import { loadCaseDetail, type CaseDetailData } from "@/lib/case-detail";
 import { db } from "@/lib/db";
 import { ArrowLeft, RefreshCw } from "lucide-react";
 
 /** Adresteki "?tab=…" değeri (genel aramadan gelen bağlantı) hangi sekmeyi açar. */
-const TAB_BY_PARAM: Record<string, "Evraklar" | "Görevler" | "Notlar" | "Takvim" | "UYAP Bilgileri" | "İcra Özeti" | "Süreler"> = {
+const TAB_BY_PARAM: Record<
+  string,
+  "Evraklar" | "Görevler" | "Notlar" | "Takvim" | "UYAP Bilgileri" | "İcra Özeti" | "Süreler"
+> = {
   evraklar: "Evraklar",
   uyap: "UYAP Bilgileri",
   icra: "İcra Özeti",
@@ -47,6 +51,7 @@ const CaseDetail = () => {
 
   useEffect(() => {
     let active = true;
+    const requestGeneration = generation;
     ++generation.current;
     // Aynı davanın yeniden yüklenmesinde (Yenile, çöpe taşıma, belge ekleme) önceki veri ekranda
     // kalır: aksi halde görünüm yeniden kurulur ve açık sekme "Özet"e geri atardı.
@@ -63,7 +68,7 @@ const CaseDetail = () => {
       });
     return () => {
       active = false;
-      ++generation.current;
+      ++requestGeneration.current;
     };
   }, [id, revision]);
 
@@ -162,7 +167,14 @@ const CaseDetail = () => {
             key={`${id}:${urlTab}`}
             data={data}
             renderSelectedActions={(ids) => <DocumentWorkflowActions ids={ids} caseId={id} />}
-            draftAction={<Link className="rounded-md border border-border px-3 py-2 text-sm hover:bg-secondary" to={`/dashboard/drafts?case=${id}`}>Belge hazırla</Link>}
+            draftAction={
+              <Link
+                className="rounded-md border border-border px-3 py-2 text-sm hover:bg-secondary"
+                to={`/dashboard/drafts?case=${id}`}
+              >
+                Belge hazırla
+              </Link>
+            }
             onDownload={download}
             downloading={downloading}
             downloadError={downloadError}
@@ -178,10 +190,25 @@ const CaseDetail = () => {
             documentCompare={<CaseDocumentCompare key={id} caseId={id} />}
             caseSummary={<CaseDocumentSummary key={id} caseId={id} />}
             uyapDetail={<UyapCaseDetail key={id} caseId={id} />}
-            executionBreakdown={isExecutionCourt(data.record.court) ? <ExecutionBreakdown key={id} caseId={id} /> : undefined}
-            deadlines={<DeadlineCalculator key={id} caseId={id} onSaved={() => setRevision((n) => n + 1)} />}
-            notesEditor={<CaseNotesEditor key={id} caseId={id} initial={data.record.notes} onSaved={() => setRevision((n) => n + 1)} />}
-            taskComposer={<CaseTaskComposer key={id} caseId={id} onSaved={() => setRevision((n) => n + 1)} />}
+            executionBreakdown={
+              isExecutionCourt(data.record.court) ? (
+                <ExecutionBreakdown key={id} caseId={id} />
+              ) : undefined
+            }
+            deadlines={
+              <DeadlineCalculator key={id} caseId={id} onSaved={() => setRevision((n) => n + 1)} />
+            }
+            notesEditor={
+              <CaseNotesEditor
+                key={id}
+                caseId={id}
+                initial={data.record.notes}
+                onSaved={() => setRevision((n) => n + 1)}
+              />
+            }
+            taskComposer={
+              <CaseTaskComposer key={id} caseId={id} onSaved={() => setRevision((n) => n + 1)} />
+            }
             trashing={trashing}
             onTrash={(documentId) => void moveToTrash(documentId)}
             documentTrash={

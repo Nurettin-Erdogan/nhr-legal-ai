@@ -10,11 +10,15 @@ import { parseSearchSummary, type SearchSummaryData } from "./search-summary";
 
 const API_BASE_URL = (import.meta.env.VITE_API_URL ?? "http://localhost:8766").replace(/\/$/, "");
 
-export type AnswerKind = "conversation" | "clarification" | "legal" | "insufficient_sources";
+export type AnswerKind =
+  "conversation" | "clarification" | "legal" | "insufficient_sources" | "general_information";
 
 /** Eski veya tanınmayan cevaplar kaynak denetiminden muaf tutulmaz. */
 export function parseAnswerKind(value: unknown): AnswerKind {
-  return value === "conversation" || value === "clarification" || value === "insufficient_sources"
+  return value === "conversation" ||
+    value === "clarification" ||
+    value === "insufficient_sources" ||
+    value === "general_information"
     ? value
     : "legal";
 }
@@ -47,6 +51,8 @@ export interface ChatMessage {
   interpretedQuestion?: string;
   /** Uzun kanun maddesi cevabı için denetlenmiş kısa özet (yapay zekâ; dayanak madde metnidir). */
   summary?: string[];
+  /** Atıf yapılan mevzuatın resmî kaynakla son karşılaştırma tarihi; kod üretir, model yazmaz. */
+  verificationNote?: string;
 }
 
 export interface ConversationSummary {
@@ -73,6 +79,7 @@ export interface AnswerResult {
   document_scope?: DocumentScope | null;
   interpreted_question?: string | null;
   summary?: string[];
+  verification_note?: string | null;
 }
 
 export const STAGE_LABELS: Record<string, string> = {
@@ -84,6 +91,7 @@ export const STAGE_LABELS: Record<string, string> = {
   sources_found: "Kaynaklar bulundu…",
   generating: "Cevap yazılıyor…",
   verifying: "Atıflar doğrulanıyor…",
+  partial: "Cevap tamamlanıyor; şu ana kadar doğrulanan kısım gösteriliyor…",
 };
 
 function authHeaders(): Record<string, string> {
@@ -148,6 +156,7 @@ export async function getConversationDetail(
       unverified_markers: string[];
       citations: Citation[];
       summary?: string[];
+      verification_note?: string | null;
     }>;
   }>(`/api/conversations/${id}`);
   const messages: ChatMessage[] = detail.messages
@@ -164,6 +173,10 @@ export async function getConversationDetail(
       summary: Array.isArray(m.summary)
         ? m.summary.filter((item): item is string => typeof item === "string")
         : undefined,
+      verificationNote:
+        typeof m.verification_note === "string" && m.verification_note
+          ? m.verification_note
+          : undefined,
     }));
   return {
     messages,
@@ -200,6 +213,7 @@ export const reindexCaseDocument = (caseId: string, documentId: string) =>
 export async function askAssistant(
   question: string,
   opts: {
+    reasoningEffort?: "low" | "medium" | "high";
     conversationId?: string | null;
     projectId?: string | null;
     /** Büro davası: yalnız bu davaya bağlı belgeler de aranır. `projectId` ile birlikte verilmez. */
@@ -219,6 +233,7 @@ export async function askAssistant(
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({
       question,
+      reasoning_effort: opts.reasoningEffort,
       conversation_id: opts.conversationId ?? null,
       project_id: opts.projectId ?? null,
       case_id: opts.caseId ?? null,

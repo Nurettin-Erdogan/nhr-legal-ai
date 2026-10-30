@@ -15,7 +15,7 @@ from api.ai.rag import RAGContext
 
 _MARKER = re.compile(r"\[\s*K\s*(\d+)\s*\]", re.IGNORECASE)
 _AFTER_SENTENCE = re.compile(r'([.!?]["”»]?)[ \t]*((?:\[\s*K\s*\d+\s*\][ \t]*)+)', re.IGNORECASE)
-_END = re.compile(r'[.!?]["”»]?(?=\s|$)')
+_END = re.compile(r'[.!?](?:[0-9]{1,3})?["”»]?(?=\s|$)')
 _ABBREVIATIONS = {"mad", "no", "prof", "dr", "av", "bkz", "vb", "vs", "ltd", "md"}
 
 

@@ -22,6 +22,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -318,8 +319,8 @@ LIMIT %(n)s
 LANES = {
     # şerit: (düğümdeki iş dizini, iş boyutu, düğümde tutulacak iş sayısı)
     # ~6 günlük iş: PC birkaç gün açılmasa bile sunucular boş kalmaz (kullanıcı 2026-10-15: "hiçbir zaman boşta kalmasın").
-    "bedesten": ("jobs", 5000, 20),
-    "emsal": ("jobs-emsal", 1500, 4),  # 2026-10-18: 61 sunucu x ~95/sa; sunucuda 4 iş (~63 saat) yeter, imleç boşa ilerlemesin
+    "bedesten": ("jobs", 1000, 2),  # 2026-10-25: 100 sunucu, ~175 bin bekleyen karar: işler küçük ki hepsi paylaşılsın
+    "emsal": ("jobs-emsal", 400, 1),  # 2026-10-25: 41 bin ulaşılamayan kayıt, 105 sunucuya eşit pay  # 2026-10-18: 61 sunucu x ~95/sa; sunucuda 4 iş (~63 saat) yeter, imleç boşa ilerlemesin
 }
 _PICKED = "UPDATE seed_verification_queue SET picked_at = NOW() WHERE legal_source_id = ANY(%s)"
 _ROW = """
@@ -606,8 +607,6 @@ def next_batch(connection: psycopg.Connection, state: dict, n: int) -> tuple[lis
     return ids, [row[0] for row in queued]
 
 
-import threading
-
 DISPATCH_LOCK = threading.Lock()
 
 
@@ -678,7 +677,7 @@ STOPPED_FILE = ROOT / "data" / "campaign" / "fetcher-stopped.txt"
 
 def active_nodes() -> dict:
     """Kullanıcının durdurduğu (kapalı) düğümler `data/campaign/fetcher-stopped.txt` içinde (satır başına ad); atlanır."""
-    stopped = {l.strip() for l in STOPPED_FILE.read_text(encoding="utf-8").splitlines() if l.strip()} if STOPPED_FILE.exists() else set()
+    stopped = {line.strip() for line in STOPPED_FILE.read_text(encoding="utf-8").splitlines() if line.strip()} if STOPPED_FILE.exists() else set()
     return {name: node for name, node in NODES.items() if name not in stopped}
 
 

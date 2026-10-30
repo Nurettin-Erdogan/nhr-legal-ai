@@ -552,6 +552,10 @@ def lab():
     uyap = ThreadingHTTPServer(("127.0.0.1", 0), _UyapHandler)
     uyap.socket = tls.wrap_socket(uyap.socket, server_side=True)
     api = ThreadingHTTPServer(("127.0.0.1", 0), _ApiHandler)
+    previous_ports = os.environ.get("NHR_OFFLINE_FIXTURE_PORTS", "")
+    os.environ["NHR_OFFLINE_FIXTURE_PORTS"] = ",".join(filter(None, [
+        previous_ports, str(uyap.server_address[1]), str(api.server_address[1]),
+    ]))
     for server in (uyap, api):
         threading.Thread(target=server.serve_forever, daemon=True).start()
 
@@ -567,6 +571,11 @@ def lab():
                 f"--disable-extensions-except={EXTENSION_DIR}",
                 f"--load-extension={EXTENSION_DIR}",
                 f"--host-resolver-rules=MAP *.uyap.gov.tr 127.0.0.1:{uyap.server_address[1]}",
+                # External traffic must fail, including service-worker updates.
+                # Only synthetic portal hosts and loopback bypass this dead proxy.
+                "--proxy-server=http://127.0.0.1:9",
+                "--proxy-bypass-list=127.0.0.1;localhost;*.uyap.gov.tr",
+                "--disable-background-networking",
                 "--ignore-certificate-errors",
             ],
         )
@@ -579,6 +588,7 @@ def lab():
         playwright.stop()
         uyap.shutdown()
         api.shutdown()
+        os.environ["NHR_OFFLINE_FIXTURE_PORTS"] = previous_ports
         shutil.rmtree(workdir, ignore_errors=True)
 
 

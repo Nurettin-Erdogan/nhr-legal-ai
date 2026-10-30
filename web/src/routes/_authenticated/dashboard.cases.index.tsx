@@ -37,10 +37,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Plus, Search, Loader2, MoreHorizontal, Pencil, Trash2, Eye } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "@/lib/router-compat";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "@/lib/router-compat";
+import { useNavigate } from "@/lib/router-hooks";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/components/AuthProvider";
+import { useAuth } from "@/components/AuthContext";
 import { toast } from "sonner";
 import { z } from "zod";
 import { cn } from "@/lib/utils";
@@ -222,7 +223,10 @@ const Cases = () => {
     }
   };
 
-  const clientName = (id: string | null) => clients.find((c) => c.id === id)?.full_name ?? "—";
+  const clientName = useCallback(
+    (id: string | null) => clients.find((c) => c.id === id)?.full_name ?? "—",
+    [clients],
+  );
 
   const filtered = useMemo(
     () =>
@@ -231,13 +235,13 @@ const Cases = () => {
         if (
           query &&
           !`${c.title} ${c.case_no ?? ""} ${c.opponent ?? ""} ${clientName(c.client_id)}`
-            .toLowerCase()
-            .includes(query.toLowerCase())
+            .toLocaleLowerCase("tr")
+            .includes(query.trim().toLocaleLowerCase("tr"))
         )
           return false;
         return true;
       }),
-    [data, filter, query, clients],
+    [data, filter, query, clientName],
   );
 
   const stats = useMemo(
@@ -441,11 +445,31 @@ const Cases = () => {
           </div>
         ) : filtered.length === 0 ? (
           <div className="py-20 text-center">
-            <div className="text-muted-foreground mb-4">Henüz dava yok.</div>
-            <Button variant="elite" size="sm" onClick={openCreate}>
-              <Plus className="h-4 w-4" />
-              İlk davayı ekle
-            </Button>
+            {data.length > 0 ? (
+              <>
+                <div className="text-muted-foreground mb-4">
+                  Aramanızla eşleşen dava bulunamadı.
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setQuery("");
+                    setFilter("all");
+                  }}
+                >
+                  Aramayı ve süzgeci temizle
+                </Button>
+              </>
+            ) : (
+              <>
+                <div className="text-muted-foreground mb-4">Henüz dava yok.</div>
+                <Button variant="elite" size="sm" onClick={openCreate}>
+                  <Plus className="h-4 w-4" />
+                  İlk davayı ekle
+                </Button>
+              </>
+            )}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -471,7 +495,9 @@ const Cases = () => {
                     className="border-t border-border hover:bg-secondary/30 transition cursor-pointer"
                     onClick={() => navigate(`/dashboard/cases/${c.id}`)}
                   >
-                    <td className="hidden px-6 py-4 font-mono text-xs md:table-cell">{c.case_no ?? "—"}</td>
+                    <td className="hidden px-6 py-4 font-mono text-xs md:table-cell">
+                      {c.case_no ?? "—"}
+                    </td>
                     <td className="px-3 py-4 font-medium sm:px-6">
                       <Link
                         to={`/dashboard/cases/${c.id}`}
@@ -481,17 +507,32 @@ const Cases = () => {
                         {c.title}
                       </Link>
                       <div className="mt-0.5 text-xs font-normal text-muted-foreground md:hidden">
-                        {[c.case_no, clientName(c.client_id) !== "—" ? clientName(c.client_id) : null].filter(Boolean).join(" · ")}
+                        {[
+                          c.case_no,
+                          clientName(c.client_id) !== "—" ? clientName(c.client_id) : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
                       </div>
                       {c.next_hearing && (
                         <div className="mt-0.5 text-xs font-normal text-muted-foreground sm:hidden">
-                          Duruşma: {new Date(c.next_hearing).toLocaleString("tr-TR", { dateStyle: "short", timeStyle: "short" })}
+                          Duruşma:{" "}
+                          {new Date(c.next_hearing).toLocaleString("tr-TR", {
+                            dateStyle: "short",
+                            timeStyle: "short",
+                          })}
                         </div>
                       )}
                     </td>
-                    <td className="hidden px-6 py-4 text-muted-foreground md:table-cell">{clientName(c.client_id)}</td>
-                    <td className="hidden px-6 py-4 text-muted-foreground lg:table-cell">{c.opponent ?? "—"}</td>
-                    <td className="hidden px-6 py-4 text-muted-foreground lg:table-cell">{c.case_type ?? "—"}</td>
+                    <td className="hidden px-6 py-4 text-muted-foreground md:table-cell">
+                      {clientName(c.client_id)}
+                    </td>
+                    <td className="hidden px-6 py-4 text-muted-foreground lg:table-cell">
+                      {c.opponent ?? "—"}
+                    </td>
+                    <td className="hidden px-6 py-4 text-muted-foreground lg:table-cell">
+                      {c.case_type ?? "—"}
+                    </td>
                     <td className="px-3 py-4 sm:px-6">
                       <span
                         className={cn(
@@ -513,7 +554,10 @@ const Cases = () => {
                     <td className="px-2 py-4 sm:px-6" onClick={(event) => event.stopPropagation()}>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
-                          <button className="p-1.5 rounded-md hover:bg-secondary" aria-label={`${c.title} işlemleri`}>
+                          <button
+                            className="p-1.5 rounded-md hover:bg-secondary"
+                            aria-label={`${c.title} işlemleri`}
+                          >
                             <MoreHorizontal className="h-4 w-4" />
                           </button>
                         </DropdownMenuTrigger>

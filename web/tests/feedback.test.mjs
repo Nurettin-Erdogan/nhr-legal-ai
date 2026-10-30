@@ -8,10 +8,25 @@ const require = createRequire(import.meta.url);
 const inserts = [];
 function load() {
   const source = readFileSync(new URL("../src/lib/feedback.ts", import.meta.url), "utf8");
-  const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } });
+  const { outputText } = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  });
   const module = { exports: {} };
-  const fakeDb = { db: { from: (table) => ({ insert: async (row) => (inserts.push({ table, row }), { error: globalThis.__feedbackError ?? null }) }) } };
-  new Function("require", "module", "exports", outputText)((name) => (name === "@/lib/db" ? fakeDb : require(name)), module, module.exports);
+  const fakeDb = {
+    db: {
+      from: (table) => ({
+        insert: async (row) => (
+          inserts.push({ table, row }),
+          { error: globalThis.__feedbackError ?? null }
+        ),
+      }),
+    },
+  };
+  new Function("require", "module", "exports", outputText)(
+    (name) => (name === "@/lib/db" ? fakeDb : require(name)),
+    module,
+    module.exports,
+  );
   return module.exports;
 }
 const lib = load();
@@ -32,16 +47,31 @@ test("only the path is sent: query strings and fragments (ids, search text) are 
 
 test("the insert carries the category, trimmed message and page and nothing else", async () => {
   inserts.length = 0;
-  await lib.sendFeedback({ category: "hata", message: "  Arama çok yavaş  ", pathname: "/dashboard/legislation?q=x" });
-  assert.deepEqual(inserts, [{ table: "feedback", row: { category: "hata", message: "Arama çok yavaş", page: "/dashboard/legislation" } }]);
+  await lib.sendFeedback({
+    category: "hata",
+    message: "  Arama çok yavaş  ",
+    pathname: "/dashboard/legislation?q=x",
+  });
+  assert.deepEqual(inserts, [
+    {
+      table: "feedback",
+      row: { category: "hata", message: "Arama çok yavaş", page: "/dashboard/legislation" },
+    },
+  ]);
 });
 
 test("a server error is surfaced as an error", async () => {
   globalThis.__feedbackError = { message: "Sunucu hatası" };
-  await assert.rejects(lib.sendFeedback({ category: "oneri", message: "deneme", pathname: "/dashboard" }), /Sunucu hatası/);
+  await assert.rejects(
+    lib.sendFeedback({ category: "oneri", message: "deneme", pathname: "/dashboard" }),
+    /Sunucu hatası/,
+  );
   delete globalThis.__feedbackError;
 });
 
 test("the three categories are offered", () => {
-  assert.deepEqual(lib.FEEDBACK_CATEGORIES.map((item) => item.value), ["hata", "oneri", "begeni"]);
+  assert.deepEqual(
+    lib.FEEDBACK_CATEGORIES.map((item) => item.value),
+    ["hata", "oneri", "begeni"],
+  );
 });

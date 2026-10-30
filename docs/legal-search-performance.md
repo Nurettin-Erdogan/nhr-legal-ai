@@ -202,3 +202,27 @@ docker exec -i nhr-legal-ai-db psql -U nhr_app -d nhr_legal_ai_test -v ON_ERROR_
 ## Kapsam dışı
 
 RAG hattının kendi aramaları yukarıdaki katmanlı fonksiyonları kullanır; araştırma sayfası artık sınırlı fonksiyonu kullanır.
+
+## Asistan aramasında örnekleme ve kullanıcı bildirimi (2026-10-30)
+
+Doğrulanmış korpus ~11 M karar / ~29,5 M parça. Yaygın hukuk terimlerinde (icra, takip, itiraz, kıdem, nafaka, kira…) sözcüksel karar kolunun **tam sıralaması**
+asistanın 2,5 sn ilk süresine sığmaz; sıra: tam sıralı → katmanlı (toplu 3 000 + resmî 5 000 eşleşme, 4 sn) → yalnız resmî (1 500 eşleşme, ~1 sn).
+Ölçüm (tam sıralı / katmanlı / yalnız-resmî örnek, sn): "boşanma nafaka" 10,3 / 2,5 / 0,5 · "kıdem tazminatı hesaplama" 9,6 / 4,6 / 1,1 ·
+"kira bedelinin tespiti" 16,4 / 4,6 / 1,2 · "haksız fiil zamanaşımı" 5,5 / 3,2 / 0,8 · "itirazın iptali" >60 / >12 / 1,0 · nadir terimli
+"banka havalesi dekont borç ispat" 0,05 (tam). Örnek sonucu gerçek ilk 5 ile çoğu kez 0-1 (katmanlı 2-3) örtüşür: yaygın terimde bu kol sıralı değil **örnektir**.
+Terim sıklığından önceden tahmin işe yaramaz (pg_stats ortak öğe tabanı %1,4; "kira", "boşanma", "kıdem" bunun altında ama 10+ sn sürer).
+Anlam (ANN) kolu yalnız gömülü ~2 M parçayı (~%7) görür; toplu katman (embedding'siz, ama doğrulanmış) kararların ~%92'sidir.
+
+Sonuç ve kodlanan davranış:
+
+- **Uzun soru:** ortak karar vektör kolu varken 12'den çok arama terimli ham soruda "hepsi birden" sözcük sorgusu atlanır (`lexical_strategy = skipped_long_question`;
+  35 terimli sorgu 0 satır dönerken 7,4 sn sürüyordu). Parça aramaları ortak vektör göndermez; onlarda kol atlanmaz.
+- **Kavram aramaları** parçanın ana aramasıyla birlikte (paralel) çalışır; art arda çalışınca iki ağır arama 15 sn tutuyordu.
+- **Bildirim iki türdür** (`api/ai/discovery.py` `retrieval_limit`, özet alanı `retrieval_limit`): `sampled` = bir kol sınırlı örnekten cevap verdi
+  (`timeout_then_tiered`, `timeout_then_official`, `official_only`); `failed` = bir kol hiç sonuç vermedi (`timeout`, `connection_error`, `skipped_unindexed`,
+  `decision_search = timeout`). Parça aramaları (`timings.extra["part_searches"]`) özete katılır, ağır olan kazanır. Arayüz `sampled` için sakin bir not
+  ("Çok sayıda eşleşen karar olduğundan karar araması örneklemeyle yapıldı…"), `failed` ve eski mesajlar için "zaman aşımına uğradı" uyarısını gösterir.
+  Ölçüm: gerçek boru hattında örnek sorularda eski uyarı %50-67 sıklıkla çıkıyordu, hepsi `sampled` idi.
+
+Gerçek çözüm seçenekleri (henüz yapılmadı): yüksek mahkeme kurulları için kısmi GIN dizini + tam sıralama; karar düzeyinde kısa özet/künye dizini;
+konu başına çevrimdışı tam sıralama + önbellek; kalan doğrulanmış kararların gömülmesi.

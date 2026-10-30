@@ -79,18 +79,14 @@ def fetch_official_pdf_text(
 
 
 def extract_article_text(full_text: str, article_no: str) -> str:
-    number = re.escape(str(article_no).strip())
-    heading = re.compile(
-        rf"(?im)^\s*(?:(?:ek|ge[çc]ici)\s+)?madde\s+{number}\b"
-    )
-    match = heading.search(full_text)
-    if match is None:
-        return ""
-    next_heading = re.compile(
-        r"(?im)^\s*(?:(?:ek|ge[çc]ici)\s+)?madde\s+\d{1,4}[a-zA-Z]?\b"
-    ).search(full_text, match.end())
-    end = next_heading.start() if next_heading else len(full_text)
-    return normalize_text(full_text[match.start() : end])
+    from ingestion.mevzuat.identity import article_headings, canonical_article
+    headings = article_headings(full_text)
+    wanted = canonical_article(str(article_no))
+    for index, heading in enumerate(headings):
+        if heading.identity == wanted:
+            end = headings[index + 1].start if index + 1 < len(headings) else len(full_text)
+            return normalize_text(full_text[heading.start:end])
+    return ""
 
 
 def _comparison_key(text: str) -> str:

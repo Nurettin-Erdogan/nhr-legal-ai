@@ -76,17 +76,17 @@ def test_all_timeout_is_failure_not_empty_corpus(monkeypatch):
         retrieval.retrieve_contexts(object(), question=RENT, top_k=6)
 
 
-def test_hybrid_has_separate_bounded_branch_and_model_identity(monkeypatch):
+def test_hybrid_has_separate_semantic_branch_without_deadline_and_preserves_model_identity(monkeypatch):
     calls = []
     monkeypatch.setattr(retrieval, '_execute_retrieval',
         lambda c, sql, params, **kw: calls.append((sql, params, kw)) or [])
     retrieval.retrieve_contexts(object(), question='Sözleşme uyuşmazlığı', top_k=6,
                                 query_embedding=[0.1]*768, embedding_model='nomic-embed-text')
     assert len(calls) == 3  # shared ANN, legislation-only ANN (migration 060), lexical
-    assert calls[1][0] == retrieval.LEGISLATION_SEMANTIC_SQL and calls[1][2]['timeout'] == '2s'
+    assert calls[1][0] == retrieval.LEGISLATION_SEMANTIC_SQL and calls[1][2]['timeout'] == '0'
     assert calls[0][0] == retrieval.SEMANTIC_RETRIEVAL_SQL
     assert calls[0][1]['embedding_model'] == 'nomic-embed-text'
-    assert calls[0][2]['timeout'] == '3s'
+    assert calls[0][2]['timeout'] == '0'
     assert 'ORDER BY chunk.embedding <=>' in calls[0][0]
     assert 'row_number' not in calls[0][0]
 

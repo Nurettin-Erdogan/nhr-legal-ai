@@ -41,7 +41,7 @@ import {
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/components/AuthProvider";
+import { useAuth } from "@/components/AuthContext";
 import { CaseDocPicker } from "@/components/CaseDocPicker";
 import { DocumentJobPanel } from "@/components/DocumentJobPanel";
 import { startDocumentJob, type DocumentJobInput } from "@/lib/document-jobs";
@@ -390,20 +390,21 @@ export const AIRunner = ({
   return (
     <div className="space-y-6">
       {/* Hero input */}
-      <div className="rounded-2xl bg-gradient-hero text-primary-foreground p-6 lg:p-8 relative overflow-hidden shadow-elegant">
+      {/* Panel zemini iki temada da koyu mavi: yazılar sabit beyaz (primary-foreground koyu temada lacivert, görünmüyordu). */}
+      <div className="rounded-2xl bg-gradient-hero text-white p-6 lg:p-8 relative overflow-hidden shadow-elegant">
         <div className="absolute -top-24 -right-24 h-72 w-72 rounded-full bg-gold/20 blur-3xl" />
         <div className="relative">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-gold/30 bg-gold/10 text-gold text-xs font-medium uppercase tracking-wider mb-4">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-white/25 bg-white/10 text-white text-xs font-medium uppercase tracking-wider mb-4">
             <Sparkles className="h-3.5 w-3.5" /> AI Powered
           </div>
 
-          <div className="bg-primary-foreground/5 backdrop-blur border border-primary-foreground/15 rounded-2xl p-4">
+          <div className="bg-white/5 backdrop-blur border border-white/15 rounded-2xl p-4">
             <div className="grid gap-3">
               <Input
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 placeholder="Başlık (opsiyonel)"
-                className="bg-transparent border-primary-foreground/20 text-primary-foreground placeholder:text-primary-foreground/50"
+                className="bg-transparent border-white/20 text-white placeholder:text-white/50"
               />
               <Textarea
                 rows={5}
@@ -416,7 +417,7 @@ export const AIRunner = ({
                   }
                 }}
                 placeholder={placeholder}
-                className="bg-transparent border-primary-foreground/20 text-primary-foreground placeholder:text-primary-foreground/50 resize-y"
+                className="bg-transparent border-white/20 text-white placeholder:text-white/50 resize-y"
               />
               <div className="rounded-xl bg-background/90 text-foreground">
                 <CaseDocPicker
@@ -453,7 +454,7 @@ export const AIRunner = ({
                         maxLength={2000}
                         rows={2}
                         placeholder="Örn. Metindeki ödeme tutarlarını ve vadeleri incele."
-                        className="bg-transparent border-primary-foreground/20 text-primary-foreground placeholder:text-primary-foreground/50"
+                        className="bg-transparent border-white/20 text-white placeholder:text-white/50"
                       />
                     </label>
                   )}
@@ -489,14 +490,11 @@ export const AIRunner = ({
                   variant="outline"
                   size="sm"
                   onClick={() => fileInputRef.current?.click()}
-                  className="border-primary-foreground/30 text-primary-foreground hover:bg-primary-foreground/10"
+                  className="border-white/30 bg-transparent text-white hover:bg-white/10"
                   title="PDF / DOCX / TXT yükle"
                 >
                   <Upload className="h-4 w-4" /> Belge Yükle
                 </Button>
-
-                <span className="text-xs">Model sunucudaki sağlayıcı ayarından seçilir.</span>
-
                 <Button
                   variant="outline"
                   size="sm"
@@ -511,17 +509,17 @@ export const AIRunner = ({
                       /* ignore */
                     }
                   }}
-                  className="border-primary-foreground/30 text-primary-foreground hover:bg-primary-foreground/10"
+                  className="border-white/30 bg-transparent text-white hover:bg-white/10"
                 >
                   Temizle
                 </Button>
-                <kbd className="hidden sm:inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded border border-primary-foreground/20 text-primary-foreground/70 font-mono">
+                <kbd className="hidden sm:inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded border border-white/20 text-white/70 font-mono">
                   Ctrl + Enter
                 </kbd>
                 <span
                   className={cn(
                     "text-xs ml-auto font-mono",
-                    prompt.length > 2000000 ? "text-destructive" : "text-primary-foreground/60",
+                    prompt.length > 2000000 ? "text-destructive" : "text-white/60",
                   )}
                 >
                   {prompt.length.toLocaleString("tr-TR")} karakter
@@ -532,7 +530,7 @@ export const AIRunner = ({
 
           {examples.length > 0 && (
             <div className="mt-5">
-              <div className="text-[10px] uppercase tracking-[0.18em] text-primary-foreground/60 font-semibold mb-2">
+              <div className="text-[10px] uppercase tracking-[0.18em] text-white/60 font-semibold mb-2">
                 Hızlı başla — örnek istemler
               </div>
               <div className="flex flex-wrap gap-2">
@@ -543,7 +541,7 @@ export const AIRunner = ({
                     title="Tıkla ve örneği kullan"
                     className={cn(
                       "text-left max-w-md inline-flex items-start gap-2 px-3 py-1.5 rounded-full text-xs",
-                      "bg-primary-foreground/5 text-primary-foreground/80 border border-primary-foreground/15 hover:bg-primary-foreground/10 hover:border-gold/40 transition",
+                      "bg-white/5 text-white/80 border border-white/15 hover:bg-white/10 hover:border-gold/40 transition",
                     )}
                   >
                     <Sparkles className="h-3 w-3 text-gold mt-0.5 shrink-0" />

@@ -42,11 +42,11 @@ import {
 import { cn } from "@/lib/utils";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/components/AuthProvider";
+import { useAuth } from "@/components/AuthContext";
 import { toast } from "sonner";
 import { z } from "zod";
 import { deriveCalendarEvents } from "@/lib/calendar-derived";
-import { useNavigate } from "@/lib/router-compat";
+import { useNavigate } from "@/lib/router-hooks";
 
 interface CalEvent {
   id: string;
@@ -169,18 +169,36 @@ const CalendarPage = () => {
         .gte("start_at", from.toISOString())
         .lte("start_at", to.toISOString())
         .order("start_at", { ascending: true }),
-      supabase.from("cases").select("id, title, case_no, court, next_hearing").order("created_at", { ascending: false }),
+      supabase
+        .from("cases")
+        .select("id, title, case_no, court, next_hearing")
+        .order("created_at", { ascending: false }),
       supabase.from("clients").select("id, full_name").order("full_name", { ascending: true }),
-      supabase.from("tasks").select("id, title, due_date, status, case_id").gte("due_date", from.toISOString()).lte("due_date", to.toISOString()),
+      supabase
+        .from("tasks")
+        .select("id, title, due_date, status, case_id")
+        .gte("due_date", from.toISOString())
+        .lte("due_date", to.toISOString()),
     ]);
     if (error) toast.error(error.message);
     const own = (e ?? []) as CalEvent[];
     // Davanın "Sonraki Duruşma" tarihi ve görevlerin son tarihi takvime kendiliğinden düşer (ayrı etkinlik açmak gerekmez).
     const derived = deriveCalendarEvents(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ((cs ?? []) as any[]).map((c) => ({ id: c.id, title: c.title, court: c.court ?? null, next_hearing: c.next_hearing ?? null })),
+      ((cs ?? []) as any[]).map((c) => ({
+        id: c.id,
+        title: c.title,
+        court: c.court ?? null,
+        next_hearing: c.next_hearing ?? null,
+      })),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ((ts ?? []) as any[]).map((t) => ({ id: t.id, title: t.title, due_date: t.due_date ?? null, status: t.status ?? null, case_id: t.case_id ?? null })),
+      ((ts ?? []) as any[]).map((t) => ({
+        id: t.id,
+        title: t.title,
+        due_date: t.due_date ?? null,
+        status: t.status ?? null,
+        case_id: t.case_id ?? null,
+      })),
       from,
       to,
       own,
@@ -313,21 +331,13 @@ const CalendarPage = () => {
     return map;
   }, [events]);
 
-  const todaysEvents = useMemo(
-    () =>
-      events
-        .filter((e) => sameDay(new Date(e.start_at), today))
-        .sort((a, b) => a.start_at.localeCompare(b.start_at)),
-    [events],
-  );
-  const upcoming = useMemo(
-    () =>
-      events
-        .filter((e) => new Date(e.start_at) >= today)
-        .sort((a, b) => a.start_at.localeCompare(b.start_at))
-        .slice(0, 8),
-    [events],
-  );
+  const todaysEvents = events
+    .filter((e) => sameDay(new Date(e.start_at), today))
+    .sort((a, b) => a.start_at.localeCompare(b.start_at));
+  const upcoming = events
+    .filter((e) => new Date(e.start_at) >= today)
+    .sort((a, b) => a.start_at.localeCompare(b.start_at))
+    .slice(0, 8);
 
   const monthLabel = cursor.toLocaleDateString("tr-TR", { month: "long", year: "numeric" });
 
@@ -573,7 +583,7 @@ const CalendarPage = () => {
                             <div
                               className={cn(
                                 "text-xs font-medium mb-1 inline-flex h-6 w-6 items-center justify-center rounded-full",
-                                isToday && "bg-gold text-primary",
+                                isToday && "bg-primary text-primary-foreground",
                               )}
                             >
                               {day.getDate()}
@@ -657,28 +667,28 @@ const CalendarPage = () => {
                       </Button>
                     )}
                     {!e.derived && (
-                    <Button variant="ghost" size="icon" onClick={() => openEdit(e)}>
-                      <Pencil className="h-4 w-4" />
-                    </Button>
+                      <Button variant="ghost" size="icon" onClick={() => openEdit(e)}>
+                        <Pencil className="h-4 w-4" />
+                      </Button>
                     )}
                     {!e.derived && (
-                    <AlertDialog>
-                      <AlertDialogTrigger asChild>
-                        <Button variant="ghost" size="icon" className="text-destructive">
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>Etkinliği sil?</AlertDialogTitle>
-                          <AlertDialogDescription>Bu işlem geri alınamaz.</AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel>İptal</AlertDialogCancel>
-                          <AlertDialogAction onClick={() => remove(e.id)}>Sil</AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button variant="ghost" size="icon" className="text-destructive">
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Etkinliği sil?</AlertDialogTitle>
+                            <AlertDialogDescription>Bu işlem geri alınamaz.</AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>İptal</AlertDialogCancel>
+                            <AlertDialogAction onClick={() => remove(e.id)}>Sil</AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
                     )}
                   </div>
                 ))}

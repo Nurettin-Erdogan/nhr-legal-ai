@@ -78,6 +78,7 @@ def test_list_returns_summaries_and_can_filter_by_project(monkeypatch):
     filtered = client.get(f"/api/conversations?project_id={project_id}")
 
     assert everything.status_code == 200
+    assert filtered.status_code == 200
     assert everything.json()[0]["title"] == "Kıdem tazminatı"
     assert everything.json()[0]["message_count"] == 4
     assert "conversation.project_id = %(project_id)s" not in executed[0][0]

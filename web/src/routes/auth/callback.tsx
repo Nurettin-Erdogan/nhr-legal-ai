@@ -18,7 +18,9 @@ function AuthCallbackPage() {
             ? "Bu e-posta ile mevcut hesap var. Önce şifrenizle giriş yapıp Ayarlar'dan Google hesabınızı bağlayın."
             : oauthError === "cancelled"
               ? "Google girişi iptal edildi."
-              : "Google hesabı doğrulanamadı. Lütfen tekrar deneyin.",
+              : oauthError === "access_denied"
+                ? "Bu uygulamaya yalnız yöneticinin erişim listesine eklediği e-posta adresleri girebilir. Erişim için yöneticinizle görüşün."
+                : "Google hesabı doğrulanamadı. Lütfen tekrar deneyin.",
         );
         return;
       }

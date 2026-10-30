@@ -14,7 +14,6 @@ import gzip
 import json
 import os
 import sys
-import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path

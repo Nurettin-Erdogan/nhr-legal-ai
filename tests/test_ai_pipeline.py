@@ -216,7 +216,7 @@ def test_retrieve_contexts_never_expands_unknown_topic_to_unbounded_or(monkeypat
     monkeypatch.setattr(retrieval, "_execute_retrieval", execute)
     monkeypatch.setattr(retrieval, "_retrieve_statute_contexts", lambda *args, **kwargs: [])
 
-    result = retrieval.retrieve_contexts(
+    _result = retrieval.retrieve_contexts(
         object(),
         question="Fazla mesai ücretinin koşulları nelerdir?",
         top_k=1,
@@ -480,3 +480,26 @@ def test_insufficient_source_reply_is_shown_ungrounded(monkeypatch):
     assert response.grounded is False
     assert response.citations == []
     assert "yeterli bilgi" in response.answer
+
+
+def test_the_independent_check_can_run_on_its_own_model_with_the_same_local_fallback():
+    from types import SimpleNamespace
+
+    from api.ai.cloud_provider import BedrockProvider, FallbackProvider
+    from api.ai.pipeline import _checker_for
+
+    primary = BedrockProvider(model="writer", api_key="k", timeout_seconds=5)
+    provider = FallbackProvider(primary=primary, fallback=object())
+    same = object()
+    assert _checker_for(SimpleNamespace(cloud_ai_check_model=""), provider, same) is same
+    chosen = _checker_for(SimpleNamespace(cloud_ai_check_model="judge"), provider, same)
+    assert chosen.primary.model == "judge" and chosen.fallback is provider.fallback and primary.model == "writer"
+    provider.fell_back = True
+    assert _checker_for(SimpleNamespace(cloud_ai_check_model="judge"), provider, same) is same
+
+
+def test_a_compilation_of_repealed_provisions_is_not_current_law_in_the_search_filters():
+    from api.ai.retrieval import _TEMPORAL_FILTER
+    from api.legal import _VERIFIED_SOURCE_FILTER
+    assert "mevzuat_tur' IS DISTINCT FROM 'MULGA'" in _TEMPORAL_FILTER
+    assert "mevzuat_tur' IS DISTINCT FROM 'MULGA'" in _VERIFIED_SOURCE_FILTER

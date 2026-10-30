@@ -59,7 +59,7 @@ function runner(props) {
         return "job";
       },
     },
-    "@/components/AuthProvider": { useAuth: () => ({ session: { user: { id: "owner" } } }) },
+    "@/components/AuthContext": { useAuth: () => ({ session: { user: { id: "owner" } } }) },
     "@/integrations/supabase/client": { supabase: {} },
     "@/lib/utils": { cn: (...args) => args.join(" ") },
     "react-markdown": { __esModule: true, default: "Markdown" },

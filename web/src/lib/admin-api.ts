@@ -142,14 +142,23 @@ export const adminApi = {
   // API'nin CORS listesi PUT/PATCH'e izin vermez; değişiklikler POST ile gider.
   setStatus: (userId: string, status: "active" | "suspended") =>
     request(`/api/admin/users/${userId}/status`, { method: "POST", ...json({ status }) }),
-  grantRole: (userId: string, role: string) => request(`/api/admin/users/${userId}/roles/${role}`, { method: "POST" }),
-  revokeRole: (userId: string, role: string) => request(`/api/admin/users/${userId}/roles/${role}`, { method: "DELETE" }),
+  grantRole: (userId: string, role: string) =>
+    request(`/api/admin/users/${userId}/roles/${role}`, { method: "POST" }),
+  revokeRole: (userId: string, role: string) =>
+    request(`/api/admin/users/${userId}/roles/${role}`, { method: "DELETE" }),
   feedback: (category = "") =>
-    request<AdminFeedback[]>(`/api/admin/feedback${category ? `?category=${encodeURIComponent(category)}` : ""}`),
+    request<AdminFeedback[]>(
+      `/api/admin/feedback${category ? `?category=${encodeURIComponent(category)}` : ""}`,
+    ),
   access: () => request<AdminAccess>("/api/admin/access"),
-  setAccessMode: (mode: AdminAccess["mode"]) => request("/api/admin/access", { method: "POST", ...json({ mode }) }),
+  setAccessMode: (mode: AdminAccess["mode"]) =>
+    request("/api/admin/access", { method: "POST", ...json({ mode }) }),
   addAccess: (email: string, note: string) =>
-    request("/api/admin/access/entries", { method: "POST", ...json({ email, note: note || null }) }),
-  removeAccess: (entryId: string) => request(`/api/admin/access/entries/${entryId}`, { method: "DELETE" }),
+    request("/api/admin/access/entries", {
+      method: "POST",
+      ...json({ email, note: note || null }),
+    }),
+  removeAccess: (entryId: string) =>
+    request(`/api/admin/access/entries/${entryId}`, { method: "DELETE" }),
   audit: (limit = 100) => request<AdminAuditEntry[]>(`/api/admin/audit?limit=${limit}`),
 };

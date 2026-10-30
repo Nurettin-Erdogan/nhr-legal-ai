@@ -32,6 +32,7 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     title: "Büro",
     items: [
+      { to: "/dashboard/bureau-assistant", label: "Büro Asistanı" },
       { to: "/dashboard/clients", label: "Müvekkiller" },
       { to: "/dashboard/tasks", label: "İş Takibi" },
     ],

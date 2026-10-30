@@ -16,7 +16,12 @@ import {
   type FileReport,
   type SyncRun,
 } from "@/lib/uyap-sync-all";
-import { checkUyapAccount, saveCaseDetail, saveSyncReport, saveAuditRun } from "@/lib/uyap-sync-api";
+import {
+  checkUyapAccount,
+  saveCaseDetail,
+  saveSyncReport,
+  saveAuditRun,
+} from "@/lib/uyap-sync-api";
 import { auditCheckpoint } from "@/lib/uyap-run-report";
 import { reportUyapProblem } from "@/lib/uyap-diagnostics";
 
@@ -207,7 +212,14 @@ export async function startSync(liste: DosyaListe, only?: Set<string>, pull = tr
   // kişiyi okumak için liste bir kez yeniden okunur; dosya anahtarları değiştiyse orkestratör kendisi yeniden eşler.
   let identity = liste.identity ?? null;
   if (!identity) {
-    set({ progress: { index: 0, total: targets.length, phase: "UYAP'ta giriş yapan kişi okunuyor", name: "" } });
+    set({
+      progress: {
+        index: 0,
+        total: targets.length,
+        phase: "UYAP'ta giriş yapan kişi okunuyor",
+        name: "",
+      },
+    });
     const fresh = await listUyapDosyalari().catch(() => null);
     if (fresh?.ok && fresh.liste.identity) identity = fresh.liste.identity;
   }
@@ -218,7 +230,10 @@ export async function startSync(liste: DosyaListe, only?: Set<string>, pull = tr
     controller = null;
     set({
       running: false,
-      run: { ...emptyRun, stoppedBecause: cause instanceof Error ? cause.message : "UYAP hesabı doğrulanamadı." },
+      run: {
+        ...emptyRun,
+        stoppedBecause: cause instanceof Error ? cause.message : "UYAP hesabı doğrulanamadı.",
+      },
       progress: null,
     });
     return;

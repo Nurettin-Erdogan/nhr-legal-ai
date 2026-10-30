@@ -63,6 +63,28 @@ _REPLIES = {
     ),
 }
 
+NON_LEGAL_REPLY = (
+    "Bu hukuki bir soru değil. Ben hukuki sorularda yardımcı olabilirim; "
+    "hukukla ilgili bir sorunuzu yazabilirsiniz."
+)
+
+# Match complete, unambiguous requests, not a topic keyword. A pizza order,
+# recipe copyright dispute or workplace cooking accident must still reach RAG.
+_FOOD = r"(?:pizza|kek|pasta|ekmek|corba|makarna|yemek|kurabiye)"
+_REQUEST_END = r"(?:ver|verir misin|verirmisin|verir misiniz|versene|verebilir misin|anlat|nedir|istiyorum|oner)"
+_OFF_TOPIC = re.compile(
+    rf"(?:(?:merhaba |selam )?(?:bana )?(?:en iyi |kolay |guzel |bir )?{_FOOD} "
+    rf"(?:tarifi(?:ni)?(?: {_REQUEST_END})?|nasil yapilir|nasil yapabilirim)"
+    r"|(?:bugun |yarin )?hava (?:nasil|nasil olacak)"
+    r")(?: lutfen)?"
+)
+
+
+def out_of_scope_reply(question: str) -> str | None:
+    """Only explicit nonlegal requests; unknown/ambiguous questions use RAG."""
+    text = _normalise_social_text(question)
+    return NON_LEGAL_REPLY if text is not None and _OFF_TOPIC.fullmatch(text) else None
+
 
 def _normalise_social_text(question: str) -> str | None:
     if not question or len(question) > 256:

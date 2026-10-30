@@ -122,6 +122,7 @@ def record_exchange(
                     "as_of": as_of.isoformat() if as_of else None,
                     **({"document_scope": document_scope} if document_scope is not None else {}),
                     **({"summary": list(answer.summary)} if answer.summary else {}),
+                    **({"verification_note": answer.verification_note} if answer.verification_note else {}),
                 }
             ),
         ),

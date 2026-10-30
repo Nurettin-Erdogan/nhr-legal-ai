@@ -6,6 +6,7 @@ from datetime import date, datetime
 from typing import Any, Iterator, Mapping
 
 from ingestion.mevzuat.models import LegislationRecord
+from ingestion.mevzuat.identity import canonical_article, primary_article
 from ingestion.text import content_hash, html_to_text, normalize_text, tr_casefold
 
 # Bedesten tür kodları -> legislation_details.legislation_type CHECK değerleri.
@@ -125,6 +126,19 @@ def record_from_article(
     if not body:
         raise ValueError(f"Madde metni HTML'den ayrıştırılamadı: {madde_id}")
 
+    portal_article_no = article_no
+    article_no = canonical_article(article_no)
+    primary = primary_article(body)
+    if primary and primary != article_no:
+        # The portal may expose 18/A under maddeNo=18. Preserve the actual
+        # heading, but never turn unrelated or prefixed mixed text into a guess.
+        import re
+        if (re.fullmatch(r"\d+", article_no)
+                and re.fullmatch(re.escape(article_no) + r"(?:/[A-ZÇĞİÖŞÜ]|[A-ZÇĞİÖŞÜ])", primary)):
+            article_no = primary
+        else:
+            raise ValueError(f"Portal article/heading mismatch: {article_no} != {primary}")
+
     article_title = _as_text(article.get("title")) or _as_text(article.get("maddeBaslik"))
     source_url = _as_text(document.get("url"))
     gazette_date = parse_portal_date(document.get("resmiGazeteTarihi"))
@@ -152,6 +166,7 @@ def record_from_article(
         version_date=version_date,
         scraped_at=scraped_at,
         metadata={
+            "portal_article_no": portal_article_no,
             "source": "bedesten.adalet.gov.tr/mevzuat",
             "mevzuat_id": mevzuat_id,
             "madde_id": madde_id,

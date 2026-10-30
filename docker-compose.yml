@@ -27,7 +27,7 @@ services:
       - effective_io_concurrency=${POSTGRES_EFFECTIVE_IO_CONCURRENCY:-200}
     # Paralel taramalar /dev/shm kullanır; 64 MB varsayılanı "could not resize shared memory
     # segment" hatası veriyordu (paralel VACUUM ve geniş aramalar).
-    shm_size: 1gb
+    shm_size: 10gb
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:

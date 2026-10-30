@@ -60,6 +60,7 @@ class ConversationMessage(BaseModel):
     unverified_markers: list[str] = Field(default_factory=list)
     citations: list[ConversationCitation] = Field(default_factory=list)
     summary: list[str] = Field(default_factory=list)
+    verification_note: str | None = None
 
 
 class ConversationDetail(BaseModel):
@@ -203,6 +204,8 @@ def build_messages(
                 else [],
                 citations=citations_by_message.get(row["id"], []),
                 summary=[str(item) for item in (metadata.get("summary") or [])][:8] if assistant else [],
+                verification_note=(str(metadata["verification_note"]) if assistant and metadata.get("verification_note")
+                                   else None),
             )
         )
     return messages

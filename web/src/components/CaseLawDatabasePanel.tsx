@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Database, Loader2, RefreshCw } from "lucide-react";
+import { useAuth } from "@/components/AuthContext";
 import { getCorpusStats, type CorpusStats } from "@/lib/legal-api";
 
 const number = new Intl.NumberFormat("tr-TR");
@@ -23,6 +24,8 @@ function SourceRow({ label, count }: { label: string; count: number }) {
 }
 
 export const CaseLawDatabasePanel = () => {
+  const { user } = useAuth();
+  const isAdmin = Boolean(user?.roles.includes("admin"));
   const [stats, setStats] = useState<CorpusStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -110,7 +113,7 @@ export const CaseLawDatabasePanel = () => {
         </div>
       </div>
 
-      <div className="mt-4 grid gap-4 lg:grid-cols-[1.2fr_1fr]">
+      <div className={`mt-4 grid gap-4 ${isAdmin ? "lg:grid-cols-[1.2fr_1fr]" : ""}`}>
         <div className="rounded-xl border bg-card px-4 py-2">
           <SourceRow label="Yargıtay" count={stats.court_decisions.yargitay} />
           <SourceRow label="Danıştay" count={stats.court_decisions.danistay} />
@@ -118,42 +121,46 @@ export const CaseLawDatabasePanel = () => {
           <SourceRow label="İstinaf / Emsal" count={stats.court_decisions.istinaf_emsal} />
           <SourceRow label="KDK" count={stats.administrative.kamu_denetciligi_kurumu} />
           <SourceRow label="Sayıştay" count={stats.administrative.sayistay} />
-          <SourceRow label="Uyuşmazlık Mahkemesi" count={stats.administrative.uyusmazlik_mahkemesi} />
+          <SourceRow
+            label="Uyuşmazlık Mahkemesi"
+            count={stats.administrative.uyusmazlik_mahkemesi}
+          />
         </div>
 
-        <div className="rounded-xl border bg-card p-4">
-          <div className="flex items-center justify-between gap-3 text-sm">
-            <span className="font-medium">Embedding ilerlemesi</span>
-            <span className="tabular-nums text-muted-foreground">
-              %{embeddingPercent.toFixed(1)}
-            </span>
-          </div>
-          <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted">
-            <div
-              className="h-full rounded-full bg-primary transition-all"
-              style={{ width: `${embeddingPercent}%` }}
-            />
-          </div>
-          <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
-            <div>
-              <div className="text-muted-foreground">Hazır</div>
-              <div className="mt-1 font-semibold tabular-nums">
-                {format(stats.embeddings.ready)}
+        {isAdmin && (
+          <div className="rounded-xl border bg-card p-4">
+            <div className="flex items-center justify-between gap-3 text-sm">
+              <span className="font-medium">Embedding ilerlemesi</span>
+              <span className="tabular-nums text-muted-foreground">
+                %{embeddingPercent.toFixed(1)}
+              </span>
+            </div>
+            <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full rounded-full bg-primary transition-all"
+                style={{ width: `${embeddingPercent}%` }}
+              />
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
+              <div>
+                <div className="text-muted-foreground">Hazır</div>
+                <div className="mt-1 font-semibold tabular-nums">
+                  {format(stats.embeddings.ready)}
+                </div>
+              </div>
+              <div>
+                <div className="text-muted-foreground">Bekleyen</div>
+                <div className="mt-1 font-semibold tabular-nums">
+                  {format(stats.embeddings.pending)}
+                </div>
               </div>
             </div>
-            <div>
-              <div className="text-muted-foreground">Bekleyen</div>
-              <div className="mt-1 font-semibold tabular-nums">
-                {format(stats.embeddings.pending)}
-              </div>
+            <div className="mt-4 border-t pt-3 text-xs text-muted-foreground">
+              Son karar tarihi: {stats.latest_decision_date ?? "—"}
             </div>
           </div>
-          <div className="mt-4 border-t pt-3 text-xs text-muted-foreground">
-            Son karar tarihi: {stats.latest_decision_date ?? "—"}
-          </div>
-        </div>
+        )}
       </div>
-
     </Card>
   );
 };

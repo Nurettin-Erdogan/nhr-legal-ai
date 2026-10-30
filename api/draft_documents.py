@@ -128,6 +128,30 @@ def has_facts(details: str | None, extra: str = "") -> bool:
     return len(" ".join(f"{details or ''} {extra}".split())) >= MIN_FACT_CHARS
 
 
+LONG_SUBJECT_CHARS = 120  # bu kadar uzun bir konu metni olgu anlatımıdır (kullanıcı olayları "Konu" alanına yazmıştır)
+
+
+def facts_source(subject: str, details: str | None, extra: str = "") -> str | None:
+    """Olay anlatımı için kullanıcı metni: ayrıntı alanı doluysa o; boşsa yalnız UZUN bir konu metni (kullanıcının kendi sözleri).
+
+    Kısa bir konu satırı olgu sayılmaz (model onunla "davalı da talepte bulunmaktadır" gibi cümleler uyduruyordu); uzun konu metni ise
+    kullanıcının yazdığı olaylardır ve cümleler yine `given_text` içinde (konu dâhil) kod denetiminden geçer.
+    """
+    if has_facts(details, extra):
+        return details
+    cleaned = " ".join(subject.split())
+    return cleaned if len(cleaned) >= LONG_SUBJECT_CHARS else details
+
+
+def short_subject(subject: str, limit: int = 160) -> str:
+    """KONU satırı için ilk cümle (uzun olay anlatımı satırda tekrar edilmez); çok uzun tek cümle sözcük sınırında kısaltılır."""
+    cleaned = " ".join(subject.split())
+    first = re.split(r"(?<=[.!?])\s+", cleaned, maxsplit=1)[0] if cleaned else cleaned
+    if len(first) > limit:
+        first = first[:limit].rsplit(" ", 1)[0].rstrip(",;:")
+    return first.rstrip(".")
+
+
 def split_sentences(paragraph: str) -> list[str]:
     from api.ai.source_support import _sentences
 
@@ -230,7 +254,7 @@ def _party(parties: list[str], index: int) -> str:
 
 def build_document(doc_type: str, title: str | None, parties: list[str], subject: str, paragraphs: list[str], legal: Legal) -> str:
     label = DOC_LABELS.get(doc_type, DOC_LABELS["diger"])
-    subject_line = " ".join(subject.split())
+    subject_line = short_subject(subject)
     body = _numbered(paragraphs)
     parties = order_parties(parties)
     head = f"# {title.strip() if title and title.strip() else label}"

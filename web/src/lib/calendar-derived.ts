@@ -61,11 +61,17 @@ export function deriveCalendarEvents(
   existing: ExistingEvent[] = [],
 ): DerivedEvent[] {
   const taken = new Set(
-    existing.filter((event) => event.event_type === "hearing" && event.case_id).map((event) => `${event.case_id}:${minuteKey(event.start_at)}`),
+    existing
+      .filter((event) => event.event_type === "hearing" && event.case_id)
+      .map((event) => `${event.case_id}:${minuteKey(event.start_at)}`),
   );
   const derived: DerivedEvent[] = [];
   for (const item of cases) {
-    if (!within(item.next_hearing, from, to) || taken.has(`${item.id}:${minuteKey(item.next_hearing)}`)) continue;
+    if (
+      !within(item.next_hearing, from, to) ||
+      taken.has(`${item.id}:${minuteKey(item.next_hearing)}`)
+    )
+      continue;
     derived.push({
       id: `case:${item.id}`,
       owner_id: "",

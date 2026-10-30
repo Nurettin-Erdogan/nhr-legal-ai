@@ -5,7 +5,9 @@ import ts from "typescript";
 
 function compile(relative) {
   const source = readFileSync(new URL(relative, import.meta.url), "utf8");
-  const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } });
+  const { outputText } = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  });
   const module = { exports: {} };
   new Function("require", "module", "exports", outputText)(() => ({}), module, module.exports);
   return module.exports;
@@ -22,8 +24,17 @@ test("her kuralın dayanağı, alıntısı ve pozitif süresi vardır; kimlikler
     assert.ok(["gün", "hafta", "ay"].includes(r.unit));
   }
   // Doğrulanan süreler (2026-10-06, resmî mevzuat metni): ceza istinaf/temyiz artık iki hafta; kambiyo şikâyeti beş gün.
-  assert.deepEqual(["cmk-273", "cmk-291", "hmk-345", "hmk-361", "hmk-127"].map((id) => [rule(id).amount, rule(id).unit]), Array(5).fill([2, "hafta"]));
-  assert.deepEqual([rule("iik-62").amount, rule("iik-16").amount, rule("iik-168").amount], [7, 7, 5]);
+  assert.deepEqual(
+    ["cmk-273", "cmk-291", "hmk-345", "hmk-361", "hmk-127"].map((id) => [
+      rule(id).amount,
+      rule(id).unit,
+    ]),
+    Array(5).fill([2, "hafta"]),
+  );
+  assert.deepEqual(
+    [rule("iik-62").amount, rule("iik-16").amount, rule("iik-168").amount],
+    [7, 7, 5],
+  );
 });
 
 test("hafta sürede başladığı güne karşılık gelen gün; hafta içine rastlarsa kayma yok", () => {
@@ -74,7 +85,10 @@ test("adli tatil: HMK kuralında otomatik uzatılmaz, uzamış hâli ayrıca gö
 test("HMK dışı kurallarda kanunun kendi hükmünü kontrol et uyarısı; tablo dışı yılda bayram uyarısı", () => {
   assert.match(run("cmk-273", "2026-10-05").warnings.join(" "), /kendi süre\/tatil hükmü/);
   assert.equal(run("hmk-345", "2026-10-05").warnings.length, 0);
-  assert.match(run("hmk-345", "2028-10-02").warnings.join(" "), /2028 yılının dinî bayram tarihleri tabloda yok/);
+  assert.match(
+    run("hmk-345", "2028-10-02").warnings.join(" "),
+    /2028 yılının dinî bayram tarihleri tabloda yok/,
+  );
 });
 
 test("geçersiz tarih reddedilir; Türkçe tarih okunur", () => {
@@ -95,7 +109,10 @@ test("safahattan olası başlangıçlar: yalnız tebligat/ödeme emri/karar içe
     ["Mahkeme", "bozuk", "Tebligat", "x", ""],
   ];
   const found = d.startCandidates(headers, rows);
-  assert.deepEqual(found.map((c) => c.date), ["2026-09-20", "2026-09-03"]);
+  assert.deepEqual(
+    found.map((c) => c.date),
+    ["2026-09-20", "2026-09-03"],
+  );
   assert.match(found[1].label, /Ödeme Emri Tebligatı/);
   assert.deepEqual(d.startCandidates(["x"], rows), []);
 });

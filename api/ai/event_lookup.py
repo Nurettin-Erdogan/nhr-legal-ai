@@ -53,3 +53,27 @@ def lookup_event_basis(question, search_question, *, history=(), prior_questions
             complete = False
         found.extend(matching)
     return EventBasisLookup(event,references,tuple(found),complete,unavailable)
+
+
+def load_current_event_reference(lookup: EventBasisLookup, *, loader=None):
+    """Current text may explain a rule, NEVER prove a historical entitlement.
+
+    Keep this separate from ``contexts``/``complete`` so successful current
+    lookup cannot silently turn missing historical coverage into verification.
+    The caller must disclose the narrow reference-only scope to both models
+    and user. No external fetching or writes occur.
+    """
+    if lookup.complete:
+        return []
+    result = []
+    for reference in lookup.references:
+        try:
+            rows = (loader or _load)(reference, None)
+        except psycopg.Error:
+            continue
+        if len(rows) >= 16:
+            continue  # an incomplete article cannot silently lose its exceptions
+        result.extend(c for c in rows if c.source_type == "legislation"
+                      and c.verification == "official"
+                      and (c.law_no, c.article_no) == reference)
+    return result

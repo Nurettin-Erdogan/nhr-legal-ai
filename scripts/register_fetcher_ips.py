@@ -50,7 +50,7 @@ def main() -> int:
         else:
             unmatched.append(f"{name.group(1)} (listede yok)")
     HUB.write_text(text, encoding="utf-8")
-    stopped = [l.strip() for l in STOPPED.read_text(encoding="utf-8").splitlines() if l.strip()] if STOPPED.exists() else []
+    stopped = [line.strip() for line in STOPPED.read_text(encoding="utf-8").splitlines() if line.strip()] if STOPPED.exists() else []
     STOPPED.write_text("".join(f"{n}\n" for n in stopped if n not in seen), encoding="utf-8")
     print(f"güncellenen: {len(updated)} | durdurulmuş listede kalan: {len(stopped) - len(seen)} | eşleşmeyen: {unmatched}")
     return 0

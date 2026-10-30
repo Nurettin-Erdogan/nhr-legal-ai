@@ -95,3 +95,18 @@ def no_implicit_uyap_record(request, monkeypatch):
     # girmemeli. Gerçek davranış tests/test_uyap_record_document.py içinde, test veritabanıyla sınanır.
     if request.module.__name__.rsplit(".", 1)[-1] != "test_uyap_record_document":
         monkeypatch.setattr("api.ai.pipeline.record_contexts", lambda *args, **kwargs: [])
+
+
+@pytest.fixture(autouse=True)
+def no_implicit_warm_answer_lookup(monkeypatch):
+    # The pre-computed answers live in the application database; pipeline tests must never read it. The tests of that feature
+    # inject their own lookup.
+    monkeypatch.setattr('api.ai.pipeline._warm_cache_lookup', lambda question: None)
+
+
+@pytest.fixture(autouse=True)
+def no_implicit_verification_dates(monkeypatch):
+    # The currency note reads verification dates from the application database; tests inject their own records.
+    monkeypatch.setattr('api.ai.currency_note.fetch_verification_records', lambda source_ids: {})
+    # ... and never compare with the official portal over the network; tests of that comparison enable it themselves.
+    monkeypatch.setattr('api.ai.pipeline._live_recheck_allowed', lambda request, answer: False)

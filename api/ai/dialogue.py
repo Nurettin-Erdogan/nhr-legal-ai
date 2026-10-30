@@ -35,12 +35,13 @@ _PERSONAL = re.compile(
 _OUTCOME = re.compile(r"ne kadar|\bkac\b|\bhesapla\w*|\btutar\w*|toplu para|\bkac\w* yapabil")
 _GENERAL = re.compile(r"genel olarak|\bnedir\b|\bnelerdir\b|nasil hesaplanir|nasil belirlenir|sartlari|kosullari")
 _DOCUMENT = re.compile(r"\b(?:belge\w*|dosya\w*|rapor\w*|karardaki|sozlesmedeki)\b")
-_NEW_EVENT = re.compile(r"baska (?:bir )?(?:konu|olay|dosya|isci)|yeni (?:bir )?(?:soru|olay|konu)|oncekini unut")
+_NEW_EVENT = re.compile(r"baska (?:bir )?(?:konu|olay|dosya|isci|muvekkil|kisi|calisan)|yeni (?:bir )?(?:soru|olay|konu)|oncekini unut")
 _UNKNOWN = re.compile(r"bilmiyorum|hatirlamiyorum|paylasmak istemiyorum|soylemek istemiyorum|bende yok")
 _DATE = re.compile(
     r"\b(?:19|20)\d{2}-\d{1,2}-\d{1,2}\b|\b\d{1,2}[./-]\d{1,2}[./-](?:19|20)\d{2}\b|"
     r"\b(?:\d{1,2}\s+)?(?:ocak|subat|mart|nisan|mayis|haziran|temmuz|agustos|eylul|ekim|kasim|aralik)\s+(?:19|20)\d{2}\b"
 )
+_YEAR = re.compile(r"\b(?:19|20)\d{2}\b(?!\s*(?:tl\b|try\b|lira\b|₺))")
 _MONEY = re.compile(r"\d[\d.,]*\s*(?:bin|milyon|tl|lira|₺)\b|\b\d{4,7}\b")
 _REASON = re.compile(
     r"gerekce (?:gosterilmedi\w*|bildirilmedi\w*|gostermeden)|sebep (?:gosterilmedi\w*|bildirilmedi\w*)|sebepsiz|nedensiz|"
@@ -64,7 +65,9 @@ def user_inputs(question: str, history: Sequence[HistoryTurn] = (),
     This is context for understanding, not admissible legal evidence.
     """
     previous = list(prior_questions) if prior_questions else [turn.question for turn in history]
-    values = [*previous[-8:], question]
+    # The reader supplies a bounded, RLS-scoped user-message window. Do not
+    # discard old event facts merely because eight followups were asked.
+    values = [*previous[-512:], question]
     start = 0
     last_topic: str | None = None
     for index, text in enumerate(values):
@@ -77,6 +80,34 @@ def user_inputs(question: str, history: Sequence[HistoryTurn] = (),
                 start = index
             last_topic = topics[0]
     return tuple(values[start:])
+
+
+def prompt_user_inputs(question: str, history: Sequence[HistoryTurn] = (),
+                       prior_questions: Sequence[str] = ()) -> tuple[dict, ...]:
+    """Compact ORIGINAL user statements, not an AI-generated factual summary.
+
+    Typed latest facts travel in event_context too. Preserve their full parent
+    utterances and late corrections/refusals; never use assistant answers or
+    copy user facts into the legal-source list.
+    """
+    values = user_inputs(question, history, prior_questions)
+    previous_count = len(prior_questions) if prior_questions else len(history)
+    offset = previous_count + 1 - len(values)
+    def entries(indices):
+        return tuple({"question_index": offset+i, "text": values[i]} for i in sorted(indices))
+    if len(values) <= 12:
+        return entries(range(len(values)))
+    from api.ai.user_facts import collect_user_facts
+    facts = collect_user_facts(question, prior_questions=values[:-1])
+    selected = {0, *range(max(0, len(values)-8), len(values))}
+    selected.update(record.question_index for record in facts.records)
+    # Keep the latest potentially invalid correction: it must not resurrect an
+    # earlier valid date/amount just because the correction has no FactRecord.
+    for pattern in (_REASON, _UNKNOWN, re.compile(r"düzelt|duzelt|yanlış|yanlis|tarih|brüt|brut|\bnet\b", re.I)):
+        index = next((i for i in range(len(values)-1, -1, -1) if pattern.search(_norm(values[i]))), None)
+        if index is not None:
+            selected.add(index)
+    return entries(i for i in selected if 0 <= i < len(values))
 
 
 def missing_input_plan(question: str, contexts: Sequence[RAGContext], *,
@@ -94,6 +125,13 @@ def missing_input_plan(question: str, contexts: Sequence[RAGContext], *,
         return None
     inputs = user_inputs(question, history, prior_questions)
     requests = [text for text in inputs if _PERSONAL.search(_norm(text)) and _OUTCOME.search(_norm(text))]
+    if not requests:
+        # A bare "kira artışı en fazla ne kadar" asks for a concrete ceiling
+        # even without "benim". Collect the differentiating event facts, not a
+        # salary/rent amount that is unnecessary for a percentage-only request.
+        requests = [text for text in inputs if _TOPICS["rent"].search(_norm(text))
+                    and re.search(r"en fazla|azami|ust sinir", _norm(text))
+                    and _OUTCOME.search(_norm(text))]
     if not requests:
         return None
     anchor = _norm(requests[-1])
@@ -134,11 +172,13 @@ def missing_input_plan(question: str, contexts: Sequence[RAGContext], *,
         if has_calculation_inputs(question, inputs[:-1]) and not _LEGAL_LIMIT.search(question):
             return None  # explicit user arithmetic does not need a renewal date
         missing = []
-        if not any(_amounts(text) for text in inputs):
+        if _PERSONAL.search(anchor) and not any(_amounts(text) for text in inputs):
             missing.append(("rent_amount", "mevcut kira tutarını"))
-        if not (_DATE.search(facts) or (re.search(r"(?:19|20)\d{2}", facts)
+        if not (_DATE.search(facts) or (_YEAR.search(facts)
                                       and re.search(r"ocak|subat|mart|nisan|mayis|haziran|temmuz|agustos|eylul|ekim|kasim|aralik", facts))):
-            missing.append(("renewal_period", "kiranın yenileneceği ay ve yılı"))
+            month_known = bool(re.search(r"ocak|subat|mart|nisan|mayis|haziran|temmuz|agustos|eylul|ekim|kasim|aralik", facts))
+            missing.append(("renewal_period", "yenilemenin hangi yılda olduğunu" if month_known
+                            else "kiranın yenileneceği ay ve yılı"))
         if not re.search(r"\b(?:konut|ev|daire|catili|isyeri|is yeri|dukkan)\b", facts):
             missing.append(("property_type", "konut mu yoksa işyeri mi olduğunu"))
     if not missing:

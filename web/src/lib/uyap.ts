@@ -140,7 +140,11 @@ export function parseUyapMeta(fileName: string, sample = ""): UyapMeta {
         : `${dateM[3]}-${dateM[2]}-${dateM[1]}`;
     const [year, month, day] = doc_date.split("-").map(Number);
     const parsed = new Date(Date.UTC(year!, month! - 1, day!));
-    if (parsed.getUTCFullYear() !== year || parsed.getUTCMonth() + 1 !== month || parsed.getUTCDate() !== day)
+    if (
+      parsed.getUTCFullYear() !== year ||
+      parsed.getUTCMonth() + 1 !== month ||
+      parsed.getUTCDate() !== day
+    )
       doc_date = null;
   }
 
@@ -179,16 +183,21 @@ export async function readArchive(file: File): Promise<ArchiveEntry[]> {
   let unzipped: Record<string, Uint8Array>;
   try {
     unzipped = unzipSync(buf, {
-    filter(info) {
-      if (info.name.endsWith("/")) return false;
-      if (seen.has(info.name)) throw new Error("Arşivde aynı yolda birden çok belge var; arşivi kontrol edin");
-      seen.add(info.name);
-      if (!isAllowedFile(info.name)) {
-        rejected.push({ name: info.name, data: new Uint8Array(), error: "Desteklenmeyen dosya türü" });
-        return false;
-      }
-      return true;
-    },
+      filter(info) {
+        if (info.name.endsWith("/")) return false;
+        if (seen.has(info.name))
+          throw new Error("Arşivde aynı yolda birden çok belge var; arşivi kontrol edin");
+        seen.add(info.name);
+        if (!isAllowedFile(info.name)) {
+          rejected.push({
+            name: info.name,
+            data: new Uint8Array(),
+            error: "Desteklenmeyen dosya türü",
+          });
+          return false;
+        }
+        return true;
+      },
     });
   } catch (error) {
     if (error instanceof RangeError) throw new Error(ARCHIVE_MEMORY_ERROR);
@@ -218,7 +227,9 @@ export async function extractTextSample(name: string, bytes: Uint8Array): Promis
       const { unzipSync, strFromU8 } = await import("fflate");
       const inner = unzipSync(bytes, {
         filter(info) {
-          return info.name.toLowerCase().endsWith("content.xml") && info.originalSize <= 2 * 1024 * 1024;
+          return (
+            info.name.toLowerCase().endsWith("content.xml") && info.originalSize <= 2 * 1024 * 1024
+          );
         },
       });
       const key = Object.keys(inner).find((k) => k.toLowerCase().endsWith("content.xml"));

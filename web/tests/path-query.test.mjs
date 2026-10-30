@@ -5,7 +5,9 @@ import ts from "typescript";
 
 function load(relative) {
   const code = readFileSync(new URL(relative, import.meta.url), "utf8");
-  const { outputText } = ts.transpileModule(code, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } });
+  const { outputText } = ts.transpileModule(code, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  });
   const module = { exports: {} };
   new Function("module", "exports", outputText)(module, module.exports);
   return module.exports;
@@ -18,9 +20,19 @@ test("sorgusuz yol olduğu gibi kalır", () => {
 });
 
 test("sorgu ve çapa yoldan ayrılır; Türkçe ve özel karakterler çözülür", () => {
-  assert.deepEqual(splitPathQuery("/dashboard/clients?q=Ay%C5%9Fe%20Demir"), { to: "/dashboard/clients", search: { q: "Ayşe Demir" } });
-  assert.deepEqual(splitPathQuery("/dashboard/cases/c1?tab=evraklar#ust"), { to: "/dashboard/cases/c1", search: { tab: "evraklar" }, hash: "ust" });
-  assert.deepEqual(splitPathQuery("/dashboard/files?q=demir%20%26%20o%C4%9Fullar%C4%B1.docx"), { to: "/dashboard/files", search: { q: "demir & oğulları.docx" } });
+  assert.deepEqual(splitPathQuery("/dashboard/clients?q=Ay%C5%9Fe%20Demir"), {
+    to: "/dashboard/clients",
+    search: { q: "Ayşe Demir" },
+  });
+  assert.deepEqual(splitPathQuery("/dashboard/cases/c1?tab=evraklar#ust"), {
+    to: "/dashboard/cases/c1",
+    search: { tab: "evraklar" },
+    hash: "ust",
+  });
+  assert.deepEqual(splitPathQuery("/dashboard/files?q=demir%20%26%20o%C4%9Fullar%C4%B1.docx"), {
+    to: "/dashboard/files",
+    search: { q: "demir & oğulları.docx" },
+  });
   assert.deepEqual(splitPathQuery("/#fiyat"), { to: "/", hash: "fiyat" });
 });
 

@@ -6,8 +6,13 @@ import ts from "typescript";
 
 const require = createRequire(import.meta.url);
 function compile(relative) {
-  const source = readFileSync(new URL(relative, import.meta.url), "utf8").replace("import.meta.env?.VITE_API_URL", "undefined");
-  const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } });
+  const source = readFileSync(new URL(relative, import.meta.url), "utf8").replace(
+    "import.meta.env?.VITE_API_URL",
+    "undefined",
+  );
+  const { outputText } = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  });
   const module = { exports: {} };
   new Function("require", "module", "exports", outputText)(require, module, module.exports);
   return module.exports;
@@ -15,7 +20,12 @@ function compile(relative) {
 
 const lib = compile("../src/lib/legislation.ts");
 
-const article = (articleNo, articleTitle = null, id = articleNo) => ({ id: String(id), articleNo, articleTitle, versionDate: null });
+const article = (articleNo, articleTitle = null, id = articleNo) => ({
+  id: String(id),
+  articleNo,
+  articleTitle,
+  versionDate: null,
+});
 const ARTICLES = [
   article("1", "Amaç"),
   article("18", "Feshin geçerli sebebe dayandırılması"),
@@ -32,7 +42,14 @@ test("the law list is parsed defensively and unknown types fall back to other", 
     offset: 0,
     article_reference: { law_no: "4857", article_no: "18" },
     results: [
-      { law_no: "4857", law_name: "İŞ  KANUNU", legislation_type: "law", articles: 122, latest_version: "2026-05-07", gazette_date: "2003-06-10" },
+      {
+        law_no: "4857",
+        law_name: "İŞ  KANUNU",
+        legislation_type: "law",
+        articles: 122,
+        latest_version: "2026-05-07",
+        gazette_date: "2003-06-10",
+      },
       { law_no: "1", law_name: "X", legislation_type: "bilinmeyen", articles: "x" },
       { law_no: "", law_name: "Kimliksiz" },
       null,
@@ -45,7 +62,10 @@ test("the law list is parsed defensively and unknown types fall back to other", 
   assert.deepEqual(page.articleReference, { lawNo: "4857", articleNo: "18" });
   assert.equal(lib.parseLawPage(null), null);
   assert.equal(lib.parseLawPage({ results: "x" }), null);
-  assert.equal(lib.parseLawPage({ results: [], article_reference: { law_no: "4857" } }).articleReference, null);
+  assert.equal(
+    lib.parseLawPage({ results: [], article_reference: { law_no: "4857" } }).articleReference,
+    null,
+  );
 });
 
 test("a law detail drops articles without an id and keeps the truncation flag", () => {
@@ -106,7 +126,10 @@ test("requests carry the filters and map failures to readable errors", async () 
     await lib.searchLaws("x");
     assert.equal(new URL(calls[1]).searchParams.get("kind"), null);
     globalThis.fetch = respond(404, { detail: "Bu numarayla doğrulanmış mevzuat bulunamadı" });
-    await assert.rejects(lib.loadLaw("123"), (error) => error.status === 404 && /bulunamadı/.test(error.message));
+    await assert.rejects(
+      lib.loadLaw("123"),
+      (error) => error.status === 404 && /bulunamadı/.test(error.message),
+    );
     globalThis.fetch = respond(200, { articles: "x" });
     await assert.rejects(lib.loadLaw("123"), (error) => /geçersiz/.test(error.message));
     globalThis.fetch = respond(200, { results: "x" });

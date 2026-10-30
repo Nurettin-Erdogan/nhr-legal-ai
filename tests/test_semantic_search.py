@@ -12,7 +12,9 @@ import pytest
 from fastapi import HTTPException
 
 from api import legal
-from tests.test_ai_persistence import TOKEN, connection  # noqa: F401  (fixture)
+from tests.test_ai_persistence import TOKEN, connection as _connection_fixture
+
+connection = _connection_fixture
 
 pytestmark = pytest.mark.skipif(not os.getenv("NHR_TEST_DATABASE_URL"), reason="Isolated test DB not configured")
 

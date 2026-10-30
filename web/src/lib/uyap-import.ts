@@ -26,9 +26,16 @@ export async function expandDroppedFiles(files: File[]): Promise<ArchiveEntry[]>
         if (signature[0] === 0x50 && signature[1] === 0x4b) throw error;
       }
     }
-    const error = !isAllowedFile(file.name) ? "Desteklenmeyen dosya türü"
-      : !file.size ? "Boş dosya" : undefined;
-    entries.push({ name: file.name, data: error ? new Uint8Array() : new Uint8Array(await file.arrayBuffer()), ...(error ? { error } : {}) });
+    const error = !isAllowedFile(file.name)
+      ? "Desteklenmeyen dosya türü"
+      : !file.size
+        ? "Boş dosya"
+        : undefined;
+    entries.push({
+      name: file.name,
+      data: error ? new Uint8Array() : new Uint8Array(await file.arrayBuffer()),
+      ...(error ? { error } : {}),
+    });
   }
   return entries;
 }
@@ -39,7 +46,9 @@ export async function importEntries(
   entries: ArchiveEntry[],
   opts: { source?: string; syncRunId?: string | null; onProgress?: (pct: number) => void } = {},
 ): Promise<ImportResult> {
-  let inserted = 0, skipped = 0, failed = 0;
+  let inserted = 0,
+    skipped = 0,
+    failed = 0;
   const errors: string[] = [];
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i]!;

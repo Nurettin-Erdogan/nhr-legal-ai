@@ -43,7 +43,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/components/AuthProvider";
+import { useAuth } from "@/components/AuthContext";
 import { toast } from "sonner";
 import { z } from "zod";
 import {

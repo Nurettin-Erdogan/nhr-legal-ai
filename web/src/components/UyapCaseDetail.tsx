@@ -11,7 +11,11 @@ const StatusSummary = ({ detail }: { detail: DosyaDetail }) => {
   const summary = summarizeDetail(detail);
   if (!summary.facts.length && !summary.parties && !summary.safahat) return null;
   return (
-    <section className="rounded-lg border bg-secondary/30 p-4 space-y-3" aria-label="Dosya durumu özeti" data-testid="uyap-status-summary">
+    <section
+      className="rounded-lg border bg-secondary/30 p-4 space-y-3"
+      aria-label="Dosya durumu özeti"
+      data-testid="uyap-status-summary"
+    >
       <h3 className="font-semibold">Dosya durumu özeti</h3>
       <dl className="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-2 text-sm">
         {summary.facts.map((fact) => (
@@ -51,17 +55,23 @@ const StatusSummary = ({ detail }: { detail: DosyaDetail }) => {
       )}
       {summary.actionTypes.length > 0 && (
         <p className="text-xs text-muted-foreground">
-          Safahatta en sık: {summary.actionTypes.map((item) => `${item.label} (${item.count})`).join(", ")}
+          Safahatta en sık:{" "}
+          {summary.actionTypes.map((item) => `${item.label} (${item.count})`).join(", ")}
         </p>
       )}
-      <p className="text-xs text-muted-foreground">Bu özet UYAP'ın yazdığı metinlerden ve kayıt sayılarından oluşur; aşama tahmini ya da hukuki yorum içermez.</p>
+      <p className="text-xs text-muted-foreground">
+        Bu özet UYAP'ın yazdığı metinlerden ve kayıt sayılarından oluşur; aşama tahmini ya da hukuki
+        yorum içermez.
+      </p>
     </section>
   );
 };
 
 const dateTime = (value: string): string => {
   const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? "" : parsed.toLocaleString("tr-TR", { dateStyle: "short", timeStyle: "short" });
+  return Number.isNaN(parsed.getTime())
+    ? ""
+    : parsed.toLocaleString("tr-TR", { dateStyle: "short", timeStyle: "short" });
 };
 
 const Pairs = ({ tab }: { tab: DetailTab }) => (
@@ -75,7 +85,15 @@ const Pairs = ({ tab }: { tab: DetailTab }) => (
   </dl>
 );
 
-const Table = ({ tab, table, searchable }: { tab: DetailTab; table: DetailTable; searchable: boolean }) => {
+const Table = ({
+  tab,
+  table,
+  searchable,
+}: {
+  tab: DetailTab;
+  table: DetailTable;
+  searchable: boolean;
+}) => {
   const [query, setQuery] = useState("");
   const rows = useMemo(() => filterRows(table.rows, query), [table.rows, query]);
   if (!table.headers.length && !table.rows.length) return null;
@@ -125,15 +143,27 @@ const Table = ({ tab, table, searchable }: { tab: DetailTab; table: DetailTable;
         </div>
       )}
       <p className="text-xs text-muted-foreground">
-        {query ? `${rows.length} / ${table.rows.length} kayıt gösteriliyor` : `${table.rows.length} kayıt`}
-        {table.declared !== null && table.declared !== table.rows.length ? ` (UYAP ${table.declared} yazıyor)` : ""}
+        {query
+          ? `${rows.length} / ${table.rows.length} kayıt gösteriliyor`
+          : `${table.rows.length} kayıt`}
+        {table.declared !== null && table.declared !== table.rows.length
+          ? ` (UYAP ${table.declared} yazıyor)`
+          : ""}
       </p>
     </div>
   );
 };
 
 /** Saklanan UYAP dosya bilgilerinin gösterimi. Değerler UYAP'ın yazdığı metindir; yorum ya da hesap içermez. */
-export const UyapDetailView = ({ detail, fetchedAt, complete }: { detail: DosyaDetail; fetchedAt: string; complete: boolean }) => {
+export const UyapDetailView = ({
+  detail,
+  fetchedAt,
+  complete,
+}: {
+  detail: DosyaDetail;
+  fetchedAt: string;
+  complete: boolean;
+}) => {
   const warnings = detailWarnings(detail);
   return (
     <div className="space-y-6" data-testid="uyap-detail">
@@ -141,10 +171,16 @@ export const UyapDetailView = ({ detail, fetchedAt, complete }: { detail: DosyaD
         role={complete ? "status" : "alert"}
         className={`flex items-start gap-2 rounded-lg border p-3 text-sm ${complete ? "border-emerald-500/30 bg-emerald-500/5" : "border-amber-500/30 bg-amber-500/5"}`}
       >
-        {complete ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" /> : <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />}
+        {complete ? (
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+        ) : (
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+        )}
         <div>
           <p className="font-medium">
-            {complete ? "UYAP'taki bilgilerin tamamı alındı" : "UYAP bilgileri eksik alınmış olabilir"}
+            {complete
+              ? "UYAP'taki bilgilerin tamamı alındı"
+              : "UYAP bilgileri eksik alınmış olabilir"}
             {fetchedAt ? ` · ${dateTime(fetchedAt)}` : ""}
           </p>
           {warnings.length > 0 && (
@@ -162,16 +198,22 @@ export const UyapDetailView = ({ detail, fetchedAt, complete }: { detail: DosyaD
           <h3 className="font-semibold">{tabTitle(tab)}</h3>
           {tab.pairs.length > 0 && <Pairs tab={tab} />}
           {tab.tables.map((table, index) => (
-            <Table key={`${table.title}-${index}`} tab={tab} table={table} searchable={tab.key === "safahat" || tab.key === "taraflar"} />
+            <Table
+              key={`${table.title}-${index}`}
+              tab={tab}
+              table={table}
+              searchable={tab.key === "safahat" || tab.key === "taraflar"}
+            />
           ))}
-          {tab.pairs.length === 0 && tab.tables.every((table) => !table.headers.length && !table.rows.length) && (
-            <p className="text-sm text-muted-foreground">UYAP bu bölümde bilgi göstermiyor.</p>
-          )}
+          {tab.pairs.length === 0 &&
+            tab.tables.every((table) => !table.headers.length && !table.rows.length) && (
+              <p className="text-sm text-muted-foreground">UYAP bu bölümde bilgi göstermiyor.</p>
+            )}
         </section>
       ))}
       <p className="text-xs text-muted-foreground">
-        Bu bilgiler UYAP'ın yazdığı metindir; JurisAI yorum yapmaz, toplama ya da hukuki sonuç üretmez. Güncel hâli için UYAP Dosyalarım sayfasından
-        yeniden aktarın.
+        Bu bilgiler UYAP'ın yazdığı metindir; JurisAI yorum yapmaz, toplama ya da hukuki sonuç
+        üretmez. Güncel hâli için UYAP Dosyalarım sayfasından yeniden aktarın.
       </p>
     </div>
   );
@@ -183,19 +225,33 @@ export const UyapCaseDetail = ({ caseId }: { caseId: string }) => {
   useEffect(() => {
     const controller = new AbortController();
     setStored(undefined);
-    void loadCaseDetail(caseId, controller.signal).then((value) => !controller.signal.aborted && setStored(value));
+    void loadCaseDetail(caseId, controller.signal).then(
+      (value) => !controller.signal.aborted && setStored(value),
+    );
     return () => controller.abort();
   }, [caseId]);
-  if (stored === undefined) return <p role="status" className="text-sm text-muted-foreground">UYAP bilgileri yükleniyor…</p>;
+  if (stored === undefined)
+    return (
+      <p role="status" className="text-sm text-muted-foreground">
+        UYAP bilgileri yükleniyor…
+      </p>
+    );
   if (stored === null)
     return (
       <p className="text-sm text-muted-foreground" data-testid="uyap-detail-empty">
-        Bu dava için UYAP'tan dosya bilgisi (taraflar, safahat, dosya hesabı) çekilmemiş. UYAP'a giriş yapıp{" "}
+        Bu dava için UYAP'tan dosya bilgisi (taraflar, safahat, dosya hesabı) çekilmemiş. UYAP'a
+        giriş yapıp{" "}
         <Link to="/dashboard/uyap" className="underline">
           UYAP Dosyalarım
         </Link>{" "}
         sayfasında "Tüm dosyaları aktar"a bas.
       </p>
     );
-  return <UyapDetailView detail={stored.detail} fetchedAt={stored.fetchedAt} complete={stored.complete} />;
+  return (
+    <UyapDetailView
+      detail={stored.detail}
+      fetchedAt={stored.fetchedAt}
+      complete={stored.complete}
+    />
+  );
 };

@@ -212,7 +212,7 @@ def insert_pending_seed(
             )
         started = time.perf_counter()
         inserted = cursor.execute(
-            f"""
+            """
             INSERT INTO legal_sources (
               id, source_type, title, source_url, external_id, authority, jurisdiction,
               raw_text, metadata, published_at, content_hash, ingest_status, last_ingested_at,

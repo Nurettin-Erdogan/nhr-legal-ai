@@ -16,6 +16,7 @@ from psycopg.types.json import Jsonb
 
 from ingestion.chunk_store import replace_chunks
 from ingestion.mevzuat.models import LegislationRecord
+from ingestion.mevzuat.identity import validate_record_identity
 from ingestion.yargitay.chunking import DEFAULT_MAX_CHARS, chunk_text
 
 logger = logging.getLogger(__name__)
@@ -312,6 +313,7 @@ def upsert_legislation(
     overwrite edilmez; sonuç ``unchanged`` olur. Hash değişmişse eski current
     korunur ve yeni revision zincire eklenir.
     """
+    validate_record_identity(record)
     version_identity = version_identity_for(record)
     with connection.transaction(), connection.cursor() as cursor:
         cursor.execute(

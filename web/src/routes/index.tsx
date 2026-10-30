@@ -12,7 +12,7 @@ import remarkGfm from "remark-gfm";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { extractFileText, MAX_UPLOAD_BYTES } from "@/lib/extract-text";
-import { useAuth } from "@/components/AuthProvider";
+import { useAuth } from "@/components/AuthContext";
 import { AuthDialog } from "@/components/AuthDialog";
 import { askAssistant } from "@/lib/ai-api";
 import { CitationList, type ChatCitation } from "@/components/ChatCitations";

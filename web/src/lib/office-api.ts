@@ -57,26 +57,46 @@ export interface UyapCaseLinks {
 }
 
 export const linkUyapCases = (after?: string | null) =>
-  post<UyapCaseLinks>(`/api/office/uyap/link-cases${after ? `?after=${encodeURIComponent(after)}` : ""}`, {});
+  post<UyapCaseLinks>(
+    `/api/office/uyap/link-cases${after ? `?after=${encodeURIComponent(after)}` : ""}`,
+    {},
+  );
 
-export async function importUyapDocument(name: string, data: Uint8Array, syncRunId?: string | null) {
+export async function importUyapDocument(
+  name: string,
+  data: Uint8Array,
+  syncRunId?: string | null,
+) {
   const form = new FormData();
-  form.append("file", new Blob([new Uint8Array(data)], { type: "application/octet-stream" }), name.split("/").pop()!);
+  form.append(
+    "file",
+    new Blob([new Uint8Array(data)], { type: "application/octet-stream" }),
+    name.split("/").pop()!,
+  );
   form.append("path", name);
   if (syncRunId) form.append("syncRunId", syncRunId);
   const token = inMemoryAccessToken();
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}/api/office/uyap/import`, {
-      method: "POST", credentials: "include", body: form,
+      method: "POST",
+      credentials: "include",
+      body: form,
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
   } catch {
     throw new Error("Sunucuya ulaşılamadı. API servisinin çalıştığını kontrol edin.");
   }
   const payload = await response.json();
-  if (!response.ok) throw new Error(typeof payload.detail === "string" ? payload.detail : "Belge aktarımı başarısız");
-  if (payload.ok !== true || typeof payload.id !== "string" || typeof payload.duplicate !== "boolean")
+  if (!response.ok)
+    throw new Error(
+      typeof payload.detail === "string" ? payload.detail : "Belge aktarımı başarısız",
+    );
+  if (
+    payload.ok !== true ||
+    typeof payload.id !== "string" ||
+    typeof payload.duplicate !== "boolean"
+  )
     throw new Error("Sunucudan geçersiz aktarım yanıtı geldi");
   return payload as { ok: true; duplicate: boolean; id: string };
 }

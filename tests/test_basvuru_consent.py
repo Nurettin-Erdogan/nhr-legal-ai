@@ -10,7 +10,9 @@ from types import SimpleNamespace
 import pytest
 
 from api import office_public
-from tests.test_ai_persistence import connection  # noqa: F401  (fixture)
+from tests.test_ai_persistence import connection as _connection_fixture
+
+connection = _connection_fixture
 
 pytestmark = pytest.mark.skipif(not os.getenv("NHR_TEST_DATABASE_URL"), reason="Isolated test DB not configured")
 

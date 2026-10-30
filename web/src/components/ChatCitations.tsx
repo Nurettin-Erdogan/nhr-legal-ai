@@ -85,13 +85,23 @@ export function CitationList({ citations }: { citations: ChatCitation[] }) {
  * Cevapta alıntılanmayan ama incelenen doğrulanmış kaynaklar. Cevabın dayanağı değildir;
  * kullanıcı ilgili kararları pasajlarıyla kendisi okuyabilsin diye gösterilir.
  */
-export function ConsultedSourceList({ sources }: { sources: ConsultedSource[] }) {
+export function ConsultedSourceList({
+  sources,
+  collapsible = true,
+}: {
+  sources: ConsultedSource[];
+  collapsible?: boolean;
+}) {
   if (!sources.length) return null;
+  const Container = collapsible ? "details" : "section";
+  const Heading = collapsible ? "summary" : "p";
   return (
-    <details className="mt-3 pt-3 border-t border-border group">
-      <summary className="cursor-pointer text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
+    <Container className="mt-3 pt-3 border-t border-border group">
+      <Heading
+        className={`${collapsible ? "cursor-pointer " : ""}text-[11px] font-medium text-muted-foreground uppercase tracking-wide`}
+      >
         İncelenen diğer kaynaklar ({sources.length})
-      </summary>
+      </Heading>
       <p className="mt-1.5 text-[11px] text-muted-foreground flex items-start gap-1">
         <Info className="h-3 w-3 mt-0.5 shrink-0" /> Bunlar cevabın dayanağı değildir; cevap yalnız
         yukarıdaki atıflara dayanır. İlgili olup olmadığını siz değerlendirin.
@@ -120,7 +130,7 @@ export function ConsultedSourceList({ sources }: { sources: ConsultedSource[] })
           </li>
         ))}
       </ul>
-    </details>
+    </Container>
   );
 }
 

@@ -13,12 +13,9 @@ import {
 } from "@/components/ui/dialog";
 import { Loader2, RefreshCw, ShieldCheck, CheckCircle2, AlertTriangle } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/components/AuthProvider";
+import { useAuth } from "@/components/AuthContext";
 import { toast } from "sonner";
-import {
-  humanSize,
-  readArchive,
-} from "@/lib/uyap";
+import { humanSize, readArchive } from "@/lib/uyap";
 import { importEntries, type ImportResult } from "@/lib/uyap-import";
 
 interface Props {
@@ -79,7 +76,8 @@ export const UyapSyncDialog = ({ onSynced }: Props) => {
           .eq("id", run.id);
       }
       setResult(res);
-      if (res.failed) toast.warning(`${res.inserted} belge eklendi, ${res.failed} belge aktarılmadı`);
+      if (res.failed)
+        toast.warning(`${res.inserted} belge eklendi, ${res.failed} belge aktarılmadı`);
       else toast.success(`Senkronizasyon tamamlandı: ${res.inserted} yeni belge`);
       onSynced?.();
     } catch (e) {
@@ -134,8 +132,8 @@ export const UyapSyncDialog = ({ onSynced }: Props) => {
             </div>
             UYAP'ın açık bir API'si yoktur ve e-imza/parola bilgilerinizi hiçbir zaman istemiyoruz.
             Senkronizasyon, sizin indirdiğiniz resmî arşivin içe aktarılmasıyla yapılır. Arşiv
-            tarayıcınızda açılır, dosyalar yalnızca sizin erişebildiğiniz özel depoya yüklenir. Belge
-            sayısı ve boyutu için sınır yoktur.
+            tarayıcınızda açılır, dosyalar yalnızca sizin erişebildiğiniz özel depoya yüklenir.
+            Belge sayısı ve boyutu için sınır yoktur.
           </div>
 
           <input
@@ -156,9 +154,17 @@ export const UyapSyncDialog = ({ onSynced }: Props) => {
           {busy && <Progress value={progress} />}
 
           {result && (
-            <div className={`rounded-lg border p-3 text-xs space-y-2 ${result.failed ? "border-amber-500/30 bg-amber-500/5" : "border-emerald-500/30 bg-emerald-500/5"}`}>
-              <div className={`flex items-center gap-2 font-semibold ${result.failed ? "text-amber-700 dark:text-amber-400" : "text-emerald-700 dark:text-emerald-400"}`}>
-                {result.failed ? <AlertTriangle className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
+            <div
+              className={`rounded-lg border p-3 text-xs space-y-2 ${result.failed ? "border-amber-500/30 bg-amber-500/5" : "border-emerald-500/30 bg-emerald-500/5"}`}
+            >
+              <div
+                className={`flex items-center gap-2 font-semibold ${result.failed ? "text-amber-700 dark:text-amber-400" : "text-emerald-700 dark:text-emerald-400"}`}
+              >
+                {result.failed ? (
+                  <AlertTriangle className="h-4 w-4" />
+                ) : (
+                  <CheckCircle2 className="h-4 w-4" />
+                )}
                 {result.failed ? "Senkronizasyon kısmen tamamlandı" : "Senkronizasyon tamamlandı"}
               </div>
               <div className="flex gap-2 flex-wrap">
@@ -173,7 +179,11 @@ export const UyapSyncDialog = ({ onSynced }: Props) => {
                   Atlananlar; daha önce aktarılmış veya desteklenmeyen belgelerdir.
                 </p>
               )}
-              {result.errors.map((error) => <p key={error} className="text-destructive">{error}</p>)}
+              {result.errors.map((error) => (
+                <p key={error} className="text-destructive">
+                  {error}
+                </p>
+              ))}
             </div>
           )}
         </div>

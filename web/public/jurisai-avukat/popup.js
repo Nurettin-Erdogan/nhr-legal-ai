@@ -114,14 +114,18 @@ el("diagnose").addEventListener("click", async () => {
     if (!tab) return say("Sekme bulunamadı.", "err");
     const frames = await chrome.scripting.executeScript({
       target: { tabId: tab.id, allFrames: true },
-      func: () => (typeof window.__jurisaiDiagnose === "function" ? window.__jurisaiDiagnose() : null),
+      func: () =>
+        typeof window.__jurisaiDiagnose === "function" ? window.__jurisaiDiagnose() : null,
     });
     const reports = frames.map((frame) => frame.result).filter(Boolean);
     if (!reports.length) return say("Bu sekmede UYAP sayfası bulunamadı.", "err");
     const payload = { reports };
     await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
     // Ayrıca dosyaya da yazılır: pano başka bir şeyle değişirse kaybolmaz, geliştiriciye dosya olarak iletilebilir.
-    const saved = await chrome.runtime.sendMessage({ type: "JURISAI_SAVE_DIAGNOSIS", report: payload });
+    const saved = await chrome.runtime.sendMessage({
+      type: "JURISAI_SAVE_DIAGNOSIS",
+      report: payload,
+    });
     say(
       `Tanı panoya kopyalandı${saved?.ok ? ` ve İndirilenler\\${saved.file.replace("/", "\\")} dosyasına kaydedildi` : ""} (${reports.length} çerçeve). Kişisel veri içermez.`,
       "ok",
@@ -148,8 +152,15 @@ el("record").addEventListener("click", async () => {
   try {
     const tabId = await activeTabId();
     if (!tabId) return say("Sekme bulunamadı.", "err");
-    await chrome.tabs.sendMessage(tabId, { type: "JURISAI_RECORD_START", seconds: 60 }, { frameId: 0 });
-    say("Kayıt başladı (60 sn). UYAP'ta evrak yaprağına tıkla; bitince dosya otomatik kaydedilir.", "ok");
+    await chrome.tabs.sendMessage(
+      tabId,
+      { type: "JURISAI_RECORD_START", seconds: 60 },
+      { frameId: 0 },
+    );
+    say(
+      "Kayıt başladı (60 sn). UYAP'ta evrak yaprağına tıkla; bitince dosya otomatik kaydedilir.",
+      "ok",
+    );
   } catch (_) {
     say("Bu sekme bir UYAP sayfası değil ya da sayfa yenilenmeli (F5).", "err");
   }
@@ -157,9 +168,15 @@ el("record").addEventListener("click", async () => {
 el("recordStop").addEventListener("click", async () => {
   try {
     const tabId = await activeTabId();
-    const result = await chrome.tabs.sendMessage(tabId, { type: "JURISAI_RECORD_STOP" }, { frameId: 0 });
+    const result = await chrome.tabs.sendMessage(
+      tabId,
+      { type: "JURISAI_RECORD_STOP" },
+      { frameId: 0 },
+    );
     say(
-      result?.ok ? "Kayıt bitti ve dosyaya yazıldı." : `Kayıt yok ya da kaydedilemedi: ${result?.error || ""}`,
+      result?.ok
+        ? "Kayıt bitti ve dosyaya yazıldı."
+        : `Kayıt yok ya da kaydedilemedi: ${result?.error || ""}`,
       result?.ok ? "ok" : "err",
     );
   } catch (_) {
@@ -173,7 +190,11 @@ async function runPull(mode) {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab) return say("Sekme bulunamadı.", "err");
     say("Çekme başladı; UYAP sayfasındaki onay penceresini bekle…", "ok");
-    const result = await chrome.tabs.sendMessage(tab.id, { type: "JURISAI_PULL_DOSYA", mode }, { frameId: 0 });
+    const result = await chrome.tabs.sendMessage(
+      tab.id,
+      { type: "JURISAI_PULL_DOSYA", mode },
+      { frameId: 0 },
+    );
     if (!result?.ok) return say(result?.error || "Çekme başlatılamadı.", "err");
     say(
       result.cancelled
@@ -191,7 +212,11 @@ el("probe").addEventListener("click", async () => {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     say("Deneme sürüyor (birkaç saniye)…", "ok");
-    const result = await chrome.tabs.sendMessage(tab.id, { type: "JURISAI_PULL_PROBE" }, { frameId: 0 });
+    const result = await chrome.tabs.sendMessage(
+      tab.id,
+      { type: "JURISAI_PULL_PROBE" },
+      { frameId: 0 },
+    );
     say(
       result?.ok
         ? `Deneme tamam: ${result.report?.direct?.sameBytesAsRealB ? "doğrudan indirme İŞE YARIYOR" : "doğrudan indirme tutmadı"}. Dosya kaydedildi.`

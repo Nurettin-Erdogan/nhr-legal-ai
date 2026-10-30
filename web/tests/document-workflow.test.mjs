@@ -44,7 +44,9 @@ test("expired, malformed, oversized and foreign contexts never become an empty s
   const store = storage();
   assert.throws(() => workflow.saveDocumentContext("alice", ["bad"], undefined, store));
   assert.throws(() => workflow.saveDocumentContext("alice", [id], "bad", store));
-  assert.throws(() => workflow.saveDocumentContext("alice", Array(2001).fill(id), undefined, store));
+  assert.throws(() =>
+    workflow.saveDocumentContext("alice", Array(2001).fill(id), undefined, store),
+  );
   assert.ok(workflow.saveDocumentContext("alice", Array(50).fill(id), undefined, storage()));
   const key = workflow.saveDocumentContext("alice", [id], undefined, store);
   const context = workflow.readDocumentContext("alice", key, store);

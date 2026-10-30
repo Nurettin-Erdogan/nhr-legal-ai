@@ -44,7 +44,7 @@ def _free_ram_gb() -> float:
 
 def _last_line(path: Path, pattern: str) -> str:
     try:
-        lines = [l for l in path.read_text(encoding="utf-8", errors="ignore").splitlines() if re.search(pattern, l)]
+        lines = [line for line in path.read_text(encoding="utf-8", errors="ignore").splitlines() if re.search(pattern, line)]
         return lines[-1] if lines else ""
     except OSError:
         return ""

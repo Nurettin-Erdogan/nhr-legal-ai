@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useAuth } from "@/components/AuthProvider";
+import { useAuth } from "@/components/AuthContext";
 import { beginGoogleLogin, googleLoginAvailable, login, register } from "@/lib/auth-api";
 import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
@@ -48,15 +48,26 @@ export function AuthDialog({ open, onOpenChange, defaultMode = "signup" }: Props
       if (mode === "login") await login(email.trim().toLowerCase(), password);
       else {
         if (fullName.trim().length < 2) throw new Error("Ad ve soyadınızı girin.");
-        if (!accepted) throw new Error("Devam etmek için Kullanım Şartları'nı ve Gizlilik Politikası'nı kabul etmelisiniz.");
+        if (!accepted)
+          throw new Error(
+            "Devam etmek için Kullanım Şartları'nı ve Gizlilik Politikası'nı kabul etmelisiniz.",
+          );
         await register(email.trim().toLowerCase(), password, fullName.trim(), TERMS_VERSION);
       }
       await refreshAuth();
       toast.success(mode === "login" ? "Giriş yapıldı" : "Kaydınız tamamlandı");
       onOpenChange(false);
     } catch (error) {
-      const status = error instanceof Error && "status" in error && typeof error.status === "number" ? error.status : undefined;
-      toast.error(authErrorMessage(error instanceof Error ? error.message : "Oturum işlemi başarısız oldu", status));
+      const status =
+        error instanceof Error && "status" in error && typeof error.status === "number"
+          ? error.status
+          : undefined;
+      toast.error(
+        authErrorMessage(
+          error instanceof Error ? error.message : "Oturum işlemi başarısız oldu",
+          status,
+        ),
+      );
     } finally {
       setBusy(false);
     }
@@ -111,13 +122,28 @@ export function AuthDialog({ open, onOpenChange, defaultMode = "signup" }: Props
           </div>
           {mode === "signup" && (
             <label className="flex items-start gap-2 text-xs leading-relaxed text-muted-foreground">
-              <input type="checkbox" className="mt-0.5 h-4 w-4 shrink-0" checked={accepted} onChange={(e) => setAccepted(e.target.checked)} />
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 shrink-0"
+                checked={accepted}
+                onChange={(e) => setAccepted(e.target.checked)}
+              />
               <span>
-                <a href="/kullanim-sartlari" target="_blank" rel="noreferrer" className="font-medium text-primary underline">
+                <a
+                  href="/kullanim-sartlari"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-medium text-primary underline"
+                >
                   Kullanım Şartları
                 </a>
                 'nı ve{" "}
-                <a href="/gizlilik" target="_blank" rel="noreferrer" className="font-medium text-primary underline">
+                <a
+                  href="/gizlilik"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-medium text-primary underline"
+                >
                   Gizlilik Politikası / KVKK Aydınlatma Metni
                 </a>
                 'ni okudum, kabul ediyorum.

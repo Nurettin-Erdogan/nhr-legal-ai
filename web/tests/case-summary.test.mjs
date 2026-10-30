@@ -6,7 +6,10 @@ import ts from "typescript";
 
 const require = createRequire(import.meta.url);
 function compile(relative) {
-  const source = readFileSync(new URL(relative, import.meta.url), "utf8").replace("import.meta.env?.VITE_API_URL", "undefined");
+  const source = readFileSync(new URL(relative, import.meta.url), "utf8").replace(
+    "import.meta.env?.VITE_API_URL",
+    "undefined",
+  );
   const { outputText } = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   });
@@ -33,14 +36,28 @@ test("facts are parsed defensively and empty cells render as a dash", () => {
     total: 3,
     ready: 2,
     documents: [
-      { id: "a", file_name: "bilirkisi.udf", ocr: true, dates: ["01.03.2015", 5], amounts: ["340.000 TL"], esas: ["2025/412"], karar: [], numbers: [], laws: ["4857"], characters: 392 },
+      {
+        id: "a",
+        file_name: "bilirkisi.udf",
+        ocr: true,
+        dates: ["01.03.2015", 5],
+        amounts: ["340.000 TL"],
+        esas: ["2025/412"],
+        karar: [],
+        numbers: [],
+        laws: ["4857"],
+        characters: 392,
+      },
       { id: "", file_name: "kimliksiz" },
       null,
       { id: "b" },
     ],
   });
   assert.equal(parsed.total, 3);
-  assert.deepEqual(parsed.documents.map((item) => item.id), ["a", "b"]);
+  assert.deepEqual(
+    parsed.documents.map((item) => item.id),
+    ["a", "b"],
+  );
   assert.deepEqual(parsed.documents[0].dates, ["01.03.2015"]);
   assert.equal(parsed.documents[0].ocr, true);
   assert.equal(parsed.documents[1].fileName, "Adsız belge");
@@ -55,8 +72,22 @@ test("facts are parsed defensively and empty cells render as a dash", () => {
 
 test("a job state is parsed with its per-document results and a malformed job is rejected", () => {
   const state = lib.parseSummaryState({
-    job: { id: "j", state: "running", total: 3, done: 1, error: null, results: [doc()], saved_id: null },
-    latest: { id: "s", created_at: "2026-10-04T12:00:00+00:00", documents: [doc({ coverage: 0.5 })], markdown: "x", model: "qwen3.5:4b" },
+    job: {
+      id: "j",
+      state: "running",
+      total: 3,
+      done: 1,
+      error: null,
+      results: [doc()],
+      saved_id: null,
+    },
+    latest: {
+      id: "s",
+      created_at: "2026-10-04T12:00:00+00:00",
+      documents: [doc({ coverage: 0.5 })],
+      markdown: "x",
+      model: "qwen3.5:4b",
+    },
   });
   assert.equal(state.job.state, "running");
   assert.equal(state.job.results[0].fileName, "dilekce.udf");
@@ -66,18 +97,42 @@ test("a job state is parsed with its per-document results and a malformed job is
   assert.equal(lib.parseSummaryState({ job: { state: "running" }, latest: null }), null);
   assert.equal(lib.parseSummaryState(null), null);
   // bilinmeyen durum "bitti" sayılmaz: çalışıyor varsayılır, böylece yoklama sürer
-  assert.equal(lib.parseSummaryState({ job: { id: "j", state: "weird" }, latest: null }).job.state, "running");
+  assert.equal(
+    lib.parseSummaryState({ job: { id: "j", state: "weird" }, latest: null }).job.state,
+    "running",
+  );
   // geçersiz kapsam tam kapsam gibi gösterilmez ama çökmez
-  assert.equal(lib.parseSummaryState({ job: { id: "j", state: "done", results: [doc({ coverage: 7 })] }, latest: null }).job.results[0].coverage, 1);
+  assert.equal(
+    lib.parseSummaryState({
+      job: { id: "j", state: "done", results: [doc({ coverage: 7 })] },
+      latest: null,
+    }).job.results[0].coverage,
+    1,
+  );
 });
 
 test("coverage and progress are explained in plain Turkish", () => {
   assert.equal(lib.coverageNote({ coverage: 1 }), "");
   assert.equal(lib.coverageNote({ coverage: 0.5 }), "Belgenin yaklaşık %50'i özetlendi.");
-  const job = (state, extra = {}) => ({ id: "j", state, total: 3, done: 1, error: null, results: [], savedId: null, ...extra });
+  const job = (state, extra = {}) => ({
+    id: "j",
+    state,
+    total: 3,
+    done: 1,
+    error: null,
+    results: [],
+    savedId: null,
+    ...extra,
+  });
   assert.equal(lib.progressText(job("running")), "1/3 belge özetlendi…");
-  assert.equal(lib.progressText(job("failed", { error: "Hiçbiri doğrulanamadı." })), "Hiçbiri doğrulanamadı.");
-  assert.equal(lib.progressText(job("done", { results: [{ error: null }, { error: null }, { error: null }] })), "3 belge özetlendi.");
+  assert.equal(
+    lib.progressText(job("failed", { error: "Hiçbiri doğrulanamadı." })),
+    "Hiçbiri doğrulanamadı.",
+  );
+  assert.equal(
+    lib.progressText(job("done", { results: [{ error: null }, { error: null }, { error: null }] })),
+    "3 belge özetlendi.",
+  );
   assert.equal(
     lib.progressText(job("done", { results: [{ error: null }, { error: "x" }, { error: "y" }] })),
     "3 belgeden 1 tanesi özetlendi; 2 belge için özet üretilemedi.",
@@ -87,7 +142,13 @@ test("coverage and progress are explained in plain Turkish", () => {
 test("the copied markdown states the limits of the summary", () => {
   const parsed = lib.parseSummaryState({
     job: null,
-    latest: { id: "s", documents: [doc({ ocr: true, coverage: 0.4, dropped: 2 }), doc({ document_id: "d2", file_name: "hata.pdf", bullets: [], error: "Doğrulanamadı." })] },
+    latest: {
+      id: "s",
+      documents: [
+        doc({ ocr: true, coverage: 0.4, dropped: 2 }),
+        doc({ document_id: "d2", file_name: "hata.pdf", bullets: [], error: "Doğrulanamadı." }),
+      ],
+    },
   });
   const markdown = lib.summaryMarkdown(parsed.latest.documents);
   assert.match(markdown, /hukuki dayanak/);
@@ -120,8 +181,13 @@ test("requests carry the token and ids, and failures become readable errors", as
     assert.match(calls[1].url, /\/api\/office\/cases\/c\/documents\/facts\?offset=0&limit=100$/);
     assert.equal(calls[1].init.headers.Authorization, undefined);
 
-    globalThis.fetch = respond(409, { detail: "Devam eden bir özet işiniz var; bitmesini bekleyin." });
-    await assert.rejects(lib.startSummary("c", ["a"]), (error) => error.status === 409 && /Devam eden/.test(error.message));
+    globalThis.fetch = respond(409, {
+      detail: "Devam eden bir özet işiniz var; bitmesini bekleyin.",
+    });
+    await assert.rejects(
+      lib.startSummary("c", ["a"]),
+      (error) => error.status === 409 && /Devam eden/.test(error.message),
+    );
     globalThis.fetch = respond(401, {});
     await assert.rejects(lib.loadFacts("c"), (error) => /Oturumunuz/.test(error.message));
     globalThis.fetch = respond(200, { job_id: 5 });
@@ -145,15 +211,29 @@ test("facts load all pages and keep the actual ready count above 40", async () =
     globalThis.fetch = async (url) => {
       const offset = Number(new URL(url).searchParams.get("offset"));
       offsets.push(offset);
-      return { ok: true, json: async () => ({ total: 151, ready: 145, has_more: offset === 0,
-        documents: Array.from({ length: offset === 0 ? 100 : 45 }, (_, i) => ({ id: `doc-${offset + i}` })) }) };
+      return {
+        ok: true,
+        json: async () => ({
+          total: 151,
+          ready: 145,
+          has_more: offset === 0,
+          documents: Array.from({ length: offset === 0 ? 100 : 45 }, (_, i) => ({
+            id: `doc-${offset + i}`,
+          })),
+        }),
+      };
     };
     const result = await lib.loadFacts("case");
     assert.equal(result.ready, 145);
     assert.equal(result.total, 151);
     assert.equal(result.documents.length, 145);
     assert.deepEqual(offsets, [0, 100]);
-    globalThis.fetch = async () => ({ ok: true, json: async () => ({ total: 45, ready: 45, has_more: true, documents: [] }) });
+    globalThis.fetch = async () => ({
+      ok: true,
+      json: async () => ({ total: 45, ready: 45, has_more: true, documents: [] }),
+    });
     await assert.rejects(lib.loadFacts("case"), /eksik/);
-  } finally { globalThis.fetch = original; }
+  } finally {
+    globalThis.fetch = original;
+  }
 });

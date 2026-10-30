@@ -15,7 +15,9 @@ const sections: LegalSection[] = [
     title: "Veri sorumlusu",
     body: (
       <p>
-        6698 sayılı Kişisel Verilerin Korunması Kanunu (KVKK) kapsamında veri sorumlusu: <strong>{CONTROLLER.name}</strong>, {CONTROLLER.address}. İletişim ve başvuru: {CONTROLLER.email}.
+        6698 sayılı Kişisel Verilerin Korunması Kanunu (KVKK) kapsamında veri sorumlusu:{" "}
+        <strong>{CONTROLLER.name}</strong>, {CONTROLLER.address}. İletişim ve başvuru:{" "}
+        {CONTROLLER.email}.
       </p>
     ),
   },
@@ -30,8 +32,10 @@ const sections: LegalSection[] = [
           "Onay kaydı: aydınlatma metnini okuduğunuza dair onay zamanı ve metnin sürümü.",
         ])}
         <p className="mt-2">
-          Konu anlatımınızda sağlık, ceza mahkûmiyeti gibi <strong>özel nitelikli kişisel veriler</strong> yer alabilir. Başvuruyu değerlendirmek için gerekli olmadıkça bu tür bilgileri yazmamanızı
-          öneririz; yazarsanız bunları yalnızca başvurunuzu değerlendirmek için kullanırız.
+          Konu anlatımınızda sağlık, ceza mahkûmiyeti gibi{" "}
+          <strong>özel nitelikli kişisel veriler</strong> yer alabilir. Başvuruyu değerlendirmek
+          için gerekli olmadıkça bu tür bilgileri yazmamanızı öneririz; yazarsanız bunları yalnızca
+          başvurunuzu değerlendirmek için kullanırız.
         </p>
         <p className="mt-3 font-medium">Avukat ve büro kullanıcıları</p>
         {list([
@@ -53,7 +57,9 @@ const sections: LegalSection[] = [
           "Avukat ve büro kullanıcılarına hukuk araştırma, belge hazırlama ve dava yönetimi hizmetinin sunulması.",
           "Hizmetin güvenliği, kötüye kullanımın önlenmesi ve hukuki yükümlülüklerin yerine getirilmesi.",
         ])}
-        <p className="mt-2 text-xs text-muted-foreground">Hukuki sebep ifadeleri taslaktır; bir hukuk danışmanı doğrulamalıdır.</p>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Hukuki sebep ifadeleri taslaktır; bir hukuk danışmanı doğrulamalıdır.
+        </p>
       </>
     ),
   },
@@ -87,9 +93,11 @@ const sections: LegalSection[] = [
     title: "Güvenlik",
     body: (
       <p>
-        Her kullanıcının verisi veritabanı düzeyinde yalnız kendi hesabına açılır (satır düzeyi erişim denetimi); başkasının kaydına erişim denenirse sonuç boş döner. Parolalar tek yönlü özetle
-        saklanır, oturum çerezi tarayıcı betiklerinden gizlidir ve önemli işlemler denetim kaydına alınır. Hiçbir sistem mutlak güvenlik garantisi veremez; bir ihlal fark ederseniz aşağıdaki
-        adrese bildirin.
+        Her kullanıcının verisi veritabanı düzeyinde yalnız kendi hesabına açılır (satır düzeyi
+        erişim denetimi); başkasının kaydına erişim denenirse sonuç boş döner. Parolalar tek yönlü
+        özetle saklanır, oturum çerezi tarayıcı betiklerinden gizlidir ve önemli işlemler denetim
+        kaydına alınır. Hiçbir sistem mutlak güvenlik garantisi veremez; bir ihlal fark ederseniz
+        aşağıdaki adrese bildirin.
       </p>
     ),
   },
@@ -97,8 +105,9 @@ const sections: LegalSection[] = [
     title: "Çerezler",
     body: (
       <p>
-        Yalnızca oturumunuzu sürdürmek için gerekli tek bir oturum çerezi (<code>nhr_access_token</code>) kullanılır. Reklam, izleme ya da analiz çerezi yoktur. Tema tercihi gibi ayarlar yalnızca
-        tarayıcınızda saklanır.
+        Yalnızca oturumunuzu sürdürmek için gerekli tek bir oturum çerezi (
+        <code>nhr_access_token</code>) kullanılır. Reklam, izleme ya da analiz çerezi yoktur. Tema
+        tercihi gibi ayarlar yalnızca tarayıcınızda saklanır.
       </p>
     ),
   },
@@ -106,7 +115,8 @@ const sections: LegalSection[] = [
     title: "UYAP eklentisi",
     body: (
       <p>
-        UYAP'tan evrak aktaran tarayıcı eklentisinin veri işleme ilkeleri ayrı bir metinde anlatılır:{" "}
+        UYAP'tan evrak aktaran tarayıcı eklentisinin veri işleme ilkeleri ayrı bir metinde
+        anlatılır:{" "}
         <a className="underline" href="/gizlilik-uyap-eklentisi.html">
           UYAP eklentisi gizlilik politikası
         </a>
@@ -126,8 +136,9 @@ const sections: LegalSection[] = [
           "İşlemenin hukuka aykırı olması hâlinde zarara uğrarsanız zararın giderilmesini talep etme.",
         ])}
         <p className="mt-2">
-          Hesap sahipleri verilerini <strong>Ayarlar → Verilerimi indir</strong> bölümünden JSON olarak indirebilir. Silme ve diğer talepler için {CONTROLLER.email} adresine yazılı başvuru
-          yapabilirsiniz; hesap silme talepleri şu an yazılı başvuruyla işlenir.
+          Hesap sahipleri verilerini <strong>Ayarlar → Verilerimi indir</strong> bölümünden JSON
+          olarak indirebilir. Silme ve diğer talepler için {CONTROLLER.email} adresine yazılı
+          başvuru yapabilirsiniz; hesap silme talepleri şu an yazılı başvuruyla işlenir.
         </p>
       </>
     ),
@@ -138,7 +149,12 @@ const PrivacyPage = () => (
   <LegalPage
     title="Gizlilik Politikası ve KVKK Aydınlatma Metni"
     version={PRIVACY_NOTICE_VERSION}
-    intro={<p>Bu metin, JurisAI'ı kullanırken veya başvuru formunu doldururken kişisel verilerinizin nasıl işlendiğini anlatır.</p>}
+    intro={
+      <p>
+        Bu metin, JurisAI'ı kullanırken veya başvuru formunu doldururken kişisel verilerinizin nasıl
+        işlendiğini anlatır.
+      </p>
+    }
     sections={sections}
   />
 );

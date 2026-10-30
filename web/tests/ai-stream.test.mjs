@@ -67,6 +67,24 @@ function mockStream(t, text) {
   return state;
 }
 
+test("reasoning choice is sent with the answer request", async (t) => {
+  const state = mockStream(
+    t,
+    JSON.stringify({ stage: "done", result: { answer: "Yanıt", citations: [] } }),
+  );
+  await askAssistant("Soru", { reasoningEffort: "high" });
+  assert.equal(JSON.parse(state.body).reasoning_effort, "high");
+});
+
+test("omitted reasoning choice preserves server default", async (t) => {
+  const state = mockStream(
+    t,
+    JSON.stringify({ stage: "done", result: { answer: "Yanıt", citations: [] } }),
+  );
+  await askAssistant("Soru", {});
+  assert.equal(Object.hasOwn(JSON.parse(state.body), "reasoning_effort"), false);
+});
+
 test("split UTF-8 progress stream preserves summary and final answer", async (t) => {
   const answer = { answer: "Türkçe yanıt", citations: [], grounded: true, search_summary: summary };
   const state = mockStream(
@@ -112,7 +130,13 @@ test("legacy answer does not fabricate candidate counters", async (t) => {
 });
 
 test("only recognized answer kinds can opt out of legacy legal presentation", () => {
-  for (const kind of ["conversation", "clarification", "insufficient_sources", "legal"]) {
+  for (const kind of [
+    "conversation",
+    "clarification",
+    "insufficient_sources",
+    "general_information",
+    "legal",
+  ]) {
     assert.equal(parseAnswerKind(kind), kind);
   }
   for (const kind of [undefined, null, "friendly", "CONVERSATION", {}, false]) {

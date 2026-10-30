@@ -11,13 +11,17 @@ from uuid import uuid4
 
 import psycopg
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.testclient import TestClient
 
-from api import admin_ingestion, admin_panel, registration
+from api import access, admin_ingestion, admin_panel
+from api.auth import routes
 from api.auth.routes import current_user_id
+from api.auth.schemas import LoginRequest
+from api.auth.security import hash_password
 
 ADMIN_ID = uuid4()
+REQUEST = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"), headers={"user-agent": "pytest"})
 NOW = datetime(2026, 10, 24, 12, 0, tzinfo=timezone.utc)
 DATABASE_URL = os.getenv("NHR_TEST_DATABASE_URL")
 db_required = pytest.mark.skipif(not DATABASE_URL, reason="Isolated test DB not configured")
@@ -29,6 +33,7 @@ class FakeConnection:
     def __init__(self, *, admin: bool, rows=None, user_exists=True):
         self.admin, self.rows, self.user_exists = admin, rows or [], user_exists
         self.queries: list[str] = []
+        self.params: list = []
 
     @contextmanager
     def transaction(self):
@@ -36,6 +41,7 @@ class FakeConnection:
 
     def execute(self, sql, params=None):
         self.queries.append(sql)
+        self.params.append(params)
         outer = self
 
         class Result:
@@ -44,6 +50,8 @@ class FakeConnection:
             def fetchone(self):
                 if "app_has_global_role" in sql:
                     return {"is_admin": outer.admin}
+                if "FROM access_allowlist" in sql:
+                    return {"email": "kisi@example.com"} if outer.user_exists else None
                 if "SELECT status FROM users" in sql:
                     return {"status": "active"} if outer.user_exists else None
                 if "FROM users" in sql:
@@ -73,7 +81,7 @@ def _client(monkeypatch, connection, revoked=None):
 def _user_row(**overrides):
     row = {"user_id": uuid4(), "email": "avukat@example.test", "full_name": "Ayşe Avukat", "status": "active",
            "created_at": NOW, "last_login_at": NOW, "roles": ["lawyer"], "cases": 3, "clients": 2, "documents": 40,
-           "conversations": 5, "ai_answers_30d": 12, "last_activity_at": NOW}
+           "conversations": 5, "ai_answers_30d": 12, "last_activity_at": NOW, "listed": False, "has_access": True}
     row.update(overrides)
     return row
 
@@ -85,10 +93,10 @@ def _user_row(**overrides):
     ("post", f"/api/admin/users/{uuid4()}/roles/admin", None),
     ("delete", f"/api/admin/users/{uuid4()}/roles/lawyer", None),
     ("get", "/api/admin/feedback", None),
-    ("get", "/api/admin/registration", None),
-    ("post", "/api/admin/registration", {"mode": "invite"}),
-    ("post", "/api/admin/registration/invites", {"email": "yeni@example.test"}),
-    ("delete", f"/api/admin/registration/invites/{uuid4()}", None),
+    ("get", "/api/admin/access", None),
+    ("post", "/api/admin/access", {"mode": "allowlist"}),
+    ("post", "/api/admin/access/entries", {"email": "yeni@example.com"}),
+    ("delete", f"/api/admin/access/entries/{uuid4()}", None),
 ])
 def test_every_admin_endpoint_refuses_a_non_admin(monkeypatch, method, path, body):
     connection = FakeConnection(admin=False)
@@ -131,6 +139,44 @@ def test_an_unknown_user_or_role_is_refused(monkeypatch):
     client = _client(monkeypatch, FakeConnection(admin=True, user_exists=False))
     assert client.post(f"/api/admin/users/{uuid4()}/status", json={"status": "suspended"}).status_code == 404
     assert client.post(f"/api/admin/users/{uuid4()}/roles/superuser").status_code == 422
+
+
+def test_switching_to_the_access_list_closes_sessions_without_access_and_is_audited(monkeypatch):
+    closed: list = []
+    connection = FakeConnection(admin=True)
+    client = _client(monkeypatch, connection)
+    monkeypatch.setattr(admin_panel, "revoke_sessions_without_access", lambda ids=None: closed.append(ids) or 3)
+    assert client.post("/api/admin/access", json={"mode": "allowlist"}).json() == {"mode": "allowlist", "closed_sessions": 3}
+    assert closed == [None]  # bütün hesaplara bakılır
+    assert any("INSERT INTO activity_logs" in sql for sql in connection.queries)
+    closed.clear()
+    assert client.post("/api/admin/access", json={"mode": "open"}).json()["closed_sessions"] == 0 and closed == []
+    assert client.post("/api/admin/access", json={"mode": "invite"}).status_code == 422
+
+
+def test_removing_an_email_closes_that_persons_sessions_and_unknown_entries_are_404(monkeypatch):
+    target = uuid4()
+    closed: list = []
+    connection = FakeConnection(admin=True, rows=[{"id": target}])
+    client = _client(monkeypatch, connection)
+    monkeypatch.setattr(admin_panel, "revoke_sessions_without_access", lambda ids=None: closed.append(ids) or 1)
+    response = client.delete(f"/api/admin/access/entries/{uuid4()}")
+    assert response.status_code == 200 and response.json()["closed_sessions"] == 1 and closed == [[target]]
+    assert any("DELETE FROM access_allowlist" in sql for sql in connection.queries)
+    missing = _client(monkeypatch, FakeConnection(admin=True, user_exists=False))
+    assert missing.delete(f"/api/admin/access/entries/{uuid4()}").status_code == 404
+
+
+def test_adding_an_email_stores_it_lowercased_and_keeps_it_out_of_the_audit_log(monkeypatch):
+    connection = FakeConnection(admin=True)
+    client = _client(monkeypatch, connection)
+    response = client.post("/api/admin/access/entries", json={"email": "Avukat@Ornek.com", "note": " pilot "})
+    assert response.status_code == 201 and response.json()["email"] == "avukat@ornek.com"
+    calls = list(zip(connection.queries, connection.params))
+    insert = next(params for sql, params in calls if "INSERT INTO access_allowlist" in sql)
+    assert insert[1:3] == ("avukat@ornek.com", "pilot")
+    audit = [params for sql, params in calls if "INSERT INTO activity_logs" in sql]
+    assert audit and "ornek.com" not in str(audit)
 
 
 def test_the_last_backup_is_read_from_its_manifest(tmp_path, monkeypatch):
@@ -211,44 +257,131 @@ def test_admin_functions_refuse_a_lawyer_and_return_counts_to_an_admin(connectio
         assert summary["users_total"] >= 2 and summary["feedback_total"] >= 1
 
 
+def _mode(conn, mode: str) -> None:
+    conn.execute("UPDATE platform_settings SET value = %s WHERE key = 'access_mode'", (mode,))
+
+
+def _allowed(conn, user_id) -> bool:
+    return conn.execute("SELECT public.app_user_access_allowed(%s) AS ok", (user_id,)).fetchone()["ok"]
+
+
+def _email(conn, user_id) -> str:
+    return conn.execute("SELECT email FROM users WHERE id = %s", (user_id,)).fetchone()["email"]
+
+
+def _list(conn, email: str) -> None:
+    conn.execute("INSERT INTO access_allowlist (id, email) VALUES (%s, %s)", (uuid4(), email.lower()))
+
+
 @db_required
-def test_only_an_admin_reads_or_writes_registration_settings_and_invites(connection):  # noqa: F811
+def test_only_an_admin_reads_or_changes_the_access_list(connection):  # noqa: F811
     admin = _user(connection, "yonetici", "admin")
     lawyer = _user(connection, "avukat")
     with _as(connection, lawyer):
         assert connection.execute("SELECT * FROM platform_settings").fetchall() == []
-        assert connection.execute("SELECT * FROM registration_invites").fetchall() == []
+        assert connection.execute("SELECT * FROM access_allowlist").fetchall() == []
     with pytest.raises(psycopg.errors.InsufficientPrivilege), _as(connection, lawyer):
-        connection.execute("INSERT INTO registration_invites (id, email) VALUES (%s, 'x@example.test')", (uuid4(),))
+        connection.execute("INSERT INTO access_allowlist (id, email) VALUES (%s, 'x@example.test')", (uuid4(),))
+    # Listede kimin olduğu uygulama rolünden sınanamaz.
+    for sql, params in (("SELECT public.app_user_access_allowed(%s)", (lawyer,)),
+                        ("SELECT public.app_email_access_allowed('x@example.test')", None)):
+        with pytest.raises(psycopg.errors.InsufficientPrivilege), _as(connection, lawyer):
+            connection.execute(sql, params)
     with _as(connection, admin):
-        connection.execute("INSERT INTO registration_invites (id, email, invited_by) VALUES (%s, 'x@example.test', %s)",
-                           (uuid4(), admin))
-        assert connection.execute("SELECT value FROM platform_settings WHERE key = 'registration_mode'").fetchone()
+        entry = uuid4()
+        connection.execute("INSERT INTO access_allowlist (id, email, added_by) VALUES (%s, 'x@example.test', %s)",
+                           (entry, admin))
+        assert connection.execute("SELECT value FROM platform_settings WHERE key = 'access_mode'").fetchone()
+        assert connection.execute("DELETE FROM access_allowlist WHERE id = %s", (entry,)).rowcount == 1
     with pytest.raises(psycopg.errors.InsufficientPrivilege), _as(connection, admin):
-        connection.execute("DELETE FROM registration_invites")  # invites are revoked, never deleted
+        connection.execute("TRUNCATE access_allowlist")
 
 
 @db_required
-def test_registration_modes_and_single_use_invites(connection, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(registration, "get_settings", lambda: SimpleNamespace(allow_registration=True))
-    connection.execute("UPDATE platform_settings SET value = 'invite' WHERE key = 'registration_mode'")
-    with pytest.raises(registration.RegistrationClosed):
-        registration.registration_gate(connection, "davetsiz@example.test")
-    invite_id = uuid4()
-    connection.execute("INSERT INTO registration_invites (id, email) VALUES (%s, 'davetli@example.test')", (invite_id,))
-    assert registration.registration_gate(connection, "Davetli@Example.test") == invite_id
-    new_user = _user(connection, "davetli")
-    registration.consume_invite(connection, invite_id, new_user)
-    with pytest.raises(registration.RegistrationClosed):  # the same invite cannot open a second account
-        registration.registration_gate(connection, "davetli@example.test")
-    connection.execute("UPDATE platform_settings SET value = 'closed' WHERE key = 'registration_mode'")
-    with pytest.raises(registration.RegistrationClosed):
-        registration.registration_gate(connection, "kimse@example.test")
-    connection.execute("UPDATE platform_settings SET value = 'open' WHERE key = 'registration_mode'")
-    assert registration.registration_gate(connection, "herkes@example.test") is None
-    monkeypatch.setattr(registration, "get_settings", lambda: SimpleNamespace(allow_registration=False))
-    with pytest.raises(registration.RegistrationClosed):  # the deployment switch always wins
-        registration.registration_gate(connection, "herkes@example.test")
+def test_in_allowlist_mode_only_listed_emails_and_admins_get_in(connection):  # noqa: F811
+    admin = _user(connection, "yonetici", "admin")
+    listed = _user(connection, "listede")
+    other = _user(connection, "listedisi")
+    _list(connection, _email(connection, listed))
+    _mode(connection, "open")
+    assert all(_allowed(connection, user) for user in (admin, listed, other))
+    _mode(connection, "allowlist")
+    assert _allowed(connection, admin) and _allowed(connection, listed) and not _allowed(connection, other)
+    assert connection.execute("SELECT public.app_email_access_allowed(%s) AS ok",
+                              (f"  {_email(connection, listed).upper()} ",)).fetchone()["ok"]
+    with _as(connection, admin):
+        rows = {row["user_id"]: row for row in connection.execute("SELECT * FROM admin_user_overview()").fetchall()}
+    assert (rows[listed]["listed"], rows[listed]["has_access"]) == (True, True)
+    assert (rows[other]["listed"], rows[other]["has_access"]) == (False, False)
+    assert (rows[admin]["listed"], rows[admin]["has_access"]) == (False, True)
+    connection.execute("UPDATE users SET status = 'suspended' WHERE id = %s", (listed,))
+    assert not _allowed(connection, listed)  # askıdaki hesap listede olsa da giremez
+    assert not _allowed(connection, uuid4())
+
+
+@db_required
+def test_new_accounts_follow_the_access_list_and_the_deployment_switch(connection, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(access, "get_settings", lambda: SimpleNamespace(allow_registration=True))
+    _mode(connection, "allowlist")
+    assert access.access_mode(connection) == "allowlist"
+    with pytest.raises(access.AccessDenied) as denied:
+        access.registration_gate(connection, "yabanci@example.test")
+    assert denied.value.reason == "not_listed" and "erişim listesine" in denied.value.detail
+    _list(connection, "davetli@example.test")
+    access.registration_gate(connection, " Davetli@Example.test ")
+    _mode(connection, "open")
+    access.registration_gate(connection, "herkes@example.test")
+    monkeypatch.setattr(access, "get_settings", lambda: SimpleNamespace(allow_registration=False))
+    with pytest.raises(access.AccessDenied) as closed:  # kurulum anahtarı her zaman kazanır
+        access.registration_gate(connection, "davetli@example.test")
+    assert closed.value.reason == "registration_closed"
+
+
+@contextmanager
+def _routes_on(connection, monkeypatch, events: list):
+    @contextmanager
+    def shared():
+        yield connection
+
+    monkeypatch.setattr(routes, "admin_database_connection", shared)
+    monkeypatch.setattr(routes, "record_event_standalone", lambda **kwargs: events.append(kwargs["action"]))
+    monkeypatch.setattr(routes, "_auth_secret", lambda: "t" * 40)
+    yield
+
+
+@db_required
+def test_a_correct_password_is_not_enough_without_access(connection, monkeypatch):  # noqa: F811
+    events: list = []
+    user = uuid4()
+    email = f"avukat-{user.hex[:8]}@example.com"
+    connection.execute("INSERT INTO users (id, email, password_hash, full_name) VALUES (%s, %s, %s, 'Avukat')",
+                       (user, email, hash_password("dogru-parola-123")))
+    connection.execute("INSERT INTO user_roles (user_id, role_id) SELECT %s, id FROM roles WHERE code = 'lawyer'", (user,))
+    _mode(connection, "allowlist")
+    with _routes_on(connection, monkeypatch, events):
+        with pytest.raises(HTTPException) as blocked:
+            routes.login(LoginRequest(email=email, password="dogru-parola-123"), Response(), REQUEST)
+        assert blocked.value.status_code == 403 and "erişim listesine" in blocked.value.detail
+        assert events == ["auth.login_blocked"]
+        with pytest.raises(HTTPException) as wrong:  # yanlış parola hâlâ genel 401: listede olup olmadığı sızmaz
+            routes.login(LoginRequest(email=email, password="yanlis-parola-000"), Response(), REQUEST)
+        assert wrong.value.status_code == 401
+        _list(connection, email)
+        assert routes.login(LoginRequest(email=email, password="dogru-parola-123"), Response(), REQUEST).user.id == user
+
+
+@db_required
+def test_losing_access_closes_only_the_sessions_that_lost_it(connection, monkeypatch):  # noqa: F811
+    admin = _user(connection, "yonetici", "admin")
+    listed = _user(connection, "listede")
+    other = _user(connection, "listedisi")
+    _list(connection, _email(connection, listed))
+    _mode(connection, "allowlist")
+    with _routes_on(connection, monkeypatch, []):
+        assert routes.revoke_sessions_without_access([admin, listed, other]) == 1
+    stamps = {row["id"]: row["sessions_valid_after"] for row in connection.execute(
+        "SELECT id, sessions_valid_after FROM users WHERE id = ANY(%s)", ([admin, listed, other],)).fetchall()}
+    assert stamps[other] is not None and stamps[admin] is None and stamps[listed] is None
 
 
 @db_required

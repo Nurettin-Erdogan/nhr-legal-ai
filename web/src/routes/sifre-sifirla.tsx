@@ -49,12 +49,14 @@ function PasswordResetPage() {
           <p className="mt-4 text-sm text-muted-foreground">Bağlantı denetleniyor…</p>
         ) : !token ? (
           <p className="mt-4 text-sm text-destructive" role="alert">
-            Bu sayfa yalnız sıfırlama bağlantısıyla açılır. Giriş sayfasından yeni bir bağlantı isteyin.
+            Bu sayfa yalnız sıfırlama bağlantısıyla açılır. Giriş sayfasından yeni bir bağlantı
+            isteyin.
           </p>
         ) : done ? (
           <>
             <p className="mt-4 text-sm" role="status">
-              Şifreniz değişti. Eski şifreyle açılmış bütün oturumlar kapatıldı; yeni şifrenizle giriş yapabilirsiniz.
+              Şifreniz değişti. Eski şifreyle açılmış bütün oturumlar kapatıldı; yeni şifrenizle
+              giriş yapabilirsiniz.
             </p>
             <Button asChild className="mt-5 w-full rounded-full">
               <Link to="/auth">Giriş yap</Link>
@@ -63,18 +65,38 @@ function PasswordResetPage() {
         ) : (
           <form onSubmit={submit} className="mt-6 space-y-4">
             {error && (
-              <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-sm text-destructive" role="alert">
+              <div
+                className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-sm text-destructive"
+                role="alert"
+              >
                 {error}
               </div>
             )}
             <div className="space-y-2">
               <Label htmlFor="reset-password">Yeni şifre</Label>
-              <Input id="reset-password" type="password" required minLength={MIN_PASSWORD_LENGTH} autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} />
-              <p className="text-xs text-muted-foreground">En az {MIN_PASSWORD_LENGTH} karakter olmalı.</p>
+              <Input
+                id="reset-password"
+                type="password"
+                required
+                minLength={MIN_PASSWORD_LENGTH}
+                autoComplete="new-password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                En az {MIN_PASSWORD_LENGTH} karakter olmalı.
+              </p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="reset-password-repeat">Yeni şifre (tekrar)</Label>
-              <Input id="reset-password-repeat" type="password" required autoComplete="new-password" value={repeat} onChange={(event) => setRepeat(event.target.value)} />
+              <Input
+                id="reset-password-repeat"
+                type="password"
+                required
+                autoComplete="new-password"
+                value={repeat}
+                onChange={(event) => setRepeat(event.target.value)}
+              />
             </div>
             <Button type="submit" className="w-full rounded-full" disabled={busy}>
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Şifreyi kaydet"}
@@ -82,7 +104,10 @@ function PasswordResetPage() {
           </form>
         )}
       </div>
-      <Link to="/auth" className="mt-6 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
+      <Link
+        to="/auth"
+        className="mt-6 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+      >
         <ArrowLeft className="h-4 w-4" /> Giriş sayfasına dön
       </Link>
     </div>
@@ -90,6 +115,8 @@ function PasswordResetPage() {
 }
 
 export const Route = createFileRoute("/sifre-sifirla")({
-  head: () => ({ meta: [{ title: "Şifre sıfırlama — JurisAI" }, { name: "robots", content: "noindex" }] }),
+  head: () => ({
+    meta: [{ title: "Şifre sıfırlama — JurisAI" }, { name: "robots", content: "noindex" }],
+  }),
   component: PasswordResetPage,
 });

@@ -28,7 +28,12 @@ export const FAQ_CATEGORIES = ["Tümü", "Genel", "İş Hukuku", "Aile Hukuku", 
 export const FAQ_NOTE =
   "Bu sayfadaki açıklamalar genel bilgilendirmedir; hukuki danışmanlık değildir ve somut olayınıza göre sonuç değişebilir. Hukuki açıklamaların dayandığı kanun maddeleri cevabın altında belirtilmiştir; süreler ve tutarlar için maddenin güncel metnine ve bir avukata başvurun.";
 
-const b = (kanun: string, kanunNo: string, madde: string, beklenen: string): FaqBasis => ({ kanun, kanunNo, madde, beklenen });
+const b = (kanun: string, kanunNo: string, madde: string, beklenen: string): FaqBasis => ({
+  kanun,
+  kanunNo,
+  madde,
+  beklenen,
+});
 
 export const FAQ_ITEMS: FaqItem[] = [
   {
@@ -96,7 +101,10 @@ export const FAQ_ITEMS: FaqItem[] = [
     kategori: "Aile Hukuku",
     q: "Velayet kime verilir?",
     a: "Hâkim boşanmaya karar verirken olanak bulundukça ana ve babayı dinler, ana babanın haklarını ve çocukla kişisel ilişkilerini düzenler; boşanmada velayet, çocuk kendisine bırakılan tarafa aittir. Bu düzenlemede çocuğun sağlık, eğitim ve ahlak bakımından yararı esas alınır; çocuğun kime bırakılacağı her dosyada ayrı değerlendirilir.",
-    dayanak: [b("Türk Medeni Kanunu", "4721", "182", "yararları esas tutulur"), b("Türk Medeni Kanunu", "4721", "336", "çocuk kendisine bırakılan")],
+    dayanak: [
+      b("Türk Medeni Kanunu", "4721", "182", "yararları esas tutulur"),
+      b("Türk Medeni Kanunu", "4721", "336", "çocuk kendisine bırakılan"),
+    ],
   },
   {
     kategori: "Belgeler",
@@ -125,7 +133,9 @@ export function basisLabel(basis: FaqBasis[] | undefined): string {
     if (!entry.maddeler.includes(item.madde)) entry.maddeler.push(item.madde);
     byLaw.set(item.kanunNo, entry);
   }
-  return [...byLaw.entries()].map(([no, entry]) => `${entry.kanun} (${no}) m. ${entry.maddeler.join(", ")}`).join("; ");
+  return [...byLaw.entries()]
+    .map(([no, entry]) => `${entry.kanun} (${no}) m. ${entry.maddeler.join(", ")}`)
+    .join("; ");
 }
 
 export function faqByCategory(kategori: string, items: FaqItem[] = FAQ_ITEMS): FaqItem[] {

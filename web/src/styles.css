@@ -135,8 +135,10 @@
   --muted: 210 40% 96%;
   --muted-foreground: 215 16% 47%;
 
-  --accent: 221 83% 53%;
-  --accent-foreground: 0 0% 100%;
+  /* accent yalnız vurgu zeminidir (fareyle üzerine gelme, odak, menüde seçili satır): hafif ton + normal yazı.
+     Güçlü mavi olunca üzerine gelinen satırın yazısı kayboluyordu (2026-10-24 koyu mod denetimi). */
+  --accent: 214 100% 95%;
+  --accent-foreground: 222 47% 11%;
   --accent-soft: 214 100% 97%;
 
   --gold: 221 83% 53%;
@@ -147,7 +149,7 @@
   --destructive-foreground: 0 0% 100%;
 
   --success: 152 60% 40%;
-  --warning: 38 92% 50%;
+  --warning: 32 95% 36%; /* açık zeminde yazı olarak da okunur (eski ton 2,1 kontrast) */
 
   --border: 214 32% 91%;
   --input: 214 32% 91%;
@@ -190,24 +192,26 @@
   --card-foreground: 210 40% 96%;
   --popover: 222 45% 11%;
   --popover-foreground: 210 40% 96%;
-  --primary: 217 91% 60%;
+  /* Koyu temada mavi hem yazı rengi hem düğme zemini: açık ton ikisinde de okunur (2026-10-24 kontrast ölçümü:
+     eski ton düğmede lacivert yazıyla 2,35, koyu zeminde yazı olarak 4,45 veriyordu). */
+  --primary: 213 94% 68%;
   --primary-foreground: 222 47% 9%;
   --primary-glow: 213 94% 68%;
   --secondary: 222 40% 15%;
   --secondary-foreground: 210 40% 96%;
   --muted: 222 35% 15%;
   --muted-foreground: 215 20% 65%;
-  --accent: 217 91% 60%;
-  --accent-foreground: 222 47% 9%;
+  --accent: 222 40% 20%;
+  --accent-foreground: 210 40% 96%;
   --accent-soft: 222 40% 17%;
-  --gold: 217 91% 60%;
-  --gold-deep: 221 83% 53%;
+  --gold: 213 94% 68%;
+  --gold-deep: 213 94% 68%;
   --gold-soft: 222 40% 17%;
   --border: 222 33% 19%;
   --input: 222 33% 19%;
-  --ring: 217 91% 60%;
-  --destructive: 0 65% 55%;
-  --destructive-foreground: 210 40% 96%;
+  --ring: 213 94% 68%;
+  --destructive: 0 84% 67%;
+  --destructive-foreground: 222 47% 9%;
   --success: 152 55% 48%;
   --warning: 38 88% 58%;
 

@@ -33,7 +33,9 @@ jobs:
       - name: Install PostgreSQL client
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - name: Install Python dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-dev.txt
+      - name: Python lint
+        run: ruff check api ingestion scripts tests
       - name: Expose migrations at the docker-compose path
         # init/*.sql dosyaları migration'ları docker-compose'daki gibi `\i /nhr-database/...` ile çağırır;
         # bu yol CI'da yoktu ve python işi 2026-09-28'den beri şema adımında düşüyordu.
@@ -65,6 +67,7 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
+      - run: npm run lint -- --max-warnings 0
       - run: npm run typecheck
       - run: npm test
       - run: npm run build

@@ -1,12 +1,12 @@
 // AvukatAI — Demo verileri kaldırıldı.
 // Her kullanıcı kendi gerçek verisini görür. Sayfalar boş başlar.
 
-export const todayCalls: any[] = [];
-export const upcomingAppointments: any[] = [];
-export const leads: any[] = [];
-export const fileQueries: any[] = [];
-export const reminders: any[] = [];
-export const modules: any[] = [
+export const todayCalls: unknown[] = [];
+export const upcomingAppointments: unknown[] = [];
+export const leads: unknown[] = [];
+export const fileQueries: unknown[] = [];
+export const reminders: unknown[] = [];
+export const modules = [
   {
     id: "inbound",
     name: "Inbound AI Asistan",
@@ -65,14 +65,14 @@ export const modules: any[] = [
   },
 ];
 
-export const clients: any[] = [];
-export const cases: any[] = [];
-export const executions: any[] = [];
-export const calendarEvents: any[] = [];
-export const payments: any[] = [];
-export const staff: any[] = [];
-export const tasks: any[] = [];
-export const activities: any[] = [];
+export const clients: unknown[] = [];
+export const cases: unknown[] = [];
+export const executions: unknown[] = [];
+export const calendarEvents: unknown[] = [];
+export const payments: unknown[] = [];
+export const staff: unknown[] = [];
+export const tasks: unknown[] = [];
+export const activities: unknown[] = [];
 
 export const monthlyRevenue = [
   { month: "Kas", value: 0 },
@@ -90,8 +90,8 @@ export const leadFunnel = [
   { stage: "Müvekkil", value: 0 },
 ];
 
-export const precedents: any[] = [];
-export const researchHistory: any[] = [];
+export const precedents: unknown[] = [];
+export const researchHistory: unknown[] = [];
 
 export const draftTemplates = [
   {
@@ -167,4 +167,4 @@ export const aiPipeline = [
   { step: 12, name: "Doğrulanmış Sonuç", desc: "Kaynakçalı çıktı" },
 ];
 
-export const aiCallLogs: any[] = [];
+export const aiCallLogs: unknown[] = [];

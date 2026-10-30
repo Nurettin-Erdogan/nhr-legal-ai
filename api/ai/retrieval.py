@@ -1,22 +1,32 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import date
+from threading import BoundedSemaphore, Lock
 
 import psycopg
 
 from api.ai.embeddings import vector_literal
 from api.ai.rag import RAGContext
 from api.ai.search_plan import normalize, plan_search
+from api.ai.query_vocabulary import expand_search_terms
 from api.ai.passages import is_duration_question, sentence_score
-from api.ai.relevance import question_intent, intent_tsquery, focused_intent_tsquery, relevant_contexts, semantic_search_text
+from api.ai.relevance import question_intent, intent_tsquery, focused_intent_tsquery, relevant_contexts, semantic_search_text, case_law_requested
 from api.ai.seed_tier import seed_tier
 from api.ai.workspace_scope import project_document_predicate
+
+# Bound public retrieval across requests, not merely within one request. Private
+# document queries keep their authenticated connection and never enter this pool.
+_PUBLIC_VECTOR_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="legal-vector")
+_PUBLIC_VECTOR_SLOTS = BoundedSemaphore(2)
 
 _LAW_NO_RE = re.compile(r"(?<!\d)(\d{3,5})(?!\d)")
 _ARTICLE_RE = re.compile(
     # "madde 18", "18. madde", ve avukatların kısa yazımı "m. 18" / "m.18" / "md. 18".
-    r"madde\s+(\d{1,3}[a-zA-Z]?)|(\d{1,3})\.\s*madd|(?<![0-9A-Za-zÇĞİÖŞÜçğıöşü])md?\.\s*(\d{1,3})(?!\d)",
+    r"(?:(?:ek\s+geçici|ek|geçici)\s+)?madde\s+(\d{1,3}(?:\s*/\s*[a-zA-Z]|[a-zA-Z])?)(?![\d/])"
+    r"|(\d{1,3}(?:\s*/\s*[a-zA-Z]|[a-zA-Z])?)\.\s*madd"
+    r"|(?<![0-9A-Za-zÇĞİÖŞÜçğıöşü])(?:(?:ek\s+geçici|ek|geçici)\s+)?md?\.\s*(\d{1,3}(?:\s*/\s*[a-zA-Z]|[a-zA-Z])?)(?![\d/])",
     re.IGNORECASE,
 )
 
@@ -240,7 +250,9 @@ _VERIFIED_SOURCE_FILTER = """
 # effective date. Court decisions are bounded by their own decision date.
 _TEMPORAL_FILTER = """
 (
-    (CAST(%(as_of)s AS date) IS NULL AND ls.is_current)
+    -- A compilation of REPEALED provisions (official MBS type MULGA, e.g. "İCRA VE İFLAS KANUNUNUN YÜRÜRLÜKTEN KALDIRILMIŞ HÜKÜMLERİ")
+    -- is marked is_current but is not current law: its articles answered "2004 sayılı Kanun m. 27" with repealed text (2026-10-30).
+    (CAST(%(as_of)s AS date) IS NULL AND ls.is_current AND ls.metadata->>'mevzuat_tur' IS DISTINCT FROM 'MULGA')
     OR
     (
         CAST(%(as_of)s AS date) IS NOT NULL
@@ -351,9 +363,25 @@ WHERE ls.deleted_at IS NULL
   AND ls.source_type = 'legislation'
   AND legislation.law_no = %(law_no)s
   AND legislation.article_no = %(article_no)s
+  AND legislation.legislation_type IN ('law', 'constitution', 'decree')
   AND {_TEMPORAL_FILTER}
 ORDER BY chunk.chunk_index
 LIMIT %(top_k)s
+"""
+
+# The cited chunks of a stored answer, read back by id through the SAME trust filters as every search (official/verified, current,
+# not deleted): `api/ai/warm_cache.py` reuses a stored answer only when these rows are exactly what it was built on.
+CHUNKS_BY_ID_SQL = f"""
+SELECT
+{_SELECT_COLUMNS},
+    10.0::real AS rank
+FROM legal_chunks chunk
+JOIN legal_sources ls ON ls.id = chunk.legal_source_id
+{_DETAIL_JOINS}
+WHERE chunk.id = ANY(%(chunk_ids)s::uuid[])
+  AND ls.deleted_at IS NULL
+  AND {_VERIFIED_SOURCE_FILTER}
+  AND {_TEMPORAL_FILTER}
 """
 
 HYBRID_RETRIEVAL_SQL = f"""
@@ -637,38 +665,46 @@ def question_law_numbers(question: str) -> tuple[str, ...]:
     soruda ad eşlemesi yapılmaz (konu sorusunu "açık madde sorusu"na çevirmesin). Üç haneli madde numarası tek başına kanun
     numarası sanılmaz: "TBK 344. madde"de 344 kanun değil maddedir.
     """
-    numbers = tuple(_LAW_NO_RE.findall(question))
+    from api.ai.search_plan import normalize
+    value = normalize(question)
+    # Dates are not statute identifiers, including questions without an
+    # explicit article. Previously the early return below treated '2026 yılı'
+    # as law 2026 and silently emptied the lexical branch.
+    temporal_years = set(re.findall(
+        r'\b((?:19|20)\d{2})\s*(?:yıl\w*|sene\w*|tarih\w*|itibarıyla|itibariyle)\b', value))
+    numbers = tuple(number for number in _LAW_NO_RE.findall(question)
+                    if number not in temporal_years
+                    or re.search(rf'(?<!\d){number}\s*sayılı', value))
     articles = question_article_numbers(question)
     if not articles:
         return numbers
-    from api.ai.search_plan import normalize
-
-    value = normalize(question)
-
     def is_explicit(number: str) -> bool:
         # Madde numarası kanun numarası değildir; yıl gibi görünen sayı ("2023 yılında …") ancak "sayılı" ile yazılmışsa kanundur
         # (2004 sayılı İcra ve İflas Kanunu gibi).
-        if number in articles:
+        if number in {re.search(r"\d+", article).group() for article in articles}:
             return False
         year_like = len(number) == 4 and number[:2] in ("19", "20")
         return not year_like or re.search(rf"(?<!\d){number}\s*sayılı", value) is not None
 
-    if any(is_explicit(number) for number in numbers):
-        return numbers
+    explicit_numbers = tuple(dict.fromkeys(number for number in numbers if is_explicit(number)))
+    if explicit_numbers:
+        return explicit_numbers
     return named_law_numbers(question) or numbers
 
 
 def question_article_numbers(question: str) -> tuple[str, ...]:
+    from ingestion.mevzuat.identity import canonical_article
     found: list[str] = []
     for match in _ARTICLE_RE.finditer(question):
         value = match.group(1) or match.group(2) or match.group(3)
         if value:
-            found.append(value.lower())
+            prefix = re.match(r"(?i)(ek\s+geçici|ek|geçici)\s+", match.group())
+            found.append(canonical_article((prefix[1] + " " if prefix else "") + value))
     return tuple(found)
 
 
 def distinctive_question_words(question: str) -> tuple[str, ...]:
-    words = [word for word in _WORD_RE.findall(question.casefold()) if len(word) >= 4]
+    words = [word for word in _WORD_RE.findall(expand_search_terms(question).casefold()) if len(word) >= 4]
     return tuple(word for word in words if word not in _BOILERPLATE_WORDS)
 
 
@@ -691,7 +727,7 @@ def _context_blob(context: RAGContext) -> str:
         context.authority or "",
         context.court_name or "",
     ]
-    return " ".join(parts).casefold()
+    return expand_search_terms(" ".join(parts)).casefold()
 
 
 def _article_in_context(context: RAGContext, article: str) -> bool:
@@ -751,6 +787,13 @@ def _hit_quality_score(question: str, context: RAGContext) -> float:
         1 for word in distinctive_question_words(question) if _word_in_blob(word, blob)
     )
     score = float(context.rank or 0) * 0.05 + overlap * 2.0
+    if context.source_type == 'court_decision':
+        from api.ai.decision_attribution import decision_section_priority
+        # A party repeating the statute is not the court's application of it.
+        # Keep such passages searchable, but don't let literal overlap alone
+        # starve reasoning/unknown passages before source diversification.
+        role = decision_section_priority(context, question)
+        score += {0: 4.0, 1: 0.0, 2: -8.0, 3: -18.0}[role]
     from api.ai.source_support import _sentences
     score += max((sentence_score(s, question) for s in _sentences(context.content, include_tail=False)), default=0)
     if law_match:
@@ -828,6 +871,12 @@ _OFFICIAL_ONLY_CAP = 1500
 # 2026-10-08). Katmanlı sürümde resmî katman yine tam puanlandığı için (5 000 eşleşmeye kadar) erken geçiş cevabın
 # dayandığı doğrulanmış kaynakları değiştirmez; yalnız doğrulanmamış toplu katman örneklenir ve sonuç "partial" olur.
 _FULL_RANKING_FIRST_BUDGET_MS = 2500
+# A question this long becomes ONE query that requires every distinctive word in the same chunk. Such a query matches nothing (a
+# natural paragraph never co-occurs in one chunk) but still reads the long posting lists of the common words ("borç", "icra",
+# "karar", "yargıtay": 5-80 % of the 29 M chunks): 5 s cold, a timeout under load, then a 1 500-match sample and the user warning
+# "araştırma eksik olabilir" (measured 2026-10-30: 28-term AND, 0 rows, 7.4 s). The semantic lanes (statutes and decisions) and the
+# planner's short per-part queries carry such questions; the mandatory legal phrase is still searched on its own.
+_LONG_QUESTION_TERMS = 12
 
 
 def _tiered_variant(sql: str, seed_cap: int = _TIERED_SEED_CAP, official_cap: int | None = None) -> str:
@@ -993,9 +1042,18 @@ def _retrieve_legacy_contexts(
 # ranking. A row_number over every embedding prevents a bounded nearest-neighbor
 # plan. RLS, model identity, source status and temporal rules are preserved.
 SEMANTIC_RETRIEVAL_SQL = f"""
-WITH nearest AS MATERIALIZED (
-    SELECT chunk.id, chunk.embedding <=> %(embedding)s::vector AS distance
+WITH coarse AS MATERIALIZED (
+    -- 768 bite sıkıştırılmış vektör üzerinde HNSW (idx_legal_chunks_embedding_bq, 2026-10-24): 15 milyon tam vektörlük graf belleğe
+    -- sığmıyordu; ikili graf sığar. Adaylar burada bulunur, aşağıda tam vektörle (kosinüs) yeniden sıralanır.
+    SELECT chunk.id
     FROM legal_chunks chunk
+    WHERE chunk.embedding IS NOT NULL
+    ORDER BY binary_quantize(chunk.embedding)::bit(768) <~> binary_quantize(%(embedding)s::vector)::bit(768)
+    LIMIT %(coarse_limit)s
+), nearest AS MATERIALIZED (
+    SELECT chunk.id, chunk.embedding <=> %(embedding)s::vector AS distance
+    FROM coarse
+    JOIN legal_chunks chunk ON chunk.id = coarse.id
     JOIN legal_sources ls ON ls.id = chunk.legal_source_id
     {_DETAIL_JOINS}
     WHERE chunk.embedding IS NOT NULL
@@ -1064,6 +1122,8 @@ def retrieve_contexts(
     query_embedding: list[float] | None = None, embedding_model: str | None = None,
     as_of: date | None = None, lexical_mode: str = "auto", diagnostics: dict | None = None,
     legislation_embedding: list[float] | None = None,
+    parallel_public_vectors: bool = False,
+    expand_legislation: bool = False,
 ) -> list[RAGContext]:
     """Selective full-corpus lexical + optional ANN search; never unbounded OR.
 
@@ -1084,8 +1144,9 @@ def retrieve_contexts(
     started = monotonic()
     errors = []
     completed = 0
+    state_lock = Lock()
 
-    def run(name, sql, params, budget, first_budget_ms=None):
+    def run(name, sql, params, budget, first_budget_ms=None, *, branch_connection=None):
         nonlocal completed
         tick = monotonic()
         tiered = _tiered_variant(sql)
@@ -1107,14 +1168,18 @@ def retrieve_contexts(
         try:
             for attempt_sql, timeout, label, samples_seed_tier in attempts:
                 try:
-                    rows = _execute_retrieval(connection, attempt_sql, params, timeout=timeout)
+                    rows = _execute_retrieval(
+                        connection if branch_connection is None else branch_connection,
+                        attempt_sql, params, timeout=timeout,
+                    )
                 except psycopg.errors.QueryCanceled as exc:
                     failure = exc
                     info['partial'] = True
                     if samples_seed_tier:
                         seed_tier.record(False)
                     continue
-                completed += 1
+                with state_lock:
+                    completed += 1
                 status = label
                 if label != 'ok':
                     info['partial'] = True
@@ -1128,6 +1193,35 @@ def retrieve_contexts(
             info['branches'].append(dict(name=name, status=locals().get('status', 'error'),
                                          seconds=round(monotonic()-tick, 3)))
 
+    def vector_run(name, sql, params):
+        # Correctness-first operation: PostgreSQL's 0 disables this statement's
+        # timeout, not a global server setting. User decision 2026-10-27.
+        budget = '0'
+        if not parallel_public_vectors or not _PUBLIC_VECTOR_SLOTS.acquire(blocking=False):
+            return run(name, sql, params, budget)
+
+        def worker():
+            from api.db import database_connection
+            try:
+                with database_connection() as isolated:
+                    return run(name, sql, params, budget, branch_connection=isolated)
+            except (psycopg.errors.UndefinedColumn, psycopg.errors.UndefinedTable):
+                return []  # optional legislation migrations may not be installed
+            except psycopg.Error as exc:
+                with state_lock:
+                    errors.append(exc)
+                    info['partial'] = True
+                info['branches'].append(dict(name=name, status='connection_error', seconds=0.0))
+                return []
+            finally:
+                _PUBLIC_VECTOR_SLOTS.release()
+
+        try:
+            return _PUBLIC_VECTOR_POOL.submit(worker)
+        except BaseException:
+            _PUBLIC_VECTOR_SLOTS.release()
+            raise
+
     law_nos, articles = question_law_numbers(question), question_article_numbers(question)
     # Multiple explicitly requested articles must not disappear behind the
     # first one (e.g. 4857 m.18 AND m.20). With multiple named laws there is
@@ -1138,6 +1232,9 @@ def retrieve_contexts(
         if law_nos and articles and len(set(law_nos)) == 1 else ()
     )
     explicit = bool(exact_references)
+    # An article reference narrows the provision lookup, not the whole request:
+    # "TBK 315 + Yargıtay decisions" must still search the decision corpus.
+    article_only = explicit and not case_law_requested(question)
     intent = question_intent(question)
     reference = (exact_references[0] if len(exact_references) == 1
                  else (intent.statute if not law_nos and intent else None))
@@ -1160,11 +1257,12 @@ def retrieve_contexts(
             raise errors[0]
         if len([group for group in grouped if group]) != len(grouped):
             info['partial'] = True
-        return statute[:top_k]
+        if article_only:
+            return statute[:top_k]
     if reference:
         statute = run('statute', STATUTE_RETRIEVAL_SQL, dict(law_no=reference[0],
                       article_no=reference[1], as_of=as_of, top_k=max(top_k, 8)), '3s')
-        if explicit:
+        if article_only:
             info['seconds'] = round(monotonic()-started, 3)
             if errors and not completed:
                 raise errors[0]
@@ -1181,30 +1279,37 @@ def retrieve_contexts(
         sql = _lexical_sql(historical=as_of is not None, mode='narrow')
     semantic = []
     if query_embedding is not None and embedding_model:
-        semantic = run('semantic', SEMANTIC_RETRIEVAL_SQL,
-                       dict(params, embedding=vector_literal(query_embedding),
-                            embedding_model=embedding_model,
-                            candidate_limit=min(192, max(96, top_k * 12))), '3s')
+        from api.ai.vector_index import shared_vector_index_ready
+        index_ready = shared_vector_index_ready(connection)
+        info['semantic_index_status'] = 'missing' if index_ready is False else 'ready' if index_ready else 'unknown'
+        if index_ready is False:
+            # Sorting millions of vectors without ANN is not a useful 3-second
+            # fallback. Retain indexed legislation + lexical retrieval and tell
+            # diagnostics that the shared semantic lane is unavailable.
+            info['partial'] = True
+            info['branches'].append(dict(name='semantic', status='skipped_unindexed', seconds=0.0))
+        else:
+            semantic = vector_run('semantic', SEMANTIC_RETRIEVAL_SQL,
+                           dict(params, embedding=vector_literal(query_embedding),
+                                embedding_model=embedding_model,
+                                candidate_limit=min(192, max(96, top_k * 12)), coarse_limit=600))
     legislative = []
     m3: list[RAGContext] = []
-    if query_embedding is not None and embedding_model and not statute:
+    if query_embedding is not None and embedding_model and (not statute or expand_legislation):
         try:
-            legislative = run('legislation_semantic', LEGISLATION_SEMANTIC_SQL,
+            legislative = vector_run('legislation_semantic', LEGISLATION_SEMANTIC_SQL,
                               dict(params, embedding=vector_literal(query_embedding), embedding_model=embedding_model,
-                                   legislation_limit=_LEGISLATION_SEMANTIC_LIMIT), '2s')
+                                   legislation_limit=_LEGISLATION_SEMANTIC_LIMIT))
         except psycopg.errors.UndefinedTable:
             legislative = []  # migration 060 not applied yet: the shared ANN branch still runs
-    if legislation_embedding is not None and not statute:
+    if legislation_embedding is not None and (not statute or expand_legislation):
         # Independent model: a shared-vector outage must not discard a valid M3 query.
         try:
-            m3 = run('legislation_m3', LEGISLATION_M3_SQL,
+            m3 = vector_run('legislation_m3', LEGISLATION_M3_SQL,
                      dict(params, legislation_embedding=vector_literal(legislation_embedding),
-                          legislation_limit=_LEGISLATION_SEMANTIC_LIMIT), '2s')
+                          legislation_limit=_LEGISLATION_SEMANTIC_LIMIT))
         except (psycopg.errors.UndefinedColumn, psycopg.errors.UndefinedTable):
             m3 = []
-        seen = {c.chunk_id for c in m3}
-        legislative = m3 + [c for c in legislative if c.chunk_id not in seen]
-        info['legislation_m3_candidates'] = len(m3)
     # Embedding coverage is incomplete. Always query the text index as well:
     # finding a few ANN hits is not evidence that the remaining corpus is empty.
     # Each branch retains a deadline; a failed branch cannot erase other hits.
@@ -1219,7 +1324,8 @@ def retrieve_contexts(
         sufficient = len({c.source_id for c in eligible}) >= top_k
         remaining_ms = int((8 - (monotonic() - lexical_started)) * 1000)
         info['lexical_strategy'] = 'statute_linked'
-        if not sufficient and remaining_ms > 0 and info['branches'][-1]['status'] == 'ok':
+        focused_status = next(b['status'] for b in reversed(info['branches']) if b['name'] == 'lexical_focused')
+        if not sufficient and remaining_ms > 0 and focused_status == 'ok':
             lexical += run('lexical', sql, params, f'{remaining_ms}ms')
             lexical = list({c.chunk_id: c for c in lexical}.values())
             info['lexical_strategy'] = 'statute_linked_then_broad'
@@ -1228,8 +1334,33 @@ def retrieve_contexts(
     else:
         # Geniş arama: tam sıralı sürüme kısa ilk süre, yetişmezse katmanlı sürüm (bkz. _FULL_RANKING_FIRST_BUDGET_MS).
         # Maddeye bağlı odaklı aramanın (yukarıda) ölçülmüş ortak süresi değişmez.
-        lexical = run('lexical', sql, params, '8s', _FULL_RANKING_FIRST_BUDGET_MS)
-        info['lexical_strategy'] = 'broad'
+        # Only when the shared (decision) semantic lane runs: the planner's per-part searches send no such vector and rely on this
+        # lexical lane for decisions, so they must keep it.
+        if query_embedding is not None and embedding_model and len(plan.text.split()) > _LONG_QUESTION_TERMS:
+            lexical = []
+            info['lexical_strategy'] = 'skipped_long_question'
+            info['branches'].append(dict(name='lexical', status='skipped_long_question', seconds=0.0))
+        else:
+            lexical = run('lexical', sql, params, '8s', _FULL_RANKING_FIRST_BUDGET_MS)
+            info['lexical_strategy'] = 'broad'
+    if not lexical and not intent and not explicit and plan.phrase and plan.text != plan.phrase:
+        # Verbose answer-format requests need not occur in a judgment. Keep
+        # the original search, then search the SAME mandatory legal phrase
+        # independently. Trust, history and phrase constraints are unchanged.
+        concept_params = dict(params, question=plan.phrase, required_phrase=plan.phrase)
+        # Turkish stemming reduces 'işe iade' to two short lexemes. The
+        # generic >=4-character token pruning would erase BOTH and return no
+        # query. Phrase search must preserve every dictionary lexeme.
+        concept_ctes = "search_query AS (SELECT phraseto_tsquery('turkish', %(required_phrase)s) AS value)"
+        concept_sql = _historical_lexical_sql(concept_ctes) if as_of else _current_lexical_sql(concept_ctes)
+        lexical = run('lexical_concept', concept_sql, concept_params, '8s', _FULL_RANKING_FIRST_BUDGET_MS)
+        info['lexical_strategy'] = 'broad_then_concept'
+    semantic, legislative, m3 = [value.result() if isinstance(value, Future) else value
+                                 for value in (semantic, legislative, m3)]
+    if legislation_embedding is not None and (not statute or expand_legislation):
+        seen = {c.chunk_id for c in m3}
+        legislative = m3 + [c for c in legislative if c.chunk_id not in seen]
+        info['legislation_m3_candidates'] = len(m3)
     candidates = relevant_contexts(question, lexical + semantic)
     unique_candidates = {c.chunk_id: c for c in statute + lexical + semantic}
     relevant_ids = {c.chunk_id for c in relevant_contexts(question, list(unique_candidates.values()))}
@@ -1255,7 +1386,7 @@ def retrieve_contexts(
         preferred = sorted(provisions, key=lambda c: _hit_quality_score(question, c), reverse=True)[:2]
         ids = {c.chunk_id for c in preferred}
         ranked = (preferred + [c for c in ranked if c.chunk_id not in ids])[:top_k]
-    elif legislative:
+    if legislative:
         # The closest relevant provisions keep a place next to the many matching decisions; "relevant" is the same
         # term-overlap gate every other branch passes, so a near-but-unrelated article is not forced in.
         # Ordered by term fit first: the embedding model ranks "HMK m. 16 yetki" above "TBK m. 72 zamanaşımı" for a

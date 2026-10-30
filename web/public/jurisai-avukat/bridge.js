@@ -4,17 +4,40 @@
    (betik orada yüklenmez); arka plan betiği de gönderenin JurisAI kaynağından geldiğini ayrıca denetler.
    Köprü UYAP şifresi, e-imza ya da oturum çerezi taşımaz: yalnız komut ve sonuç (dosya listesi gibi) geçer. */
 (() => {
-  const COMMANDS = new Set(["PING", "LIST_DOSYALAR", "OPEN_DOSYA", "SET_KEY", "TREE", "DETAIL", "RECOVER_READ", "JOB_STATUS", "CURRENT_JOB", "PULL_IDS", "STOP_JOB", "DIAGNOSE"]);
+  const COMMANDS = new Set([
+    "PING",
+    "LIST_DOSYALAR",
+    "OPEN_DOSYA",
+    "SET_KEY",
+    "TREE",
+    "DETAIL",
+    "RECOVER_READ",
+    "JOB_STATUS",
+    "CURRENT_JOB",
+    "PULL_IDS",
+    "STOP_JOB",
+    "DIAGNOSE",
+  ]);
 
   function onMessage(event) {
     // Eklenti yeniden yüklendiyse bu kopya yetim kalır (chrome.runtime.id yok): yeni kopya yanıt versin.
     if (!chrome.runtime?.id) return;
     if (event.source !== window || event.origin !== location.origin) return;
     const data = event.data;
-    if (!data || data.source !== "jurisai-web" || typeof data.id !== "string" || !COMMANDS.has(data.type)) return;
-    const reply = (body) => window.postMessage({ source: "jurisai-extension", id: data.id, ...body }, location.origin);
+    if (
+      !data ||
+      data.source !== "jurisai-web" ||
+      typeof data.id !== "string" ||
+      !COMMANDS.has(data.type)
+    )
+      return;
+    const reply = (body) =>
+      window.postMessage({ source: "jurisai-extension", id: data.id, ...body }, location.origin);
     chrome.runtime
-      .sendMessage({ type: `BRIDGE_${data.type}`, payload: data.payload && typeof data.payload === "object" ? data.payload : {} })
+      .sendMessage({
+        type: `BRIDGE_${data.type}`,
+        payload: data.payload && typeof data.payload === "object" ? data.payload : {},
+      })
       .then((out) => reply(out || { ok: false, error: "Eklenti yanıt vermedi" }))
       .catch((error) => reply({ ok: false, error: error?.message || "Eklentiye ulaşılamadı" }));
   }

@@ -138,7 +138,12 @@ export function CaseDetailView({
             type="button"
             key={name}
             aria-pressed={tab === name}
-            className={`${actionClass} ${tab === name ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}
+            className={
+              tab === name
+                ? // Seçili sekme fare üzerindeyken de kendi rengini korur (hover:bg-secondary yazıyı görünmez yapıyordu).
+                  `${actionClass.replace("hover:bg-secondary", "")} bg-primary text-primary-foreground`
+                : `${actionClass} text-muted-foreground`
+            }
             onClick={() => setTab(name)}
           >
             {name}

@@ -87,7 +87,12 @@ class _FakeClient:
 
     def fetch_article_html(self, madde_id: str) -> str:
         self.article_calls.append(madde_id)
-        return self.html
+        # Fixture bodies must match the requested node; previously every
+        # article reused m.25, masking article-identity corruption.
+        import re
+        number = next(str(n["maddeNo"]) for n in iter_article_nodes(self.tree)
+                      if str(n["maddeId"]) == madde_id)
+        return re.sub(r"(MADDE\s+)25\b", lambda m: m[1] + number, self.html, flags=re.I)
 
 
 def test_fetcher_archives_article_records_and_skips_duplicates(tmp_path):

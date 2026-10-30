@@ -86,22 +86,31 @@ export interface ExecutionData {
   labels: Record<string, string>;
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-const count = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : 0);
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+const count = (value: unknown): number =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : 0;
 const text = (value: unknown): string | null => (typeof value === "string" && value ? value : null);
 
 function receipt(value: unknown): ReceiptSummary {
   const item = isRecord(value) ? value : {};
   const total = text(item.total);
-  return { count: count(item.count), read: count(item.read), total: total && /^\d+(\.\d+)?$/.test(total) ? total : null };
+  return {
+    count: count(item.count),
+    read: count(item.read),
+    total: total && /^\d+(\.\d+)?$/.test(total) ? total : null,
+  };
 }
 
 function parseFile(value: unknown): ExecutionFile[] {
   if (!isRecord(value) || typeof value.case_id !== "string") return [];
   const counts: Record<string, number> = {};
-  if (isRecord(value.counts)) for (const [key, amount] of Object.entries(value.counts)) if (count(amount) > 0) counts[key] = count(amount);
+  if (isRecord(value.counts))
+    for (const [key, amount] of Object.entries(value.counts))
+      if (count(amount) > 0) counts[key] = count(amount);
   const receipts: Record<string, ReceiptSummary> = {};
-  if (isRecord(value.receipts)) for (const [key, item] of Object.entries(value.receipts)) receipts[key] = receipt(item);
+  if (isRecord(value.receipts))
+    for (const [key, item] of Object.entries(value.receipts)) receipts[key] = receipt(item);
   return [
     {
       case_id: value.case_id,
@@ -121,7 +130,11 @@ function parseFile(value: unknown): ExecutionFile[] {
 }
 
 const names = (value: unknown): string[] =>
-  Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim() !== "").map((item) => item.slice(0, 200)) : [];
+  Array.isArray(value)
+    ? value
+        .filter((item): item is string => typeof item === "string" && item.trim() !== "")
+        .map((item) => item.slice(0, 200))
+    : [];
 
 function parseListOverview(value: unknown): ExecutionListOverview | null {
   if (!isRecord(value)) return null;
@@ -134,7 +147,8 @@ function parseListOverview(value: unknown): ExecutionListOverview | null {
     debtors: names(value.debtors),
     partyCount: count(value.party_count),
     lastActivity: text(value.last_activity),
-    daysSinceLast: typeof days === "number" && Number.isFinite(days) && days >= 0 ? Math.trunc(days) : null,
+    daysSinceLast:
+      typeof days === "number" && Number.isFinite(days) && days >= 0 ? Math.trunc(days) : null,
     historyEntries: count(value.history_entries),
     positiveQueries: names(value.positive_queries),
   };
@@ -167,14 +181,23 @@ function parseUyap(value: unknown): UyapInfo | null {
 }
 
 /** Doğrulama rozeti: hiç doğrulanmamış dosya "eksiksiz" ya da "eksik" diye gösterilmez. */
-export function verificationLabel(uyap: UyapInfo | null): { text: string; tone: "ok" | "warn" | "none" } {
+export function verificationLabel(uyap: UyapInfo | null): {
+  text: string;
+  tone: "ok" | "warn" | "none";
+} {
   if (!uyap) return { text: "UYAP ile karşılaştırılmadı", tone: "none" };
   const when = uyap.checkedAt ? ` (${dateTr(uyap.checkedAt)})` : "";
   // Doğrulamadan sonra evrak silindiyse eski "eksiksiz" kaydı gösterilmez.
   if (uyap.removedSince > 0)
-    return { text: `Son doğrulamadan${when} sonra ${uyap.removedSince} evrak silinmiş; UYAP'tan yeniden aktarın`, tone: "warn" };
+    return {
+      text: `Son doğrulamadan${when} sonra ${uyap.removedSince} evrak silinmiş; UYAP'tan yeniden aktarın`,
+      tone: "warn",
+    };
   if (uyap.complete) return { text: `UYAP'taki evrakların tamamı aktarılmış${when}`, tone: "ok" };
-  return { text: uyap.missing > 0 ? `${uyap.missing} evrak eksik${when}` : `Aktarım doğrulanamadı${when}`, tone: "warn" };
+  return {
+    text: uyap.missing > 0 ? `${uyap.missing} evrak eksik${when}` : `Aktarım doğrulanamadı${when}`,
+    tone: "warn",
+  };
 }
 
 /** UYAP durum metninin kısa hâli: "Kapalı ( 27.06.2025 11:43:11 )" → "Kapalı". Metin tanınmıyorsa olduğu gibi kalır. */
@@ -189,7 +212,9 @@ export function parseExecution(raw: unknown): ExecutionData {
   const files = Array.isArray(body.files) ? body.files.flatMap(parseFile) : [];
   const summary = isRecord(body.summary) ? body.summary : {};
   const labels: Record<string, string> = {};
-  if (isRecord(body.labels)) for (const [key, label] of Object.entries(body.labels)) if (typeof label === "string") labels[key] = label;
+  if (isRecord(body.labels))
+    for (const [key, label] of Object.entries(body.labels))
+      if (typeof label === "string") labels[key] = label;
   return {
     files,
     labels,
@@ -217,14 +242,18 @@ export function receiptLine(summary: ReceiptSummary | undefined): string {
   if (!summary || summary.count === 0) return "—";
   if (summary.read === 0) return `okunamadı (${summary.count} makbuz)`;
   const base = formatLira(summary.total);
-  return summary.read === summary.count ? `${base} (${summary.count} makbuz)` : `${base} (${summary.count} makbuzdan ${summary.read}'i okundu)`;
+  return summary.read === summary.count
+    ? `${base} (${summary.count} makbuz)`
+    : `${base} (${summary.count} makbuzdan ${summary.read}'i okundu)`;
 }
 
 /** Özet kartının alt notu: kaç makbuzun toplandığı; makbuz yoksa boş. */
 export function receiptNote(summary: ReceiptSummary | undefined): string {
   if (!summary || summary.count === 0) return "";
   if (summary.read === 0) return `okunamadı (${summary.count} makbuz)`;
-  return summary.read === summary.count ? `${summary.count} makbuz` : `${summary.count} makbuzdan ${summary.read}'i okundu`;
+  return summary.read === summary.count
+    ? `${summary.count} makbuz`
+    : `${summary.count} makbuzdan ${summary.read}'i okundu`;
 }
 
 const DATE = /^(\d{4})-(\d{2})-(\d{2})/;
@@ -233,7 +262,10 @@ export function dateTr(value: string | null | undefined): string {
   return match ? `${match[3]}.${match[2]}.${match[1]}` : "—";
 }
 
-export const KIND_LABELS: Record<ExecutionFile["kind"], string> = { takip: "İcra dairesi", mahkeme: "İcra mahkemesi" };
+export const KIND_LABELS: Record<ExecutionFile["kind"], string> = {
+  takip: "İcra dairesi",
+  mahkeme: "İcra mahkemesi",
+};
 
 /** Dairenin adı "(Kapatılan)" ile başlıyorsa daire kapatılmıştır; dosyanın kapandığı anlamına GELMEZ. */
 export function closedOffice(court: string): boolean {
@@ -265,14 +297,23 @@ export function isOpenFile(file: ExecutionFile): boolean | null {
 }
 
 /** Arama kutusu ve süzgeçler: dosya no, daire adı, taraf adı ve UYAP durumuyla eşleşir. */
-export function filterFiles(files: ExecutionFile[], query: string, kind: KindFilter, status: StatusFilter = "all"): ExecutionFile[] {
+export function filterFiles(
+  files: ExecutionFile[],
+  query: string,
+  kind: KindFilter,
+  status: StatusFilter = "all",
+): ExecutionFile[] {
   const needle = lower(query);
   return files.filter((file) => {
     if (kind !== "all" && file.kind !== kind) return false;
     if (status !== "all" && isOpenFile(file) !== (status === "open")) return false;
     if (!needle) return true;
-    const parties = file.overview ? [...file.overview.creditors, ...file.overview.debtors].join(" ") : "";
-    return lower(`${file.file_no ?? ""} ${file.court} ${parties} ${fileStatus(file) ?? ""}`).includes(needle);
+    const parties = file.overview
+      ? [...file.overview.creditors, ...file.overview.debtors].join(" ")
+      : "";
+    return lower(
+      `${file.file_no ?? ""} ${file.court} ${parties} ${fileStatus(file) ?? ""}`,
+    ).includes(needle);
   });
 }
 
@@ -307,7 +348,11 @@ export function daysAgo(days: number | null): string {
 }
 
 /** Dosya satırındaki evrak rozetleri: en çok evrağı olan türler önce, "diğer" en sonda. */
-export function countBadges(counts: Record<string, number>, labels: Record<string, string>, limit = 8): Array<{ key: string; label: string; count: number }> {
+export function countBadges(
+  counts: Record<string, number>,
+  labels: Record<string, string>,
+  limit = 8,
+): Array<{ key: string; label: string; count: number }> {
   return Object.entries(counts)
     .sort(([a, x], [b, y]) => (a === "diger" ? 1 : b === "diger" ? -1 : y - x))
     .slice(0, limit)
@@ -329,6 +374,11 @@ export async function loadExecution(signal?: AbortSignal): Promise<ExecutionData
     if (signal?.aborted) throw error;
     throw new Error("Sunucuya ulaşılamadı.");
   }
-  if (!response.ok) throw new Error(response.status === 401 ? "Oturumunuz sona ermiş; yeniden giriş yapın." : "İcra dosyaları şu an yüklenemiyor.");
+  if (!response.ok)
+    throw new Error(
+      response.status === 401
+        ? "Oturumunuz sona ermiş; yeniden giriş yapın."
+        : "İcra dosyaları şu an yüklenemiyor.",
+    );
   return parseExecution(await response.json().catch(() => null));
 }

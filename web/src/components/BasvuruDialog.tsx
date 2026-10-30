@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { HUKUK_ALANLARI } from "./application-fields";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,18 +16,6 @@ import { submitApplication } from "@/lib/office-api";
 import { PRIVACY_NOTICE_VERSION } from "@/lib/legal";
 import { toast } from "sonner";
 import { ArrowLeft, CheckCircle2, Loader2 } from "lucide-react";
-
-export const HUKUK_ALANLARI = [
-  "İş Hukuku",
-  "Aile Hukuku",
-  "Ceza Hukuku",
-  "Borçlar / Kira",
-  "İcra & İflas",
-  "Ticaret Hukuku",
-  "Miras Hukuku",
-  "Tüketici Hukuku",
-  "Diğer",
-];
 
 interface Props {
   open: boolean;
@@ -172,7 +161,13 @@ export const BasvuruDialog = ({ open, onOpenChange, sohbetOzeti }: Props) => {
               />
             </div>
             <label className="flex items-start gap-2 text-xs leading-relaxed text-muted-foreground">
-              <input type="checkbox" className="mt-0.5" checked={consent} onChange={(event) => setConsent(event.target.checked)} data-testid="kvkk-consent" />
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={consent}
+                onChange={(event) => setConsent(event.target.checked)}
+                data-testid="kvkk-consent"
+              />
               <span>
                 <a href="/gizlilik" target="_blank" rel="noreferrer" className="underline">
                   KVKK aydınlatma metnini
@@ -184,7 +179,11 @@ export const BasvuruDialog = ({ open, onOpenChange, sohbetOzeti }: Props) => {
               <Button variant="outline" className="rounded-full" onClick={() => setStep(1)}>
                 <ArrowLeft className="h-4 w-4" />
               </Button>
-              <Button className="flex-1 rounded-full" disabled={saving || !consent} onClick={submit}>
+              <Button
+                className="flex-1 rounded-full"
+                disabled={saving || !consent}
+                onClick={submit}
+              >
                 {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : "Başvuruyu Gönder"}
               </Button>
             </div>

@@ -4,7 +4,8 @@ import { Loader2, RefreshCw, Search } from "lucide-react";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { ExecutionAsk } from "@/components/ExecutionAsk";
 import { Button } from "@/components/ui/button";
-import { Link, useNavigate } from "@/lib/router-compat";
+import { Link } from "@/lib/router-compat";
+import { useNavigate } from "@/lib/router-hooks";
 import { cn } from "@/lib/utils";
 import {
   KIND_LABELS,
@@ -88,7 +89,10 @@ const ExecutionPage = () => {
     () => (data ? sortFiles(filterFiles(data.files, query, kind, status), order) : []),
     [data, query, kind, status, order],
   );
-  const openCount = useMemo(() => (data ? data.files.filter((file) => isOpenFile(file) === true).length : 0), [data]);
+  const openCount = useMemo(
+    () => (data ? data.files.filter((file) => isOpenFile(file) === true).length : 0),
+    [data],
+  );
   const summary = data?.summary;
 
   return (
@@ -96,13 +100,26 @@ const ExecutionPage = () => {
       title="İcra Takibi"
       subtitle="UYAP'tan aktarılan icra dosyaları ve evrakları"
       actions={
-        <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading} aria-label="Yenile">
-          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => void load()}
+          disabled={loading}
+          aria-label="Yenile"
+        >
+          {loading ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <RefreshCw className="h-4 w-4" />
+          )}
         </Button>
       }
     >
       {error && (
-        <p role="alert" className="mb-4 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+        <p
+          role="alert"
+          className="mb-4 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"
+        >
           {error}
         </p>
       )}
@@ -114,10 +131,15 @@ const ExecutionPage = () => {
       )}
 
       {data && data.files.length === 0 && !error && (
-        <section role="status" className="max-w-2xl rounded-xl border border-border bg-card p-6" data-testid="execution-empty">
+        <section
+          role="status"
+          className="max-w-2xl rounded-xl border border-border bg-card p-6"
+          data-testid="execution-empty"
+        >
           <h2 className="text-lg font-semibold">Henüz icra dosyası yok</h2>
           <p className="mt-2 text-sm text-muted-foreground">
-            İcra dosyaları UYAP'tan aktarıldığında burada listelenir; adı "İcra Dairesi" ya da "İcra Hukuk Mahkemesi" olan her dosya otomatik tanınır.
+            İcra dosyaları UYAP'tan aktarıldığında burada listelenir; adı "İcra Dairesi" ya da "İcra
+            Hukuk Mahkemesi" olan her dosya otomatik tanınır.
           </p>
           <Link to="/dashboard/uyap" className="mt-3 inline-block text-sm text-primary underline">
             UYAP'a Bağlan sayfasına git
@@ -152,8 +174,9 @@ const ExecutionPage = () => {
             />
           </div>
           <p className="mt-3 text-xs text-muted-foreground" role="note">
-            Tutarlar makbuz metninden okunur, hesaplanmaz: tek ve açık bir tutar okunamayan makbuz toplama girmez ve yukarıda sayıyla belirtilir.
-            Belge taranmış görüntüyse ya da henüz okunmadıysa tutar görünmez. Önemli kararlardan önce makbuzun aslına bakın.
+            Tutarlar makbuz metninden okunur, hesaplanmaz: tek ve açık bir tutar okunamayan makbuz
+            toplama girmez ve yukarıda sayıyla belirtilir. Belge taranmış görüntüyse ya da henüz
+            okunmadıysa tutar görünmez. Önemli kararlardan önce makbuzun aslına bakın.
           </p>
 
           <div className="mt-5 flex flex-wrap items-center gap-3">
@@ -176,14 +199,20 @@ const ExecutionPage = () => {
                   onClick={() => setKind(item.key)}
                   className={cn(
                     "rounded-full border px-3 py-1.5 font-medium transition-colors",
-                    kind === item.key ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card text-muted-foreground hover:text-foreground",
+                    kind === item.key
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-border bg-card text-muted-foreground hover:text-foreground",
                   )}
                 >
                   {item.label}
                 </button>
               ))}
             </div>
-            <div className="flex items-center gap-1.5 text-xs" role="group" aria-label="UYAP durumu">
+            <div
+              className="flex items-center gap-1.5 text-xs"
+              role="group"
+              aria-label="UYAP durumu"
+            >
               {STATUS_FILTERS.map((item) => (
                 <button
                   key={item.key}
@@ -192,7 +221,9 @@ const ExecutionPage = () => {
                   onClick={() => setStatus(item.key)}
                   className={cn(
                     "rounded-full border px-3 py-1.5 font-medium transition-colors",
-                    status === item.key ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card text-muted-foreground hover:text-foreground",
+                    status === item.key
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-border bg-card text-muted-foreground hover:text-foreground",
                   )}
                 >
                   {item.label}
@@ -215,7 +246,9 @@ const ExecutionPage = () => {
 
           <div className="mt-4 overflow-hidden rounded-2xl border border-border bg-card shadow-card-elite">
             {visible.length === 0 ? (
-              <p className="p-6 text-center text-sm text-muted-foreground">Aramayla eşleşen icra dosyası yok.</p>
+              <p className="p-6 text-center text-sm text-muted-foreground">
+                Aramayla eşleşen icra dosyası yok.
+              </p>
             ) : (
               <table className="w-full text-sm" data-testid="execution-table">
                 <thead>
@@ -223,7 +256,9 @@ const ExecutionPage = () => {
                     <th className="px-3 py-3 font-medium sm:px-6">Dosya</th>
                     <th className="hidden px-6 py-3 font-medium lg:table-cell">Evraklar</th>
                     <th className="hidden px-6 py-3 font-medium md:table-cell">Tahsilat</th>
-                    <th className="hidden px-6 py-3 font-medium sm:table-cell">Son işlem / evrak</th>
+                    <th className="hidden px-6 py-3 font-medium sm:table-cell">
+                      Son işlem / evrak
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -245,23 +280,31 @@ const ExecutionPage = () => {
                           {file.court}
                           {closedOffice(file.court) && " · daire kapatılmış"}
                         </div>
-                        {file.overview && (file.overview.creditors.length > 0 || file.overview.debtors.length > 0) && (
-                          <div className="mt-0.5 break-words text-xs" data-testid="execution-parties-line">
-                            {file.overview.creditors.length > 0 && (
-                              <>
-                                <span className="text-muted-foreground">Alacaklı: </span>
-                                {namesLine(file.overview.creditors)}
-                              </>
-                            )}
-                            {file.overview.creditors.length > 0 && file.overview.debtors.length > 0 && <span className="text-muted-foreground"> · </span>}
-                            {file.overview.debtors.length > 0 && (
-                              <>
-                                <span className="text-muted-foreground">Borçlu: </span>
-                                {namesLine(file.overview.debtors)}
-                              </>
-                            )}
-                          </div>
-                        )}
+                        {file.overview &&
+                          (file.overview.creditors.length > 0 ||
+                            file.overview.debtors.length > 0) && (
+                            <div
+                              className="mt-0.5 break-words text-xs"
+                              data-testid="execution-parties-line"
+                            >
+                              {file.overview.creditors.length > 0 && (
+                                <>
+                                  <span className="text-muted-foreground">Alacaklı: </span>
+                                  {namesLine(file.overview.creditors)}
+                                </>
+                              )}
+                              {file.overview.creditors.length > 0 &&
+                                file.overview.debtors.length > 0 && (
+                                  <span className="text-muted-foreground"> · </span>
+                                )}
+                              {file.overview.debtors.length > 0 && (
+                                <>
+                                  <span className="text-muted-foreground">Borçlu: </span>
+                                  {namesLine(file.overview.debtors)}
+                                </>
+                              )}
+                            </div>
+                          )}
                         <div className="mt-0.5 text-xs text-muted-foreground">
                           {KIND_LABELS[file.kind]} · {file.documents} evrak
                           {file.overview?.type ? ` · ${file.overview.type}` : ""}
@@ -269,13 +312,17 @@ const ExecutionPage = () => {
                           {file.uyap?.rol ? ` · ${file.uyap.rol}` : ""}
                         </div>
                         {file.overview && file.overview.positiveQueries.length > 0 && (
-                          <div className="mt-0.5 text-xs text-emerald-700 dark:text-emerald-300" data-testid="execution-positive-queries">
+                          <div
+                            className="mt-0.5 text-xs text-emerald-700 dark:text-emerald-300"
+                            data-testid="execution-positive-queries"
+                          >
                             Sorgu sonucu “VAR” yazan: {file.overview.positiveQueries.join(", ")}
                           </div>
                         )}
                         {file.overview?.lastActivity && (
                           <div className="mt-0.5 text-xs text-muted-foreground sm:hidden">
-                            Son işlem: {dateTr(file.overview.lastActivity)} ({daysAgo(file.overview.daysSinceLast)})
+                            Son işlem: {dateTr(file.overview.lastActivity)} (
+                            {daysAgo(file.overview.daysSinceLast)})
                           </div>
                         )}
                         {(() => {
@@ -297,7 +344,9 @@ const ExecutionPage = () => {
                         {file.detail && (
                           <div className="mt-0.5 text-xs" data-testid="execution-account">
                             <span className="text-muted-foreground">UYAP dosya hesabı: </span>
-                            {accountLine(file.detail.account) || <span className="text-muted-foreground">yazılı bilgi yok</span>}
+                            {accountLine(file.detail.account) || (
+                              <span className="text-muted-foreground">yazılı bilgi yok</span>
+                            )}
                             {" · "}
                             <Link
                               to={`/dashboard/cases/${file.case_id}?tab=uyap`}
@@ -308,28 +357,42 @@ const ExecutionPage = () => {
                             </Link>
                           </div>
                         )}
-                        <div className="mt-1 text-xs text-muted-foreground md:hidden">Tahsilat: {receiptLine(file.receipts.tahsilat)}</div>
+                        <div className="mt-1 text-xs text-muted-foreground md:hidden">
+                          Tahsilat: {receiptLine(file.receipts.tahsilat)}
+                        </div>
                       </td>
                       <td className="hidden px-6 py-4 lg:table-cell">
                         <div className="flex flex-wrap gap-1.5">
                           {countBadges(file.counts, data.labels).map((badge) => (
-                            <span key={badge.key} className="rounded-full border border-border bg-secondary/50 px-2 py-0.5 text-xs">
+                            <span
+                              key={badge.key}
+                              className="rounded-full border border-border bg-secondary/50 px-2 py-0.5 text-xs"
+                            >
                               {badge.label} <span className="font-medium">{badge.count}</span>
                             </span>
                           ))}
                         </div>
                       </td>
-                      <td className="hidden px-6 py-4 text-xs md:table-cell">{receiptLine(file.receipts.tahsilat)}</td>
-                      <td className="hidden px-6 py-4 text-xs sm:table-cell" data-testid="execution-last-activity">
+                      <td className="hidden px-6 py-4 text-xs md:table-cell">
+                        {receiptLine(file.receipts.tahsilat)}
+                      </td>
+                      <td
+                        className="hidden px-6 py-4 text-xs sm:table-cell"
+                        data-testid="execution-last-activity"
+                      >
                         {file.overview?.lastActivity ? (
                           <>
                             <div>İşlem: {dateTr(file.overview.lastActivity)}</div>
-                            <div className="text-muted-foreground">{daysAgo(file.overview.daysSinceLast)}</div>
+                            <div className="text-muted-foreground">
+                              {daysAgo(file.overview.daysSinceLast)}
+                            </div>
                           </>
                         ) : (
                           <div className="text-muted-foreground">İşlem: UYAP bilgisi yok</div>
                         )}
-                        <div className="mt-1 text-muted-foreground">Evrak: {dateTr(file.last_date)}</div>
+                        <div className="mt-1 text-muted-foreground">
+                          Evrak: {dateTr(file.last_date)}
+                        </div>
                       </td>
                     </tr>
                   ))}

@@ -33,7 +33,8 @@ export function ExecutionAsk() {
       const answer = await askExecution(asked, controller.signal);
       if (!controller.signal.aborted) setState({ answer });
     } catch (error) {
-      if (!controller.signal.aborted) setState({ error: error instanceof Error ? error.message : "Soru yanıtlanamadı." });
+      if (!controller.signal.aborted)
+        setState({ error: error instanceof Error ? error.message : "Soru yanıtlanamadı." });
     }
   };
 
@@ -41,13 +42,17 @@ export function ExecutionAsk() {
   const examples = answer && answer.examples.length ? answer.examples : STARTERS;
 
   return (
-    <section className="mb-5 rounded-2xl border border-border bg-card p-4 shadow-card-elite" aria-labelledby="execution-ask-title" data-testid="execution-ask">
+    <section
+      className="mb-5 rounded-2xl border border-border bg-card p-4 shadow-card-elite"
+      aria-labelledby="execution-ask-title"
+      data-testid="execution-ask"
+    >
       <h2 id="execution-ask-title" className="text-sm font-semibold">
         Dosyalarıma sor
       </h2>
       <p className="mt-0.5 text-xs text-muted-foreground">
-        Bütün icra dosyalarınızda UYAP kayıtlarına göre arar: durum, borçlu sorguları, işlemler, son işlem tarihi, taraf adı. Cevap her
-        zaman kayıtların kendisidir; tahmin içermez.
+        Bütün icra dosyalarınızda UYAP kayıtlarına göre arar: durum, borçlu sorguları, işlemler, son
+        işlem tarihi, taraf adı. Cevap her zaman kayıtların kendisidir; tahmin içermez.
       </p>
       <form
         className="mt-3 flex flex-wrap gap-2"
@@ -97,29 +102,45 @@ export function ExecutionAsk() {
               {answerHeadline(answer)}
             </span>
             {answer.understood.length > 0 && (
-              <span className="text-xs text-muted-foreground" data-testid="execution-ask-understood">
+              <span
+                className="text-xs text-muted-foreground"
+                data-testid="execution-ask-understood"
+              >
                 Şöyle anladım: {answer.understood.join(" · ")}
               </span>
             )}
           </div>
           {answer.note && (
-            <p role="note" className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-2 text-xs text-amber-800 dark:text-amber-300">
+            <p
+              role="note"
+              className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-2 text-xs text-amber-800 dark:text-amber-300"
+            >
               {answer.note}
             </p>
           )}
-          {answer.ok && answer.rows.length === 0 && <p className="mt-2 text-sm text-muted-foreground">Bu süzgece uyan dosya yok.</p>}
+          {answer.ok && answer.rows.length === 0 && (
+            <p className="mt-2 text-sm text-muted-foreground">Bu süzgece uyan dosya yok.</p>
+          )}
           {answer.rows.length > 0 && (
-            <ul className="mt-3 divide-y divide-border rounded-xl border border-border" data-testid="execution-ask-rows">
+            <ul
+              className="mt-3 divide-y divide-border rounded-xl border border-border"
+              data-testid="execution-ask-rows"
+            >
               {answer.rows.map((row) => (
                 <li key={row.caseId} className="p-3 text-sm sm:px-4">
                   <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5">
-                    <Link to={`/dashboard/cases/${row.caseId}?tab=icra`} className="font-medium hover:underline">
+                    <Link
+                      to={`/dashboard/cases/${row.caseId}?tab=icra`}
+                      className="font-medium hover:underline"
+                    >
                       {row.fileNo ?? "Numarasız dosya"}
                       <span className="font-normal text-muted-foreground"> · {row.court}</span>
                     </Link>
                     <span className="text-xs text-muted-foreground">
                       {row.status ? `UYAP durumu: ${row.status}` : ""}
-                      {row.lastActivity ? `${row.status ? " · " : ""}son işlem ${dateTr(row.lastActivity)} (${daysAgo(row.daysSinceLast)})` : ""}
+                      {row.lastActivity
+                        ? `${row.status ? " · " : ""}son işlem ${dateTr(row.lastActivity)} (${daysAgo(row.daysSinceLast)})`
+                        : ""}
                     </span>
                   </div>
                   {(row.creditors.length > 0 || row.debtors.length > 0) && (
@@ -144,7 +165,8 @@ export function ExecutionAsk() {
           )}
           {answer.ok && (
             <p className="mt-2 text-xs text-muted-foreground">
-              Satırlar UYAP'tan çekilen kayıtlardır; “VAR” ve “YOK” UYAP'ın yazdığı ifadedir, içeriği için dosyadaki sorgu sonucuna bakın.
+              Satırlar UYAP'tan çekilen kayıtlardır; “VAR” ve “YOK” UYAP'ın yazdığı ifadedir,
+              içeriği için dosyadaki sorgu sonucuna bakın.
             </p>
           )}
         </div>

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import psycopg
+import pytest
 from dataclasses import replace
 from types import SimpleNamespace
 from uuid import UUID
 
+from api.ai import pipeline
 from api.ai.pipeline import CONSULTED_SOURCE_LIMIT, _response_from_verified, consulted_sources
 from api.ai.verification import VerifiedAnswer
 from api.schemas import AIAnswerRequest
@@ -108,12 +112,6 @@ def test_response_without_consulted_contexts_has_an_empty_list():
 
 # --- soğuk önbellekte ilk arama: bir kez yeniden denenir -------------------------------------
 
-import asyncio
-
-import psycopg
-import pytest
-
-from api.ai import pipeline
 
 
 def _run(coro):

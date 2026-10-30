@@ -9,7 +9,17 @@ export interface LegalSection {
 }
 
 /** Hukuki metin sayfası: başlık, sürüm, taslak uyarısı ve numaralı bölümler. */
-export function LegalPage({ title, version, intro, sections }: { title: string; version: string; intro?: ReactNode; sections: LegalSection[] }) {
+export function LegalPage({
+  title,
+  version,
+  intro,
+  sections,
+}: {
+  title: string;
+  version: string;
+  intro?: ReactNode;
+  sections: LegalSection[];
+}) {
   return (
     <div className="flex min-h-screen flex-col bg-background">
       <SiteHeader />
@@ -19,15 +29,24 @@ export function LegalPage({ title, version, intro, sections }: { title: string; 
           Sürüm: {version}
         </p>
         {LEGAL_DRAFT && (
-          <p role="note" className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-amber-800 dark:text-amber-300" data-testid="legal-draft">
-            Bu metin <strong>taslaktır</strong>: yayından önce bir hukuk danışmanı tarafından gözden geçirilmeli ve köşeli parantezli alanlar (veri sorumlusu bilgileri, saklama süreleri)
+          <p
+            role="note"
+            className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-amber-800 dark:text-amber-300"
+            data-testid="legal-draft"
+          >
+            Bu metin <strong>taslaktır</strong>: yayından önce bir hukuk danışmanı tarafından gözden
+            geçirilmeli ve köşeli parantezli alanlar (veri sorumlusu bilgileri, saklama süreleri)
             doldurulmalıdır.
           </p>
         )}
         {intro && <div className="mt-4 text-sm leading-relaxed text-muted-foreground">{intro}</div>}
         <div className="mt-8 space-y-8">
           {sections.map((section, index) => (
-            <section key={section.title} aria-labelledby={`bolum-${index + 1}`} className="space-y-2 text-sm leading-relaxed">
+            <section
+              key={section.title}
+              aria-labelledby={`bolum-${index + 1}`}
+              className="space-y-2 text-sm leading-relaxed"
+            >
               <h2 id={`bolum-${index + 1}`} className="text-base font-semibold">
                 {index + 1}. {section.title}
               </h2>

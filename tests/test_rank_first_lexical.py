@@ -4,7 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_ai_persistence import connection, _seed_decision, _seed_legislation, TOKEN
+from tests.test_ai_persistence import connection as _connection_fixture, _seed_decision, _seed_legislation, TOKEN
+
+connection = _connection_fixture
 
 
 def test_rank_first_migration_is_safe_and_keeps_unlimited_compatibility():

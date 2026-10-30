@@ -9,8 +9,10 @@ from pydantic import ValidationError
 
 from api import account, account_export, office, uyap_runs
 from api.main import app
-from tests.test_case_document_rag import db, needs_db  # noqa: F401
+from tests.test_case_document_rag import db as _db_fixture, needs_db
 from tests.test_uyap_sync import REQUEST, _case
+
+db = _db_fixture
 
 
 def checkpoint(**extra):

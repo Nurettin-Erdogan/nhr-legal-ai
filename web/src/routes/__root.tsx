@@ -6,12 +6,13 @@ import {
   HeadContent,
   Scripts,
 } from "@tanstack/react-router";
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useMemo, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { Link } from "@/lib/router-compat";
 import { Toaster } from "@/components/ui/sonner";
+import { ConfirmDialogHost } from "@/components/ConfirmDialog";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { AuthProvider } from "@/components/AuthProvider";
@@ -38,7 +39,12 @@ function NotFoundComponent() {
   );
 }
 
-function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
+function ErrorComponent({ error: raised, reset }: { error: unknown; reset: () => void }) {
+  // Yönlendirici hatayı `unknown` verir (TanStack Router 1.170.46); bileşen Error bekler.
+  const error = useMemo(
+    () => (raised instanceof Error ? raised : new Error(String(raised))),
+    [raised],
+  );
   console.error(error);
   const router = useRouter();
   useEffect(() => {
@@ -150,6 +156,7 @@ function RootComponent() {
             <Outlet />
           </AuthProvider>
           <Toaster />
+          <ConfirmDialogHost />
         </TooltipProvider>
       </ThemeProvider>
     </QueryClientProvider>

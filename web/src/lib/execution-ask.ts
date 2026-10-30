@@ -32,10 +32,15 @@ export interface AskAnswer {
   examples: string[];
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
 const text = (value: unknown): string => (typeof value === "string" ? value : "");
-const count = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : 0);
-const strings = (value: unknown): string[] => (Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim() !== "") : []);
+const count = (value: unknown): number =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : 0;
+const strings = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim() !== "")
+    : [];
 
 /** Sunucu yanıtını güvenli biçimde okur; bozuk satır atılır, sayfa çökmez. */
 export function parseAnswer(raw: unknown): AskAnswer {
@@ -43,17 +48,20 @@ export function parseAnswer(raw: unknown): AskAnswer {
   const rows = (Array.isArray(body.rows) ? body.rows : []).flatMap((item): AskRow[] => {
     if (!isRecord(item) || !text(item.case_id)) return [];
     const days = item.days_since_last;
-    return [{
-      caseId: text(item.case_id),
-      fileNo: text(item.file_no) || null,
-      court: text(item.court),
-      status: text(item.status) || null,
-      creditors: strings(item.creditors),
-      debtors: strings(item.debtors),
-      lastActivity: text(item.last_activity) || null,
-      daysSinceLast: typeof days === "number" && Number.isFinite(days) && days >= 0 ? Math.trunc(days) : null,
-      facts: strings(item.facts),
-    }];
+    return [
+      {
+        caseId: text(item.case_id),
+        fileNo: text(item.file_no) || null,
+        court: text(item.court),
+        status: text(item.status) || null,
+        creditors: strings(item.creditors),
+        debtors: strings(item.debtors),
+        lastActivity: text(item.last_activity) || null,
+        daysSinceLast:
+          typeof days === "number" && Number.isFinite(days) && days >= 0 ? Math.trunc(days) : null,
+        facts: strings(item.facts),
+      },
+    ];
   });
   return {
     ok: body.ok === true,
@@ -71,7 +79,8 @@ export function parseAnswer(raw: unknown): AskAnswer {
 /** Sonuç başlığı: "18 dosyadan 7'si eşleşti" yerine ek gerektirmeyen yazım. */
 export function answerHeadline(answer: AskAnswer): string {
   if (!answer.ok) return "Soru anlaşılamadı";
-  const shown = answer.rows.length < answer.matched ? ` (ilk ${answer.rows.length} dosya gösteriliyor)` : "";
+  const shown =
+    answer.rows.length < answer.matched ? ` (ilk ${answer.rows.length} dosya gösteriliyor)` : "";
   return `Eşleşen dosya: ${answer.matched} / ${answer.totalFiles}${shown}`;
 }
 
@@ -84,7 +93,10 @@ export async function askExecution(question: string, signal?: AbortSignal): Prom
     response = await fetch(`${BASE}/api/office/execution/ask`, {
       method: "POST",
       credentials: "include",
-      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
       body: JSON.stringify({ question }),
       signal,
     });

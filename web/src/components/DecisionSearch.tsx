@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useSearchParam } from "@/lib/router-compat";
+import { useSearchParam } from "@/lib/router-hooks";
 import {
   DEFAULT_FILTERS,
   MIN_QUERY_LENGTH,

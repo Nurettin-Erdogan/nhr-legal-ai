@@ -5,14 +5,17 @@ import ts from "typescript";
 
 // Yönetici paneli yardımcıları (2026-10-24). Yetki sunucuda denetlenir; bunlar yalnız görünüm.
 const source = readFileSync(new URL("../src/lib/admin-panel.ts", import.meta.url), "utf8");
-const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } });
+const { outputText } = ts.transpileModule(source, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+});
 const lib = { exports: {} };
 new Function("module", "exports", outputText)(lib, lib.exports);
 const panel = lib.exports;
 
 test("only the admin role opens the panel; anything malformed does not", () => {
   assert.equal(panel.isAdmin(["lawyer", "admin"]), true);
-  for (const roles of [["lawyer"], [], null, undefined, "admin"]) assert.equal(panel.isAdmin(roles), false);
+  for (const roles of [["lawyer"], [], null, undefined, "admin"])
+    assert.equal(panel.isAdmin(roles), false);
 });
 
 test("audit actions read in Turkish and unknown codes stay visible instead of disappearing", () => {
@@ -49,10 +52,13 @@ test("both access modes have a label and an explanation", () => {
 
 test("switching to the access list says how many accounts will be shut out before it happens", () => {
   const confirm = panel.accessModeConfirm("allowlist", 29);
-  assert.match(confirm, /29 hesap artık giriş yapamayacak/);
-  assert.match(confirm, /Verileri silinmez/);
-  assert.doesNotMatch(panel.accessModeConfirm("allowlist", 0), /hesap artık/);
-  assert.match(panel.accessModeConfirm("open", 29), /herkes/);
+  assert.match(confirm.description, /29 hesap artık giriş yapamayacak/);
+  assert.match(confirm.description, /Verileri silinmez/);
+  assert.equal(confirm.destructive, true);
+  assert.ok(confirm.title && confirm.confirmLabel);
+  assert.doesNotMatch(panel.accessModeConfirm("allowlist", 0).description, /hesap artık/);
+  assert.match(panel.accessModeConfirm("open", 29).description, /herkes/);
+  assert.equal(panel.removeAccessConfirm("a@b.com", "allowlist").destructive, true);
 });
 
 test("an access-list entry tells whether the person has opened an account yet", () => {
@@ -62,7 +68,10 @@ test("an access-list entry tells whether the person has opened an account yet", 
 });
 
 test("blocked logins and access-list changes read in Turkish in the audit log", () => {
-  assert.equal(panel.actionLabel("auth.login_blocked"), "Giriş engellendi (erişim listesinde değil)");
+  assert.equal(
+    panel.actionLabel("auth.login_blocked"),
+    "Giriş engellendi (erişim listesinde değil)",
+  );
   assert.equal(panel.actionLabel("admin.access_add"), "Erişim listesine ekledi");
   assert.equal(panel.actionLabel("admin.access_remove"), "Erişim listesinden çıkardı");
   assert.equal(panel.actionLabel("admin.access_mode"), "Erişim modunu değiştirdi");

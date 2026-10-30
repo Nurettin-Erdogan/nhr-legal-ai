@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from api.ai.pipeline import (
-    _embed_question,
+    _embed_question as _embed_question,
     as_citation,
     execute_answer,
     iter_answer_events,
@@ -24,8 +24,9 @@ from api.ai.providers import (
 from api.ai.research import router as research_router
 from api.ai.document_selection import selected_document_coverage
 from api.ai.workspace_scope import office_project_case
+from api.ai.vector_index import shared_vector_index_ready
 from api.audit import AuditContext
-from api.auth.routes import optional_current_user_id
+from api.auth.routes import current_user_id
 from api.config import get_settings
 from api.db import authenticated_database_connection, database_connection
 from api.schemas import AIAnswerRequest, AIAnswerResponse, AIStatusResponse
@@ -34,7 +35,7 @@ router = APIRouter(prefix="/api/ai", tags=["ai"])
 router.include_router(research_router)
 
 _STATUS_TTL_SECONDS = 30.0
-_status_semantic_cache: tuple[float, bool] | None = None
+_status_semantic_cache: tuple[float, str, bool] | None = None
 
 # Re-export for existing tests that patch the route module.
 _as_citation = as_citation
@@ -71,11 +72,11 @@ def _semantic_search_ready(embedding_model: str) -> bool:
     global _status_semantic_cache
     now = monotonic()
     cached = _status_semantic_cache
-    if cached is not None and now - cached[0] < _STATUS_TTL_SECONDS:
-        return cached[1]
+    if cached is not None and cached[1] == embedding_model and now - cached[0] < _STATUS_TTL_SECONDS:
+        return cached[2]
     try:
         with database_connection() as connection:
-            ready = bool(
+            ready = shared_vector_index_ready(connection) is True and bool(
                 connection.execute(
                     "SELECT EXISTS (SELECT 1 FROM legal_chunks "
                     "WHERE embedding IS NOT NULL AND embedding_model = %s)",
@@ -84,7 +85,7 @@ def _semantic_search_ready(embedding_model: str) -> bool:
             )
     except psycopg.Error:
         ready = False
-    _status_semantic_cache = (now, ready)
+    _status_semantic_cache = (now, embedding_model, ready)
     return ready
 
 
@@ -139,7 +140,7 @@ def _require_selected_document_access(user_id: UUID | None, request: AIAnswerReq
 @router.post("/answer", response_model=AIAnswerResponse)
 async def answer_question(
     request: AIAnswerRequest,
-    user_id: Annotated[UUID | None, Depends(optional_current_user_id)],
+    user_id: Annotated[UUID, Depends(current_user_id)],  # oturumsuz soru yok: erişim listesi ve bulut bakiyesi
     http_request: Request,
 ) -> AIAnswerResponse:
     _require_project_access(user_id, request.project_id)
@@ -154,7 +155,7 @@ async def answer_question(
 @router.post("/answer/progress")
 async def answer_question_progress(
     request: AIAnswerRequest,
-    user_id: Annotated[UUID | None, Depends(optional_current_user_id)],
+    user_id: Annotated[UUID, Depends(current_user_id)],  # oturumsuz soru yok: erişim listesi ve bulut bakiyesi
     http_request: Request,
 ) -> StreamingResponse:
     _require_project_access(user_id, request.project_id)

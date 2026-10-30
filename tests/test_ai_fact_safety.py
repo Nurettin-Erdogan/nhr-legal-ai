@@ -207,3 +207,14 @@ def test_relevant_clause_does_not_launder_an_unrelated_fact_in_a_narrow_analysis
 def test_later_instruction_exclusion_is_not_promoted_to_a_requested_subject():
     from api.ai.relevance import analysis_scope_relevant
     assert not analysis_scope_relevant("Yalnız depozito tutarını incele. Kira bedelini yazma.", "Kira bedeli 12.000 TL'dir.")
+
+
+def test_payment_condition_phrased_as_unperformed_duty_supports_the_unpaid_claim():
+    from api.ai.relevance import payment_polarity_supported
+    source = ("Kiracı, kiralananın tesliminden sonra muaccel olan kira bedelini veya yan gideri ödeme borcunu ifa etmezse, "
+              "kiraya veren kiracıya yazılı olarak bir süre verip, bu sürede de ifa etmeme durumunda, sözleşmeyi feshedeceğini bildirebilir.")
+    assert payment_polarity_supported(
+        "Kiracı kira bedelini ödemediğinde, ev sahibi yazılı olarak bir süre verip sözleşmeyi feshedeceğini bildirebilir.", source)
+    # the reverse polarity must still be refused
+    assert not payment_polarity_supported(
+        "Kiracı kira bedelini ödediğinde, ev sahibi yazılı olarak bir süre verip sözleşmeyi feshedebilir.", source)

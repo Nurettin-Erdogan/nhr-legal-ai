@@ -13,10 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import io
 import logging
 import re
-import shutil
 from typing import Annotated, Any
 from uuid import UUID, uuid4
 
@@ -29,7 +27,6 @@ from api import case_summary, deep_research, draft_documents, office_analysis
 from api.ai.pipeline import _embed_question, _generation_lock, _retrieve
 from api.ai.providers import AIProviderError, create_provider
 from api.ai.rag import RAGContext
-from api.ai.verification import verify_answer
 from api.auth.routes import current_user_id
 from api.config import get_settings
 from api.db import authenticated_database_connection
@@ -307,11 +304,12 @@ async def _draft(
     legal = draft_documents.legal_references(contexts, question=topic, suggested=suggested)
     model = None
     paragraphs: list[str] = []
+    facts = draft_documents.facts_source(subject, details, extra)
     prompt = (
-        f"Belge türü: {label}\nTaraflar: {'; '.join(parties) or '(belirtilmedi)'}\nKonu: {subject}\n"
-        f"Olgular: {(details or '(yok)')[:1500]}{extra[:1200]}\n\nOlguları numaralı paragraflar hâlinde yaz."
+        f"Belge türü: {label}\nTaraflar: {'; '.join(parties) or '(belirtilmedi)'}\nKonu: {draft_documents.short_subject(subject)}\n"
+        f"Olgular: {(facts or '(yok)')[:1500]}{extra[:1200]}\n\nOlguları numaralı paragraflar hâlinde yaz."
     )
-    if draft_documents.has_facts(details, extra):
+    if draft_documents.has_facts(facts, extra):
         try:
             output, model = await _generate(draft_documents.FACT_SYSTEM, prompt)
             grouped = draft_documents.verified_paragraphs(output, given)
@@ -328,9 +326,9 @@ async def _draft(
             logger.warning("Taslak olay anlatımı modelden alınamadı; kullanıcının olguları kullanılacak")
     from_user = not paragraphs
     if from_user:
-        paragraphs = draft_documents.fallback_paragraphs(subject, details or extra[:600])
+        paragraphs = draft_documents.fallback_paragraphs(subject, facts or extra[:600])
     content = draft_documents.build_document(doc_type, title, parties, subject, paragraphs, legal)
-    if from_user and draft_documents.has_facts(details, extra):
+    if from_user and draft_documents.has_facts(facts, extra):
         content += "_Olay anlatımı model çıktısı doğrulanamadığı ya da alınamadığı için sizin yazdığınız bilgilerle oluşturuldu; üslubu düzeltin._\n"
     elif from_user:
         content += "_Olgu verilmediği için açıklamalar bölümü boş bırakıldı: olayları, tarihleri ve tutarları yazıp yeniden oluşturun ya da elle doldurun._\n"

@@ -21,7 +21,7 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { Loader2, Upload, ShieldCheck } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/components/AuthProvider";
+import { useAuth } from "@/components/AuthContext";
 import { toast } from "sonner";
 import {
   ALLOWED_EXTENSIONS,
@@ -83,6 +83,22 @@ export const FileUploadDialog = ({ onUploaded }: Props) => {
     let success = 0;
     try {
       for (const file of files) {
+        // Aynı ad ve boyutta belge zaten yüklüyse sessizce çoğaltılmaz: kullanıcıya sorulur (Büro Asistanı ve arama sonuçları
+        // aynı belge için tekrar tekrar öneri/sonuç üretmesin).
+        const existing = await supabase
+          .from("case_documents")
+          .select("id")
+          .eq("file_name", file.name)
+          .eq("size_bytes", file.size)
+          .limit(1);
+        if (
+          Array.isArray(existing.data) &&
+          existing.data.length > 0 &&
+          !window.confirm(`"${file.name}" zaten yüklü görünüyor. Yine de yeniden yüklensin mi?`)
+        ) {
+          setDone((d) => d + 1);
+          continue;
+        }
         const path = storagePathFor(user.id, file.name);
         const { error: upErr } = await supabase.storage.from("case-files").upload(path, file, {
           contentType: file.type || "application/octet-stream",

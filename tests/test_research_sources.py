@@ -1,6 +1,6 @@
 from contextlib import contextmanager
 from dataclasses import asdict
-from uuid import UUID
+from uuid import UUID, uuid4
 from pathlib import Path
 from contextlib import nullcontext
 
@@ -9,6 +9,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from api.auth.routes import current_user_id
 from api.ai import research
 from api.ai.search_plan import plan_search
 from api.ai.passages import select_passage
@@ -89,6 +90,7 @@ def pages(monkeypatch):
     monkeypatch.setattr(research, "database_connection", connection)
     app = FastAPI()
     app.include_router(research.router, prefix="/api/ai")
+    app.dependency_overrides[current_user_id] = lambda: uuid4()  # uç yalnız oturumla açılır
     return TestClient(app), statements
 
 
@@ -236,3 +238,10 @@ def test_an_empty_first_page_is_complete_and_zero(monkeypatch):
     _scripted_connection(monkeypatch, [[]])
     response = research.research_sources(q="kıdem tazminatı şartları", limit=10, offset=0)
     assert response["partial"] is False and response["candidate_total"] == 0 and response["results"] == []
+
+
+def test_the_research_list_needs_a_session():
+    # Erişim listesi (2026-10-24): korpus oturumsuz istekle okunamaz.
+    app = FastAPI()
+    app.include_router(research.router, prefix="/api/ai")
+    assert TestClient(app).get("/api/ai/sources", params={"q": "kira bedeli artışı"}).status_code == 401

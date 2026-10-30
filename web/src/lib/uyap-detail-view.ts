@@ -5,7 +5,21 @@
  */
 import type { DetailPair, DetailTab, DetailTable, DosyaDetail } from "@/lib/uyap-bridge";
 
-const FOLD: Record<string, string> = { İ: "i", I: "i", ı: "i", Ş: "s", ş: "s", Ç: "c", ç: "c", Ğ: "g", ğ: "g", Ö: "o", ö: "o", Ü: "u", ü: "u" };
+const FOLD: Record<string, string> = {
+  İ: "i",
+  I: "i",
+  ı: "i",
+  Ş: "s",
+  ş: "s",
+  Ç: "c",
+  ç: "c",
+  Ğ: "g",
+  ğ: "g",
+  Ö: "o",
+  ö: "o",
+  Ü: "u",
+  ü: "u",
+};
 
 /** Türkçe harf çiftlerini (ı/i, ş/s…) tek biçime indirip küçük harfe çevirir: "ISPARTA" ile "ısparta" ve "Isparta" aynı aranır. */
 export const foldText = (text: string): string =>
@@ -53,10 +67,11 @@ export function tableWarning(tab: DetailTab, table: DetailTable): string | null 
 /** Eksik okunan tabloların uyarıları (ayrıca eklentinin bildirdiği sorunlar) — hiçbiri sessizce gizlenmez. */
 export function detailWarnings(detail: DosyaDetail): string[] {
   const out: string[] = [];
-  for (const tab of detail.tabs) for (const table of tab.tables) {
-    const warning = tableWarning(tab, table);
-    if (warning) out.push(warning);
-  }
+  for (const tab of detail.tabs)
+    for (const table of tab.tables) {
+      const warning = tableWarning(tab, table);
+      if (warning) out.push(warning);
+    }
   for (const problem of detail.problems) if (!out.includes(problem)) out.push(problem);
   return out;
 }
@@ -69,7 +84,10 @@ export function accountLine(pairs: DetailPair[]): string {
 }
 
 /** UYAP'ın dosya hesabında yazdığı alanlardan istenenleri (etiket → UYAP'ın yazdığı metin) döndürür; bulunmayan alan atlanır, hiçbir şey hesaplanmaz. */
-export function accountSummary(pairs: DetailPair[], wanted: string[] = ["Toplam Alacak", "Yatan Para", "Bakiye Borç Miktarı"]): DetailPair[] {
+export function accountSummary(
+  pairs: DetailPair[],
+  wanted: string[] = ["Toplam Alacak", "Yatan Para", "Bakiye Borç Miktarı"],
+): DetailPair[] {
   return wanted.flatMap((label) => {
     const found = pairs.find((pair) => foldText(pair.label) === foldText(label));
     return found && found.value ? [{ label, value: found.value }] : [];

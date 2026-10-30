@@ -17,7 +17,9 @@ Sınırlar (kod tarafında, prompt'ta değil):
 from __future__ import annotations
 
 import logging
+import os
 import re
+import time
 from dataclasses import dataclass, field, replace
 from typing import ClassVar
 
@@ -27,7 +29,7 @@ from api.ai.providers import AIProvider, AIProviderError, GenerationUsage
 
 logger = logging.getLogger(__name__)
 
-CLOUD_PROVIDERS = frozenset({"anthropic", "openai", "deepseek", "openrouter"})
+CLOUD_PROVIDERS = frozenset({"anthropic", "openai", "deepseek", "openrouter", "gemini", "bedrock"})
 DEEPSEEK_DEFAULT_MODEL = "deepseek-flash"
 DEEPSEEK_REASONING_EFFORTS = frozenset({"none", "low", "high", "max"})
 # Resmî API teknik üst sınırı; uygulama/kullanıcı kotası değildir.
@@ -155,8 +157,12 @@ class AnthropicProvider(_CloudBase):
 class OpenAIProvider(_CloudBase):
     name: str = "openai"
     base_url: str = "https://api.openai.com"
+    chat_path: str = "/v1/chat/completions"
     max_tokens_field: str = "max_completion_tokens"
     json_mode: ClassVar[bool] = True
+
+    def _json_response_format(self, system_instruction: str) -> dict:
+        return {"type": "json_object"}
 
     def _generation_options(self) -> dict:
         options: dict = {"temperature": 0}
@@ -176,9 +182,9 @@ class OpenAIProvider(_CloudBase):
             ],
         }
         if self.json_mode and _wants_json(system_instruction):
-            payload["response_format"] = {"type": "json_object"}
+            payload["response_format"] = self._json_response_format(system_instruction)
         headers = {"authorization": f"Bearer {self.api_key}", "content-type": "application/json"}
-        body = self._post(f"{self.base_url}/v1/chat/completions", headers, payload)
+        body = self._post(f"{self.base_url}{self.chat_path}", headers, payload)
         choices = body.get("choices")
         if not isinstance(choices, list):
             raise AIProviderError(f"{self.name} yanıtı okunamadı")
@@ -275,21 +281,200 @@ class OpenRouterDeepSeekProvider(DeepSeekCloudProvider):
 
     name: str = "openrouter"
     base_url: str = "https://openrouter.ai/api"
-    # Azure (the fastest host) returns EMPTY content when response_format=json_object is set, and valid JSON without it
-    # (2026-10-24). The instruction already demands JSON and every output is parsed and checked server-side.
-    json_mode: ClassVar[bool] = False
+
+    def __post_init__(self) -> None:
+        if self.model == "openai/gpt-6-luna":
+            if self.reasoning_effort not in {"none", "low", "medium", "high", "xhigh", "max"}:
+                raise AIProviderError("Geçersiz Luna düşünme düzeyi", status_code=503)
+            if not 0 <= self.max_output_tokens <= DEEPSEEK_MAX_COMPLETION_TOKENS:
+                raise AIProviderError("Geçersiz çıktı ayarı", status_code=503)
+        else:
+            DeepSeekCloudProvider.__post_init__(self)
+    @property
+    def json_mode(self) -> bool:
+        # The Azure/DeepSeek empty-JSON workaround is NOT a property of every
+        # OpenRouter model. Current OpenAI models support constrained output;
+        # planner/checker prose otherwise leaks into content and adds retries.
+        return self.model.startswith('openai/')
+
+    def _json_response_format(self, system_instruction: str) -> dict:
+        # Search plans have a finite data shape. Constrain that shape instead
+        # of allowing arbitrary JSON/whitespace until the answer token window
+        # is exhausted. These are existing planner/parser limits, not a cap on
+        # the user's answer or a declaration that a reference is valid.
+        if system_instruction.startswith('Türk hukuku araştırma planlayıcısısın.'):
+            reference = {"type": "object", "additionalProperties": False,
+                "properties": {"law_no": {"type": "string", "maxLength": 5},
+                               "article_no": {"type": "string", "maxLength": 8}},
+                "required": ["law_no", "article_no"]}
+            part = {"type": "object", "additionalProperties": False,
+                "properties": {"question": {"type": "string", "maxLength": 200},
+                    "queries": {"type": "array", "maxItems": 2, "items": {"type": "string", "maxLength": 160}},
+                    "references": {"type": "array", "maxItems": 2, "items": reference}},
+                "required": ["question", "queries", "references"]}
+            return {"type": "json_schema", "json_schema": {"name": "public_question_plan", "strict": True,
+                "schema": {"type": "object", "additionalProperties": False,
+                    "properties": {"legal": {"type": "boolean"},
+                                   "parts": {"type": "array", "maxItems": 4, "items": part}},
+                    "required": ["legal", "parts"]}}}
+        if system_instruction.startswith('Türk hukuku araştırması için yalnız ARAMA PLANI hazırla;'):
+            return {"type": "json_schema", "json_schema": {"name": "public_research_plan", "strict": True,
+                "schema": {"type": "object", "additionalProperties": False,
+                    "properties": {"aspects": {"type": "array", "minItems": 1, "maxItems": 5,
+                        "items": {"type": "object", "additionalProperties": False,
+                            "properties": {"label": {"type": "string", "maxLength": 80},
+                                           "query": {"type": "string", "maxLength": 180}},
+                            "required": ["label", "query"]}}}, "required": ["aspects"]}}}
+        if 'coverage_preserved' not in system_instruction or 'clarification_safe' not in system_instruction:
+            return {"type": "json_object"}
+        # Same existing checker protocol, now constrained at generation too.
+        # This guarantees shape, NOT legal correctness: code/claim checks stay.
+        result = {"type": "json_schema", "json_schema": {
+            "name": "legal_claim_verdict", "strict": True, "schema": {
+                "type": "object", "additionalProperties": False,
+                "properties": {
+                    "claims": {"type": "array", "items": {
+                        "type": "object", "additionalProperties": False,
+                        "properties": {
+                            "id": {"type": "integer"},
+                            "supported": {"type": "boolean"},
+                            "relevant": {"type": "boolean"},
+                            "scope_preserved": {"type": "boolean"},
+                            "why": {"type": "string"},
+                        },
+                        "required": ["id", "supported", "relevant", "scope_preserved", "why"],
+                    }},
+                    "coverage_preserved": {"type": "boolean"},
+                    "source_only": {"type": "boolean"},
+                    "clarification_safe": {"type": "boolean"},
+                },
+                "required": ["claims", "coverage_preserved", "source_only", "clarification_safe"],
+            },
+        }}
+        if 'PART_COVERAGE_V1' in system_instruction:
+            schema = result['json_schema']['schema']
+            schema['properties']['part_coverage'] = {"type": "array", "items": {
+                "type": "object", "additionalProperties": False,
+                "properties": {"part_id": {"type": "integer"},
+                    "claim_ids": {"type": "array", "items": {"type": "integer"}},
+                    "complete": {"type": "boolean"}, "why": {"type": "string"}},
+                "required": ["part_id", "claim_ids", "complete", "why"]}}
+            schema['required'].append('part_coverage')
+        return result
 
     def _generation_options(self) -> dict:
         # Preferred hosts, measured 2026-10-24 on the same legal prompt: Azure 4.8 s (835 tokens, 172 tk/s), Parasail 4.7 s,
         # DeepInfra 11.9 s. "Sort by throughput" picked hosts that ignore effort=low and think 4-6k tokens (Wafer 46 s,
         # DigitalOcean 61 s). Others stay as fallbacks within the account's privacy settings; no host in China is preferred.
         routing = {"provider": {"order": list(OPENROUTER_PREFERRED_HOSTS)}}
+        if self.json_mode:
+            routing['provider']['require_parameters'] = True
         if self.reasoning_effort == "none":
             return {"reasoning": {"enabled": False}, **routing}
         return {"reasoning": {"effort": "high" if self.reasoning_effort == "max" else self.reasoning_effort}, **routing}
 
 
 OPENROUTER_DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
+_GEMINI_BUSY_WAITS = (2.0, 6.0)
+GEMINI_DEFAULT_MODEL = "gemini-3.8-flash"  # 2.5-flash is closed to new users (404, 2026-10-25)
+
+
+@dataclass(slots=True)
+class GeminiProvider(OpenAIProvider):
+    """Google Gemini API through its OpenAI-compatible endpoint (2026-10-25: OpenRouter fee + tax on small top-ups; a free AI
+    Studio key lets development run at no cost). Same guards as every cloud provider: only general questions, masked
+    identifiers, local fallback. Free-tier keys may let Google use prompts for training: test questions only."""
+
+    name: str = "gemini"
+    base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
+    chat_path: str = "/chat/completions"
+    max_tokens_field: str = "max_tokens"
+    max_output_tokens: int = 0  # thinking tokens count against the limit; a fixed cap cut drafts short
+    reasoning_effort: str = "low"
+    busy_waits: tuple[float, ...] = _GEMINI_BUSY_WAITS
+
+    def _generation_options(self) -> dict:
+        return {"temperature": 0, "reasoning_effort": "none" if self.reasoning_effort == "none" else "low"}
+
+    def generate(self, *, system_instruction: str, prompt: str) -> str:
+        # Google answers 503 "high demand" / 429 in bursts (2026-10-25: several calls in a row, the whole answer fell back to
+        # "doğrulayamadım"). A short wait usually clears it; a timeout is not retried (it already cost the full wait).
+        for wait in (*self.busy_waits, None):
+            try:
+                return OpenAIProvider.generate(self, system_instruction=system_instruction, prompt=prompt)
+            except AIProviderError as exc:
+                cause = exc.__cause__
+                busy = isinstance(cause, httpx.HTTPStatusError) and cause.response.status_code in {429, 500, 502, 503}
+                if wait is None or not busy:
+                    raise
+                time.sleep(wait)
+        raise AssertionError("unreachable")
+
+    def generate_auxiliary(self, *, system_instruction: str, prompt: str) -> str:
+        return self.generate(system_instruction=system_instruction, prompt=prompt)
+
+
+BEDROCK_DEFAULT_MODEL = "openai.gpt-6-luna"
+_BEDROCK_BUSY_WAITS = (2.0, 6.0)
+
+
+@dataclass(slots=True)
+class BedrockProvider(_CloudBase):
+    """Amazon Bedrock Converse API (2026-10-30: the AWS account has credits and lists GPT-6 Luna / Claude in eu-north-1).
+
+    One endpoint serves every model family, so the same code reaches OpenAI, Anthropic and open models. Authentication is a
+    Bedrock API key (``AWS_BEARER_TOKEN_BEDROCK``) sent as a bearer token. Same guards as every cloud provider: only general
+    questions, masked identifiers, local fallback. ``reasoning_effort`` is left to the model default: Converse has no common field."""
+
+    name: str = "bedrock"
+    region: str = "eu-north-1"
+    max_output_tokens: int = 0
+    reasoning_effort: str = "low"
+    busy_waits: tuple[float, ...] = _BEDROCK_BUSY_WAITS
+
+    def _url(self) -> str:
+        return f"https://bedrock-runtime.{self.region}.amazonaws.com/model/{self.model}/converse"
+
+    def generate(self, *, system_instruction: str, prompt: str) -> str:
+        self.last_usage = None
+        payload: dict = {
+            "system": [{"text": mask_personal_data(system_instruction)}],
+            "messages": [{"role": "user", "content": [{"text": mask_personal_data(prompt)}]}],
+            "inferenceConfig": {**({} if "kimi-k3" in self.model else {"temperature": 0}),  # Kimi K3 rejects the temperature field
+                                **({"maxTokens": self.max_output_tokens} if self.max_output_tokens > 0 else {})},
+        }
+        headers = {"authorization": f"Bearer {self.api_key}", "content-type": "application/json"}
+        started = time.monotonic()
+        for wait in (*self.busy_waits, None):
+            try:
+                body = self._post(self._url(), headers, payload)
+                break
+            except AIProviderError as exc:
+                cause = exc.__cause__
+                busy = isinstance(cause, httpx.HTTPStatusError) and cause.response.status_code in {429, 500, 502, 503, 529}
+                if wait is None or not busy:
+                    raise
+                time.sleep(wait)
+        message = (body.get("output") or {}).get("message") or {}
+        blocks = message.get("content") if isinstance(message.get("content"), list) else []
+        # reasoning blocks (reasoningContent) are internal and never passed on
+        text = "".join(b["text"] for b in blocks if isinstance(b, dict) and isinstance(b.get("text"), str)).strip()
+        usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+        stop = body.get("stopReason") if isinstance(body.get("stopReason"), str) else None
+        self.last_usage = GenerationUsage(prompt_eval_count=usage.get("inputTokens"), eval_count=usage.get("outputTokens"),
+                                          done_reason=stop, num_predict=self.max_output_tokens or None)
+        logger.info("Bedrock %s: %.1f sn, giriş %s, çıkış %s token", self.model, time.monotonic() - started,
+                    usage.get("inputTokens"), usage.get("outputTokens"))
+        if stop == "max_tokens":
+            raise AIProviderError("Bedrock yanıtı token sınırında kesildi", partial=text)
+        if not text:
+            raise AIProviderError("Bedrock boş bir yanıt döndürdü")
+        if stop not in {"end_turn", "stop_sequence"}:
+            raise AIProviderError("Bedrock tamamlanmamış bir yanıt döndürdü")
+        return text
+
+    def generate_auxiliary(self, *, system_instruction: str, prompt: str) -> str:
+        return self.generate(system_instruction=system_instruction, prompt=prompt)
 
 
 @dataclass(slots=True)
@@ -322,10 +507,18 @@ class FallbackProvider:
     def _generate(self, *, system_instruction: str, prompt: str, auxiliary: bool) -> str:
         if self.fell_back:
             return self._generate_local(system_instruction=system_instruction, prompt=prompt)
+        generate = (getattr(self.primary, "generate_auxiliary", self.primary.generate)
+                    if auxiliary else self.primary.generate)
         try:
-            generate = (getattr(self.primary, "generate_auxiliary", self.primary.generate)
-                        if auxiliary else self.primary.generate)
-            return generate(system_instruction=system_instruction, prompt=prompt)
+            try:
+                return generate(system_instruction=system_instruction, prompt=prompt)
+            except AIProviderError as exc:
+                # Sağlayıcı arada boş yanıt döndürüyor (ölçüldü: 2026-10-25, 6 denemenin 3'ünde); tek boş yanıt yüzünden yerel küçük
+                # modele düşmek cevabı bozuyordu. Boş yanıt bir kez yeniden denenir; başka hata hemen yerele düşer.
+                if exc.partial or "boş bir yanıt" not in str(exc):
+                    raise
+                logger.warning("Bulut modeli boş yanıt verdi; bir kez daha deneniyor")
+                return generate(system_instruction=system_instruction, prompt=prompt)
         except AIProviderError as exc:
             if exc.partial:
                 raise  # kesilen çıktı çağırana bırakılır (madde özeti tamamlanmış satırları kullanır)
@@ -335,7 +528,8 @@ class FallbackProvider:
 
     def _generate_local(self, *, system_instruction: str, prompt: str) -> str:
         from api.embed_pause import local_generation_pause
-        with local_generation_pause():
+        from api.ai.providers import LOCAL_GENERATION_LOCK
+        with LOCAL_GENERATION_LOCK, local_generation_pause():
             return self.fallback.generate(system_instruction=system_instruction, prompt=prompt)
 
 
@@ -382,4 +576,12 @@ def create_cloud_provider(*, provider_name: str, model: str, api_key: str, timeo
                                           timeout_seconds=timeout_seconds,
                                           max_output_tokens=0 if max_output_tokens is None else max_output_tokens,
                                           reasoning_effort=reasoning_effort)
+    if provider_name == "gemini":
+        return GeminiProvider(model=model or GEMINI_DEFAULT_MODEL, api_key=api_key, timeout_seconds=timeout_seconds,
+                              max_output_tokens=0 if max_output_tokens is None else max_output_tokens,
+                              reasoning_effort=reasoning_effort)
+    if provider_name == "bedrock":
+        return BedrockProvider(model=model or BEDROCK_DEFAULT_MODEL, api_key=api_key, timeout_seconds=timeout_seconds,
+                               max_output_tokens=0 if max_output_tokens is None else max_output_tokens,
+                               reasoning_effort=reasoning_effort, region=os.getenv("AWS_REGION", "eu-north-1"))
     raise AIProviderError(f"Desteklenmeyen bulut sağlayıcısı: {provider_name}")

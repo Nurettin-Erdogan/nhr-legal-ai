@@ -15,7 +15,10 @@ export function UyapAccountBinding() {
     let alive = true;
     loadUyapAccounts()
       .then((value) => alive && setData(value))
-      .catch((cause) => alive && setError(cause instanceof Error ? cause.message : "UYAP hesapları okunamadı."));
+      .catch(
+        (cause) =>
+          alive && setError(cause instanceof Error ? cause.message : "UYAP hesapları okunamadı."),
+      );
     return () => {
       alive = false;
     };
@@ -23,14 +26,17 @@ export function UyapAccountBinding() {
 
   if (!data && !error) return null;
   return (
-    <section className="mb-6 rounded-xl border bg-card p-4 text-sm space-y-2" data-testid="uyap-accounts">
+    <section
+      className="mb-6 rounded-xl border bg-card p-4 text-sm space-y-2"
+      data-testid="uyap-accounts"
+    >
       <p className="font-medium">Dosyalar kimin UYAP'ından geldi</p>
       {error ? (
         <p className="text-destructive">{error}</p>
       ) : !data?.accounts.length && !data?.unknown.files ? (
         <p className="text-muted-foreground">
-          Henüz UYAP'tan aktarım yok. Her aktarımda UYAP'ta giriş yapan kişi okunur; dosyaları Belgeler'de o kişinin adı altında
-          ayrı durur.
+          Henüz UYAP'tan aktarım yok. Her aktarımda UYAP'ta giriş yapan kişi okunur; dosyaları
+          Belgeler'de o kişinin adı altında ayrı durur.
         </p>
       ) : (
         <>
@@ -49,8 +55,9 @@ export function UyapAccountBinding() {
               <li className="flex flex-wrap items-center gap-x-2">
                 <span className="font-medium">Kimden geldiği bilinmiyor</span>
                 <span className="text-muted-foreground">
-                  {data.unknown.files} dosya · {data.unknown.documents} evrak — bu dosyaların sahibi kendi UYAP'ıyla girip
-                  "Yalnız denetle" ya da "Tüm dosyaları aktar"a basınca onun adına geçer.
+                  {data.unknown.files} dosya · {data.unknown.documents} evrak — bu dosyaların sahibi
+                  kendi UYAP'ıyla girip "Yalnız denetle" ya da "Tüm dosyaları aktar"a basınca onun
+                  adına geçer.
                 </span>
               </li>
             )}

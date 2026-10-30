@@ -8,13 +8,22 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 const require = createRequire(import.meta.url);
 function compile(relative, dependencies) {
-  const source = readFileSync(new URL(relative, import.meta.url), "utf8").replaceAll("import.meta.env", "({})");
+  const source = readFileSync(new URL(relative, import.meta.url), "utf8").replaceAll(
+    "import.meta.env",
+    "({})",
+  );
   const { outputText } = ts.transpileModule(source, {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      jsx: ts.JsxEmit.ReactJSX,
+      target: ts.ScriptTarget.ES2022,
+    },
   });
   const module = { exports: {} };
   new Function("require", "module", "exports", outputText)(
-    (id) => dependencies[id] ?? require(id), module, module.exports,
+    (id) => dependencies[id] ?? require(id),
+    module,
+    module.exports,
   );
   return module.exports;
 }
@@ -49,9 +58,14 @@ test("UYAP case linking sends authenticated requests and keeps the resume cursor
 test("case linking never turns an HTTP or network failure into success", async () => {
   const original = globalThis.fetch;
   try {
-    globalThis.fetch = async () => new Response(JSON.stringify({ detail: "UYAP dava bağlantıları kurulamadı" }), { status: 503 });
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({ detail: "UYAP dava bağlantıları kurulamadı" }), {
+        status: 503,
+      });
     await assert.rejects(api.linkUyapCases(), /UYAP dava bağlantıları kurulamadı/);
-    globalThis.fetch = async () => { throw new Error("offline"); };
+    globalThis.fetch = async () => {
+      throw new Error("offline");
+    };
     await assert.rejects(api.linkUyapCases(), /Sunucuya ulaşılamadı/);
   } finally {
     globalThis.fetch = original;
@@ -60,9 +74,17 @@ test("case linking never turns an HTTP or network failure into success", async (
 
 test("the UYAP linking card explains matching and does not mutate on render", () => {
   const { UyapCaseLinks } = compile("../src/components/UyapCaseLinks.tsx", {
-    "@/lib/office-api": { linkUyapCases: () => { throw new Error("Must require a user click"); } },
-    "@/components/ui/button": { Button: ({ children, variant, ...props }) => createElement("button", props, children) },
-    "@/lib/router-compat": { Link: ({ to, children }) => createElement("a", { href: to }, children) },
+    "@/lib/office-api": {
+      linkUyapCases: () => {
+        throw new Error("Must require a user click");
+      },
+    },
+    "@/components/ui/button": {
+      Button: ({ children, variant, ...props }) => createElement("button", props, children),
+    },
+    "@/lib/router-compat": {
+      Link: ({ to, children }) => createElement("a", { href: to }, children),
+    },
   });
   const markup = renderToStaticMarkup(createElement(UyapCaseLinks));
   assert.match(markup, /dosya numarası ve UYAP birimi birlikte/);

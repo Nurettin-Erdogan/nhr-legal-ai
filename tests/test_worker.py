@@ -133,7 +133,6 @@ def test_yargitay_resume_uses_incomplete_window_cursor():
 
 
 def test_legacy_yargitay_cursor_restarts_window_without_skipping(monkeypatch, tmp_path):
-    from worker.adapters import yargitay as adapter_module
     from worker.config import get_worker_settings
 
     class _Client:

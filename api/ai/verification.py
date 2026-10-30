@@ -38,6 +38,9 @@ class VerifiedAnswer:
     # ve atıflar bundan bağımsızdır; `grounded` hesabına girmez.
     summary: tuple[str, ...] = ()
     answer_kind: AnswerKind = "legal"
+    # Kod tarafından, saklı doğrulama tarihlerinden kurulan güncellik notu (bkz. api.ai.currency_note). Model yazmaz, cevap metnine
+    # katılmaz; `grounded` hesabına girmez.
+    verification_note: str | None = None
 
     @property
     def grounded(self) -> bool:

@@ -51,6 +51,12 @@ def test_version_date_is_not_effectiveness_and_interval_is_required():
     assert not source_covers_date(source,date(2019,1,1))
 
 
+def test_one_temporally_valid_reference_does_not_repair_a_known_incomplete_basis():
+    source = replace(modern_source(), effective_from=date(2010,1,1), effective_to=date(2018,1,1))
+    assert context([source], basis_complete=False).historical_basis_missing
+    assert not context([source], basis_complete=False).applicability_verified
+
+
 def test_explicit_as_of_is_preserved_not_overwritten_by_collected_event_date():
     event = context([modern_source()], as_of=date(2015,1,1))
     assert event.applicable_on == date(2015,1,1)

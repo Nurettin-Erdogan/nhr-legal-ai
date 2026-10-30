@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { confirmAction } from "@/lib/confirmation";
 import { Loader2, RotateCcw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -66,7 +67,15 @@ export function DocumentTrash({
   };
 
   const removeForever = async (item: TrashedDocument) => {
-    if (busy || !window.confirm(permanentDeleteWarning(item))) return;
+    if (busy) return;
+    const confirmed = await confirmAction({
+      title: `"${item.file_name}" kalıcı olarak silinsin mi?`,
+      // İlk paragraf soru cümlesinin kendisi; başlıkta zaten var.
+      description: permanentDeleteWarning(item).split("\n\n").slice(1).join("\n\n"),
+      confirmLabel: "Kalıcı olarak sil",
+      destructive: true,
+    });
+    if (!confirmed) return;
     setBusy(item.id);
     setNotice("");
     try {

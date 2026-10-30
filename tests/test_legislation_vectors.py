@@ -8,7 +8,9 @@ import psycopg
 import pytest
 
 from api.ai import retrieval
-from tests.test_ai_persistence import TOKEN, _seed_decision, _seed_legislation, connection  # noqa: F401
+from tests.test_ai_persistence import TOKEN, _seed_decision, _seed_legislation, connection as _connection_fixture
+
+connection = _connection_fixture
 
 db_required = pytest.mark.skipif(not os.getenv("NHR_TEST_DATABASE_URL"), reason="Isolated test DB not configured")
 MODEL = "nomic-embed-text"

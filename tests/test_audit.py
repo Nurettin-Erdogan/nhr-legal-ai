@@ -53,6 +53,9 @@ class FakeConnection:
             event["metadata"] = event["metadata"].obj  # Jsonb sarmalayıcısı
             self.events.append(event)
             return _Result(None)
+        if "_access_allowed(" in sql:
+            # Erişim listesi (migration 062) bu testlerin konusu değil: herkes girer.
+            return _Result({"allowed": True})
         if "FROM activity_logs" in sql and "email_ip_failures" in sql:
             # Giriş sınırlaması toplu bir sorgudur ve gerçekte her zaman tek satır döner.
             return _Result({"email_ip_failures": self.login_failures, "ip_failures": self.login_failures})

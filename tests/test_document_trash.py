@@ -6,7 +6,6 @@ import contextlib
 import os
 from uuid import uuid4
 
-import psycopg
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient

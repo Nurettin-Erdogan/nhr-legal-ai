@@ -1,10 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Copy, ExternalLink, Loader2, MessageSquare, Search, ShieldCheck } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  ExternalLink,
+  Loader2,
+  MessageSquare,
+  Search,
+  ShieldCheck,
+} from "lucide-react";
 import { toast } from "sonner";
-import { Link, useSearchParam } from "@/lib/router-compat";
+import { Link } from "@/lib/router-compat";
+import { useSearchParam } from "@/lib/router-hooks";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { loadSourceDetail, isHttpUrl, highlightSegments, type SourceDetail } from "@/lib/decision-search";
+import {
+  loadSourceDetail,
+  isHttpUrl,
+  highlightSegments,
+  type SourceDetail,
+} from "@/lib/decision-search";
 import {
   LegislationError,
   TYPE_FILTERS,
@@ -23,7 +38,13 @@ import {
   type LegislationType,
 } from "@/lib/legislation";
 
-const EXAMPLES = ["İş Kanunu", "Türk Borçlar Kanunu", "4857 m. 18", "Hukuk Muhakemeleri", "Anayasa"];
+const EXAMPLES = [
+  "İş Kanunu",
+  "Türk Borçlar Kanunu",
+  "4857 m. 18",
+  "Hukuk Muhakemeleri",
+  "Anayasa",
+];
 
 function ArticleReader({
   law,
@@ -49,7 +70,8 @@ function ArticleReader({
         if (!abort.signal.aborted) setDetail(value);
       })
       .catch((e) => {
-        if (!abort.signal.aborted) setError(e instanceof Error ? e.message : "Madde metni alınamadı.");
+        if (!abort.signal.aborted)
+          setError(e instanceof Error ? e.message : "Madde metni alınamadı.");
       });
     return () => abort.abort();
   }, [article.id]);
@@ -72,8 +94,14 @@ function ArticleReader({
           <ShieldCheck className="h-3.5 w-3.5" /> Resmî kaynaklarla doğrulandı
         </span>
       </div>
-      {article.articleTitle && <p className="text-sm text-muted-foreground">{article.articleTitle}</p>}
-      {article.versionDate && <p className="text-xs text-muted-foreground">Güncel sürüm tarihi: {dateTr(article.versionDate)}</p>}
+      {article.articleTitle && (
+        <p className="text-sm text-muted-foreground">{article.articleTitle}</p>
+      )}
+      {article.versionDate && (
+        <p className="text-xs text-muted-foreground">
+          Güncel sürüm tarihi: {dateTr(article.versionDate)}
+        </p>
+      )}
       {error && (
         <p role="alert" className="text-sm text-destructive">
           {error}
@@ -85,7 +113,10 @@ function ArticleReader({
         </p>
       )}
       {detail && (
-        <div className="max-h-[28rem] overflow-y-auto text-sm leading-relaxed" data-testid="article-text">
+        <div
+          className="max-h-[28rem] overflow-y-auto text-sm leading-relaxed"
+          data-testid="article-text"
+        >
           {detail.chunks.length ? (
             detail.chunks.map((chunk, index) => (
               <p key={index} className="mb-3 whitespace-pre-wrap last:mb-0">
@@ -151,25 +182,29 @@ export function LegislationBrowser() {
   const searchAbort = useRef<AbortController | null>(null);
   const lawAbort = useRef<AbortController | null>(null);
 
-  const search = useCallback(async (text: string, selectedKind: LegislationType | "", offset = 0) => {
-    searchAbort.current?.abort();
-    const abort = new AbortController();
-    searchAbort.current = abort;
-    setBusy(true);
-    setError("");
-    try {
-      const next = await searchLaws(text, { kind: selectedKind, offset, signal: abort.signal });
-      if (abort.signal.aborted) return undefined;
-      setPage(next);
-      setLaws((previous) => (offset === 0 ? next.results : [...previous, ...next.results]));
-      return next;
-    } catch (e) {
-      if (!abort.signal.aborted) setError(e instanceof Error ? e.message : "Arama tamamlanamadı.");
-      return undefined;
-    } finally {
-      if (!abort.signal.aborted) setBusy(false);
-    }
-  }, []);
+  const search = useCallback(
+    async (text: string, selectedKind: LegislationType | "", offset = 0) => {
+      searchAbort.current?.abort();
+      const abort = new AbortController();
+      searchAbort.current = abort;
+      setBusy(true);
+      setError("");
+      try {
+        const next = await searchLaws(text, { kind: selectedKind, offset, signal: abort.signal });
+        if (abort.signal.aborted) return undefined;
+        setPage(next);
+        setLaws((previous) => (offset === 0 ? next.results : [...previous, ...next.results]));
+        return next;
+      } catch (e) {
+        if (!abort.signal.aborted)
+          setError(e instanceof Error ? e.message : "Arama tamamlanamadı.");
+        return undefined;
+      } finally {
+        if (!abort.signal.aborted) setBusy(false);
+      }
+    },
+    [],
+  );
 
   const openLaw = useCallback(async (lawNo: string, articleNo?: string) => {
     lawAbort.current?.abort();
@@ -185,11 +220,14 @@ export function LegislationBrowser() {
       setLaw(detail);
       const target = articleNo ? findArticle(detail.articles, articleNo) : undefined;
       if (target) setArticleId(target.id);
-      else if (articleNo) setLawError(`Madde ${articleNo} bu mevzuatın doğrulanmış maddeleri arasında bulunamadı.`);
+      else if (articleNo)
+        setLawError(`Madde ${articleNo} bu mevzuatın doğrulanmış maddeleri arasında bulunamadı.`);
     } catch (e) {
       if (!abort.signal.aborted) {
         setLaw(null);
-        setLawError(e instanceof LegislationError || e instanceof Error ? e.message : "Mevzuat açılamadı.");
+        setLawError(
+          e instanceof LegislationError || e instanceof Error ? e.message : "Mevzuat açılamadı.",
+        );
       }
     } finally {
       if (!abort.signal.aborted) setLawBusy(false);
@@ -234,7 +272,13 @@ export function LegislationBrowser() {
             void submit();
           }}
         >
-          <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Kanun adı, numarası ya da “4857 m. 18”" aria-label="Mevzuat ara" maxLength={200} />
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Kanun adı, numarası ya da “4857 m. 18”"
+            aria-label="Mevzuat ara"
+            maxLength={200}
+          />
           <Button type="submit" disabled={busy} aria-label="Ara">
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
           </Button>
@@ -258,7 +302,12 @@ export function LegislationBrowser() {
         {!query && (
           <div className="flex flex-wrap gap-1.5">
             {EXAMPLES.map((example) => (
-              <button key={example} type="button" className="rounded-full border px-2.5 py-1 text-xs text-muted-foreground hover:bg-accent" onClick={() => void submit(example)}>
+              <button
+                key={example}
+                type="button"
+                className="rounded-full border px-2.5 py-1 text-xs text-muted-foreground hover:bg-accent"
+                onClick={() => void submit(example)}
+              >
                 {example}
               </button>
             ))}
@@ -285,15 +334,25 @@ export function LegislationBrowser() {
               >
                 <span className="block font-medium leading-snug">{item.lawName}</span>
                 <span className="text-xs text-muted-foreground">
-                  {TYPE_LABELS[item.legislationType]} · No {item.lawNo} · {item.articles.toLocaleString("tr-TR")} madde
+                  {TYPE_LABELS[item.legislationType]} · No {item.lawNo} ·{" "}
+                  {item.articles.toLocaleString("tr-TR")} madde
                 </span>
               </button>
             </li>
           ))}
-          {page && laws.length === 0 && !busy && <li className="text-sm text-muted-foreground">Eşleşen doğrulanmış mevzuat yok. Başka bir ad ya da numara deneyin.</li>}
+          {page && laws.length === 0 && !busy && (
+            <li className="text-sm text-muted-foreground">
+              Eşleşen doğrulanmış mevzuat yok. Başka bir ad ya da numara deneyin.
+            </li>
+          )}
         </ul>
         {hasMore && (
-          <Button variant="outline" size="sm" disabled={busy} onClick={() => void search(query, kind, laws.length)}>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy}
+            onClick={() => void search(query, kind, laws.length)}
+          >
             Daha fazla göster
           </Button>
         )}
@@ -301,7 +360,9 @@ export function LegislationBrowser() {
 
       <section className="space-y-3" aria-label="Mevzuat içeriği">
         {!law && !lawBusy && !lawError && (
-          <p className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">Soldan bir mevzuat seçin ya da “4857 m. 18” gibi bir madde atfı yazın.</p>
+          <p className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">
+            Soldan bir mevzuat seçin ya da “4857 m. 18” gibi bir madde atfı yazın.
+          </p>
         )}
         {lawBusy && (
           <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -309,7 +370,10 @@ export function LegislationBrowser() {
           </p>
         )}
         {lawError && (
-          <p role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm">
+          <p
+            role="alert"
+            className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm"
+          >
             {lawError}
           </p>
         )}
@@ -321,9 +385,14 @@ export function LegislationBrowser() {
               </h2>
               <p className="text-xs text-muted-foreground">
                 {TYPE_LABELS[law.legislationType]} · No {law.lawNo}
-                {law.gazetteDate ? ` · Resmî Gazete ${dateTr(law.gazetteDate)}` : ""} · {law.articles.length.toLocaleString("tr-TR")} doğrulanmış madde
+                {law.gazetteDate ? ` · Resmî Gazete ${dateTr(law.gazetteDate)}` : ""} ·{" "}
+                {law.articles.length.toLocaleString("tr-TR")} doğrulanmış madde
               </p>
-              {law.truncated && <p className="text-xs text-amber-700 dark:text-amber-400">Madde sayısı çok fazla: dizin ilk maddelerle sınırlandı.</p>}
+              {law.truncated && (
+                <p className="text-xs text-amber-700 dark:text-amber-400">
+                  Madde sayısı çok fazla: dizin ilk maddelerle sınırlandı.
+                </p>
+              )}
             </header>
             {current && (
               <ArticleReader
@@ -331,15 +400,27 @@ export function LegislationBrowser() {
                 article={current}
                 query={articleFilter}
                 onPrevious={index > 0 ? () => setArticleId(law.articles[index - 1].id) : undefined}
-                onNext={index < law.articles.length - 1 ? () => setArticleId(law.articles[index + 1].id) : undefined}
+                onNext={
+                  index < law.articles.length - 1
+                    ? () => setArticleId(law.articles[index + 1].id)
+                    : undefined
+                }
               />
             )}
             <div className="space-y-2">
-              <Input value={articleFilter} onChange={(event) => setArticleFilter(event.target.value)} placeholder="Madde ara: numara (18) ya da başlıkta geçen sözcük" aria-label="Madde ara" />
+              <Input
+                value={articleFilter}
+                onChange={(event) => setArticleFilter(event.target.value)}
+                placeholder="Madde ara: numara (18) ya da başlıkta geçen sözcük"
+                aria-label="Madde ara"
+              />
               <p className="text-xs text-muted-foreground" data-testid="article-count">
                 {visible.length.toLocaleString("tr-TR")} madde gösteriliyor
               </p>
-              <ul className="max-h-80 divide-y overflow-y-auto rounded-lg border" data-testid="article-list">
+              <ul
+                className="max-h-80 divide-y overflow-y-auto rounded-lg border"
+                data-testid="article-list"
+              >
                 {visible.slice(0, 400).map((article) => (
                   <li key={article.id}>
                     <button
@@ -352,8 +433,16 @@ export function LegislationBrowser() {
                     </button>
                   </li>
                 ))}
-                {visible.length > 400 && <li className="px-3 py-2 text-xs text-muted-foreground">İlk 400 madde gösteriliyor; aramayı daraltın.</li>}
-                {visible.length === 0 && <li className="px-3 py-2 text-sm text-muted-foreground">Bu ifadeyle madde bulunamadı.</li>}
+                {visible.length > 400 && (
+                  <li className="px-3 py-2 text-xs text-muted-foreground">
+                    İlk 400 madde gösteriliyor; aramayı daraltın.
+                  </li>
+                )}
+                {visible.length === 0 && (
+                  <li className="px-3 py-2 text-sm text-muted-foreground">
+                    Bu ifadeyle madde bulunamadı.
+                  </li>
+                )}
               </ul>
             </div>
           </>

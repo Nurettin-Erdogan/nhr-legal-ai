@@ -1,11 +1,17 @@
 import { useState } from "react";
 import { MessageSquarePlus } from "lucide-react";
 import { toast } from "sonner";
-import { useLocation } from "@/lib/router-compat";
+import { useLocation } from "@/lib/router-hooks";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { FEEDBACK_CATEGORIES, MAX_FEEDBACK, canSendFeedback, sendFeedback, type FeedbackCategory } from "@/lib/feedback";
+import {
+  FEEDBACK_CATEGORIES,
+  MAX_FEEDBACK,
+  canSendFeedback,
+  sendFeedback,
+  type FeedbackCategory,
+} from "@/lib/feedback";
 
 /** Panelin köşesindeki "Geri bildirim" düğmesi: pilot kullanıcılar hata, öneri ya da beğeni gönderir. */
 export function FeedbackButton() {
@@ -46,7 +52,11 @@ export function FeedbackButton() {
             <DialogTitle>Geri bildirim</DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
-            <div role="radiogroup" aria-label="Geri bildirim türü" className="flex flex-wrap gap-2 text-sm">
+            <div
+              role="radiogroup"
+              aria-label="Geri bildirim türü"
+              className="flex flex-wrap gap-2 text-sm"
+            >
               {FEEDBACK_CATEGORIES.map((item) => (
                 <button
                   key={item.value}
@@ -68,8 +78,15 @@ export function FeedbackButton() {
               aria-label="Geri bildirim metni"
               placeholder="Ne yapmaya çalışıyordunuz, ne oldu? Müvekkil adı gibi kişisel bilgi yazmayın."
             />
-            <p className="text-xs text-muted-foreground">Açık olduğunuz sayfa ({location.pathname}) mesajla birlikte gönderilir; belge ve sohbet içeriği gönderilmez.</p>
-            <Button className="w-full" disabled={!canSendFeedback(message) || busy} onClick={() => void submit()}>
+            <p className="text-xs text-muted-foreground">
+              Açık olduğunuz sayfa ({location.pathname}) mesajla birlikte gönderilir; belge ve
+              sohbet içeriği gönderilmez.
+            </p>
+            <Button
+              className="w-full"
+              disabled={!canSendFeedback(message) || busy}
+              onClick={() => void submit()}
+            >
               {busy ? "Gönderiliyor…" : "Gönder"}
             </Button>
           </div>

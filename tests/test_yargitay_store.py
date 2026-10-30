@@ -11,11 +11,11 @@ from datetime import date
 
 import pytest
 
-psycopg = pytest.importorskip("psycopg")
-
 from ingestion.yargitay.models import CourtDecision
 from ingestion.yargitay.parser import content_hash
-from ingestion.yargitay.store import CitedDecisionChangedError, upsert_decision
+from ingestion.yargitay.store import upsert_decision
+
+psycopg = pytest.importorskip("psycopg")
 
 DATABASE_URL = os.getenv("NHR_TEST_DATABASE_URL")
 

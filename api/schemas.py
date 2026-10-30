@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
@@ -163,6 +163,7 @@ class AIStatusResponse(BaseModel):
 
 class AIAnswerRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
     conversation_id: UUID | None = None
     project_id: UUID | None = None
     # Büro davası: dava belgeleri (UYAP dahil) kullanıcının özel belgeleri olarak aranır.
@@ -238,5 +239,7 @@ class AIAnswerResponse(BaseModel):
     interpreted_question: str | None = None
     # Uzun kanun maddesi cevabı için denetlenmiş kısa özet (yapay zekâ; dayanak aşağıdaki madde metnidir).
     summary: list[str] = Field(default_factory=list)
+    # Atıf yapılan mevzuatın resmî kaynakla son karşılaştırma tarihi (kod üretir, model değil; bkz. api.ai.currency_note).
+    verification_note: str | None = None
     # Dava kapsamlı sorularda: davadaki kaç belgenin cevaba katılabildiği, hangilerinin okunamadığı.
     document_scope: dict[str, Any] | None = None

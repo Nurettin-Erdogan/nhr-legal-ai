@@ -57,14 +57,23 @@ export function parseIdentity(raw: unknown): UyapIdentity | null {
   const source = raw as Record<string, unknown>;
   const fingerprint = typeof source.fingerprint === "string" ? source.fingerprint : "";
   const display = typeof source.display === "string" ? source.display : "";
-  if (!/^[0-9a-f]{64}$/.test(fingerprint) || (source.kind !== "tc" && source.kind !== "name")) return null;
-  if (!/^[A-Za-zÇĞİÖŞÜÂÎÛçğıöşüâîû][A-Za-zÇĞİÖŞÜÂÎÛçğıöşüâîû .'*\-]{0,118}[A-Za-zÇĞİÖŞÜÂÎÛçğıöşüâîû.*]$/.test(display)) return null;
-  const portal = source.portal === "vatandas" || source.portal === "avukat" ? source.portal : "diger";
+  if (!/^[0-9a-f]{64}$/.test(fingerprint) || (source.kind !== "tc" && source.kind !== "name"))
+    return null;
+  if (
+    !/^[A-Za-zÇĞİÖŞÜÂÎÛçğıöşüâîû][A-Za-zÇĞİÖŞÜÂÎÛçğıöşüâîû .'*-]{0,118}[A-Za-zÇĞİÖŞÜÂÎÛçğıöşüâîû.*]$/.test(
+      display,
+    )
+  )
+    return null;
+  const portal =
+    source.portal === "vatandas" || source.portal === "avukat" ? source.portal : "diger";
   return { fingerprint, kind: source.kind, portal, display };
 }
 
-export const sameIdentity = (a: UyapIdentity | null | undefined, b: UyapIdentity | null | undefined): boolean =>
-  !!a && !!b && a.kind === b.kind && a.fingerprint === b.fingerprint;
+export const sameIdentity = (
+  a: UyapIdentity | null | undefined,
+  b: UyapIdentity | null | undefined,
+): boolean => !!a && !!b && a.kind === b.kind && a.fingerprint === b.fingerprint;
 
 export interface DosyaListe {
   items: BridgeDosya[];
@@ -504,7 +513,9 @@ export function parseTree(raw: unknown): TreeResult | null {
       explained: !truncated && c.explained === true,
       gapList: [
         ...(truncated
-          ? [`Güvenlik sınırı: ${MAX_TREE_ITEMS.toLocaleString("tr-TR")} evraktan sonrası alınamadı.`]
+          ? [
+              `Güvenlik sınırı: ${MAX_TREE_ITEMS.toLocaleString("tr-TR")} evraktan sonrası alınamadı.`,
+            ]
           : []),
         ...strings(c.gapList, 200, 12),
       ],

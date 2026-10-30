@@ -31,8 +31,10 @@ import {
 import { steadySleep } from "@/lib/steady-timer";
 
 /** Aynı UYAP kişisi mi (parmak izi + tür). Köprüdeki `sameIdentity` ile aynı kural; testler köprüyü sahtelediği için burada da tanımlı. */
-const sameIdentity = (a: UyapIdentity | null | undefined, b: UyapIdentity | null | undefined): boolean =>
-  !!a && !!b && a.kind === b.kind && a.fingerprint === b.fingerprint;
+const sameIdentity = (
+  a: UyapIdentity | null | undefined,
+  b: UyapIdentity | null | undefined,
+): boolean => !!a && !!b && a.kind === b.kind && a.fingerprint === b.fingerprint;
 
 /** "empty": UYAP dosyada evrak bulunmadığını kendisi bildiriyor; aktarılacak bir şey yoktur, eksik sayılmaz. */
 export type FileOutcome = "complete" | "empty" | "incomplete" | "failed" | "pending";
@@ -334,12 +336,20 @@ async function pullIds(
   if (ids.length > PULL_BATCH) {
     const total: PullResult = { sent: 0, errors: [], absent: [] };
     for (let start = 0; start < ids.length && !signal?.aborted; start += PULL_BATCH) {
-      const part = await pullIds(tabId, ids.slice(start, start + PULL_BATCH), bridge, signal, (text) =>
-        onPhase(`${text} (parça ${Math.floor(start / PULL_BATCH) + 1}/${Math.ceil(ids.length / PULL_BATCH)})`),
+      const part = await pullIds(
+        tabId,
+        ids.slice(start, start + PULL_BATCH),
+        bridge,
+        signal,
+        (text) =>
+          onPhase(
+            `${text} (parça ${Math.floor(start / PULL_BATCH) + 1}/${Math.ceil(ids.length / PULL_BATCH)})`,
+          ),
       );
       total.sent += part.sent;
       total.absent.push(...part.absent);
-      for (const error of part.errors) if (total.errors.length < 5 && !total.errors.includes(error)) total.errors.push(error);
+      for (const error of part.errors)
+        if (total.errors.length < 5 && !total.errors.includes(error)) total.errors.push(error);
       if (part.failure) {
         total.failure = part.failure;
         if (part.failure.code && FATAL_CODES.has(part.failure.code)) break;
@@ -419,7 +429,8 @@ export async function syncDosya(
   if (result.fatal || options.signal?.aborted) return result;
   const detailStartedAt = Date.now();
   const fatal = await readDetail(dosya, result.report, options, result.tabId ?? options.tabId);
-  if (result.report.timing) result.report.timing.detail = Math.round((Date.now() - detailStartedAt) / 100) / 10;
+  if (result.report.timing)
+    result.report.timing.detail = Math.round((Date.now() - detailStartedAt) / 100) / 10;
   return fatal ? { report: result.report, fatal } : result;
 }
 
@@ -585,7 +596,10 @@ async function syncEvraks(
     lastTree = read.tree;
     // Dosyalar karışmasın: koşu, başladığı UYAP kişisiyle sürer. Aktarım ortasında başka biri UYAP'a girdiyse ya da sunucu
     // bu kişiyi hesaba bağlı saymadıysa hiçbir evrak/dosya bilgisi kaydedilmeden durulur (kullanıcı kararı 2026-10-16).
-    if (options.identity && (lastTree.accountRefused || !sameIdentity(options.identity, lastTree.identity))) {
+    if (
+      options.identity &&
+      (lastTree.accountRefused || !sameIdentity(options.identity, lastTree.identity))
+    ) {
       report.found = 0;
       return fail({
         ok: false,
@@ -607,7 +621,12 @@ async function syncEvraks(
 
     if (todo.length === 0 && structural.length === 0) break;
     // Bir aktarım hiç evrak indiremediyse aynısını hemen tekrarlamak yalnız süre yer (canlıda 3 × ~4,5 dk, 2026-10-17).
-    if (todo.length > 0 && options.pull !== false && report.pulls < MAX_PULLS_PER_FILE && lastPullSent !== 0) {
+    if (
+      todo.length > 0 &&
+      options.pull !== false &&
+      report.pulls < MAX_PULLS_PER_FILE &&
+      lastPullSent !== 0
+    ) {
       report.pulls += 1;
       emit(`Evrak aktarılıyor: ${todo.length} evrak`);
       const pullStartedAt = Date.now();
@@ -641,8 +660,13 @@ async function syncEvraks(
   for (const problem of structural) addProblem(report, problem);
   if (report.absent) {
     // Yalnız UYAP'ın içerik vermediği evraklar kaldıysa önceki denemelerin indirme hata satırları artık sorun değildir.
-    report.problems = report.problems.filter((line) => !/UYAP bu evrakın içeriğini vermiyor|sistemine yüklenmemiş/i.test(line));
-    addProblem(report, `${report.absent} evrakın içeriği UYAP'ın kendisinde yok ("sisteme yüklenmemiş"); aktarılamaz, eksik sayılmadı.`);
+    report.problems = report.problems.filter(
+      (line) => !/UYAP bu evrakın içeriğini vermiyor|sistemine yüklenmemiş/i.test(line),
+    );
+    addProblem(
+      report,
+      `${report.absent} evrakın içeriği UYAP'ın kendisinde yok ("sisteme yüklenmemiş"); aktarılamaz, eksik sayılmadı.`,
+    );
   }
   if (report.missing > 0)
     addProblem(report, `${report.missing} evrak JurisAI'da kayıtlı görünmüyor.`);
@@ -750,7 +774,11 @@ export function unpulledFiles(items: BridgeDosya[], verified: VerifiedFile[]): U
       key: item.key,
       esas: item.esas,
       birim: item.birim,
-      reason: !record ? "Hiç aktarılmamış" : missing > 0 ? `${missing} evrak eksik` : "Aktarım doğrulanamadı",
+      reason: !record
+        ? "Hiç aktarılmamış"
+        : missing > 0
+          ? `${missing} evrak eksik`
+          : "Aktarım doğrulanamadı",
     });
   }
   return out;
@@ -781,18 +809,22 @@ export async function syncAll(
   // iki kez yeniden okunur, dosyalar esas no + birim + yargı türüyle yeni anahtarlarına eşlenir ve dosya yeniden denenir.
   // Raporlar özgün anahtarı taşımaya devam eder (sayfa satırları onunla eşler).
   const liveKey = new Map<string, string>();
-  const identity = (dosya: BridgeDosya) => `${dosya.yargiTuru}|${dosya.esas.replace(/\s+/g, "")}|${dosya.birim.trim()}`;
+  const identity = (dosya: BridgeDosya) =>
+    `${dosya.yargiTuru}|${dosya.esas.replace(/\s+/g, "")}|${dosya.birim.trim()}`;
   let relists = 2;
   let heals = HEAL_ATTEMPTS;
   const run = async (index: number) => {
     const dosya = list[index];
-    const result = await syncDosya({ ...dosya, key: liveKey.get(dosya.key) ?? dosya.key }, {
-      ...options,
-      bridge,
-      recoveryBudget,
-      index,
-      total: list.length,
-    });
+    const result = await syncDosya(
+      { ...dosya, key: liveKey.get(dosya.key) ?? dosya.key },
+      {
+        ...options,
+        bridge,
+        recoveryBudget,
+        index,
+        total: list.length,
+      },
+    );
     result.report.key = dosya.key;
     return result;
   };
@@ -818,7 +850,12 @@ export async function syncAll(
     if (!bridge.relist) return false;
     for (let attempt = 0; attempt < LOGIN_WAIT_ATTEMPTS; attempt += 1) {
       if (options.signal?.aborted) return false;
-      options.onProgress?.({ index, total: list.length, phase: LOGIN_WAIT_PHASE, report: reports[index] });
+      options.onProgress?.({
+        index,
+        total: list.length,
+        phase: LOGIN_WAIT_PHASE,
+        report: reports[index],
+      });
       await bridge.sleep(LOGIN_POLL_MS);
       if (options.signal?.aborted) return false;
       const fresh = await bridge.relist();
@@ -835,7 +872,11 @@ export async function syncAll(
       break;
     }
     let result = await run(index);
-    if (result.report.outcome === "failed" && !result.fatal && (result.code === "stale" || result.code === "recovery_failed" || result.code === "no_list")) {
+    if (
+      result.report.outcome === "failed" &&
+      !result.fatal &&
+      (result.code === "stale" || result.code === "recovery_failed" || result.code === "no_list")
+    ) {
       if (await relist()) result = await run(index);
     }
     reports[index] = result.report;
@@ -852,7 +893,11 @@ export async function syncAll(
     if (result.fatal) {
       // JurisAI hedefinin/anahtarının hatası UYAP'a tekrar girişle düzelmez.
       // Kaydedilmiş ilerlemeyi koru; UYAP'tan aynı belgeyi yeniden indirme.
-      if (["pairing_rejected", "destination_unavailable", "uyap_account_mismatch"].includes(result.fatal.code || "")) {
+      if (
+        ["pairing_rejected", "destination_unavailable", "uyap_account_mismatch"].includes(
+          result.fatal.code || "",
+        )
+      ) {
         stoppedBecause = result.fatal.error;
         break;
       }
@@ -875,13 +920,19 @@ export async function syncAll(
       let healed = false;
       if (bridge.relist && heals > 0 && !options.signal?.aborted) {
         heals -= 1;
-        options.onProgress?.({ index, total: list.length, phase: "UYAP yanıt vermiyor; bir dakika beklenip dosya listesi yeniden okunacak", report: reports[index] });
+        options.onProgress?.({
+          index,
+          total: list.length,
+          phase: "UYAP yanıt vermiyor; bir dakika beklenip dosya listesi yeniden okunacak",
+          report: reports[index],
+        });
         await bridge.sleep(HEAL_WAIT_MS);
         const fresh = options.signal?.aborted ? null : await bridge.relist();
         // Liste okunamıyorsa oturum kapanmıştır: yeniden giriş beklenir.
         const back2 = fresh ? (remap(fresh), true) : await waitForSession(index);
         if (back2) {
-          for (let back = index - MAX_CONSECUTIVE_FAILURES + 1; back <= index; back += 1) reports[back] = blankReport(list[back]);
+          for (let back = index - MAX_CONSECUTIVE_FAILURES + 1; back <= index; back += 1)
+            reports[back] = blankReport(list[back]);
           index -= MAX_CONSECUTIVE_FAILURES; // döngü artırınca hata alan ilk dosyaya döner
           consecutiveFailures = 0;
           healed = true;
@@ -908,8 +959,10 @@ export async function syncAll(
         break;
       }
       await bridge.sleep(FILE_PAUSE_MS);
-      const result = await syncDosya({ ...list[index], key: liveKey.get(list[index].key) ?? list[index].key },
-        { ...options, bridge, recoveryBudget, index, total: list.length, detail: false });
+      const result = await syncDosya(
+        { ...list[index], key: liveKey.get(list[index].key) ?? list[index].key },
+        { ...options, bridge, recoveryBudget, index, total: list.length, detail: false },
+      );
       result.report.key = list[index].key;
       if (result.fatal) {
         stoppedBecause = result.fatal.error;
@@ -917,8 +970,16 @@ export async function syncAll(
       }
       // Yeni okuma yalnız daha iyiyse eskisinin yerini alır; dosya bilgisi sonucu ilk turdan korunur.
       if (result.report.outcome !== "failed" && result.report.missing <= before.missing)
-        reports[index] = { ...result.report, sent: before.sent + result.report.sent, detail: before.detail };
-      await options.onCheckpoint?.({ reports: [...reports], summary: summarize(reports), aborted: !!options.signal?.aborted });
+        reports[index] = {
+          ...result.report,
+          sent: before.sent + result.report.sent,
+          detail: before.detail,
+        };
+      await options.onCheckpoint?.({
+        reports: [...reports],
+        summary: summarize(reports),
+        aborted: !!options.signal?.aborted,
+      });
     }
   }
   // Dosya bilgileri için de son tur: evrakı tamam ama bir bilgi tablosu o an yüklenmemiş dosyalar bir kez daha okunur. Gerçek
@@ -928,19 +989,29 @@ export async function syncAll(
     for (let index = 0; index < list.length; index += 1) {
       const before = reports[index];
       const state = before.detail?.state;
-      if ((before.outcome !== "complete" && before.outcome !== "empty") || (state !== "partial" && state !== "failed")) continue;
+      if (
+        (before.outcome !== "complete" && before.outcome !== "empty") ||
+        (state !== "partial" && state !== "failed")
+      )
+        continue;
       if (options.signal?.aborted) {
         aborted = true;
         break;
       }
       await bridge.sleep(FILE_PAUSE_MS);
-      const result = await syncDosya({ ...list[index], key: liveKey.get(list[index].key) ?? list[index].key },
-        { ...options, bridge, recoveryBudget, index, total: list.length, pull: false });
+      const result = await syncDosya(
+        { ...list[index], key: liveKey.get(list[index].key) ?? list[index].key },
+        { ...options, bridge, recoveryBudget, index, total: list.length, pull: false },
+      );
       result.report.key = list[index].key;
       if (result.fatal) break; // evraklar zaten doğrulandı: bu ek okuma koşuyu "durdu" diye işaretlemez
       if (result.report.detail?.state === "complete")
         reports[index] = { ...before, detail: result.report.detail };
-      await options.onCheckpoint?.({ reports: [...reports], summary: summarize(reports), aborted: !!options.signal?.aborted });
+      await options.onCheckpoint?.({
+        reports: [...reports],
+        summary: summarize(reports),
+        aborted: !!options.signal?.aborted,
+      });
     }
   }
   return { reports, summary: summarize(reports), stoppedBecause, aborted };
@@ -1017,7 +1088,8 @@ export function toServerItems(reports: FileReport[], dosyalar: BridgeDosya[]): S
   for (const report of reports) {
     // Evraksız dosya da bildirilir (0 evrak, eksiksiz): yoksa her liste yenilemede "çekilmemiş" görünürdü. Dava kaydı dosya
     // bilgileri kaydedilirken açılır; kayıt yoksa sunucu satırı "no_case" diye atlar.
-    if (report.outcome === "pending" || (report.outcome === "failed" && report.found === 0)) continue;
+    if (report.outcome === "pending" || (report.outcome === "failed" && report.found === 0))
+      continue;
     const esas = (report.who?.esas || report.esas).trim();
     const birim = (report.who?.birim || report.birim).trim();
     if (!esas || !birim) continue;

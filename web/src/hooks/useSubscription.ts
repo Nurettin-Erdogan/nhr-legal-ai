@@ -1,7 +1,7 @@
 import { invokeFunction } from "@/lib/backend";
 import { useEffect, useState, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/components/AuthProvider";
+import { useAuth } from "@/components/AuthContext";
 
 export type SubscriptionStatus = {
   subscribed: boolean;

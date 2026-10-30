@@ -14,21 +14,37 @@ import {
   type FoldedItem,
 } from "@/lib/document-compare";
 
-function Redline({ words, side }: { words: Extract<FoldedItem, { kind: "changed" }>["words"]; side: "left" | "right" }) {
+function Redline({
+  words,
+  side,
+}: {
+  words: Extract<FoldedItem, { kind: "changed" }>["words"];
+  side: "left" | "right";
+}) {
   // Sol sütun silinenleri, sağ sütun eklenenleri işaretler; ikisinde de değişmeyen sözcükler düz görünür.
   return (
     <>
       {words
-        .filter((piece) => piece.op === "equal" || (side === "left" ? piece.op === "delete" : piece.op === "insert"))
+        .filter(
+          (piece) =>
+            piece.op === "equal" ||
+            (side === "left" ? piece.op === "delete" : piece.op === "insert"),
+        )
         .map((piece, index) =>
           piece.op === "equal" ? (
             <span key={index}>{piece.text} </span>
           ) : piece.op === "delete" ? (
-            <del key={index} className="rounded bg-red-500/15 px-0.5 text-red-800 dark:text-red-300">
+            <del
+              key={index}
+              className="rounded bg-red-500/15 px-0.5 text-red-800 dark:text-red-300"
+            >
               {piece.text}{" "}
             </del>
           ) : (
-            <ins key={index} className="rounded bg-emerald-500/15 px-0.5 no-underline text-emerald-800 dark:text-emerald-300">
+            <ins
+              key={index}
+              className="rounded bg-emerald-500/15 px-0.5 no-underline text-emerald-800 dark:text-emerald-300"
+            >
               {piece.text}{" "}
             </ins>
           ),
@@ -37,7 +53,15 @@ function Redline({ words, side }: { words: Extract<FoldedItem, { kind: "changed"
   );
 }
 
-function Item({ item, leftName, rightName }: { item: FoldedItem; leftName: string; rightName: string }) {
+function Item({
+  item,
+  leftName,
+  rightName,
+}: {
+  item: FoldedItem;
+  leftName: string;
+  rightName: string;
+}) {
   const [open, setOpen] = useState(false);
   if (item.kind === "equal") {
     return (
@@ -59,29 +83,47 @@ function Item({ item, leftName, rightName }: { item: FoldedItem; leftName: strin
         </button>
       </div>
     ) : (
-      <button type="button" className="w-full rounded-md border border-dashed py-1 text-xs text-muted-foreground hover:bg-accent" onClick={() => setOpen(true)} data-testid="diff-fold">
+      <button
+        type="button"
+        className="w-full rounded-md border border-dashed py-1 text-xs text-muted-foreground hover:bg-accent"
+        onClick={() => setOpen(true)}
+        data-testid="diff-fold"
+      >
         {item.units.length} aynı cümle gizlendi · göster
       </button>
     );
   }
   if (item.kind === "removed") {
     return (
-      <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-3 text-sm" data-testid="diff-removed">
-        <p className="mb-1 text-xs font-medium text-red-700 dark:text-red-300">Silindi · yalnız “{leftName}” içinde var</p>
+      <div
+        className="rounded-lg border border-red-500/30 bg-red-500/5 p-3 text-sm"
+        data-testid="diff-removed"
+      >
+        <p className="mb-1 text-xs font-medium text-red-700 dark:text-red-300">
+          Silindi · yalnız “{leftName}” içinde var
+        </p>
         <p>{item.text}</p>
       </div>
     );
   }
   if (item.kind === "added") {
     return (
-      <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm" data-testid="diff-added">
-        <p className="mb-1 text-xs font-medium text-emerald-700 dark:text-emerald-300">Eklendi · yalnız “{rightName}” içinde var</p>
+      <div
+        className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm"
+        data-testid="diff-added"
+      >
+        <p className="mb-1 text-xs font-medium text-emerald-700 dark:text-emerald-300">
+          Eklendi · yalnız “{rightName}” içinde var
+        </p>
         <p>{item.text}</p>
       </div>
     );
   }
   return (
-    <div className="grid gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm sm:grid-cols-2" data-testid="diff-changed">
+    <div
+      className="grid gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm sm:grid-cols-2"
+      data-testid="diff-changed"
+    >
       <div>
         <p className="mb-1 text-xs font-medium text-muted-foreground">{leftName}</p>
         <p>
@@ -140,10 +182,18 @@ export function CaseDocumentCompare({ caseId }: { caseId: string }) {
     setError("");
     setResult(undefined);
     try {
-      const next = await compareDocuments(caseId, left, right, { token: inMemoryAccessToken(), signal: abort.signal });
+      const next = await compareDocuments(caseId, left, right, {
+        token: inMemoryAccessToken(),
+        signal: abort.signal,
+      });
       if (!abort.signal.aborted) setResult(next);
     } catch (e) {
-      if (!abort.signal.aborted) setError(e instanceof CompareError || e instanceof Error ? e.message : "Karşılaştırma tamamlanamadı.");
+      if (!abort.signal.aborted)
+        setError(
+          e instanceof CompareError || e instanceof Error
+            ? e.message
+            : "Karşılaştırma tamamlanamadı.",
+        );
     } finally {
       if (!abort.signal.aborted) setBusy(false);
     }
@@ -154,8 +204,9 @@ export function CaseDocumentCompare({ caseId }: { caseId: string }) {
   return (
     <div className="space-y-4" data-testid="case-document-compare">
       <p className="text-sm text-muted-foreground">
-        Davaya bağlı iki belgenin metin farkını gösterir (ör. sözleşmenin iki sürümü). Bu bir yapay zekâ yorumu ya da hukuki değerlendirme değildir; yalnız iki metnin hangi
-        cümlelerde ayrıldığını işaretler. Rakamlar ve noktalama farkı da değişiklik sayılır.
+        Davaya bağlı iki belgenin metin farkını gösterir (ör. sözleşmenin iki sürümü). Bu bir yapay
+        zekâ yorumu ya da hukuki değerlendirme değildir; yalnız iki metnin hangi cümlelerde
+        ayrıldığını işaretler. Rakamlar ve noktalama farkı da değişiklik sayılır.
       </p>
       {loadError && (
         <p role="alert" className="text-sm text-destructive">
@@ -169,15 +220,22 @@ export function CaseDocumentCompare({ caseId }: { caseId: string }) {
       )}
       {documents && ready.length < 2 && (
         <p className="rounded-lg border p-3 text-sm text-muted-foreground" role="status">
-          Karşılaştırmak için davaya bağlı en az iki okunmuş (aranabilir) belge gerekir; şu an {ready.length} tane var.
-          {unavailable.length > 0 && ` ${unavailable.length} belge henüz hazır değil: ${unavailable.map((item) => `${item.file_name} (${documentStatusLabel(item)})`).join(", ")}.`}
+          Karşılaştırmak için davaya bağlı en az iki okunmuş (aranabilir) belge gerekir; şu an{" "}
+          {ready.length} tane var.
+          {unavailable.length > 0 &&
+            ` ${unavailable.length} belge henüz hazır değil: ${unavailable.map((item) => `${item.file_name} (${documentStatusLabel(item)})`).join(", ")}.`}
         </p>
       )}
       {ready.length >= 2 && (
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
           <label className="flex-1 text-xs">
             Belge A (önceki / referans)
-            <select aria-label="Belge A" className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm" value={left} onChange={(event) => setLeft(event.target.value)}>
+            <select
+              aria-label="Belge A"
+              className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm"
+              value={left}
+              onChange={(event) => setLeft(event.target.value)}
+            >
               <option value="">Seçin…</option>
               {ready.map((item) => (
                 <option key={item.id} value={item.id} disabled={item.id === right}>
@@ -190,7 +248,12 @@ export function CaseDocumentCompare({ caseId }: { caseId: string }) {
           <ArrowRight className="hidden h-4 w-4 shrink-0 self-center text-muted-foreground sm:block" />
           <label className="flex-1 text-xs">
             Belge B (sonraki / karşılaştırılan)
-            <select aria-label="Belge B" className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm" value={right} onChange={(event) => setRight(event.target.value)}>
+            <select
+              aria-label="Belge B"
+              className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm"
+              value={right}
+              onChange={(event) => setRight(event.target.value)}
+            >
               <option value="">Seçin…</option>
               {ready.map((item) => (
                 <option key={item.id} value={item.id} disabled={item.id === left}>
@@ -208,35 +271,63 @@ export function CaseDocumentCompare({ caseId }: { caseId: string }) {
       )}
       {unavailable.length > 0 && ready.length >= 2 && (
         <p className="text-xs text-muted-foreground">
-          Listede olmayan belgeler okunamadı ya da işlenmedi: {unavailable.map((item) => item.file_name).join(", ")}.
+          Listede olmayan belgeler okunamadı ya da işlenmedi:{" "}
+          {unavailable.map((item) => item.file_name).join(", ")}.
         </p>
       )}
       {error && (
-        <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm">
+        <div
+          role="alert"
+          className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm"
+        >
           {error}
         </div>
       )}
       {result && (
         <div className="space-y-3">
-          <div className="flex flex-wrap items-center gap-2 text-sm" role="status" data-testid="compare-summary">
+          <div
+            className="flex flex-wrap items-center gap-2 text-sm"
+            role="status"
+            data-testid="compare-summary"
+          >
             <span className="font-medium">{describeCounts(result.counts)}</span>
-            <span className="text-muted-foreground">Aynı cümle oranı: %{Math.round(result.similarity * 100)}</span>
+            <span className="text-muted-foreground">
+              Aynı cümle oranı: %{Math.round(result.similarity * 100)}
+            </span>
           </div>
           {(result.left.ocr || result.right.ocr) && (
-            <p className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-2 text-xs text-amber-800 dark:text-amber-300" data-testid="compare-ocr">
-              {[result.left.ocr ? result.left.fileName : "", result.right.ocr ? result.right.fileName : ""].filter(Boolean).join(" ve ")} metni OCR ile okundu: bazı farklar okuma
-              hatasından kaynaklanabilir. Önemli bir değişikliği özgün belgeden doğrulayın.
+            <p
+              className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-2 text-xs text-amber-800 dark:text-amber-300"
+              data-testid="compare-ocr"
+            >
+              {[
+                result.left.ocr ? result.left.fileName : "",
+                result.right.ocr ? result.right.fileName : "",
+              ]
+                .filter(Boolean)
+                .join(" ve ")}{" "}
+              metni OCR ile okundu: bazı farklar okuma hatasından kaynaklanabilir. Önemli bir
+              değişikliği özgün belgeden doğrulayın.
             </p>
           )}
           {hasDifferences(result.counts) && result.counts.equal > 0 && (
             <label className="flex items-center gap-1.5 text-xs">
-              <input type="checkbox" checked={showEqual} onChange={(event) => setShowEqual(event.target.checked)} />
+              <input
+                type="checkbox"
+                checked={showEqual}
+                onChange={(event) => setShowEqual(event.target.checked)}
+              />
               Aynı bölümleri de göster
             </label>
           )}
           <div className="space-y-2">
             {items.map((item, index) => (
-              <Item key={index} item={item} leftName={result.left.fileName} rightName={result.right.fileName} />
+              <Item
+                key={index}
+                item={item}
+                leftName={result.left.fileName}
+                rightName={result.right.fileName}
+              />
             ))}
           </div>
         </div>

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import re
 from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
 from dataclasses import dataclass, field, replace
 from time import monotonic
@@ -17,12 +19,14 @@ from psycopg.errors import InsufficientPrivilege
 from api.audit import AI_ANSWER, AuditContext, record_event
 from api.ai.case_questions import asks_for_legal_assessment, is_case_file_question
 from api.ai.answer_kind import AnswerKind
+from api.ai.conversation_intent import NON_LEGAL_REPLY as _NON_LEGAL_REPLY
 from api.ai.document_selection import selected_document_coverage
 from api.ai.cache import (
     answer_cache,
     answer_cache_key,
     history_fingerprint,
     source_fingerprint,
+    restore_verified_natural_answer,
 )
 from api.ai.conversation_history import (
     ConversationNotFound,
@@ -38,9 +42,10 @@ from api.ai.workspace_scope import office_project_case, project_document_coverag
 from api.document_indexing import case_document_coverage, sweep_unindexed
 from api.ai.live_verify import verify_third_party_contexts
 from api.ai.consulted_relevance import relevant_chunk_ids
-from api.ai.discovery import candidate_pool_size, select_answer_contexts, search_summary
+from api.ai.discovery import (LIMIT_FAILED, LIMIT_NONE, candidate_pool_size, retrieval_limit, search_summary,
+                              select_answer_contexts, worse_limit)
 from api.ai.fast_statute import try_fast_statute
-from api.ai.event_lookup import lookup_event_basis
+from api.ai.event_lookup import lookup_event_basis, load_current_event_reference
 from api.ai.relevance import case_law_requested, documents_answer, documents_named_in, missing_document_references
 from api.ai.trust import usable_as_evidence, verified_contexts
 from api.ai.turkish_text import restore_turkish
@@ -70,6 +75,25 @@ logger = logging.getLogger(__name__)
 
 StageCallback = Callable[[dict[str, Any]], Coroutine[Any, Any, None] | None]
 _generation_lock = asyncio.Lock()
+_cloud_generation_slots = {}
+
+
+def _generation_slot(provider, local_provider):
+    """Local GPU stays serialized; independent cloud requests need not queue
+    behind an entire unrelated writer/checker/repair sequence. The fan-out is
+    still bounded, not unlimited paid-provider concurrency.
+    """
+    if provider is local_provider or (isinstance(provider, FallbackProvider) and provider.fell_back):
+        return _generation_lock
+    loop = asyncio.get_running_loop()
+    for old_loop in list(_cloud_generation_slots):
+        if old_loop.is_closed():
+            _cloud_generation_slots.pop(old_loop, None)
+    if loop not in _cloud_generation_slots:
+        _cloud_generation_slots[loop] = asyncio.BoundedSemaphore(4)
+    return _cloud_generation_slots[loop]
+
+
 GenerationProfile = Literal["default", "deep_research"]
 
 
@@ -85,11 +109,18 @@ class _ServerReplyProvider:
 
 # Synthesis failures where no checker judged the meaning: the draft quoted inexactly, had the wrong shape, mismatched a
 # number, or a source chunk could not be shown whole. Only these fall back to the verified-quote route.
-_MECHANICAL_SYNTHESIS_REJECTIONS = frozenset({"evidence", "draft_shape", "numeric_polarity", "source_shape", "budget",
+_MECHANICAL_SYNTHESIS_REJECTIONS = frozenset({"evidence", "draft_shape", "numeric_polarity", "source_shape", "budget", "answer_focus",
                                               # claims WE left out made an otherwise fully supported answer incomplete
                                               "dropped_coverage",
                                               # the writer claimed a source gap the checker rejected (sources cover it)
                                               "unconfirmed_source_gap"})
+
+
+_DIGEST_REASONS = frozenset({"numeric_polarity", "research_coverage", "dropped_coverage", "budget", "source_shape", "draft_shape", "answer_focus"})
+
+
+def _wants_source_text(question: str) -> bool:
+    return bool(re.search(r"\baynen\b|\bolduğu gibi\b|\btam met\w*|\bmadde metn\w*", question, re.I))
 
 
 def cloud_allowed(request: AIAnswerRequest) -> bool:
@@ -124,6 +155,11 @@ def answer_provider(
             timeout_seconds=settings.cloud_ai_timeout_seconds, max_output_tokens=settings.cloud_ai_max_output_tokens,
             reasoning_effort=getattr(settings, "cloud_ai_reasoning_effort", "low"),
         )
+    # Per-request Luna choice; never changes global settings or private routing.
+    if (profile == "default" and request.reasoning_effort is not None
+            and options["provider_name"] == "openrouter"
+            and options["model"] == "openai/gpt-6-luna"):
+        options["reasoning_effort"] = request.reasoning_effort
     try:
         cloud = create_cloud_provider(**options)
     except AIProviderError as exc:
@@ -141,6 +177,417 @@ def provider_cache_model(provider: AIProvider, profile: GenerationProfile) -> st
         ) else ""
         return f"{profile}:{cloud.name}:{cloud.model}:{getattr(cloud, 'reasoning_effort', '')}:{cloud.max_output_tokens}{auxiliary_policy}"
     return provider.model
+
+
+_FREE_ANSWER_SOURCES_PER_SENTENCE = 4
+_FREE_ANSWER_SOURCES_PER_PART = 6
+_PERIOD_FACET = re.compile(r"zamanaşımı|hak düşürücü|(?:dava|başvuru|itiraz|temyiz|istinaf|şikayet|şikâyet)\w*\s+(?:açma\s+)?(?:süre|müddet)|hangi süre|ne kadar süre|kaç (?:gün|ay|yıl|hafta)|süresi", re.IGNORECASE)
+
+
+def _free_answer(provider: AIProvider, question: str, contexts: list[RAGContext], history, timings: "PipelineTimings",
+                 checker: AIProvider, on_draft=None, *, public_web_scope=False, prepared_plan=None,
+                 on_partial=None) -> "VerifiedAnswer | None":
+    from api.ai.free_answer import free_verified_answer
+    from api.ai.evidence_pool import balanced_evidence, query_scoped_evidence
+    from api.ai.request_memo import memoize_request
+
+    settings = get_settings()
+    stage_started = monotonic()
+    stage_ms = timings.extra.setdefault('natural_stages_ms', {})
+    from api.ai.relevance import case_law_requested
+    if case_law_requested(question) and sum(1 for context in contexts if context.source_type == "court_decision") < _FREE_ANSWER_EXTRA_DECISIONS:
+        # Bilinen konularda arama "hızlı kanun yolu"na girip havuza hiç karar koymuyor (kira sorusunda yalnız TBK m. 315 vardı);
+        # yargı uygulaması cevaptan eksik kalıyordu. Sorunun kendi karar araması ayrıca çalışır, en çok 3 karar eklenir.
+        try:
+            with database_connection() as connection:
+                found = verified_contexts(retrieve_contexts(connection, question=question, top_k=8))
+            contexts = _with_decisions(contexts, found, question=question)
+        except Exception:  # noqa: BLE001 - decisions are an enrichment; the statutes alone still answer
+            logger.exception("Serbest cevap için karar araması başarısız")
+
+    def vector(sentence: str) -> list[float] | None:
+        model = getattr(settings, "legislation_embedding_model", "")
+        if not model:
+            return None
+        try:
+            from api.ai.relevance import semantic_search_text
+            embedder = create_embedding_provider(
+                provider_name="ollama", model=model, dimensions=1024, ollama_base_url=settings.ollama_base_url,
+                ollama_timeout_seconds=min(8.0, settings.ollama_timeout_seconds))
+            return embedder.embed_query(semantic_search_text(sentence))
+        except EmbeddingProviderError:
+            return None
+
+    @memoize_request
+    def concept_lookup(query: str) -> list[RAGContext]:
+        # Different subquestions often share the same legal concept. Own
+        # transaction + request-local single-flight: no repeated corpus sort,
+        # no failed transaction leaking into successful sibling searches.
+        with database_connection() as connection:
+            return retrieve_contexts(connection, question=query,
+                                     top_k=_FREE_ANSWER_SOURCES_PER_SENTENCE)
+
+    @memoize_request
+    def retrieve(sentence: str) -> list[RAGContext]:
+        # A planner's numeric reference is an exact lookup, not a semantic
+        # query. Do not embed/search the whole corpus before reading that
+        # very provision. Only this entire canonical query shape qualifies;
+        # a fact pattern mentioning the same article keeps broad discovery.
+        reference = re.fullmatch(r'([0-9]{1,5}) sayılı Kanun m\. ([0-9]{1,3}(?:/[A-Za-z])?)', sentence)
+        if reference and public_web_scope:
+            from api.ai.retrieval import STATUTE_RETRIEVAL_SQL, _execute_retrieval
+            with database_connection() as connection:
+                return verified_contexts(_execute_retrieval(connection, STATUTE_RETRIEVAL_SQL,
+                    dict(law_no=reference[1], article_no=reference[2], as_of=None,
+                         top_k=_FREE_ANSWER_SOURCES_PER_SENTENCE), timeout='5s'))
+        # Kanun maddeleri önce (konu tablosu + bge-m3 anlam araması), sonra aynı cümlenin karar aramaları: karar parçaları
+        # çoğu zaman cümle sınırında temiz bölünmediğinden kanıt olarak yalnız resmî madde sık kullanılabilir.
+        legislation_vector = vector(sentence)
+        search_info: dict = {}
+        from concurrent.futures import ThreadPoolExecutor
+
+        from api.ai.search_plan import research_queries
+        concept = research_queries(sentence)[1:]
+        # The concept lookups do not depend on the main search, so they run beside it: two heavy lexical lanes queued one behind
+        # the other took 15 s for a part (measured 2026-10-30). Each opens its own connection; a failed optional lookup cannot
+        # touch the main search's transaction.
+        concept_pool = ThreadPoolExecutor(max_workers=len(concept)) if concept else None
+        concept_futures = [concept_pool.submit(concept_lookup, query) for query in concept] if concept_pool else []
+        try:
+            with database_connection() as connection:
+                statutes = _case_statute_contexts(connection, sentence, [])
+                found = retrieve_contexts(connection, question=sentence, top_k=_FREE_ANSWER_SOURCES_PER_SENTENCE,
+                                          legislation_embedding=legislation_vector, expand_legislation=True,
+                                          diagnostics=search_info)
+                # A lane of this part's search ran out of time or was sampled: the user is told the research may be incomplete (the
+                # outer search used to be the only source of that warning).
+                # (not inside "free_answer": the attempt loop clears that dictionary)
+                searches = timings.extra.setdefault("part_searches", [])
+                searches.append({"query": sentence[:60], "partial": bool(search_info.get("partial")),
+                                 "limit": retrieval_limit(search_info),
+                                 "branches": [(b.get("name"), b.get("status"), b.get("seconds"))
+                                              for b in search_info.get("branches", [])]})
+            concept_hits = []
+            for future in concept_futures:
+                try:
+                    concept_hits.extend(future.result())
+                except psycopg.Error:
+                    logger.warning('Hukuk kavramı arama kolu tamamlanamadı')
+        finally:
+            if concept_pool is not None:
+                concept_pool.shutdown(wait=False)
+        # Hints and semantic/lexical discovery are independent evidence lanes.
+        # Two broad hints must not hide the directly relevant semantic statute.
+        return balanced_evidence([query_scoped_evidence(sentence, lane) for lane in [
+            statutes,
+            [c for c in found if c.source_type == "legislation"],
+            [c for c in found if c.source_type != "legislation"],
+            concept_hits,
+        ]], _FREE_ANSWER_SOURCES_PER_PART)
+
+    # Plan → search per part: a question with several subjects ("nafaka, velayet, mal paylaşımı süresi") got sources only for the
+    # dominant one and the rest was skipped silently (2026-10-25). Each part now brings its own statutes and decisions.
+    from concurrent.futures import ThreadPoolExecutor
+
+    from api.ai.free_answer import plan_question
+
+    single = [(question, (question,))]
+    if prepared_plan:
+        # The outer pipeline already paid for and validated a research plan.
+        # Reuse it instead of asking another planner the same question.
+        plan = list(prepared_plan)
+    else:
+        planner = _planner(settings)
+        if planner is not None:
+            plan = plan_question(planner, question, history)
+        else:
+            # No "short question needs no planner" shortcut: it sent every question under 15 words without "ve" straight to a raw
+            # word search (measured 2026-10-30: "Aldığım telefon iki ayda bozuldu..." was never turned into "ayıplı mal", and
+            # "telefon" brought prison-administration rules). `plan_question` itself skips the model for a recognised one-topic
+            # question, so only questions the system does not know pay for the planning call.
+            from api.ai.free_answer import simple_search_plan
+            plan = simple_search_plan(question, history) or plan_question(checker, question, history)
+    if not plan:
+        timings.extra.setdefault("free_answer", {}).update(reason="not_legal", status="fallback")
+        return None
+    # The planner may treat requested precedents as output decoration and omit
+    # them from its legal aspects. Preserve that explicit research requirement.
+    from api.ai.relevance import case_law_requested
+    if case_law_requested(question) and not any(case_law_requested(text) for text, _ in plan):
+        from api.ai.search_plan import research_queries
+        # The part's own text is a plain case-law question: the raw question also carried instructions to the assistant ("what
+        # could you answer with statutes only?"), and the writer answered those with sentences about itself (2026-10-30).
+        plan = [*plan, ("Bu konudaki Yargıtay kararları ne diyor?", research_queries(question))]
+    queries = [query for _, part_queries in plan for query in part_queries]
+    stage_ms['planning'] = round((monotonic() - stage_started) * 1000, 1)
+    stage_started = monotonic()
+    from api.ai.free_answer import simple_search_plan, _usable
+    # Progressive retrieval: validate exact local provisions for EVERY planned
+    # facet before running the expensive semantic/precedent fan-out. This is
+    # structural source readiness, never a completeness or truth verdict.
+    # Explicit case-law, historical and private scopes keep full discovery.
+    local_plan_lanes = []
+    if public_web_scope and not case_law_requested(question):
+        from api.ai.relevance import context_relevant
+        for text, part_queries in plan:
+            if _PERIOD_FACET.search(text):
+                # A limitation/filing period is where statute text alone is least reliable: the article may be wrong, silent
+                # or read differently by the courts (TMK m. 178's one year vs. the Hukuk Genel Kurulu's ten years for the
+                # participation claim, 2026-10-30). Such a facet always gets the full statute + precedent discovery.
+                local_plan_lanes.append([])
+                continue
+            reference_queries = [q for q in part_queries if re.fullmatch(
+                r'[0-9]{1,5} sayılı Kanun m\. [0-9]{1,3}(?:/[A-Za-z])?', q)]
+            # A planner may name only one provision for a multi-path facet.
+            # Supplement its references with the existing deterministic topic
+            # catalogue BEFORE treating an exact local lane as ready. These
+            # numbers are search hints, never generated law or proof of support.
+            from api import statute_hints
+            reference_queries.extend(f'{hint.law_no} sayılı Kanun m. {hint.article_no}'
+                                     for hint in statute_hints.suggest(text))
+            reference_queries = list(dict.fromkeys(reference_queries))
+            rows = list({c.chunk_id: c for q in reference_queries for c in _safe_retrieve(retrieve, q)}.values())
+            if rows:
+                from api.ai.provision_context import restore_provisions
+                try:
+                    with database_connection() as connection:
+                        rows = restore_provisions(rows, connection)
+                except psycopg.Error:
+                    rows = []
+            rows = [c for c in rows if _usable(c, 36000) is not None and context_relevant(text, c)]
+            local_plan_lanes.append(rows)
+    local_plan_reused = bool(local_plan_lanes) and all(local_plan_lanes)
+    reuse_initial = (len(plan) == 1 and plan[0][0] == question
+                     and simple_search_plan(question, history) is not None)
+    initial_usable = [c for c in contexts if _usable(c, 36000) is not None] if reuse_initial else []
+    # one worker per query: with two, a three-part question searched in two rounds (measured 2026-10-30: 10 s for 2 parts)
+    with ThreadPoolExecutor(max_workers=len(queries)) as pool_executor:
+        if local_plan_reused:
+            found_per_query = [rows for rows, (_, part_queries) in zip(local_plan_lanes, plan) for _ in part_queries]
+            contexts = list({c.chunk_id: c for rows in local_plan_lanes for c in rows}.values())
+        elif initial_usable:
+            found_per_query = [initial_usable for _ in queries]
+        else:
+            # Duplicate queued queries must not occupy a worker waiting on
+            # single-flight work while a different query waits behind them.
+            unique_queries = list(dict.fromkeys(queries))
+            found_by_query = dict(zip(unique_queries,
+                pool_executor.map(lambda q: _safe_retrieve(retrieve, q), unique_queries)))
+            found_per_query = [found_by_query[q] for q in queries]
+    timings.extra['initial_evidence_reused'] = bool(initial_usable)
+    timings.extra['local_plan_evidence_reused'] = local_plan_reused
+    stage_ms['part_search'] = round((monotonic() - stage_started) * 1000, 1)
+    stage_started = monotonic()
+    # Resolve canonical local statute tails BEFORE deciding that an official
+    # PDF must be downloaded. A recoverable local chunk is not missing data.
+    from api.ai.provision_context import restore_provisions
+    local_pool = list({c.chunk_id: c for c in [*contexts, *(c for lane in found_per_query for c in lane)]}.values())
+    try:
+        with database_connection() as connection:
+            restored_local = restore_provisions(local_pool, connection)
+        restored_by_id = {c.chunk_id: c for c in restored_local}
+        contexts = [restored_by_id[c.chunk_id] for c in contexts]
+        found_per_query = [[restored_by_id[c.chunk_id] for c in lane] for lane in found_per_query]
+    except psycopg.Error:
+        logger.warning('Web öncesi yerel madde bağlamı okunamadı; kaynak politikası korunuyor')
+    stage_ms['preweb_local_restore'] = round((monotonic() - stage_started) * 1000, 1)
+    stage_started = monotonic()
+    # Fetch only after the local research plan. The web lane gets no history,
+    # names, uploads or raw outbound query: adapters reduce plans to numeric
+    # references / fixed legal vocabulary. Persisted corpus IDs are required.
+    web_contexts = []
+    if public_web_scope and getattr(settings, 'official_web_research_enabled', False):
+        from api.ai.official_research import research_official
+        from api.ai.chat_research_policy import official_research_reasons
+        from api.ai.relevance import context_relevant
+        research_pool = [*contexts, *(c for lane in found_per_query for c in lane)]
+        reasons = official_research_reasons(question, plan, research_pool,
+            usable=lambda c: _usable(c, 16000) is not None, relevant=context_relevant)
+        timings.extra['official_web_routing'] = list(reasons) or ['local_sources_ready']
+        if reasons:
+            result = research_official(queries, research_pool, public_scope=public_web_scope)
+            web_contexts = list(result.contexts)
+            timings.extra['official_web'] = list(result.statuses)
+    stage_ms['official_web'] = round((monotonic() - stage_started) * 1000, 1)
+    stage_started = monotonic()
+    per_part: list[list[RAGContext]] = []
+    cursor = 0
+    for _, part_queries in plan:
+        lanes = found_per_query[cursor:cursor + len(part_queries)]
+        cursor += len(part_queries)
+        if web_contexts:
+            from api.ai.retrieval import _hit_quality_score
+            relevant = sorted(web_contexts, key=lambda c: -_hit_quality_score(' '.join(part_queries), c))
+            lanes.append([c for c in relevant if _hit_quality_score(' '.join(part_queries), c) > 0])
+        per_part.append(balanced_evidence(
+            [query_scoped_evidence(' '.join(part_queries), lane) for lane in lanes],
+            _FREE_ANSWER_SOURCES_PER_PART))
+    # Interleave the parts so the character budget never drops a whole part; then the question's own sources.
+    ordered: list[RAGContext] = []
+    for rank in range(max((len(p) for p in per_part), default=0)):
+        ordered.extend(p[rank] for p in per_part if rank < len(p))
+    contexts = list({c.chunk_id: c for c in [*ordered, *contexts, *web_contexts]}.values())
+    # Recover full canonical provisions when fixed-size ingestion cut a rule in
+    # mid-sentence. Same source/revision/trust predicates; no chunk-tail guesses.
+    from api.ai.provision_context import restore_provisions
+    try:
+        with database_connection() as connection:
+            contexts = restore_provisions(contexts, connection)
+    except psycopg.Error:
+        logger.warning("Tam mevzuat bağlamı okunamadı; mevcut doğrulanmış parçalar korunuyor")
+    from api.ai.decision_context import restore_decisions
+    try:
+        with database_connection() as connection:
+            contexts = restore_decisions(contexts, connection)
+    except psycopg.Error:
+        logger.warning('Tam karar bağlamı okunamadı; mevcut doğrulanmış parçalar korunuyor')
+    # A request naming a court is narrower than generic "case-law" research.
+    # Don't let an official lower-court/BAM source stand in for requested Yargıtay.
+    from api.ai.decision_attribution import requested_court_evidence
+    contexts = requested_court_evidence(question, contexts)
+    parts = [(text, frozenset(c.chunk_id for c in found)) for (text, _), found in zip(plan, per_part)]
+    stage_ms['restore_and_select'] = round((monotonic() - stage_started) * 1000, 1)
+    stage_started = monotonic()
+    from api.ai.evidence_readiness import prepare_parts, requested_decisions_ready
+    from api.ai.free_answer import _usable
+
+    def normalize_repair(rows):
+        with database_connection() as connection:
+            rows = restore_provisions(rows, connection)
+            rows = restore_decisions(rows, connection)
+        return requested_court_evidence(question, rows)
+
+    contexts, parts, readiness = prepare_parts(parts, contexts, retrieve,
+        usable=lambda c: _usable(c, 36000) is not None, normalize=normalize_repair,
+        ready=requested_decisions_ready)
+    timings.extra['evidence_readiness'] = readiness
+    stage_ms['prewrite_readiness'] = round((monotonic() - stage_started) * 1000, 1)
+    stage_started = monotonic()
+    timings.extra.setdefault("free_answer", {})["plan"] = [text for text, _ in plan]
+    answer = free_verified_answer(provider, question=question, contexts=contexts, retrieve=retrieve, history=history,
+                                checker_provider=_checker_for(settings, provider, checker), diagnostics=timings.extra.setdefault("free_answer", {}),
+                                on_draft=on_draft, parts=parts, deferred_research=local_plan_reused,
+                                parallel_parts=getattr(settings, 'free_answer_parallel_parts', True),
+                                triage_sources=getattr(settings, 'free_answer_source_triage', True),
+                                on_partial=on_partial,
+                                explain_in_background=getattr(settings, 'free_answer_defer_reasons', True))
+    stage_ms['write_and_check'] = round((monotonic() - stage_started) * 1000, 1)
+    answer_info = timings.extra.get('free_answer') or {}
+    selected_attempt = {key: answer_info[key] for key in ('write_seconds', 'check_seconds', 'attempts')
+                        if isinstance(answer_info.get(key), (int, float))}
+    logger.warning('Assistant stage durations ms=%s readiness=%s selected_attempt=%s',
+                   stage_ms, readiness, selected_attempt)
+    return answer
+
+
+
+def _checker_for(settings, provider: AIProvider, checker: AIProvider) -> AIProvider:
+    """The independent check on its own model (`CLOUD_AI_CHECK_MODEL`): a writer that also judges its own sentences lets its
+    blind spots through (2026-10-30: a senseless sentence about the worker's own justified termination passed). Same cloud
+    provider and key, same local fallback; an unset model, a local run or an already fallen-back request keep `checker`."""
+    model = getattr(settings, "cloud_ai_check_model", "")
+    if not model or not isinstance(provider, FallbackProvider) or provider.fell_back:
+        return checker
+    try:
+        from dataclasses import replace
+
+        return FallbackProvider(primary=replace(provider.primary, model=model), fallback=provider.fallback)
+    except (TypeError, AIProviderError):
+        return checker
+
+
+def _planner(settings) -> AIProvider | None:
+    """Splitting the question is an easy job: on Gemini it runs on the light model, whose free quota is separate, so the main
+    model's daily quota is left for writing and checking (2026-10-25: the free quota ran out after a few test questions). A busy
+    light model is not waited for; the caller then plans with the main model."""
+    model = getattr(settings, "cloud_ai_plan_model", "")
+    provider_name = getattr(settings, "cloud_ai_provider", "")
+    if provider_name not in {"gemini", "bedrock"} or not model:
+        return None
+    try:
+        from dataclasses import replace
+
+        planner = create_cloud_provider(provider_name=provider_name, model=model, api_key=settings.cloud_ai_api_key,
+                                        timeout_seconds=20.0, reasoning_effort="low")
+        return replace(planner, busy_waits=())
+    except AIProviderError:
+        return None
+
+
+def _safe_retrieve(retrieve, query: str) -> list[RAGContext]:
+    try:
+        return retrieve(query)
+    except Exception:  # noqa: BLE001 - one failed part search must not sink the answer; that part is reported as not found
+        logger.exception("Parça araması başarısız")
+        return []
+
+
+
+_FREE_ANSWER_EXTRA_DECISIONS = 3
+
+
+# Yalnız cevap ZATEN çıkmadığında VE hiç kaynak bulunamadığında mesajı seçer ("TÜFE nedir" hukuk sözcüğü taşımaz ama kira
+# artışının ölçütüdür; kaynak bulunduysa soru hukukidir, 2026-10-25); soruyu reddetmek için kullanılmaz ("komşum ağacımı kesti" hukuk sözcüğü taşımasa
+# da hukuki sorudur ve normal yoldan geçer). "Hava nasıl, pizza tarifi" sorusuna "kaynaklar bulundu ama doğrulayamadım" demek
+# yanıltıcıydı (2026-10-25).
+_LEGAL_WORD = re.compile(
+    r"hukuk|kanun|yasa|madde|mevzuat|yönetmelik|dava|mahkeme|yargıtay|danıştay|anayasa|avukat|hâkim|hakim|savcı|"
+    r"tazminat|sözleşme|işçi|işveren|işten|kıdem|ihbar|maaş|ücret|kira|ev sahibi|boşan|nafaka|velayet|miras|tapu|"
+    r"ceza|suç|şikayet|icra|haciz|borç|alacak|faiz|zamanaşımı|süre|hak|yasal|vergi|şirket|ortak|sigorta|kaza|"
+    r"tebligat|itiraz|başvuru|izin|fesih|feshet|arabulucu|noter|vekalet|vasiyet|mülk|komşu|evlilik|eş|çocuk|polis",
+    re.IGNORECASE)
+# The model service itself failed (quota / overload): saying "doğrulayamadım" blamed the sources (2026-10-25, Gemini free quota).
+_BUSY_REPLY = ("Yapay zekâ hizmeti şu anda yoğun olduğu için cevabı hazırlayamadım. Lütfen birkaç dakika sonra yeniden deneyin.")
+
+
+def _looks_non_legal(question: str) -> bool:
+    from api.ai.query_vocabulary import has_search_abbreviation
+    return not has_search_abbreviation(question) and not _LEGAL_WORD.search(question.replace("İ", "i"))
+
+
+def _missing_requested_article(question: str, contexts: Sequence[RAGContext]) -> tuple[str, str] | None:
+    """Soru tek bir kanunun tek bir maddesini açıkça soruyorsa ve o madde getirilen kaynaklarda yoksa (kanun no, madde no)."""
+    from api.ai.retrieval import question_article_numbers, question_law_numbers
+
+    articles = set(question_article_numbers(question))
+    laws = set(question_law_numbers(question)) - articles  # "madde 999" is also read as a law number
+    if len(laws) != 1 or len(articles) != 1:
+        return None
+    law_no, article_no = next(iter(laws)), next(iter(articles))
+    found = any(c.source_type == "legislation" and c.law_no == law_no and (c.article_no or "").lower() == article_no
+                for c in contexts)
+    return None if found else (law_no, article_no)
+
+
+def _with_decisions(selected: list[RAGContext], pool: Sequence[RAGContext], *, question: str = '') -> list[RAGContext]:
+    """Seçilen kaynaklara, havuzdaki en alakalı karar parçalarını ekler (en çok 3 karar toplam): "kiracı kirayı ödemezse" gibi
+    sorularda seçici yalnız kanun maddesini bırakıyor ve cevap yargı uygulamasından hiç söz etmiyordu (ölçüldü: 2026-10-25)."""
+    from api.ai.decision_attribution import decision_selection_key, decision_matches_question
+    selected = [c for c in selected if decision_matches_question(question, c)]
+    have = sum(1 for context in selected if context.source_type == "court_decision")
+    known = {context.chunk_id for context in selected}
+    sources = {context.source_id for context in selected if context.source_type == 'court_decision'}
+    extra = [context for context in pool if context.source_type == "court_decision"
+             and context.verification == 'official' and context.chunk_id not in known
+             and decision_matches_question(question, context)]
+    if question:
+        extra.sort(key=lambda c: decision_selection_key(c, question))
+    added = []
+    for context in extra:
+        if len(added) >= max(0, _FREE_ANSWER_EXTRA_DECISIONS - have):
+            break
+        if context.source_id in sources:
+            continue
+        added.append(context)
+        sources.add(context.source_id)
+    return [*selected, *added]
+
+
+def _already_verified(answer: "VerifiedAnswer"):
+    """`synthesize_answer` yerine geçer: cevap zaten cümle cümle kanıtlandı, yeniden sentez yapılmaz."""
+    def synthesize(*_args, **_kwargs):
+        return answer
+    return synthesize
 
 
 def auxiliary_provider(provider: AIProvider, profile: GenerationProfile) -> AIProvider:
@@ -288,10 +735,57 @@ def _response_from_verified(
         search_summary=None if timings is None else timings.extra.get('search_summary'),
         interpreted_question=None if timings is None else timings.extra.get('interpreted_question'),
         summary=list(answer.summary),
+        verification_note=answer.verification_note,
         document_scope=(
             None if timings is None else (timings.extra.get('retrieval') or {}).get('document_scope')
         ),
     )
+
+
+def _with_verification_note(request: AIAnswerRequest, answer: VerifiedAnswer) -> VerifiedAnswer:
+    """Attach the code-built currency note (when the question asks about it and legislation is cited); a cached note is rebuilt."""
+    from dataclasses import replace as _replace
+    from datetime import date as _date
+
+    from api.ai import currency_note
+    legislation = [c.source_id for c in answer.contexts if c.source_type == "legislation"]
+    if (not answer.grounded or not legislation
+            or (request.as_of is None and not currency_note.asks_currency(request.question))):
+        return _replace(answer, verification_note=None)
+    today = _date.today()
+    try:
+        records = currency_note.fetch_verification_records(legislation)
+    except psycopg.Error:
+        logger.warning("Mevzuat doğrulama tarihleri okunamadı")
+        records = {}
+    live: dict = {}
+    if _live_recheck_allowed(request, answer):
+        # The user asked about the text in force: articles not compared with the official text today are compared now. Only the
+        # law number leaves the machine (approved public adapter); private scopes and historical questions never reach here.
+        stale = [source for source in legislation
+                 if not _verified_on(records.get(str(source), {}).get("last_verified_at"), today)]
+        if stale:
+            try:
+                live = currency_note.recheck_official(stale)
+            except Exception:  # noqa: BLE001 - a failed check is reported as "not reached", never as verified
+                logger.warning("Resmî metinle yeniden karşılaştırma yapılamadı")
+                live = {str(source): currency_note.UNREACHABLE for source in stale}
+    return _replace(answer, verification_note=currency_note.verification_note(
+        request.question, request.as_of, answer.contexts, records, today, live))
+
+
+def _verified_on(value, day) -> bool:
+    from datetime import datetime as _datetime
+    if isinstance(value, _datetime):
+        value = value.astimezone().date()
+    return value == day
+
+
+def _live_recheck_allowed(request: AIAnswerRequest, answer: VerifiedAnswer) -> bool:
+    settings = get_settings()
+    return (bool(getattr(settings, "official_web_research_enabled", False)) and cloud_allowed(request)
+            and request.as_of is None and not holds_private_documents(list(answer.contexts))
+            and os.getenv("NHR_OFFLINE_AUDIT") != "1")
 
 
 def _payload_from_response(response: AIAnswerResponse) -> dict[str, Any]:
@@ -315,10 +809,11 @@ async def _finish_without_evidence(
     kind: AnswerKind, timings: PipelineTimings, started: float, emit: StageCallback,
     audit: AuditContext | None = None,
     model_name: str = "conversation-router-v1",
+    generated_provider: AIProvider | None = None,
 ) -> tuple[AIAnswerResponse, PipelineTimings]:
     """Conversation/status is not a legal finding and must never be marked grounded."""
     answer = VerifiedAnswer(text=text, contexts=(), unverified_markers=(), answer_kind=kind)
-    provider = _ServerReplyProvider(model=model_name)
+    provider = generated_provider or _ServerReplyProvider(model=model_name)
     conversation_id = message_id = None
     persist_started = monotonic()
     if user_id is not None:
@@ -334,6 +829,26 @@ async def _finish_without_evidence(
     timings.total_ms = (monotonic() - started) * 1000
     await emit("done", result=response.model_dump(mode="json"))
     return response, timings
+
+
+async def _general_definition_fallback(request, user_id, *, provider, local_provider,
+                                       generation_profile, timings, started, emit, audit):
+    from api.ai.general_information import eligible_definition, generate_definition
+    if (generation_profile != "default" or not cloud_allowed(request)
+            or provider is local_provider or not eligible_definition(request.question)):
+        return None
+    await emit("generating")
+    tick = monotonic()
+    async with _generation_slot(provider, local_provider):
+        text = await asyncio.to_thread(generate_definition, provider, request.question)
+    timings.llm_ms += (monotonic() - tick) * 1000
+    if text is None:
+        return None
+    timings.extra["answer_mode"] = "general_information"
+    return await _finish_without_evidence(
+        request, user_id, text=text, kind="general_information", timings=timings,
+        started=started, emit=emit, audit=audit, generated_provider=provider,
+    )
 
 
 async def _embed_question(question: str) -> list[float] | None:
@@ -553,7 +1068,7 @@ def _interleave(first: list[RAGContext], second: list[RAGContext]) -> list[RAGCo
     return merged
 
 
-_CASE_STATUTE_ARTICLES = 2
+_CASE_STATUTE_ARTICLES = 3
 _CASE_STATUTE_CHUNKS = 3
 
 
@@ -573,21 +1088,77 @@ def _case_statute_contexts(connection, question: str, named_documents: list[RAGC
     if not hints and named_documents:
         hints = statute_hints.suggest(question + " " + " ".join(c.content[:1500] for c in named_documents[:2]))
     found: list[RAGContext] = []
-    for hint in hints[:_CASE_STATUTE_ARTICLES]:
+    # An open rights overview spans several independent subjects. The ordinary
+    # two-provision shortcut silently removed wages/leave/reinstatement. Keep
+    # the larger, still bounded plan only for that explicitly broad request.
+    broad_overview = bool(statute_hints.employment_rights_groups(question))
+    article_limit = statute_hints.MAX_HINTS if broad_overview else _CASE_STATUTE_ARTICLES
+    for hint in hints[:article_limit]:
         try:
             with connection.transaction():  # zaman aşımı yalnız bu ek sorguyu düşürür, asıl aramayı değil
                 rows = _execute_retrieval(
                     connection, STATUTE_RETRIEVAL_SQL,
                     {"law_no": hint.law_no, "article_no": hint.article_no, "as_of": None, "top_k": _CASE_STATUTE_CHUNKS},
-                    timeout="2s",
+                    timeout="5s",
                 )
         except psycopg.Error:
             logger.warning("Dava sorusu için madde ipucu okunamadı: %s m.%s", hint.law_no, hint.article_no)
             continue
         rows = [row for row in rows if row.source_type == "legislation" and row.verification == "official"]
         if rows and statute_hints.text_matches(hint, " ".join(row.content for row in rows)):
+            if broad_overview and hint.anchor:
+                # The main sentence of m.32 is in chunk 2, not its definition
+                # chunk. Source diversity selection must retain the actual rule.
+                from api.ai.search_plan import normalize
+                rows.sort(key=lambda row: normalize(hint.anchor) not in normalize(row.content))
             found.extend(rows)
     return found
+
+
+def _planned_statutes(request: AIAnswerRequest, question: str) -> list[RAGContext]:
+    """Cheap exact verified lookup before repeating broad discovery per facet."""
+    if (not cloud_allowed(request) or request.as_of is not None
+            or case_law_requested(request.question) or case_law_requested(question)):
+        return []
+    try:
+        with database_connection() as connection:
+            return _case_statute_contexts(connection, question, [])
+    except psycopg.Error:
+        return []
+
+
+def _initial_public_statutes(request: AIAnswerRequest, question: str, diagnostics: dict) -> list[RAGContext]:
+    """Provisional seeds, NOT a substitute for the per-part research/checker.
+
+    The caller still plans every facet in _free_answer; a facet without usable
+    local evidence takes broad discovery. Do not use for private, historical,
+    explicit case-law or simple single-provision requests.
+    """
+    from api.ai.free_answer import simple_search_plan, _usable
+    from api.ai.relevance import context_relevant
+    from api.ai.provision_context import restore_provisions
+    from api import statute_hints
+    if (not cloud_allowed(request) or request.as_of is not None
+            or case_law_requested(question) or re.search(r'\b(?:19|20)\d{2}\b', question)
+            or simple_search_plan(question) is not None
+            or len(statute_hints.suggest(question)) < 2):
+        return []
+    tick = monotonic()
+    try:
+        rows = _planned_statutes(request, question)
+        if rows:
+            with database_connection() as connection:
+                rows = restore_provisions(rows, connection)
+        rows = [c for c in verified_contexts(rows)
+                if _usable(c, 36000) is not None and context_relevant(question, c)]
+    except psycopg.Error:
+        rows = []
+    finally:
+        diagnostics['provisional_seed_ms'] = round((monotonic() - tick) * 1000, 1)
+    if rows:
+        diagnostics.update(strategy='provisional_local_statutes', research_deferred=True,
+                           partial=False, exhaustive=False)
+    return rows
 
 
 def _retrieve(
@@ -734,6 +1305,7 @@ def _retrieve(
                 as_of=request.as_of,
                 diagnostics=diagnostics,
                 legislation_embedding=legislation_embedding,
+                parallel_public_vectors=True,
             )
         except psycopg.errors.QueryCanceled as exc:
             # Karar araması yoğun diskte ikinci denemede de zaman aşımına uğrayabilir (ölçüldü: 2026-10-08, art arda dört
@@ -803,11 +1375,12 @@ async def execute_answer(
     # Strict server-owned social grammar, before source search/model warmup. A
     # mixed greeting + legal question never matches this route. Validate an
     # existing conversation's ownership and scope even for a one-word greeting.
-    from api.ai.conversation_intent import conversation_reply
+    from api.ai.conversation_intent import conversation_reply, out_of_scope_reply
     from api.ai.arithmetic import arithmetic_reply
     social = conversation_reply(request.question)
     arithmetic = arithmetic_reply(request.question) if social is None else None
-    social = social or arithmetic
+    off_topic = out_of_scope_reply(request.question) if cloud_allowed(request) else None
+    social = social or arithmetic or off_topic
     if social is not None and generation_profile == "default":
         if not cloud_allowed(request) and user_id is None:
             raise HTTPException(401, "Çalışma alanı için oturum açmalısınız")
@@ -815,7 +1388,8 @@ async def execute_answer(
         return await _finish_without_evidence(
             request, user_id, text=social, kind="conversation", timings=timings,
             started=started, emit=emit, audit=audit,
-            model_name="decimal-arithmetic-v1" if arithmetic is not None else "conversation-router-v1",
+            model_name=("decimal-arithmetic-v1" if arithmetic is not None else
+                        "scope-router-v1" if off_topic is not None else "conversation-router-v1"),
         )
     await emit("searching")
     history_context = None
@@ -824,9 +1398,26 @@ async def execute_answer(
         # neither corpus evidence nor a paid model. Always validate saved scope
         # and ownership first. Document questions stay on their reading route.
         history_context = await _load_history(request, user_id)
+        from api.ai.arithmetic import rent_percentage_reply
+        percentage = rent_percentage_reply(request.question, history_context[1])
+        if percentage is not None:
+            return await _finish_without_evidence(
+                request, user_id, text=percentage, kind="conversation", timings=timings,
+                started=started, emit=emit, audit=audit, model_name="declared-percentage-v1",
+            )
         from api.ai.dialogue import missing_input_plan
         input_plan = missing_input_plan(request.question, (), history=history_context[0],
                                         prior_questions=history_context[1], allow_source_free=True)
+        from api import statute_hints as _topic_hints
+        # Kira artışında yasal sınır TÜFE oranına bağlıdır ve korpusta oran yok: orada önce sormak kasıtlıdır (testlerle kilitli).
+        employment_inputs = {"gross_pay", "employment_dates", "termination_reason"}
+        if (input_plan is not None and employment_inputs & set(input_plan.missing)
+                and _topic_hints.suggest(request.question)):
+            # Konusu bilinen soruda önce genel kural kaynaklarla anlatılır, eksik olgu sorusu cevabın sonuna eklenir
+            # (kullanıcı 2026-10-25: "adam gibi cevap"; eskiden yalnız soru dönüyordu).
+            timings.extra["followup_question"] = input_plan.question
+            timings.extra["missing_inputs"] = list(input_plan.missing)
+            input_plan = None
         if input_plan is not None:
             timings.extra["missing_inputs"] = list(input_plan.missing)
             return await _finish_without_evidence(
@@ -875,6 +1466,27 @@ def _answer_providers(settings, request, generation_profile):
     return local, answer_provider(settings, request, local, profile=generation_profile)
 
 
+def _warm_cache_eligible(request: AIAnswerRequest, settings, provider: AIProvider, local_provider: AIProvider,
+                         history, generation_profile: GenerationProfile) -> bool:
+    """Only a plain, self-contained general question may use or feed the pre-computed answers: no case/project/document scope, no
+    earlier turns, no historical date, the cloud route, and the natural-answer pipeline. Anything personal never qualifies."""
+    return bool(
+        getattr(settings, "warm_answer_cache_enabled", True) and getattr(settings, "rag_natural_answers", False)
+        and getattr(settings, "free_answer_enabled", False) and generation_profile == "default"
+        and cloud_allowed(request) and request.as_of is None and not history and request.conversation_id is None
+        and provider is not local_provider and not (isinstance(provider, FallbackProvider) and provider.fell_back))
+
+
+def _warm_cache_lookup(question: str) -> VerifiedAnswer | None:
+    from api.ai import warm_cache
+    try:
+        with database_connection() as connection:
+            return warm_cache.lookup(connection, question)
+    except psycopg.Error:
+        logger.warning("Önceden hazırlanmış cevap okunamadı; normal yoldan devam ediliyor")
+        return None
+
+
 async def _execute_answer_body(
     request: AIAnswerRequest,
     user_id: UUID | None,
@@ -890,9 +1502,43 @@ async def _execute_answer_body(
     history_context: tuple[tuple[HistoryTurn, ...], tuple[str, ...]] | None = None,
 ) -> tuple[AIAnswerResponse, PipelineTimings]:
     history, prior_questions = history_context if history_context is not None else await _load_history(request, user_id)
+    from api.ai.query_vocabulary import standalone_definition
+    if generation_profile == "default" and cloud_allowed(request) and standalone_definition(request.question):
+        # Ownership/scope were checked above. This complete new question is not
+        # a continuation of the previous event or off-topic turn. Do not pay to
+        # rewrite it, import previous facts, or vary its cache key each repeat.
+        history, prior_questions = (), ()
+        timings.extra["history_context_strategy"] = "standalone_definition"
     natural_mode = getattr(settings, "rag_natural_answers", False)
+    followup_question: str | None = timings.extra.get("followup_question")
 
     local_provider, provider = providers or _answer_providers(settings, request, generation_profile)
+
+    from api.ai import warm_cache as _warm_cache
+    # While the warm-up script is generating answers (it sets the collector) the stored ones must not answer for it.
+    if _warm_cache.collector.get() is None and _warm_cache_eligible(request, settings, provider, local_provider, history,
+                                                                    generation_profile):
+        warm = await asyncio.to_thread(_warm_cache_lookup, request.question)
+        if warm is not None:
+            # A finished answer for this very question whose cited chunks are unchanged and still verified/current: no search, no
+            # model call. It is saved to the user's conversation like any answer.
+            timings.from_cache = True
+            timings.extra["warm_cache"] = True
+            warm = await asyncio.to_thread(_with_verification_note, request, warm)
+            conversation_id: UUID | None = None
+            message_id: UUID | None = None
+            persist_started = monotonic()
+            if user_id is not None:
+                conversation_id, message_id = await asyncio.to_thread(
+                    persist_answer, request, warm, user_id=user_id, model_name=provider.model, audit=audit, from_cache=True,
+                    document_scope=None)
+            timings.persist_ms = (monotonic() - persist_started) * 1000
+            timings.total_ms = (monotonic() - started) * 1000
+            response = _response_from_verified(
+                request, warm, provider=provider, conversation_id=conversation_id, message_id=message_id, from_cache=True,
+                timings=timings, consulted=list(warm.contexts))
+            await emit("done", result=response.model_dump(mode="json"))
+            return response, timings
 
     # Takip sorusu ("Peki bunun süresi?") önceki sorulara göre tek başına anlaşılır hâle getirilir; sonuç kodla
     # denetlenir (bkz. conversation_history.accept_rewrite) ve yalnız arama ile kanıt seçimini yönlendirir.
@@ -904,7 +1550,7 @@ async def _execute_answer_body(
     # bulut çağrısını hem de yanlış konu taşıma riskini azaltır.
     if prior_questions and interpreted is None and needs_standalone_rewrite(request.question):
         rewrite_started = monotonic()
-        async with _generation_lock:
+        async with _generation_slot(provider, local_provider):
             interpreted = await asyncio.to_thread(
                 standalone_question, auxiliary_provider(provider, generation_profile),
                 restore_turkish(request.question), prior_questions
@@ -916,6 +1562,9 @@ async def _execute_answer_body(
     search_question = restore_turkish(interpreted or retrieval_question(request.question, history))
     answer_question = interpreted or restore_turkish(request.question)
     from api.ai.dialogue import outcome_search_query
+    event_reference_contexts = []
+    research_aspects = ()
+    research_evidence = None
     topic_query = outcome_search_query(request.question, history, prior_questions)
     if topic_query is not None and cloud_allowed(request):
         search_question = topic_query
@@ -929,14 +1578,18 @@ async def _execute_answer_body(
                 "unavailable": temporal.unavailable, "references": list(temporal.references),
                 "as_of": temporal.event.applicable_on.isoformat()}
             if not temporal.complete:
-                from api.ai.event_context import compose_event_answer
-                return await _finish_without_evidence(
-                    request,user_id,text=compose_event_answer("",temporal.event),kind="insufficient_sources",
-                    timings=timings,started=started,emit=emit,audit=audit,model_name="event-scope-v1",
-                )
+                event_reference_contexts = await asyncio.to_thread(load_current_event_reference, temporal)
+                if not event_reference_contexts:
+                    from api.ai.event_context import compose_event_answer
+                    return await _finish_without_evidence(
+                        request,user_id,text=compose_event_answer("",temporal.event),kind="insufficient_sources",
+                        timings=timings,started=started,emit=emit,audit=audit,model_name="event-scope-v1",
+                    )
+                timings.extra["event_reference_only"] = True
             # Use the explicit or independently parsed event date for discovery,
             # never mix current versions/future cases into this historical run.
-            request = request.model_copy(update={"as_of": temporal.event.applicable_on})
+            else:
+                request = request.model_copy(update={"as_of": temporal.event.applicable_on})
 
     verify_task: asyncio.Future[list[RAGContext]] | None = None
     warmup_task: asyncio.Task[None] | None = None
@@ -954,12 +1607,35 @@ async def _execute_answer_body(
         fast_conversation_id = request.conversation_id
         if natural_mode and generation_profile == "default" and cloud_allowed(request):
             fast_conversation_id = None
-        fast_contexts = [] if _force_full_search or request.selected_document_ids else await asyncio.to_thread(
+        fast_contexts = event_reference_contexts or ([] if _force_full_search or request.selected_document_ids else await asyncio.to_thread(
             try_fast_statute, question=search_question, as_of=request.as_of,
             project_id=request.project_id or request.case_id or request.office_project_id, conversation_id=fast_conversation_id,
             max_chunks=settings.rag_top_k, max_chars=settings.rag_context_chars,
             diagnostics=fast_diagnostics,
-        )
+        ))
+        if (not fast_contexts and not _force_full_search and natural_mode
+                and generation_profile == 'default' and provider is not local_provider):
+            # Do not pay the initial whole-corpus search just to rediscover
+            # exact known provisions. These are seeds: _free_answer still
+            # researches all facets and independently verifies the full answer.
+            fast_contexts = await asyncio.to_thread(
+                _initial_public_statutes, request, search_question, fast_diagnostics)
+        if event_reference_contexts:
+            fast_diagnostics.update(strategy="current_reference_only", research_deferred=True,
+                                    partial=True, exhaustive=False)
+        from api.ai.free_answer import simple_search_plan
+        if (natural_mode and not fast_contexts and cloud_allowed(request)
+                and simple_search_plan(search_question, history) is None
+                and provider is not local_provider and callable(getattr(provider, "generate", None))
+                and (request.as_of is not None or not re.search(r"\b(?:19|20)\d{2}\b", search_question))
+                and getattr(settings, "rag_research_planning", True)):
+            from api.ai.research_plan import make_plan
+            plan_started = monotonic()
+            async with _generation_slot(provider, local_provider):
+                research_aspects = await asyncio.to_thread(
+                    make_plan, auxiliary_provider(provider, generation_profile), search_question,
+                    diagnostics=timings.extra.setdefault("research_plan", {}))
+            timings.extra["research_plan_ms"] = round((monotonic()-plan_started)*1000, 1)
         timings.extra.update(fast_diagnostics)
         embed_started = monotonic()
         embedding_requested = settings.rag_query_embedding and not fast_contexts
@@ -1033,7 +1709,27 @@ async def _execute_answer_body(
             raise HTTPException(
                 status_code=503, detail="Hukuk kaynakları aranamadı"
             ) from exc
-        timings.retrieval_ms = (monotonic() - retrieval_started) * 1000 + fast_diagnostics.get('fast_statute_ms', 0)
+        if research_aspects:
+            from api.ai.research_plan import search_aspects
+            async def retrieve_aspect(query):
+                statutes = await asyncio.to_thread(_planned_statutes, request, query)
+                if statutes:
+                    return statutes, False
+                diagnostic = {}
+                rows = await _retrieve_with_warm_retry(
+                    request, user_id=user_id, query_embedding=None,
+                    top_k=min(24, candidate_pool_size(settings.rag_top_k)),
+                    embedding_model=settings.embedding_model, question=query,
+                    diagnostics=diagnostic, legislation_embedding=None)
+                return rows, bool(diagnostic.get("partial"))
+            research_evidence, planned_rows = await search_aspects(research_aspects, retrieve_aspect)
+            contexts = list({c.chunk_id: c for c in [*contexts, *planned_rows]}.values())
+            if research_evidence.failed:
+                retrieval_diagnostics["partial"] = True
+            timings.extra["research_plan"].update(
+                searched=len(research_aspects), incomplete=len(research_evidence.failed))
+        timings.retrieval_ms = ((monotonic() - retrieval_started) * 1000
+            + fast_diagnostics.get('fast_statute_ms', 0) + fast_diagnostics.get('provisional_seed_ms', 0))
         # Portal verification overlaps model warmup, never answer generation.
         candidates = list(contexts)
         timings.extra['retrieval'] = retrieval_diagnostics
@@ -1063,13 +1759,30 @@ async def _execute_answer_body(
         )
         verify_task = None
     contexts = verified_contexts(contexts)
+    if ((not contexts or _missing_requested_article(request.question, contexts) is not None)
+            and generation_profile == 'default' and cloud_allowed(request)
+            and request.as_of is None and not holds_private_documents(contexts)
+            and getattr(settings, 'official_web_research_enabled', False)):
+        # Do not return "no local source" before the approved public-web lane
+        # can run. The adapter sends only numeric references/fixed vocabulary.
+        from api.ai.official_research import research_official
+        await emit('retrieving', source_type='official_web')
+        web_result = await asyncio.to_thread(research_official, [search_question], contexts, public_scope=True)
+        timings.extra['official_web'] = list(web_result.statuses)
+        contexts = list({c.chunk_id: c for c in [*contexts, *web_result.contexts]}.values())
     verified_pool = contexts
     # A cloud writer reads a few more sources: the legislation-only branch adds up to two provisions, and with the
     # local 6-source limit they pushed out the decisions a nafaka answer rested on (2026-10-22). The local model keeps
     # its small window.
     from api.ai.retrieval import _LEGISLATION_PREFERRED
     answer_limit = settings.rag_top_k + (_LEGISLATION_PREFERRED if provider is not local_provider else 0)
-    contexts = select_answer_contexts(verified_pool, answer_limit, question=search_question)
+    if research_evidence is not None and not holds_private_documents(verified_pool):
+        from api.ai.research_plan import select_contexts
+        contexts = select_contexts(verified_pool, [], research_evidence,
+                                  max(answer_limit, len(research_aspects)*2), search_question)
+    else:
+        research_evidence = None
+        contexts = select_answer_contexts(verified_pool, answer_limit, question=search_question)
     verification_stats = dict(verification_diagnostics)
     if timings.extra.get('live_verify') in ('timeout', 'error'):
         verification_stats['stop_reason'] = timings.extra['live_verify']
@@ -1095,6 +1808,12 @@ async def _execute_answer_body(
         if scope.get('file_only'):
             raise HTTPException(422, "Bu soru için çalışma alanınızdaki belgelerde yeterli bilgi bulunamadı. Projeye bağlı dava/belge yoksa önce bağlayın; hukuki araştırma için mevzuat veya içtihat istediğinizi belirtin.")
         if natural_mode:
+            definition = await _general_definition_fallback(
+                request, user_id, provider=provider, local_provider=local_provider,
+                generation_profile=generation_profile, timings=timings, started=started, emit=emit, audit=audit,
+            )
+            if definition is not None:
+                return definition
             from api.ai.event_context import build_event_context, compose_event_answer
             event = build_event_context(request.question, (), prior_questions=prior_questions,
                                         history=history, as_of=request.as_of)
@@ -1120,8 +1839,8 @@ async def _execute_answer_body(
                                  prior_questions=prior_questions)
     if calculation is not None:
         provider = calculation
-    # Paraphrases cannot be revalidated by the exact-quotation cache gate. Do
-    # not cache them until their full claim/evidence proof can be rechecked.
+    # Natural answers use their server-owned verified object plus current
+    # evidence fingerprints, never the exact-quotation cache gate.
     use_natural = natural_mode and calculation is None
     from api.uyap_record_document import RECORD_AUTHORITY
     if any(context.authority == RECORD_AUTHORITY for context in contexts):
@@ -1136,9 +1855,9 @@ async def _execute_answer_body(
         fingerprint=fingerprint,
         history_key=history_fingerprint(history),
         selected_document_ids=request.selected_document_ids,
-        user_id=user_id if request.selected_document_ids else None,
+        user_id=user_id if use_natural or request.selected_document_ids else None,
     )
-    cached = None if use_natural else answer_cache.get(cache_key)
+    cached = answer_cache.get(cache_key)
     conversation_id: UUID | None = None
     message_id: UUID | None = None
     if cached is not None:
@@ -1149,13 +1868,15 @@ async def _execute_answer_body(
         cited_ids = [item["chunk_id"] for item in cached["citations"]]
         by_id = {str(context.chunk_id): context for context in cached_contexts}
         ordered = tuple(by_id[chunk_id] for chunk_id in cited_ids if chunk_id in by_id)
-        cached_answer = verify_answer(cached["answer"], list(ordered), question=search_question,
-                                      available_contexts=contexts)
+        cached_answer = (restore_verified_natural_answer(cached, cached_contexts) if use_natural else
+                         verify_answer(cached["answer"], list(ordered), question=search_question,
+                                       available_contexts=contexts))
         if len(ordered) != len(cited_ids):
             cached = None
-        if cached is not None and cached_answer.grounded:
+        if cached is not None and cached_answer is not None and cached_answer.grounded:
             from dataclasses import replace as _replace
             cached_answer = _replace(cached_answer, summary=tuple(str(item) for item in (cached.get("summary") or ())))
+            cached_answer = await asyncio.to_thread(_with_verification_note, request, cached_answer)
             persist_started = monotonic()
             if user_id is not None:
                 conversation_id, message_id = await asyncio.to_thread(
@@ -1191,16 +1912,78 @@ async def _execute_answer_body(
     from api.ai.event_context import build_event_context
     event_for_generation = build_event_context(request.question, contexts,
                                                prior_questions=prior_questions, history=history,
-                                               as_of=request.as_of)
+                                               as_of=request.as_of,
+                                               basis_complete=False if event_reference_contexts else None)
+    missing = _missing_requested_article(request.question, contexts)
+    if missing is not None:
+        # "4857 sayılı Kanun madde 999" korpusta yoksa model çağrılmaz: modele ilgisiz kararlar okutmak sayfa numarası gibi
+        # anlamsız eşleşmeler doğuruyordu (2026-10-25) ve kredi harcıyordu. Yokluk yalnız bizim doğrulanmış korpusumuz içindir.
+        law_no, article_no = missing
+        return await _finish_without_evidence(
+            request, user_id,
+            text=(f"{law_no} sayılı Kanunun {article_no}. maddesini doğrulanmış mevzuat kaynaklarımızda bulamadım. Madde numarası "
+                  "yanlış yazılmış olabilir ya da bu madde henüz kaynaklarımıza eklenmemiş olabilir; numarayı kontrol edip yeniden "
+                  "sorabilir ya da konuyu madde numarası vermeden anlatabilirsiniz."),
+            kind="insufficient_sources", timings=timings, started=started, emit=emit, audit=audit,
+        )
     try:
         if isinstance(provider, RentCalculationProvider):
             raw_answer = provider.basis_text
             timings.llm_ms = 0
         else:
-            async with _generation_lock:
+            async with _generation_slot(provider, local_provider):
                 llm_started = monotonic()
                 if use_natural:
                     from api.ai.synthesis import synthesize_answer
+                    free = None
+                    free_route = False
+                    if (getattr(settings, "free_answer_enabled", False)
+                            # Yerel model de aynı kanıtlı düzene girebilir (kullanıcı 2026-10-30: "bedava olsun, bulutu boşver").
+                            and (provider is not local_provider or getattr(settings, "free_answer_local", False))
+                            and generation_profile == "default" and event_for_generation is None
+                            and not holds_private_documents(contexts)
+                            and request.project_id is None and request.case_id is None
+                            and request.office_project_id is None and not request.selected_document_ids):
+                        # Önce serbest cevap, sonra her cümlenin kanıtı (api/ai/free_answer.py). Kanıtlanabilen cümle yoksa ya
+                        # da yol başarısız olursa `free` boş kalır ve aşağıdaki eski sentez yolu aynen çalışır.
+                        free_route = True
+                        partial_loop = asyncio.get_running_loop()
+
+                        def push_partial(partial: VerifiedAnswer) -> None:
+                            # Verified sentences only (never a draft): the user reads them while the rest is proven. The final
+                            # answer replaces the preview; nothing here is saved. Runs in the worker thread, so the event is
+                            # handed to the event loop.
+                            preview = _response_from_verified(
+                                request, partial, provider=provider, conversation_id=None, message_id=None, from_cache=False,
+                                timings=timings, consulted=list(partial.contexts))
+                            asyncio.run_coroutine_threadsafe(
+                                emit("partial", preview=preview.model_dump(mode="json")), partial_loop)
+
+                        free = await asyncio.to_thread(
+                            _free_answer, provider, answer_question, _with_decisions(contexts, verified_pool, question=answer_question), history, timings,
+                            auxiliary_provider(provider, generation_profile), None,
+                            **({'prepared_plan': tuple((a.label, (a.query,)) for a in research_aspects)}
+                               if research_aspects else {}),
+                            public_web_scope=cloud_allowed(request) and request.as_of is None,
+                            on_partial=(push_partial if getattr(settings, 'free_answer_stream_verified', True) else None))
+                        free_info = timings.extra.get('free_answer') or {}
+                        part_searches = timings.extra.get('part_searches', ())
+                        if isinstance(timings.extra.get('search_summary'), dict) and part_searches:
+                            # The answer was built from these per-part searches: if one of them ran out of time or answered from
+                            # a sample, the research may be incomplete and the user is told so (graver kind wins).
+                            summary = timings.extra['search_summary']
+                            part_limit = worse_limit(*(item.get('limit') or (LIMIT_FAILED if item.get('partial') else LIMIT_NONE)
+                                                       for item in part_searches))
+                            summary['retrieval_limit'] = worse_limit(summary.get('retrieval_limit'), part_limit)
+                            summary['retrieval_partial'] = bool(summary.get('retrieval_partial')) or part_limit != LIMIT_NONE
+                        admission = free_info.get('source_admission') or {}
+                        if admission.get('unusable') or admission.get('over_budget') or free_info.get('uncovered_parts'):
+                            logger.warning('Assistant evidence admission: sources=%s parts=%s reason=%s',
+                                           admission, free_info.get('part_admission'), free_info.get('reason'))
+                    if free_route:
+                        # Kullanıcı kararı 2026-10-25: genel sohbette eski kaynakla-sınırlı sentez yolu YOK. Serbest cevap
+                        # cümle cümle kanıtlanamadıysa (free None) eski yola düşülmez; dürüst "doğrulayamadım" cevabı verilir.
+                        synthesize_answer = _already_verified(free)
                     budget = getattr(settings, "rag_synthesis_context_chars", 24000)
                     if provider is local_provider:
                         # Leave room for question, prompt and output on small
@@ -1208,27 +1991,50 @@ async def _execute_answer_body(
                         budget = min(budget, max(2400, settings.ollama_num_ctx * 2))
                     synthesized = await asyncio.to_thread(
                         synthesize_answer, provider, checker_provider=auxiliary_provider(provider, generation_profile),
+                        repair_provider=auxiliary_provider(provider, generation_profile),
+                        _generation_calls=timings.extra.setdefault("generation_calls", []),
                         question=answer_question, user_question=request.question,
                         contexts=contexts, max_context_chars=budget, history=history,
                         prior_questions=prior_questions,
                         diagnostics=timings.extra.setdefault("synthesis", {}),
-                        # A content repair (quote/number) never succeeded in 2026-10-22 measurements and cost 8-26 s;
-                        # those drafts go straight to the verified-quote route. A malformed draft is still repaired.
-                        repair_reasons=frozenset({"draft_shape"}),
-                        compact_evidence=provider is not local_provider,
+                        # One bounded repair gets the concrete server-owned
+                        # support failures, not a generic "try again". Every
+                        # repaired sentence faces the same hard/semantic gates.
+                        repair_reasons=frozenset({"draft_shape", "evidence", "numeric_polarity", "answer_focus", "research_coverage"}),
+                        # Qwen selects complete evidence units by ID rather
+                        # than recopying fragile PDF text into a JSON quote.
+                        # Resolution and all semantic/numeric checks stay on.
+                        compact_evidence=provider is not local_provider or 'qwen' in provider.model,
                         semantic_repair=provider is not local_provider and generation_profile == "default",
                         as_of=request.as_of,
+                        event_basis_complete=False if event_reference_contexts else None,
+                        research_evidence=research_evidence,
+                        ask_missing_inputs=followup_question is None,
                     )
                     timings.extra["answer_mode"] = "synthesis" if synthesized else "synthesis_unavailable"
                     if synthesized is None:
-                        logger.warning("Assistant synthesis unavailable: %s", timings.extra["synthesis"])
+                        if free_route:
+                            # No prompts, source bodies or user facts in logs.
+                            # Previously this logged the unused synthesis dict
+                            # ({}), losing the actual natural-answer failure.
+                            details = timings.extra.get("free_answer") or {}
+                            outcomes = details.get("sentence_outcomes") or {}
+                            counts = {label: sum(str(value).startswith(label) for value in outcomes.values())
+                                      for label in ("kod:", "denetçi_reddetti", "kaldı")}
+                            logger.warning(
+                                "Assistant natural answer unavailable: reason=%s checker=%s protocol=%s attempts=%s sentences=%s outcomes=%s",
+                                details.get("reason"), details.get("checker_status"), details.get('checker_protocol_attempts'), details.get("attempts"), details.get("draft_sentences"), counts,
+                            )
+                        else:
+                            logger.warning("Assistant synthesis unavailable: %s", timings.extra["synthesis"])
                         reason = (timings.extra.get("synthesis") or {}).get("reason")
-                        if contexts and reason in _MECHANICAL_SYNTHESIS_REJECTIONS and event_for_generation is None:
-                            # The free-form writer often paraphrases a quote, and the strict evidence gate rightly
-                            # rejects it before any checker ran. That used to end as "oluşturamadım" (measured
-                            # 2026-10-22: 20/20 eval questions). Fall back to the verified-quote answer with its short
-                            # checked summary (statute_summary) — the route that scored 20/20 grounded on 2026-10-18.
-                            # A draft the independent checker rejected never gets this second route.
+                        # A failed natural answer is not permission to erase a
+                        # research plan or dump an unsolicited full article.
+                        # Exact quotations remain available when explicitly
+                        # requested; they still pass the ordinary source gate.
+                        quote_requested = _wants_source_text(request.question)
+                        if (quote_requested and contexts and reason in (_MECHANICAL_SYNTHESIS_REJECTIONS | {"checker"})
+                                and event_for_generation is None and research_evidence is None):
                             use_natural = False
                             extractive_fallback = True
                             timings.extra["answer_mode"] = "synthesis_then_quotes"
@@ -1284,19 +2090,42 @@ async def _execute_answer_body(
         )
 
     if use_natural and synthesized is None:
+        definition = await _general_definition_fallback(
+            request, user_id, provider=provider, local_provider=local_provider,
+            generation_profile=generation_profile, timings=timings, started=started, emit=emit, audit=audit,
+        )
+        if definition is not None:
+            return definition
         # A rejected explanation is not permission to dump the entire law or
         # publish a second, less-checked model answer. This is an application
         # status, NOT a finding that the corpus lacks the requested information.
         from api.ai.event_context import build_event_context, compose_event_answer
         event = build_event_context(request.question, contexts, prior_questions=prior_questions,
-                                    history=history, as_of=request.as_of)
-        text = (compose_event_answer("", event, generation_failed=True) if event is not None else
-                "İlgili kaynaklar bulundu ancak bu yanıtı güvenilir biçimde doğrulayamadım. Şu an kesin bir sonuç veremiyorum.")
-        return await _finish_without_evidence(
-            request, user_id,
-            text=text,
-            kind="insufficient_sources", timings=timings, started=started, emit=emit, audit=audit,
-        )
+                                    history=history, as_of=request.as_of,
+                                    basis_complete=False if event_reference_contexts else None)
+        from api.ai.source_digest import build_source_digest
+        # Denetçi taslağı içerik olarak reddettiyse ("checker") kaynak metni basılmaz (testlerle kilitli politika); yalnız mekanik
+        # ret (sayı/koşul tutarsızlığı, kapsam eksikliği) kaynak özetine düşer.
+        digest = (build_source_digest(contexts, request.question)
+                  if event is None and _wants_source_text(request.question)
+                  and research_evidence is None
+                  and (timings.extra.get("synthesis") or {}).get("reason") in _DIGEST_REASONS else None)
+        if digest is None:
+            text = (compose_event_answer("", event, generation_failed=True) if event is not None else
+                    _BUSY_REPLY if (timings.extra.get("free_answer") or {}).get("reason") == "provider" else
+                    "Kaynaklar bulundu ancak yanıtın doğrulama işlemi teknik bir sorun nedeniyle tamamlanamadı. Lütfen yeniden deneyin."
+                    if (timings.extra.get("free_answer") or {}).get("reason") == "checker_protocol" else
+                    _NON_LEGAL_REPLY if (timings.extra.get("free_answer") or {}).get("reason") == "not_legal"
+                    or (not contexts and _looks_non_legal(request.question)) else
+                    "İlgili kaynaklar bulundu ancak bu yanıtı güvenilir biçimde doğrulayamadım. Şu an kesin bir sonuç veremiyorum.")
+            return await _finish_without_evidence(
+                request, user_id,
+                text=text,
+                kind="insufficient_sources", timings=timings, started=started, emit=emit, audit=audit,
+            )
+        # Taslak denetimden geçmedi ama doğrulanmış kaynaklar var: yorumsuz, aynen aktarılmış kaynak metni gösterilir.
+        timings.extra["answer_mode"] = "source_digest"
+        synthesized = digest
 
     await emit("verifying")
     final_contexts = await _resolve_verification(
@@ -1329,7 +2158,14 @@ async def _execute_answer_body(
         # Never put a user's draft, case facts or private document text in logs.
         logger.warning("Yanıt reddedildi: desteklenmeyen=%d, çözülmeyen_işaret=%d, atıf=%d",
                        len(answer.unsupported_claims), len(answer.unverified_markers), len(answer.contexts))
-        if is_insufficient_source_reply(
+        from api.ai.source_digest import build_source_digest
+        digest = (build_source_digest(contexts, request.question) if event_for_generation is None
+                  and _wants_source_text(request.question) and research_evidence is None
+                  and (timings.extra.get("synthesis") or {}).get("reason") in _DIGEST_REASONS else None)
+        if digest is not None:
+            timings.extra["answer_mode"] = "source_digest"
+            answer = digest
+        elif is_insufficient_source_reply(
             answer.text or raw_answer
         ) or has_insufficient_source_signal(raw_answer):
             answer = VerifiedAnswer(
@@ -1353,7 +2189,7 @@ async def _execute_answer_body(
     if not use_natural and synthesized is None and answer.grounded and not practical and getattr(settings, "rag_explanations", False):
         from api.ai.explanation import explain_verified_answer
         explanation_started = monotonic()
-        async with _generation_lock:
+        async with _generation_slot(provider, local_provider):
             answer = await asyncio.to_thread(
                 explain_verified_answer, auxiliary_provider(provider, generation_profile),
                 question=search_question, answer=answer,
@@ -1369,7 +2205,7 @@ async def _execute_answer_body(
         summary_started = monotonic()
 
         async def _summary_generate(system: str, prompt: str) -> str:
-            async with _generation_lock:
+            async with _generation_slot(provider, local_provider):
                 return await asyncio.to_thread(auxiliary_provider(provider, generation_profile).generate,
                                               system_instruction=system, prompt=prompt)
 
@@ -1391,7 +2227,8 @@ async def _execute_answer_body(
         answer = with_coverage_notice(answer, search_question)
     from api.ai.event_context import build_event_context, compose_event_answer
     event = build_event_context(request.question, contexts, prior_questions=prior_questions,
-                                history=history, as_of=request.as_of)
+                                history=history, as_of=request.as_of,
+                                basis_complete=False if event_reference_contexts else None)
     if event is not None:
         if answer.answer_kind == "clarification" and event.historical_basis_missing:
             # More event questions cannot repair missing historical source
@@ -1400,6 +2237,9 @@ async def _execute_answer_body(
                                     unverified_markers=(), answer_kind="insufficient_sources")
         elif answer.answer_kind != "clarification":
             answer = replace(answer, text=compose_event_answer(answer.text, event, legal_reference=answer.grounded))
+    if followup_question and answer.grounded and answer.answer_kind == "legal":
+        answer = replace(answer, text=answer.text + "\n\n" + followup_question)
+    answer = await asyncio.to_thread(_with_verification_note, request, answer)
     persist_started = monotonic()
     if user_id is not None:
         conversation_id, message_id = await asyncio.to_thread(
@@ -1422,10 +2262,23 @@ async def _execute_answer_body(
         timings=timings,
         consulted=verified_pool,
     )
-    if (answer.grounded and not use_natural and not extractive_fallback
+    natural_cacheable = (use_natural and generation_profile == "default" and cloud_allowed(request)
+                         and (timings.extra.get("free_answer") or {}).get("status") == "accepted"
+                         and (timings.extra.get("free_answer") or {}).get("coverage_preserved") is not False
+                         and not (timings.extra.get("free_answer") or {}).get("partial_answer")
+                         and not (timings.extra.get("free_answer") or {}).get("uncovered_parts"))
+    if (answer.grounded and (not use_natural or natural_cacheable) and not extractive_fallback
             and event is None
             and not (isinstance(provider, FallbackProvider) and provider.fell_back)):
-        answer_cache.put(cache_key, _payload_from_response(response))
+        payload = _payload_from_response(response)
+        if natural_cacheable:
+            payload["_verified_natural_answer"] = answer
+        answer_cache.put(cache_key, payload)
+        from api.ai import warm_cache
+        collect = warm_cache.collector.get()
+        if (collect is not None and natural_cacheable and _warm_cache_eligible(request, settings, provider, local_provider, history,
+                                                                              generation_profile)):
+            collect(request.question, answer, provider_cache_model(provider, generation_profile))
     timings.total_ms = (monotonic() - started) * 1000
     await emit("done", result=response.model_dump(mode="json"))
     return response, timings

@@ -16,6 +16,7 @@ from api.admin_ingestion import router as admin_ingestion_router
 from api.admin_panel import router as admin_panel_router
 from api.ai.providers import AIProviderError, LOCAL_OLLAMA_PROVIDERS, create_provider
 from api.ai.routes import router as ai_router
+from api.bureau_assistant import router as bureau_router
 from api.auth.routes import router as auth_router
 from api.config import get_settings
 from api.conversations import router as conversations_router
@@ -23,6 +24,8 @@ from api.db import database_connection
 from api.document_trash import purge_expired
 from api.documents import router as documents_router
 from api.legal import router as legal_router, warm_slow_counts
+from api.mcp_server import router as mcp_router
+from api.mcp_oauth import router as mcp_oauth_router
 from api.office import router as office_router
 from api.office_search import router as office_search_router
 from api.execution import router as execution_router
@@ -187,7 +190,10 @@ async def security_headers(request, call_next):
 
 
 app.include_router(legal_router)
+app.include_router(mcp_router)
+app.include_router(mcp_oauth_router)
 app.include_router(ai_router)
+app.include_router(bureau_router)
 app.include_router(auth_router)
 app.include_router(account_router)
 app.include_router(projects_router)

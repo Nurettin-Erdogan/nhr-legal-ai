@@ -119,7 +119,10 @@ test("research shows the actual model, including local fallback, without inventi
   assert.equal(parsed.job.steps[0].model, "deepseek-v4-pro");
   assert.equal(parsed.latest.steps[0].model, "local-qwen");
   assert.equal(parsed.latest.steps[1].model, null);
-  const component = readFileSync(new URL("../src/components/DeepResearch.tsx", import.meta.url), "utf8");
+  const component = readFileSync(
+    new URL("../src/components/DeepResearch.tsx", import.meta.url),
+    "utf8",
+  );
   assert.match(component, /step\.model &&/);
   assert.match(component, /Yanıt modeli: \{step\.model\}/);
 });

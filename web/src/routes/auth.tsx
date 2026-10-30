@@ -1,10 +1,17 @@
 import { createFileRoute, Outlet, useRouterState } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { Link, useNavigate } from "@/lib/router-compat";
-import { beginGoogleLogin, googleLoginAvailable, login, register, requestPasswordReset } from "@/lib/auth-api";
+import { Link } from "@/lib/router-compat";
+import { useNavigate } from "@/lib/router-hooks";
+import {
+  beginGoogleLogin,
+  googleLoginAvailable,
+  login,
+  register,
+  requestPasswordReset,
+} from "@/lib/auth-api";
 import { authErrorMessage, MIN_PASSWORD_LENGTH } from "@/lib/account-forms";
 import { TERMS_VERSION } from "@/lib/legal";
-import { useAuth } from "@/components/AuthProvider";
+import { useAuth } from "@/components/AuthContext";
 import { Logo } from "@/components/Logo";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,7 +22,9 @@ import { ArrowLeft, Eye, EyeOff, Loader2 } from "lucide-react";
 type Mode = "login" | "signup" | "forgot";
 
 const statusOf = (error: unknown): number | undefined =>
-  error instanceof Error && "status" in error && typeof error.status === "number" ? error.status : undefined;
+  error instanceof Error && "status" in error && typeof error.status === "number"
+    ? error.status
+    : undefined;
 
 function AuthPage() {
   const { user, loading: authLoading, refreshAuth } = useAuth();
@@ -57,7 +66,8 @@ function AuthPage() {
     setNotice(null);
 
     const mail = email.trim().toLowerCase();
-    if (!mail.includes("@") || mail.length < 5) return setError("Geçerli bir e-posta adresi girin.");
+    if (!mail.includes("@") || mail.length < 5)
+      return setError("Geçerli bir e-posta adresi girin.");
 
     if (mode === "forgot") {
       setBusy(true);
@@ -69,7 +79,12 @@ function AuthPage() {
             : "Bu kurulumda e-posta gönderimi yapılandırılmadığı için bağlantı e-postayla gönderilemiyor. Sıfırlama bağlantısı için sistem yöneticinize başvurun.",
         );
       } catch (err) {
-        setError(authErrorMessage(err instanceof Error ? err.message : "İstek gönderilemedi.", statusOf(err)));
+        setError(
+          authErrorMessage(
+            err instanceof Error ? err.message : "İstek gönderilemedi.",
+            statusOf(err),
+          ),
+        );
       } finally {
         setBusy(false);
       }
@@ -78,9 +93,13 @@ function AuthPage() {
 
     if (mode === "signup") {
       if (!firstName.trim()) return setError("Adınızı girin.");
-      if (password.length < MIN_PASSWORD_LENGTH) return setError(`Şifre en az ${MIN_PASSWORD_LENGTH} karakter olmalı.`);
+      if (password.length < MIN_PASSWORD_LENGTH)
+        return setError(`Şifre en az ${MIN_PASSWORD_LENGTH} karakter olmalı.`);
       if (password !== password2) return setError("Şifreler birbiriyle aynı değil.");
-      if (!accepted) return setError("Devam etmek için Kullanım Şartları'nı ve Gizlilik Politikası'nı kabul etmelisiniz.");
+      if (!accepted)
+        return setError(
+          "Devam etmek için Kullanım Şartları'nı ve Gizlilik Politikası'nı kabul etmelisiniz.",
+        );
     }
 
     setBusy(true);
@@ -89,19 +108,34 @@ function AuthPage() {
         await login(mail, password);
         await refreshAuth();
       } else {
-        await register(mail, password, `${firstName.trim()} ${lastName.trim()}`.trim(), TERMS_VERSION);
+        await register(
+          mail,
+          password,
+          `${firstName.trim()} ${lastName.trim()}`.trim(),
+          TERMS_VERSION,
+        );
         await refreshAuth();
         toast.success("Kaydınız tamamlandı, hoş geldiniz.");
       }
       navigate("/dashboard");
     } catch (err) {
-      setError(authErrorMessage(err instanceof Error ? err.message : "Oturum işlemi başarısız oldu.", statusOf(err)));
+      setError(
+        authErrorMessage(
+          err instanceof Error ? err.message : "Oturum işlemi başarısız oldu.",
+          statusOf(err),
+        ),
+      );
     } finally {
       setBusy(false);
     }
   };
 
-  const title = mode === "login" ? "Avukat Paneli" : mode === "signup" ? "Ücretsiz hesap oluşturun" : "Şifrenizi mi unuttunuz?";
+  const title =
+    mode === "login"
+      ? "Avukat Paneli"
+      : mode === "signup"
+        ? "Ücretsiz hesap oluşturun"
+        : "Şifrenizi mi unuttunuz?";
   const subtitle =
     mode === "login"
       ? "Hesabınıza giriş yapın"
@@ -120,12 +154,18 @@ function AuthPage() {
         <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>
 
         {error && (
-          <div role="alert" className="mt-5 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-sm text-destructive">
+          <div
+            role="alert"
+            className="mt-5 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-sm text-destructive"
+          >
             {error}
           </div>
         )}
         {notice && (
-          <div role="status" className="mt-5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2.5 text-sm">
+          <div
+            role="status"
+            className="mt-5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2.5 text-sm"
+          >
             {notice}
           </div>
         )}
@@ -135,11 +175,21 @@ function AuthPage() {
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-2">
                 <Label htmlFor="first-name">Ad</Label>
-                <Input id="first-name" autoComplete="given-name" value={firstName} onChange={(e) => setFirstName(e.target.value)} />
+                <Input
+                  id="first-name"
+                  autoComplete="given-name"
+                  value={firstName}
+                  onChange={(e) => setFirstName(e.target.value)}
+                />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="last-name">Soyad</Label>
-                <Input id="last-name" autoComplete="family-name" value={lastName} onChange={(e) => setLastName(e.target.value)} />
+                <Input
+                  id="last-name"
+                  autoComplete="family-name"
+                  value={lastName}
+                  onChange={(e) => setLastName(e.target.value)}
+                />
               </div>
             </div>
           )}
@@ -164,7 +214,11 @@ function AuthPage() {
               <div className="flex items-center justify-between">
                 <Label htmlFor="password">Şifre</Label>
                 {mode === "login" && (
-                  <button type="button" className="text-xs font-medium text-primary hover:underline" onClick={() => switchMode("forgot")}>
+                  <button
+                    type="button"
+                    className="text-xs font-medium text-primary hover:underline"
+                    onClick={() => switchMode("forgot")}
+                  >
                     Şifremi unuttum
                   </button>
                 )}
@@ -189,7 +243,11 @@ function AuthPage() {
                   {showPass ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </button>
               </div>
-              {mode === "signup" && <p className="text-xs text-muted-foreground">En az {MIN_PASSWORD_LENGTH} karakter olmalı.</p>}
+              {mode === "signup" && (
+                <p className="text-xs text-muted-foreground">
+                  En az {MIN_PASSWORD_LENGTH} karakter olmalı.
+                </p>
+              )}
             </div>
           )}
 
@@ -216,11 +274,21 @@ function AuthPage() {
                   onChange={(e) => setAccepted(e.target.checked)}
                 />
                 <span>
-                  <a href="/kullanim-sartlari" target="_blank" rel="noreferrer" className="font-medium text-primary underline">
+                  <a
+                    href="/kullanim-sartlari"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-medium text-primary underline"
+                  >
                     Kullanım Şartları
                   </a>
                   'nı ve{" "}
-                  <a href="/gizlilik" target="_blank" rel="noreferrer" className="font-medium text-primary underline">
+                  <a
+                    href="/gizlilik"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-medium text-primary underline"
+                  >
                     Gizlilik Politikası / KVKK Aydınlatma Metni
                   </a>
                   'ni okudum, kabul ediyorum.
@@ -245,7 +313,8 @@ function AuthPage() {
         {mode !== "forgot" && (
           <>
             <div className="my-5 flex items-center gap-3 text-[11px] uppercase tracking-widest text-muted-foreground">
-              <span className="h-px flex-1 bg-border" /> veya <span className="h-px flex-1 bg-border" />
+              <span className="h-px flex-1 bg-border" /> veya{" "}
+              <span className="h-px flex-1 bg-border" />
             </div>
 
             <Button
@@ -271,13 +340,19 @@ function AuthPage() {
                 'nı kabul etmiş olursunuz.
               </p>
             ) : (
-              <p className="mt-2 text-center text-xs text-muted-foreground">Google girişi bu ortamda henüz yapılandırılmadı.</p>
+              <p className="mt-2 text-center text-xs text-muted-foreground">
+                Google girişi bu ortamda henüz yapılandırılmadı.
+              </p>
             )}
           </>
         )}
 
         <p className="mt-6 text-center text-sm text-muted-foreground">
-          {mode === "login" ? "Hesabınız yok mu? " : mode === "signup" ? "Zaten hesabınız var mı? " : "Şifrenizi hatırladınız mı? "}
+          {mode === "login"
+            ? "Hesabınız yok mu? "
+            : mode === "signup"
+              ? "Zaten hesabınız var mı? "
+              : "Şifrenizi hatırladınız mı? "}
           <button
             type="button"
             className="font-medium text-primary hover:underline"
@@ -288,7 +363,10 @@ function AuthPage() {
         </p>
       </div>
 
-      <Link to="/" className="mt-6 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
+      <Link
+        to="/"
+        className="mt-6 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+      >
         <ArrowLeft className="h-4 w-4" /> Ana sayfaya dön
       </Link>
     </div>
@@ -310,10 +388,14 @@ export const Route = createFileRoute("/auth")({
       { title: "Avukat Girişi ve Kayıt — JurisAI" },
       {
         name: "description",
-        content: "JurisAI avukat paneline ücretsiz kayıt olun veya giriş yapın; başvuruları, dosyaları ve AI araçlarını yönetin.",
+        content:
+          "JurisAI avukat paneline ücretsiz kayıt olun veya giriş yapın; başvuruları, dosyaları ve AI araçlarını yönetin.",
       },
       { property: "og:title", content: "Avukat Girişi ve Kayıt — JurisAI" },
-      { property: "og:description", content: "Ücretsiz kayıt olun veya avukat panelinize giriş yapın." },
+      {
+        property: "og:description",
+        content: "Ücretsiz kayıt olun veya avukat panelinize giriş yapın.",
+      },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
     ],

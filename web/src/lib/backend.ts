@@ -48,8 +48,7 @@ const handlers: Record<string, (body: Record<string, unknown>) => Promise<unknow
     if (!last?.content) throw new Error("Soru bulunamadı");
     const result = await askAssistant(last.content.slice(0, 2000), {});
     const sources = result.citations.map(
-      (c) =>
-        `- ${c.marker} ${c.reference}${citationSuffix(c.verification, c.source_url)}`,
+      (c) => `- ${c.marker} ${c.reference}${citationSuffix(c.verification, c.source_url)}`,
     );
     const content = sources.length
       ? `${result.answer}\n\n**Kaynaklar**\n${sources.join("\n")}`

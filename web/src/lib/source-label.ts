@@ -23,7 +23,10 @@ export function officialPortalUrl(url: string | null | undefined): string | null
 }
 
 /** Kaynak adı ("Yargıtay kararı", "Danıştay kararı"); adresten okunur, bilinmiyorsa mahkeme adından, o da yoksa "Karar". */
-export function decisionSourceName(url: string | null | undefined, courtName?: string | null): string {
+export function decisionSourceName(
+  url: string | null | undefined,
+  courtName?: string | null,
+): string {
   const value = (url ?? "").trim();
   const portal = PORTALS.find(([pattern]) => pattern.test(value));
   if (portal) return portal[1];
@@ -34,7 +37,9 @@ export function decisionSourceName(url: string | null | undefined, courtName?: s
 }
 
 /** Ekranda gösterilecek rozet: yalnız kullanıcı belgesi ayrılır; hukuk kaynaklarında doğrulama rozeti yoktur. */
-export function verificationTag(verification: SourceVerification): { label: string; tone: "document" } | null {
+export function verificationTag(
+  verification: SourceVerification,
+): { label: string; tone: "document" } | null {
   if (verification === "user_document") return { label: "kullanıcı belgesi", tone: "document" };
   return null;
 }

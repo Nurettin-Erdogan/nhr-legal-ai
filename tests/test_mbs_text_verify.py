@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from ingestion.mevzuat.text_verify import (
-    MbsTextVerificationError,
     extract_article_text,
     verify_article_text,
 )

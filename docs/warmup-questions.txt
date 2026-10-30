@@ -1,0 +1,177 @@
+# Önceden hazırlanacak genel hukuk soruları (scripts/warm_answer_cache.py). Her satır bir soru; # ile başlayanlar yorumdur.
+# Kurallar: kişisel olgu, ad, rakamlı olay anlatımı YOK (soru metni tabloya aynen yazılır); tek başına anlaşılır, genel sorular.
+# Cevap yalnız kaynaklarıyla doğrulanmış, tam ve kısmi olmayan ise kaydedilir; aksi hâlde soru atlanır.
+
+# İş hukuku
+Kıdem tazminatı nedir, kimler alabilir? || Kıdem tazminatı nedir || Kıdem tazminatını kimler alabilir || Kıdem tazminatı kimlere ödenir || Kıdem tazminatı hakkı nasıl doğar
+Kıdem tazminatı nasıl hesaplanır? || Kıdem tazminatı hesaplama || Kıdem tazminatı nasıl hesaplanır ve kimler alır || Kıdem tazminatı hesabı nasıl yapılır
+İhbar tazminatı nedir, nasıl hesaplanır? || İhbar tazminatı nedir || İhbar tazminatı nasıl hesaplanır || İhbar tazminatı hesaplama
+Kıdem ve ihbar tazminatını aynı anda alabilir miyim? || Kıdem ve ihbar tazminatı birlikte alınır mı || Kıdem tazminatı ile ihbar tazminatı aynı anda alınabilir mi
+İşçi hangi durumlarda kıdem tazminatı alamaz?
+İşten çıkarılırsam hangi haklarım vardır?
+İşe iade davası nedir, şartları nelerdir? || İşe iade davası şartları nelerdir || İşe iade davası nedir || İşe iade davası açmak için şartlar
+İşe iade davası ne kadar süre içinde açılır? || İşe iade davası süresi nedir || İşe iade için dava açma süresi || İşe iade başvuru süresi ne kadar
+İşe iade davası kazanılırsa ne olur?
+İşveren işçiyi hangi hallerde haklı nedenle derhal işten çıkarabilir?
+İşçi iş sözleşmesini hangi hallerde haklı nedenle feshedebilir?
+Yıllık ücretli izin hakkı nasıl doğar? || Yıllık izin hakkı nasıl doğar || Yıllık izin hakkı kazanma şartları nelerdir
+Kullanılmayan yıllık izin ücreti ödenir mi?
+Fazla mesai ücreti nasıl hesaplanır? || Fazla çalışma ücreti nasıl hesaplanır || Fazla mesai hesaplama
+Mobbing nedir, mobbinge uğrayan işçi ne yapabilir?
+İş kazası geçiren işçi işverenden hangi tazminatları isteyebilir?
+Maaşı ödenmeyen işçi ne yapabilir?
+İşçilik alacaklarında zamanaşımı süresi nedir?
+Deneme süresinde işten çıkarma yapılabilir mi?
+Hamile işçi işten çıkarılabilir mi?
+Belirli süreli iş sözleşmesi nasıl sona erer?
+İş sözleşmesinde rekabet yasağı geçerli midir?
+Asgari ücretten düşük maaş ödenebilir mi?
+İşverenin işçiyi başka işyerine göndermesi hukuka uygun mudur?
+
+# Aile hukuku
+Boşanma türleri nelerdir?
+Anlaşmalı boşanma şartları nelerdir? || Anlaşmalı boşanma nasıl olur || Anlaşmalı boşanma için gerekli şartlar
+Çekişmeli boşanma davası nasıl açılır?
+Boşanmada nafaka çeşitleri nelerdir? || Nafaka çeşitleri nelerdir || Nafaka türleri nelerdir
+Yoksulluk nafakası ne zaman kaldırılır?
+İştirak nafakası nasıl belirlenir?
+Tedbir nafakası nedir?
+Boşanmada velayet nasıl belirlenir? || Velayet nasıl belirlenir || Velayet kime verilir
+Boşanmada mal paylaşımı nasıl yapılır? || Mal paylaşımı nasıl yapılır || Boşanmada mal paylaşımı
+Edinilmiş mallara katılma rejimi nedir?
+Mal rejiminin tasfiyesi davası ne kadar sürede açılır?
+Aile konutu şerhi nedir?
+Kadına yönelik şiddette koruma kararı nasıl alınır?
+Çocukla kişisel ilişki nasıl düzenlenir?
+Evlilik dışı doğan çocuğun babalığı nasıl tespit edilir?
+Evlat edinme şartları nelerdir?
+Boşanma davasında kusur nasıl belirlenir?
+Mal kaçırma durumunda ne yapılır?
+
+# Kira hukuku
+Kira artışı yılda en fazla ne kadar olabilir? || Kira artış oranı en fazla ne kadar olabilir || Kira artışı sınırı nedir || Kira zammı en fazla ne kadar olur
+Ev sahibi kira artışını nasıl bildirir?
+Kiracı kirayı ödemezse ev sahibi ne yapabilir? || Kiracı kirayı ödemezse ne olur || Kira ödenmezse ev sahibi ne yapabilir || Kirasını ödemeyen kiracıya ne yapılır
+Kira depozitosu nasıl iade edilir? || Kira depozitosu iadesi nasıl olur || Depozito ne zaman iade edilir
+Ev sahibi kiracıyı hangi hallerde çıkarabilir?
+Kira sözleşmesi bitince kiracı evi boşaltmak zorunda mı?
+İhtiyaç nedeniyle tahliye davası nasıl açılır?
+Kira bedelinin tespiti davası nedir?
+Kiracının tadilat ve bakım yükümlülüğü nedir?
+Kiralanan ev satılırsa kira sözleşmesi ne olur?
+İki haklı ihtar nedeniyle tahliye nasıl istenir?
+Kiracı sözleşmeyi süresinden önce nasıl feshedebilir?
+
+# Tüketici hukuku
+Ayıplı mal alan tüketicinin hakları nelerdir? || Ayıplı mal hakları nelerdir || Ayıplı ürün aldım ne yapabilirim || Ayıplı malda tüketicinin seçimlik hakları nelerdir
+Ayıplı mal için başvuru süresi nedir?
+Mesafeli satışlarda cayma hakkı nasıl kullanılır? || İnternetten alınan üründe cayma hakkı nasıl kullanılır || Cayma hakkı nedir
+Garanti belgesi ve garanti süresi nedir?
+Tüketici hakem heyeti ne zaman ve nasıl başvuru yapılır?
+Ayıplı hizmet halinde tüketici ne yapabilir?
+Satın alınan ürün teslim edilmezse ne yapılır?
+Kredi kartı borcunda tüketici hakları nelerdir?
+
+# Borçlar ve icra hukuku
+İlamsız icra takibi nasıl başlatılır? || İcra takibi nasıl başlatılır || İlamsız takip nasıl başlatılır
+İcra takibine itiraz süresi nedir? || İcra takibine itiraz süresi ne kadar || İcra takibine kaç gün içinde itiraz edilir
+İtirazın iptali davası nedir ve ne zaman açılır?
+İtirazın kaldırılması nedir?
+Haciz nasıl yapılır? || Haciz işlemi nasıl yapılır || Haciz nasıl olur
+Maaş haczi nasıl yapılır?
+Haczedilemeyen mallar nelerdir?
+Kambiyo senedi takibi nedir?
+Çek zamanaşımı süresi nedir?
+Genel zamanaşımı süresi nedir? || Zamanaşımı süresi nedir || Borçlarda zamanaşımı süresi ne kadar
+Zamanaşımı nasıl kesilir?
+Temerrüt faizi nedir, nasıl hesaplanır?
+Kefalet sözleşmesinin şartları nelerdir?
+Borca itiraz eden borçlu ne olur?
+İcra takibinde menfi tespit davası nedir?
+Senetle borç ödenmezse ne yapılır?
+
+# Miras hukuku
+Yasal mirasçılar kimlerdir? || Kimler yasal mirasçıdır || Yasal mirasçılar kimlerdir ve payları nedir
+Saklı pay nedir?
+Mirası reddetme süresi nedir? || Mirasın reddi süresi ne kadar || Mirası reddetmek için kaç ay süre var
+Vasiyetname çeşitleri nelerdir?
+Mirasçılık belgesi nasıl alınır?
+Ortaklığın giderilmesi davası nasıl açılır?
+Muris muvazaası nedir?
+Tenkis davası nedir?
+Eşin yasal miras payı nedir?
+Miras taksimi nasıl yapılır?
+
+# Ceza hukuku
+Hakaret suçunda şikayet süresi nedir? || Hakaret suçunda şikayet süresi ne kadar || Hakaret şikayeti süresi
+Uzlaştırma nedir, hangi suçlarda uygulanır? || Uzlaştırma nedir || Hangi suçlarda uzlaştırma yapılır
+Tehdit suçu nedir, cezası nedir?
+Dolandırıcılık suçu nedir?
+Hırsızlık suçu nedir?
+Kasten yaralama suçu nedir?
+Trafik kazasında taksirle yaralama suçu nedir?
+Gözaltı süresi en fazla ne kadardır?
+Tutuklama şartları nelerdir?
+Adli kontrol nedir?
+Hükmün açıklanmasının geri bırakılması nedir?
+Şikayetten vazgeçme ne sonuç doğurur?
+İftira suçu nedir?
+Koşullu salıverilme şartları nelerdir?
+Ceza davasında zamanaşımı nasıl işler?
+
+# Trafik, haksız fiil ve tazminat
+Trafik kazasında hangi tazminatlar istenebilir? || Trafik kazası tazminatı nasıl istenir || Trafik kazasında hangi tazminatlar alınır
+Trafik kazasında dava süresi nedir?
+Araç değer kaybı tazminatı nasıl istenir?
+Zorunlu trafik sigortası neleri karşılar?
+Haksız fiil nedir, zamanaşımı süresi nedir?
+Manevi tazminat nasıl belirlenir?
+Destekten yoksun kalma tazminatı nedir?
+Bedensel zararda tazminat nasıl hesaplanır?
+
+# İdare ve vergi hukuku
+İdari işlemin iptali davası ne kadar sürede açılır? || İptal davası açma süresi nedir || İdari işleme karşı dava açma süresi
+İdari para cezasına nasıl itiraz edilir? || İdari para cezasına itiraz nasıl yapılır || İdari para cezasına itiraz süresi nedir
+Vergi cezasına itiraz nasıl yapılır?
+Vergi uzlaşması nedir?
+Tam yargı davası nedir?
+Kamulaştırma bedeline itiraz nasıl edilir?
+Memur disiplin cezasına karşı hangi yollara başvurulur?
+Yürütmenin durdurulması nasıl istenir?
+Kamu ihale kararlarına itiraz nasıl yapılır?
+İdari yargıda dava açma süresi nedir?
+
+# Ticaret hukuku
+Limited şirket nasıl kurulur?
+Anonim şirket nasıl kurulur?
+Limited şirkette ortaklıktan çıkma nasıl olur?
+Konkordato nedir?
+İflas nasıl istenir?
+Haksız rekabet nedir?
+Marka tescili nasıl yapılır?
+Ticari defterlerin delil değeri nedir?
+
+# Gayrimenkul ve komşuluk hukuku
+Tapu iptal ve tescil davası nedir?
+Kat mülkiyetinde aidat borcu nasıl tahsil edilir?
+Komşu ağaç dallarını kesmişse ne yapılır?
+Geçit hakkı nasıl istenir?
+Önalım hakkı nedir?
+Taşınmaz satış sözleşmesi hangi şekilde yapılır?
+
+# Usul hukuku
+Arabuluculuk dava şartı hangi davalarda geçerlidir? || Hangi davalarda arabuluculuk zorunludur || Zorunlu arabuluculuk hangi davalarda var
+İhtiyati tedbir nasıl istenir?
+İhtiyati haciz nasıl istenir?
+İstinaf süresi nedir? || İstinaf süresi ne kadar || İstinaf başvuru süresi
+Temyiz yoluna hangi kararlar tabidir?
+Yetkili mahkeme nasıl belirlenir?
+Delil tespiti nedir?
+Hukuk davalarında harç ve giderler nelerdir?
+
+# Sosyal güvenlik
+Emeklilik şartları nelerdir?
+SGK prim borcu nasıl yapılandırılır?
+İş göremezlik ödeneği nedir?
+Hizmet birleştirme nasıl yapılır?
+Sigortasız çalıştırılan işçi hizmet tespiti nasıl yapar?

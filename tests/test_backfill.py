@@ -353,7 +353,7 @@ def test_failed_source_caps_old_next_run_wait(monkeypatch):
             },
         }
 
-    summary = run_full_backfill(
+    _summary = run_full_backfill(
         object(),
         ["aym"],
         should_stop=lambda: stopped[0],
@@ -753,7 +753,6 @@ def test_already_complete_archive_starts_on_current_lane(monkeypatch):
 
 
 def test_current_lane_keeps_walking_incomplete_window(monkeypatch):
-    from datetime import UTC, datetime
 
     monkeypatch.setenv("DATABASE_ADMIN_URL", "postgresql://nhr_app:x@localhost:5433/nhr")
     from worker.config import get_worker_settings

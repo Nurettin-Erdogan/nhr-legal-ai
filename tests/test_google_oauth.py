@@ -137,9 +137,10 @@ class _Cursor:
 
 
 class _Connection:
-    def __init__(self, *, existing_email=False, row_email="new@gmail.com"):
+    def __init__(self, *, existing_email=False, row_email="new@gmail.com", allowed=True):
         self.existing_email = existing_email
         self.row_email = row_email
+        self.allowed = allowed  # erişim listesi (migration 062)
         self.statements = []
         self.user_id = uuid4()
         self.migration_ready = True
@@ -158,6 +159,8 @@ class _Connection:
         self.statements.append((statement, params))
         if "to_regclass" in statement:
             return _Cursor({"ready": self.migration_ready})
+        if "_access_allowed(" in statement:
+            return _Cursor({"allowed": self.allowed})
         if "FROM auth_google_identities WHERE google_subject" in statement:
             return _Cursor(None)
         if "FROM users WHERE lower(email)" in statement:
@@ -201,6 +204,14 @@ def test_new_google_account_gets_separate_subject_identity_and_lawyer_role(monke
     assert any("INSERT INTO auth_google_identities" in sql for sql, _ in connection.statements)
     assert {event["action"] for event in events} == {routes.AUTH_REGISTER, routes.AUTH_LOGIN}
     assert "stable-sub" not in str(events)
+
+
+def test_an_email_outside_the_access_list_cannot_open_an_account_with_google(monkeypatch):
+    connection = _Connection(allowed=False)
+    monkeypatch.setattr(routes, "admin_database_connection", lambda: connection)
+    with pytest.raises(routes.AccessDenied):
+        routes._google_user("stable-sub", "new@gmail.com", "New Lawyer", link_user_id=None, context=SimpleNamespace())
+    assert not any("INSERT INTO" in sql for sql, _ in connection.statements)
 
 
 def test_explicit_link_requires_same_verified_email_and_never_creates_new_user(monkeypatch):

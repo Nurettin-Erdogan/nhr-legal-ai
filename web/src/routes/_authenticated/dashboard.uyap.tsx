@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
-import { useAuth } from "@/components/AuthProvider";
+import { useAuth } from "@/components/AuthContext";
 import { UyapDosyalarim } from "@/components/UyapDosyalarim";
 import { UyapCaseLinks } from "@/components/UyapCaseLinks";
 import { UyapAccountBinding } from "@/components/UyapAccountBinding";

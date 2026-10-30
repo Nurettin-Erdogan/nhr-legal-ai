@@ -8,12 +8,12 @@ from uuid import uuid4
 
 import pytest
 
-psycopg = pytest.importorskip("psycopg")
-
 from worker.jobs import run_sync
 from worker.locks import JobLockedError, source_job_lock
 from worker.models import Checkpoint, SyncRequest
 from worker.repository import SyncRepository
+
+psycopg = pytest.importorskip("psycopg")
 
 DATABASE_URL = os.getenv("NHR_TEST_DATABASE_URL")
 

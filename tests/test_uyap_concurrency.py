@@ -1,9 +1,9 @@
-import asyncio
 """Parallel real HTTP handlers + runtime PostgreSQL in an isolated *_test database.
 
 Committed synthetic fixtures are needed for independent connections; only their
 generated owner is removed in finally. Never point this test at production.
 """
+import asyncio
 import contextlib
 import os
 import threading

@@ -11,7 +11,12 @@ const examples = [
   "Yargıtay 11. HD'nin marka tecavüzünde tazminat hesaplama yöntemi",
 ];
 
-const searchExamples = ["kıdem tazminatı", "ihtiyati tedbir", "4857 sayılı Kanun 25", "haksız fesih ispat yükü"];
+const searchExamples = [
+  "kıdem tazminatı",
+  "ihtiyati tedbir",
+  "4857 sayılı Kanun 25",
+  "haksız fesih ispat yükü",
+];
 const narrativeExamples = [
   "İşçi haklı nedenle iş akdini feshetti, son 3 maaşı ödenmedi; kıdem ve ihbar tazminatı talep edebilir mi?",
   "Kiracı sözleşme süresi dolmadan anahtarı teslim etti, ev sahibi kalan aylar için kira istiyor.",

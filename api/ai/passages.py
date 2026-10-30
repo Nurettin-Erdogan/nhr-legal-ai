@@ -3,6 +3,7 @@
 import re
 
 from api.ai.search_plan import normalize, plan_search
+from api.ai.query_vocabulary import expand_search_terms, definition_evidence_score
 
 
 def is_duration_question(question: str) -> bool:
@@ -16,7 +17,7 @@ def contains_duration(text: str) -> bool:
 def sentence_score(sentence: str, question: str) -> float:
     """Relevance is a ranking heuristic, never a legal truth/verification flag."""
     plan = plan_search(question)
-    normalized = normalize(sentence)
+    normalized = normalize(expand_search_terms(sentence))
     terms = {word[:max(4, len(word) - 2)] for word in plan.text.split() if len(word) >= 4}
     overlap = sum(term in normalized for term in terms)
     phrase = 8 if plan.phrase and plan.phrase in normalized else 0
@@ -27,7 +28,7 @@ def sentence_score(sentence: str, question: str) -> float:
         duration = 12 if contains_duration(normalized) else -5
         if duration > 0 and re.search(r"itibaren|tebliğ|başla", normalized):
             duration += 6
-    return phrase + overlap + duration - allegation
+    return phrase + overlap + duration - allegation + definition_evidence_score(question, sentence)
 
 
 def select_passage(text: str, question: str, budget: int) -> str:

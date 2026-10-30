@@ -38,12 +38,31 @@ class Settings:
     rag_explanations: bool = False
     # Mevzuat için ikinci anlam vektörü (migration 061; boş = kapalı). Ölçüm: ilk 5'te doğru madde 12/18 -> 17/18.
     legislation_embedding_model: str = ""
+    # Serbest cevap + cümle cümle kanıt (api/ai/free_answer.py); kapalıysa ya da başarısız olursa eski sentez yolu çalışır.
+    free_answer_enabled: bool = True
+    free_answer_local: bool = False
+    # Çok parçalı sorularda her parça ayrı çağrıda, paralel yazılır ve denetlenir (api/ai/free_answer.py)
+    free_answer_parallel_parts: bool = True
+    # Yazmadan önce konusu açıkça ilgisiz kaynakları ayıklar (api/ai/free_answer.py `_drop_unrelated_sources`)
+    free_answer_source_triage: bool = True
+    # Doğrulanan bölümleri bitiş sırasına göre önizleme olarak gösterir (yalnız denetimden geçmiş cümleler)
+    free_answer_stream_verified: bool = True
+    # Reddedilen cümlelerin gerekçeleri ilk denetimde yazılmaz, arka planda istenir (yalnız yeniden deneme bekler)
+    free_answer_defer_reasons: bool = True
+    # Önceden hazırlanmış, kaynaklarıyla doğrulanmış cevaplar (api/ai/warm_cache.py; yalnız genel soru, kaynaklar değişmemişse)
+    warm_answer_cache_enabled: bool = True
+    official_web_research_enabled: bool = False
     # Doğal cevap + ayrı iddia denetimi. Kapalıysa eski tam alıntı akışı kullanılır.
     rag_natural_answers: bool = True
+    # Enable only after end-to-end acceptance; plans do not replace grounding.
+    rag_research_planning: bool = False
     rag_synthesis_context_chars: int = 24000
     # Bulut modeli (varsayılan kapalı): yalnız genel hukuk sorularında kullanılır; bkz. api/ai/cloud_provider.py.
     cloud_ai_provider: str = ""
     cloud_ai_model: str = ""
+    cloud_ai_plan_model: str = ""
+    # Yazarla aynı sağlayıcıda, ama denetim çağrıları için ayrı (genelde daha güçlü) model; boşsa yazarla aynı model.
+    cloud_ai_check_model: str = ""
     cloud_ai_api_key: str = field(default="", repr=False)
     cloud_ai_max_output_tokens: int = 1024
     cloud_ai_timeout_seconds: float = 60.0
@@ -95,7 +114,8 @@ def get_settings() -> Settings:
     ai_provider = os.getenv("AI_PROVIDER", "deepseek").strip().lower()
     cloud_provider = os.getenv("CLOUD_AI_PROVIDER", "").strip().lower()
     cloud_key_name = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY",
-                      "deepseek": "DEEPSEEK_API_KEY", "openrouter": "OPENROUTER_API_KEY"}.get(cloud_provider, "")
+                      "deepseek": "DEEPSEEK_API_KEY", "openrouter": "OPENROUTER_API_KEY",
+                      "gemini": "GEMINI_API_KEY", "bedrock": "AWS_BEARER_TOKEN_BEDROCK"}.get(cloud_provider, "")
     research_provider = os.getenv("DEEP_RESEARCH_AI_PROVIDER", "deepseek").strip().lower()
     research_key_name = "OPENROUTER_API_KEY" if research_provider == "openrouter" else "DEEPSEEK_API_KEY"
     return Settings(
@@ -109,6 +129,7 @@ def get_settings() -> Settings:
         ai_provider=ai_provider,
         rag_explanations=os.getenv("RAG_EXPLANATIONS", "false").lower() in {"1", "true", "yes"},
         rag_natural_answers=os.getenv("RAG_NATURAL_ANSWERS", "true").lower() in {"1", "true", "yes"},
+        rag_research_planning=os.getenv("RAG_RESEARCH_PLANNING", "false").lower() in {"1", "true", "yes"},
         rag_synthesis_context_chars=max(4000, min(int(os.getenv("RAG_SYNTHESIS_CONTEXT_CHARS", "24000")), 64000)),
         ai_model=os.getenv("AI_MODEL", "deepseek-r1:8b").strip(),
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip(),
@@ -151,9 +172,19 @@ def get_settings() -> Settings:
         * 1024,
         cloud_ai_provider=cloud_provider,
         legislation_embedding_model=os.getenv("LEGISLATION_EMBEDDING_MODEL", "bge-m3").strip(),
+        free_answer_enabled=os.getenv("FREE_ANSWER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"},
+        free_answer_local=os.getenv("FREE_ANSWER_LOCAL", "false").strip().lower() in {"1", "true", "yes", "on"},
+        free_answer_parallel_parts=os.getenv("FREE_ANSWER_PARALLEL_PARTS", "true").strip().lower() in {"1", "true", "yes", "on"},
+        free_answer_source_triage=os.getenv("FREE_ANSWER_SOURCE_TRIAGE", "true").strip().lower() in {"1", "true", "yes", "on"},
+        free_answer_stream_verified=os.getenv("FREE_ANSWER_STREAM_VERIFIED", "true").strip().lower() in {"1", "true", "yes", "on"},
+        free_answer_defer_reasons=os.getenv("FREE_ANSWER_DEFER_REASONS", "true").strip().lower() in {"1", "true", "yes", "on"},
+        warm_answer_cache_enabled=os.getenv("WARM_ANSWER_CACHE_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"},
+        official_web_research_enabled=os.getenv("OFFICIAL_WEB_RESEARCH_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"},
+        cloud_ai_check_model=os.getenv("CLOUD_AI_CHECK_MODEL", "").strip(),
+        cloud_ai_plan_model=os.getenv("CLOUD_AI_PLAN_MODEL", {"gemini": "gemini-3.1-flash-lite"}.get(cloud_provider, "")).strip(),
         cloud_ai_model=os.getenv("CLOUD_AI_MODEL", DEEPSEEK_DEFAULT_MODEL if cloud_provider == "deepseek" else "").strip(),
         cloud_ai_api_key=(os.getenv(cloud_key_name) or file_values.get(cloud_key_name) or "").strip() if cloud_key_name else "",
-        cloud_ai_max_output_tokens=_cloud_output_tokens("CLOUD_AI_MAX_OUTPUT_TOKENS", deepseek=cloud_provider in {"deepseek", "openrouter"}),
+        cloud_ai_max_output_tokens=_cloud_output_tokens("CLOUD_AI_MAX_OUTPUT_TOKENS", deepseek=cloud_provider in {"deepseek", "openrouter", "gemini", "bedrock"}),
         cloud_ai_timeout_seconds=max(5.0, min(float(os.getenv(
             "CLOUD_AI_TIMEOUT_SECONDS", "90" if cloud_provider == "deepseek" else "60"
         )), 300.0)),

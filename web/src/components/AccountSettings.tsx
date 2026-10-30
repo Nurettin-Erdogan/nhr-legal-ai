@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import { useAuth } from "@/components/AuthProvider";
+import { useAuth } from "@/components/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { accountSecurity, changePassword, deleteAccount, updateProfile, type AccountSecurity } from "@/lib/auth-api";
+import { changePassword, deleteAccount, updateProfile, type AccountSecurity } from "@/lib/auth-api";
 import {
   DELETE_PHRASE,
   MIN_PASSWORD_LENGTH,
@@ -28,7 +28,8 @@ function Feedback({ error, notice }: { error: string; notice: string }) {
   return null;
 }
 
-const messageOf = (cause: unknown, fallback: string) => (cause instanceof Error ? cause.message : fallback);
+const messageOf = (cause: unknown, fallback: string) =>
+  cause instanceof Error ? cause.message : fallback;
 
 function ProfileSection() {
   const { user, refreshAuth } = useAuth();
@@ -58,18 +59,29 @@ function ProfileSection() {
   };
 
   return (
-    <section className="space-y-4 rounded-xl border border-border bg-card p-6" data-testid="profile-section">
+    <section
+      className="space-y-4 rounded-xl border border-border bg-card p-6"
+      data-testid="profile-section"
+    >
       <h2 className="text-xl font-semibold">Profil</h2>
       <form onSubmit={save} className="space-y-4">
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-2">
             <Label htmlFor="profile-name">Ad soyad</Label>
-            <Input id="profile-name" value={name} maxLength={150} autoComplete="name" onChange={(event) => setName(event.target.value)} />
+            <Input
+              id="profile-name"
+              value={name}
+              maxLength={150}
+              autoComplete="name"
+              onChange={(event) => setName(event.target.value)}
+            />
           </div>
           <div className="space-y-2">
             <Label htmlFor="profile-email">E-posta</Label>
             <Input id="profile-email" value={user?.email ?? ""} readOnly disabled />
-            <p className="text-xs text-muted-foreground">E-posta adresi giriş kimliğinizdir ve buradan değiştirilemez.</p>
+            <p className="text-xs text-muted-foreground">
+              E-posta adresi giriş kimliğinizdir ve buradan değiştirilemez.
+            </p>
           </div>
         </div>
         <Feedback error={error} notice={notice} />
@@ -113,29 +125,52 @@ function PasswordSection({ security }: { security: AccountSecurity | null }) {
   };
 
   return (
-    <section className="space-y-4 rounded-xl border border-border bg-card p-6" data-testid="password-section">
+    <section
+      className="space-y-4 rounded-xl border border-border bg-card p-6"
+      data-testid="password-section"
+    >
       <h2 className="text-xl font-semibold">Şifre</h2>
       {!hasPassword && (
         <p className="text-sm text-muted-foreground">
-          Hesabınız Google ile açıldığı için şifreniz yok. Buradan bir şifre belirlerseniz e-posta ve şifreyle de giriş yapabilirsiniz.
+          Hesabınız Google ile açıldığı için şifreniz yok. Buradan bir şifre belirlerseniz e-posta
+          ve şifreyle de giriş yapabilirsiniz.
         </p>
       )}
       <form onSubmit={save} className="space-y-4">
         {hasPassword && (
           <div className="space-y-2 sm:max-w-sm">
             <Label htmlFor="current-password">Mevcut şifre</Label>
-            <Input id="current-password" type="password" autoComplete="current-password" value={current} onChange={(event) => setCurrent(event.target.value)} />
+            <Input
+              id="current-password"
+              type="password"
+              autoComplete="current-password"
+              value={current}
+              onChange={(event) => setCurrent(event.target.value)}
+            />
           </div>
         )}
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-2">
             <Label htmlFor="new-password">Yeni şifre</Label>
-            <Input id="new-password" type="password" autoComplete="new-password" minLength={MIN_PASSWORD_LENGTH} value={next} onChange={(event) => setNext(event.target.value)} />
+            <Input
+              id="new-password"
+              type="password"
+              autoComplete="new-password"
+              minLength={MIN_PASSWORD_LENGTH}
+              value={next}
+              onChange={(event) => setNext(event.target.value)}
+            />
             <p className="text-xs text-muted-foreground">En az {MIN_PASSWORD_LENGTH} karakter.</p>
           </div>
           <div className="space-y-2">
             <Label htmlFor="new-password-repeat">Yeni şifre (tekrar)</Label>
-            <Input id="new-password-repeat" type="password" autoComplete="new-password" value={repeat} onChange={(event) => setRepeat(event.target.value)} />
+            <Input
+              id="new-password-repeat"
+              type="password"
+              autoComplete="new-password"
+              value={repeat}
+              onChange={(event) => setRepeat(event.target.value)}
+            />
           </div>
         </div>
         <Feedback error={error} notice={notice} />
@@ -171,15 +206,24 @@ function DeleteSection({ security }: { security: AccountSecurity | null }) {
   };
 
   return (
-    <section className="space-y-3 rounded-xl border border-destructive/40 bg-card p-6" data-testid="delete-account-section">
+    <section
+      className="space-y-3 rounded-xl border border-destructive/40 bg-card p-6"
+      data-testid="delete-account-section"
+    >
       <h2 className="text-xl font-semibold text-destructive">Hesabı sil</h2>
       <p className="text-sm">
-        Hesabınız ve içindeki her şey <strong>kalıcı olarak</strong> silinir: müvekkiller, davalar, görevler, takvim, yüklediğiniz ve
-        UYAP'tan aktardığınız belgeler (dosyalarıyla birlikte), sohbet geçmişi ve yapay zekâ çıktıları. Bu işlem geri alınamaz.
-        Silmeden önce yukarıdaki <em>Verilerimi indir</em> düğmesiyle bir kopya alabilirsiniz.
+        Hesabınız ve içindeki her şey <strong>kalıcı olarak</strong> silinir: müvekkiller, davalar,
+        görevler, takvim, yüklediğiniz ve UYAP'tan aktardığınız belgeler (dosyalarıyla birlikte),
+        sohbet geçmişi ve yapay zekâ çıktıları. Bu işlem geri alınamaz. Silmeden önce yukarıdaki{" "}
+        <em>Verilerimi indir</em> düğmesiyle bir kopya alabilirsiniz.
       </p>
       {!open ? (
-        <Button type="button" variant="outline" className="border-destructive/50 text-destructive" onClick={() => setOpen(true)}>
+        <Button
+          type="button"
+          variant="outline"
+          className="border-destructive/50 text-destructive"
+          onClick={() => setOpen(true)}
+        >
           Hesabımı silmek istiyorum
         </Button>
       ) : (
@@ -188,12 +232,23 @@ function DeleteSection({ security }: { security: AccountSecurity | null }) {
             <Label htmlFor="delete-phrase">
               Onaylamak için <span className="font-mono">{DELETE_PHRASE}</span> yazın
             </Label>
-            <Input id="delete-phrase" value={phrase} autoComplete="off" onChange={(event) => setPhrase(event.target.value)} />
+            <Input
+              id="delete-phrase"
+              value={phrase}
+              autoComplete="off"
+              onChange={(event) => setPhrase(event.target.value)}
+            />
           </div>
           {hasPassword && (
             <div className="space-y-2 sm:max-w-sm">
               <Label htmlFor="delete-password">Şifreniz</Label>
-              <Input id="delete-password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} />
+              <Input
+                id="delete-password"
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+              />
             </div>
           )}
           <Feedback error={error} notice="" />
@@ -212,21 +267,6 @@ function DeleteSection({ security }: { security: AccountSecurity | null }) {
 }
 
 /** Ayarlar sayfasının hesap bölümleri: profil ve şifre üstte, hesabı silme en altta ayrı gösterilir. */
-export function useAccountSecurity(): AccountSecurity | null {
-  const { user } = useAuth();
-  const [security, setSecurity] = useState<AccountSecurity | null>(null);
-  useEffect(() => {
-    if (!user?.id) return setSecurity(null);
-    let cancelled = false;
-    void accountSecurity()
-      .then((value) => !cancelled && setSecurity(value))
-      .catch(() => !cancelled && setSecurity(null));
-    return () => {
-      cancelled = true;
-    };
-  }, [user?.id]);
-  return security;
-}
 
 export function AccountProfile({ security }: { security: AccountSecurity | null }) {
   return (

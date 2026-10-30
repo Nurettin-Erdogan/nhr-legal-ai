@@ -24,23 +24,29 @@ def primary_legislation_markers(question, contexts):
             return set()
         references = {(laws[0], article) for article in articles}
     else:
-        intent = question_intent(question)
-        if intent is None or intent.statute is None:
-            return set()
-        references = {intent.statute}
+        from api.statute_hints import employment_rights_groups
+        groups = employment_rights_groups(question)
+        if groups and not any(c.source_type == 'document' for c in contexts):
+            references = set().union(*groups)
+        else:
+            intent = question_intent(question)
+            if intent is None or intent.statute is None:
+                return set()
+            references = {intent.statute}
     return {i for i, c in enumerate(contexts, 1)
             if c.source_type == 'legislation' and c.verification == 'official'
             and (c.law_no, c.article_no) in references}
 
 
-def answer_uses_primary_basis(question, cited_contexts, available_contexts):
+def answer_uses_primary_basis(question, cited_contexts, available_contexts, *, supplementary_chunk_ids=frozenset()):
     markers = primary_legislation_markers(question, available_contexts)
     if not markers:
         return True
     primary_ids = {available_contexts[i-1].chunk_id for i in markers}
     # Kullanıcı belgesine atıf mevzuat dayanağının yerine geçmez ama onu da bozmaz.
     if not cited_contexts or not all(
-        c.chunk_id in primary_ids or c.source_type == 'document' for c in cited_contexts
+        c.chunk_id in primary_ids or c.source_type == 'document'
+        or (str(c.chunk_id) in supplementary_chunk_ids and c.verification == 'official') for c in cited_contexts
     ):
         return False
     # If two requested articles are actually available, citing only one
@@ -48,9 +54,15 @@ def answer_uses_primary_basis(question, cited_contexts, available_contexts):
     # on exact law/article metadata from verified corpus records.
     required = {(available_contexts[i-1].law_no, available_contexts[i-1].article_no)
                 for i in markers}
+    if supplementary_chunk_ids and not any(c.chunk_id in primary_ids for c in cited_contexts):
+        return False
     if len(required) > 1:
         cited = {(c.law_no, c.article_no) for c in cited_contexts
                  if c.source_type == 'legislation'}
+        from api.statute_hints import employment_rights_groups
+        groups = employment_rights_groups(question)
+        if groups and not any(c.source_type == 'document' for c in available_contexts):
+            return all(bool(group & cited) for group in groups if group & required)
         return required <= cited
     return True
 

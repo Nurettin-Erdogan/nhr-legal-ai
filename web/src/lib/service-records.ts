@@ -44,14 +44,23 @@ export interface ServiceRecords {
   rule: ServiceRule | null;
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
 const text = (value: unknown): string => (typeof value === "string" ? value : "");
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
-const day = (value: unknown): string | null => (typeof value === "string" && ISO_DAY.test(value.slice(0, 10)) ? value.slice(0, 10) : null);
+const day = (value: unknown): string | null =>
+  typeof value === "string" && ISO_DAY.test(value.slice(0, 10)) ? value.slice(0, 10) : null;
 
 function event(raw: unknown): ServiceEvent[] {
   if (!isRecord(raw) || !day(raw.at)) return [];
-  return [{ kind: text(raw.kind), label: text(raw.label) || text(raw.kind), at: text(raw.at), text: text(raw.text) }];
+  return [
+    {
+      kind: text(raw.kind),
+      label: text(raw.label) || text(raw.kind),
+      at: text(raw.at),
+      text: text(raw.text),
+    },
+  ];
 }
 
 function record(raw: unknown): ServiceRecord[] {
@@ -60,33 +69,42 @@ function record(raw: unknown): ServiceRecord[] {
   if (!text(document.id)) return [];
   const stated = day(raw.stated_deemed_on);
   const computed = day(raw.computed_deemed_on);
-  return [{
-    documentId: text(document.id),
-    docType: text(raw.doc_type),
-    served: text(raw.served) || null,
-    events: Array.isArray(raw.events) ? raw.events.flatMap(event) : [],
-    deliveredOn: day(raw.delivered_on),
-    statedDeemedOn: stated,
-    computedDeemedOn: computed,
-    // Uyuşma sunucunun sözüne değil iki tarihin kendisine bakılarak söylenir.
-    agrees: stated && computed ? stated === computed : null,
-  }];
+  return [
+    {
+      documentId: text(document.id),
+      docType: text(raw.doc_type),
+      served: text(raw.served) || null,
+      events: Array.isArray(raw.events) ? raw.events.flatMap(event) : [],
+      deliveredOn: day(raw.delivered_on),
+      statedDeemedOn: stated,
+      computedDeemedOn: computed,
+      // Uyuşma sunucunun sözüne değil iki tarihin kendisine bakılarak söylenir.
+      agrees: stated && computed ? stated === computed : null,
+    },
+  ];
 }
 
 /** Sunucu yanıtını güvenli biçimde okur; bozuk ya da eksik alan boş değere düşer, sayfa çökmez. */
 export function parseServiceRecords(raw: unknown): ServiceRecords {
   const body = isRecord(raw) ? raw : {};
-  const rule = isRecord(body.rule) && text(body.rule.sentence) && text(body.rule.reference)
-    ? {
-        reference: text(body.rule.reference),
-        sourceUrl: /^https:\/\//.test(text(body.rule.source_url)) ? text(body.rule.source_url) : null,
-        sentence: text(body.rule.sentence),
-        days: typeof body.rule.days === "number" && body.rule.days > 0 ? Math.trunc(body.rule.days) : 0,
-      }
-    : null;
+  const rule =
+    isRecord(body.rule) && text(body.rule.sentence) && text(body.rule.reference)
+      ? {
+          reference: text(body.rule.reference),
+          sourceUrl: /^https:\/\//.test(text(body.rule.source_url))
+            ? text(body.rule.source_url)
+            : null,
+          sentence: text(body.rule.sentence),
+          days:
+            typeof body.rule.days === "number" && body.rule.days > 0
+              ? Math.trunc(body.rule.days)
+              : 0,
+        }
+      : null;
   return {
     records: Array.isArray(body.records) ? body.records.flatMap(record) : [],
-    unreadable: typeof body.unreadable === "number" && body.unreadable > 0 ? Math.trunc(body.unreadable) : 0,
+    unreadable:
+      typeof body.unreadable === "number" && body.unreadable > 0 ? Math.trunc(body.unreadable) : 0,
     rule,
   };
 }
@@ -102,7 +120,9 @@ export interface ServiceCandidate {
 
 function offDayNote(isoDate: string): string {
   const reason = holidayName(new Date(`${isoDate}T00:00:00Z`));
-  return reason ? `Bu gün ${reason}; tebligatın yapılmış sayıldığı günün tatile rastlaması hâlindeki uygulamayı kontrol edin.` : "";
+  return reason
+    ? `Bu gün ${reason}; tebligatın yapılmış sayıldığı günün tatile rastlaması hâlindeki uygulamayı kontrol edin.`
+    : "";
 }
 
 const join = (...parts: string[]): string => parts.filter(Boolean).join(" ");
@@ -117,19 +137,34 @@ export function serviceCandidates(data: ServiceRecords): ServiceCandidate[] {
     const reached = item.deliveredOn ? `hesaba ulaşma ${formatDateTr(item.deliveredOn)}` : "";
     const what = item.served ? ` · ${item.served.slice(0, 90)}` : "";
     const add = (date: string, source: string, warning: string) =>
-      out.push({ date, label: `E-tebligat ${source}${reached ? ` (${reached})` : ""}${what}`, warning: join(warning, offDayNote(date)), documentId: item.documentId });
-    if (item.statedDeemedOn && item.computedDeemedOn && item.statedDeemedOn !== item.computedDeemedOn) {
+      out.push({
+        date,
+        label: `E-tebligat ${source}${reached ? ` (${reached})` : ""}${what}`,
+        warning: join(warning, offDayNote(date)),
+        documentId: item.documentId,
+      });
+    if (
+      item.statedDeemedOn &&
+      item.computedDeemedOn &&
+      item.statedDeemedOn !== item.computedDeemedOn
+    ) {
       const clash = `Mazbatada yazan gün (${formatDateTr(item.statedDeemedOn)}) ile hesaplanan gün (${formatDateTr(item.computedDeemedOn)}) farklı; mazbatayı açıp kontrol edin.`;
       add(item.statedDeemedOn, "mazbataya göre yapılmış sayıldı", clash);
       add(item.computedDeemedOn, "kurala göre yapılmış sayılır", clash);
     } else if (item.statedDeemedOn || item.computedDeemedOn) {
-      const source = item.statedDeemedOn && item.computedDeemedOn ? "yapılmış sayıldı (mazbata ve hesap aynı)" : item.statedDeemedOn ? "mazbataya göre yapılmış sayıldı" : "kurala göre yapılmış sayılır";
+      const source =
+        item.statedDeemedOn && item.computedDeemedOn
+          ? "yapılmış sayıldı (mazbata ve hesap aynı)"
+          : item.statedDeemedOn
+            ? "mazbataya göre yapılmış sayıldı"
+            : "kurala göre yapılmış sayılır";
       add((item.statedDeemedOn ?? item.computedDeemedOn)!, source, "");
     } else if (item.deliveredOn) {
       out.push({
         date: item.deliveredOn,
         label: `E-tebligat hesaba ulaştı${what}`,
-        warning: "Yapılmış sayıldığı gün okunamadı ve hesaplanamadı; bu, hesaba ulaşma günüdür, tebliğ günü değildir.",
+        warning:
+          "Yapılmış sayıldığı gün okunamadı ve hesaplanamadı; bu, hesaba ulaşma günüdür, tebliğ günü değildir.",
         documentId: item.documentId,
       });
     }
@@ -141,19 +176,26 @@ export function serviceCandidates(data: ServiceRecords): ServiceCandidate[] {
 export function recordsHeadline(data: ServiceRecords): string {
   const parts: string[] = [];
   if (data.records.length > 0) parts.push(`${data.records.length} e-tebliğ mazbatası okundu`);
-  if (data.unreadable > 0) parts.push(`${data.unreadable} tebliğ evrakının tarihi okunamadı (kâğıt mazbata ya da zarf)`);
+  if (data.unreadable > 0)
+    parts.push(`${data.unreadable} tebliğ evrakının tarihi okunamadı (kâğıt mazbata ya da zarf)`);
   return parts.join(" · ");
 }
 
 const BASE = (import.meta.env?.VITE_API_URL ?? "http://localhost:8766").replace(/\/$/, "");
 
-export async function loadServiceRecords(caseId: string, signal?: AbortSignal): Promise<ServiceRecords> {
+export async function loadServiceRecords(
+  caseId: string,
+  signal?: AbortSignal,
+): Promise<ServiceRecords> {
   const token = inMemoryAccessToken();
-  const response = await fetch(`${BASE}/api/office/cases/${encodeURIComponent(caseId)}/service-records`, {
-    credentials: "include",
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-    signal,
-  });
+  const response = await fetch(
+    `${BASE}/api/office/cases/${encodeURIComponent(caseId)}/service-records`,
+    {
+      credentials: "include",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      signal,
+    },
+  );
   if (!response.ok) throw new Error("Tebliğ kayıtları yüklenemedi.");
   return parseServiceRecords(await response.json().catch(() => null));
 }

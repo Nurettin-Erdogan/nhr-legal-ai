@@ -94,7 +94,7 @@ export function CaseDocumentActions({
             aria-label="Yüklenecek evrak"
             type="file"
             disabled={busy}
-            className="block mt-2 max-w-full"
+            className="mt-2 block w-full max-w-full text-sm file:mr-3 file:cursor-pointer file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-2 file:text-primary-foreground"
             onChange={(e) => setFile(e.target.files?.[0] ?? null)}
           />
         </label>

@@ -1,15 +1,19 @@
-"""Canlı API'ye sabit regresyon sorularını sorar ve ölçülebilir kontrolleri raporlar (salt okunur, anonim).
+r"""Canlı API'ye sabit regresyon sorularını sorar ve ölçülebilir kontrolleri raporlar.
 
 Kontroller kodla yapılır, yargı içermez: cevap kaynağa dayalı mı (`grounded`), atıf var mı, beklenen kanun/madde atıflarda geçiyor mu,
 beklenen kaynak türleri geliyor mu, soru terimleri cevapta yer alıyor mu, doğrulanmamış (üçüncü taraf) atıf oranı, süre.
 Cevabın hukuken doğru olduğunu ÖLÇMEZ: bu bir avukat değerlendirmesi gerektirir.
 
-    .venv\Scripts\python.exe scripts\eval_live_answers.py --output .local\eval-live.json [--limit 5]
+    $env:EVAL_PASSWORD = "..."; .venv\Scripts\python.exe scripts\eval_live_answers.py --email deneme@example.com --output .local\eval-live.json [--limit 5]
+
+Asistan yalnız oturum açmış ve erişim listesindeki kullanıcıya cevap verir (2026-10-24): bir deneme hesabıyla giriş yapılır,
+parola ortam değişkeninden (EVAL_PASSWORD) okunur. Cevaplar o hesabın sohbet geçmişine yazılır; deneme hesabını sonra silin.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import statistics
 import sys
 import time
@@ -48,12 +52,16 @@ def main() -> None:
     parser.add_argument("--api", default="http://127.0.0.1:8766")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--email", required=True, help="deneme hesabı; parola EVAL_PASSWORD ortam değişkeninde")
     args = parser.parse_args()
     if args.output.exists():
         parser.error("Rapor üzerine yazılmaz")
     cases = list(REGRESSION_QUESTIONS)[: args.limit or None]
     rows = []
     with httpx.Client(timeout=300) as client:
+        login = client.post(f"{args.api}/api/auth/login", json={"email": args.email, "password": os.environ.get("EVAL_PASSWORD", "")})
+        if login.status_code != 200:
+            parser.error(f"Giriş yapılamadı ({login.status_code}): {login.text[:160]}")
         for case in cases:
             started = time.monotonic()
             try:

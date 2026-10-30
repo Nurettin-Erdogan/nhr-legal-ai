@@ -48,7 +48,8 @@ def source_covers_date(context: RAGContext, target: date) -> bool:
 
 def build_event_context(question: str, contexts: Sequence[RAGContext], *,
                         prior_questions: Sequence[str] = (), history: Sequence[HistoryTurn] = (),
-                        as_of: date | None = None, today: date | None = None) -> EventContext | None:
+                        as_of: date | None = None, today: date | None = None,
+                        basis_complete: bool | None = None) -> EventContext | None:
     if personal_outcome_topic(question, history, prior_questions) != "employment":
         return None
     if any(c.source_type == "document" for c in contexts):
@@ -61,7 +62,8 @@ def build_event_context(question: str, contexts: Sequence[RAGContext], *,
     statutes = [c for c in legal if c.source_type == "legislation"]
     # At least every supplied candidate provision must be temporally admissible
     # before any of it can support an event-specific historical conclusion.
-    verified = bool(target is not None and statutes and all(source_covers_date(c, target) for c in legal))
+    verified = bool(basis_complete is not False and target is not None and statutes
+                    and all(source_covers_date(c, target) for c in legal))
     missing = bool(target is not None and not verified)
     return EventContext(facts, target, missing, verified)
 

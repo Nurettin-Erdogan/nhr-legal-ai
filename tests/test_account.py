@@ -166,10 +166,10 @@ def test_deleting_an_account_erases_its_data_and_files_but_nothing_of_other_user
     world.connection.execute("INSERT INTO conversations (id, created_by, title) VALUES (%s, %s, 'sohbet')", (conversation, world.alice))
     world.connection.execute("INSERT INTO messages (conversation_id, role, content) VALUES (%s, 'user', 'gizli soru')", (conversation,))
     world.connection.execute("INSERT INTO office_reminders (id, owner_id, title, remind_at) VALUES (%s, %s, 'ara', now())", (uuid4(), world.alice))
-    used_invite, bob_invite = uuid4(), uuid4()
+    alice_entry, bob_entry = uuid4(), uuid4()
     world.connection.execute(
-        "INSERT INTO registration_invites (id, email, used_at, used_by) VALUES (%s, 'alice@example.com', now(), %s), (%s, 'bob-davet@example.com', NULL, NULL)",
-        (used_invite, world.alice, bob_invite))
+        "INSERT INTO access_allowlist (id, email) VALUES (%s, 'alice@example.com'), (%s, 'bob-liste@example.com')",
+        (alice_entry, bob_entry))
     folder = world.tmp / "office" / str(world.alice)
     folder.mkdir(parents=True)
     (folder / "belge.pdf").write_bytes(b"%PDF")
@@ -198,7 +198,7 @@ def test_deleting_an_account_erases_its_data_and_files_but_nothing_of_other_user
     assert count("SELECT count(*) AS n FROM conversations WHERE created_by = %s", world.alice) == 0
     assert count("SELECT count(*) AS n FROM messages WHERE conversation_id = %s", conversation) == 0
     assert count("SELECT count(*) AS n FROM office_reminders WHERE owner_id = %s", world.alice) == 0
-    assert count("SELECT count(*) AS n FROM registration_invites WHERE id = %s", used_invite) == 0  # davetteki e-posta da gider
+    assert count("SELECT count(*) AS n FROM access_allowlist WHERE id = %s", alice_entry) == 0  # listedeki e-posta da gider
     user = world.connection.execute("SELECT email, full_name, password_hash, status, deleted_at FROM users WHERE id = %s", (world.alice,)).fetchone()
     assert user["email"].endswith("@deleted.invalid") and user["full_name"] is None and user["password_hash"] is None
     assert user["status"] == "inactive" and user["deleted_at"] is not None
@@ -206,7 +206,7 @@ def test_deleting_an_account_erases_its_data_and_files_but_nothing_of_other_user
     # Başka kullanıcının hiçbir şeyi etkilenmedi.
     assert count("SELECT count(*) AS n FROM office_cases WHERE owner_id = %s", world.bob) == 1
     assert count("SELECT count(*) AS n FROM documents WHERE office_case_document_id = %s", bob_doc) == 1
-    assert count("SELECT count(*) AS n FROM registration_invites WHERE id = %s", bob_invite) == 1
+    assert count("SELECT count(*) AS n FROM access_allowlist WHERE id = %s", bob_entry) == 1
     assert (other / "belge.pdf").exists()
     # Denetim kaydı kimliksiz iz bırakır: e-posta ya da ad yazılmaz.
     log = world.connection.execute("SELECT metadata::text AS m FROM activity_logs WHERE action = %s AND actor_user_id = %s", (account.ACCOUNT_DELETE, world.alice)).fetchone()

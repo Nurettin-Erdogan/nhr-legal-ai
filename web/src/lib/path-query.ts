@@ -16,7 +16,8 @@ export function splitPathQuery(path: string): PathQuery {
   const result: PathQuery = { to: queryAt >= 0 ? withoutHash.slice(0, queryAt) : withoutHash };
   if (queryAt >= 0) {
     const search: Record<string, string> = {};
-    for (const [key, value] of new URLSearchParams(withoutHash.slice(queryAt + 1))) search[key] = value;
+    for (const [key, value] of new URLSearchParams(withoutHash.slice(queryAt + 1)))
+      search[key] = value;
     if (Object.keys(search).length) result.search = search;
   }
   if (hash) result.hash = hash;

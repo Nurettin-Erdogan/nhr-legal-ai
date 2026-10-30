@@ -246,13 +246,24 @@ export interface UyapAccounts {
 
 /** Bu hesaba aktarım yapılmış UYAP kişileri, dosya/evrak sayılarıyla. */
 export async function loadUyapAccounts(): Promise<UyapAccounts> {
-  const response = await fetch(`${BASE}/api/office/uyap/account`, { credentials: "include", headers: headers(false) });
+  const response = await fetch(`${BASE}/api/office/uyap/account`, {
+    credentials: "include",
+    headers: headers(false),
+  });
   if (!response.ok) throw new Error("UYAP hesapları okunamadı.");
   const body = (await response.json()) as Record<string, unknown>;
   const accounts = (Array.isArray(body.accounts) ? body.accounts : []).map((raw) => {
     const row = (raw ?? {}) as Record<string, unknown>;
-    return { id: String(row.id ?? ""), display: String(row.display ?? ""), files: Number(row.files) || 0, documents: Number(row.documents) || 0 };
+    return {
+      id: String(row.id ?? ""),
+      display: String(row.display ?? ""),
+      files: Number(row.files) || 0,
+      documents: Number(row.documents) || 0,
+    };
   });
   const unknown = (body.unknown ?? {}) as Record<string, unknown>;
-  return { accounts, unknown: { files: Number(unknown.files) || 0, documents: Number(unknown.documents) || 0 } };
+  return {
+    accounts,
+    unknown: { files: Number(unknown.files) || 0, documents: Number(unknown.documents) || 0 },
+  };
 }

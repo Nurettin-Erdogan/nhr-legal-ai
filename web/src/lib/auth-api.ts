@@ -115,9 +115,15 @@ export interface AccountSecurity {
 export const accountSecurity = () => request<AccountSecurity>("/api/account/security");
 
 export const updateProfile = (fullName: string) =>
-  request<AuthUser>("/api/account/profile", { method: "POST", body: JSON.stringify({ full_name: fullName }) });
+  request<AuthUser>("/api/account/profile", {
+    method: "POST",
+    body: JSON.stringify({ full_name: fullName }),
+  });
 
-export async function changePassword(currentPassword: string, newPassword: string): Promise<AuthResponse> {
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string,
+): Promise<AuthResponse> {
   const result = await request<AuthResponse>("/api/account/password", {
     method: "POST",
     body: JSON.stringify({ current_password: currentPassword || null, new_password: newPassword }),

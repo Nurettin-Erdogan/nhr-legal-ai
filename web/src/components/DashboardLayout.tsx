@@ -1,4 +1,5 @@
-import { NavLink, useLocation, Link, useNavigate } from "@/lib/router-compat";
+import { NavLink, Link } from "@/lib/router-compat";
+import { useLocation, useNavigate } from "@/lib/router-hooks";
 import {
   LayoutDashboard,
   Scale,
@@ -16,6 +17,7 @@ import {
   User as UserIcon,
   Users,
   ListChecks,
+  Sparkles,
   FileText,
   ChevronDown,
   ShieldCheck,
@@ -41,7 +43,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Logo } from "./Logo";
 import { cn } from "@/lib/utils";
 import { ThemeToggle } from "./ThemeToggle";
-import { useAuth } from "./AuthProvider";
+import { useAuth } from "./AuthContext";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -52,6 +54,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 const NAV_ICONS: Record<string, LucideIcon> = {
+  "/dashboard/bureau-assistant": Sparkles,
   "/dashboard": LayoutDashboard,
   "/dashboard/cases": Briefcase,
   "/dashboard/execution": Landmark,

@@ -11,11 +11,11 @@ from datetime import date
 
 import pytest
 
-psycopg = pytest.importorskip("psycopg")
-
 from api.ai.history import record_exchange
 from api.ai.retrieval import retrieve_contexts, retrieve_document_contexts
 from api.ai.verification import verify_answer
+
+psycopg = pytest.importorskip("psycopg")
 
 DATABASE_URL = os.getenv("NHR_TEST_DATABASE_URL")
 

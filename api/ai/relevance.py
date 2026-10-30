@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import re
 
 from api.ai.search_plan import normalize
+from api.ai.query_vocabulary import expand_search_terms
 
 
 _CASE_REQUEST = re.compile(r'\b(?:içtihat\w*|emsal\w*|karar(?:ı|ını|ında|ları|larını|larında)|'
@@ -100,11 +101,15 @@ _PAYMENT_STATUS_RE = re.compile(
 _NEGATIVE_PAYMENT_RE = re.compile(r"memiş|medi|memekte|mıyor|miyor|muyor|müyor|mamış|madı|yok")
 _CONDITIONAL_PAYMENT_RE = re.compile(
     r"\b(?:öden|öde|yatırıl)\w*(?:mişse|mışsa|memişse|mamışsa|diğinde|dığında|mediğinde|madığında|seydi|saydı)\b"
-    r"|\b(?:halinde|hâlinde|takdirde|aksi halde)\b"
+    r"|\b(?:halinde|hâlinde|durumunda|takdirde|aksi halde)\b"
+    r"|\b\w+(?:mazsa|mezse|yorsa)\b"
     # A conditional payment rule may attach its condition to a different verb:
     # "iki ihtara sebep olmuşsa" and "sebep olması halinde" are both conditions,
     # not an assertion that the tenant actually failed to pay.
     r"|\b\w+(?:mişse|mışsa|muşsa|müşse)\b"
+)
+_UNPERFORMED_PAYMENT_DUTY_RE = re.compile(
+    r"\b(?:bedel\w*|ücret\w*|alacağ\w*|ödeme\s+borc\w*|borc\w*|giderin?\w*)\b[^.;]{0,80}?\b(?:ifa\s+etmez\w*|yerine\s+getirmez\w*)"
 )
 _SHORT_PREDICATE_RE = re.compile(r"\b(?:yoktur|yok|değildir|bulunmamaktadır|bulunmuyor)\b")
 _SUBJECT_SUFFIX_RE = re.compile(
@@ -148,6 +153,17 @@ def payment_polarity_supported(claim: str, source: str) -> bool:
             continue
         known.update(_NEGATIVE_PAYMENT_RE.search(match.group()) is not None
                      for match in _PAYMENT_STATUS_RE.finditer(value))
+        if conditional_claim:
+            # "ödemiyorsa" and "ödememesi durumunda" are the same negative
+            # payment *condition*. Nominal forms are not added to the factual
+            # payment-status parser: a hypothetical rule still cannot prove
+            # that a user's rent has actually been paid or remains unpaid.
+            known.update(bool(re.search(r"memesi|maması", match.group()))
+                         for match in re.finditer(r"\b(?:öde|öden)(?:mesi|ması|memesi|maması)\b", value))
+            # "ödeme borcunu ifa etmezse" (TBK m. 315) is the same negative payment condition as "ödemezse": a statute
+            # often names the duty instead of the verb "ödemek" (2026-10-30: the rule's lead sentence was dropped for this).
+            if _UNPERFORMED_PAYMENT_DUTY_RE.search(value):
+                known.add(True)
     return required == known
 
 
@@ -431,7 +447,7 @@ def passage_relevant(question: str, text: str, *, source_type: str | None = None
     if source_type == 'document':
         return document_passage_relevant(question, text, document_hint=document_hint)
     intent = question_intent(question)
-    value = normalize(text)
+    value = normalize(expand_search_terms(text))
     if intent and not all(any(re.search(r'(?<!\w)' + re.escape(term), value) for term in group) for group in intent.groups):
         return False
     if intent and intent.name == 'joint_custody' and any(t in normalize(question) for t in ('şart', 'koşul')):
@@ -453,6 +469,16 @@ def passage_relevant(question: str, text: str, *, source_type: str | None = None
 
 def context_relevant(question, context):
     from api.ai.source_support import _sentences
+    # Everyday concepts need not be literal strings in the governing statute
+    # (e.g. a provision defining dismissal protection may not say "işe iade").
+    # Reuse the existing topic -> article map AND its actual-text predicate;
+    # metadata alone is not enough. This is candidate relevance, not support
+    # for an answer or a substitute for the independent claim checker.
+    if context.source_type == 'legislation' and context.verification == 'official':
+        from api.statute_hints import suggest, text_matches
+        if any((context.law_no, context.article_no) == (hint.law_no, hint.article_no)
+               and text_matches(hint, context.content) for hint in suggest(question)):
+            return True
     # Retrieval may return a fragment (including a historical version). Only
     # generation requires complete sentences; don't lose valid search records.
     return any(passage_relevant(question, s) for s in _sentences(context.content, include_tail=True))
@@ -513,6 +539,9 @@ def semantic_search_text(question: str) -> str:
     q = normalize(question)
     everyday = [terms for pattern, terms in _EVERYDAY_LEGAL_TERMS if pattern.search(q)]
     hint = ' '.join(part for part in [hint, *everyday] if part)
+    expanded = expand_search_terms(question)
+    if expanded != normalize(question):
+        hint = ' '.join(part for part in (expanded, hint) if part)
     return f'{question}\nArama kavramları: {hint}' if hint else question
 
 

@@ -26,6 +26,7 @@ import { Route as AuthenticatedDashboardApplicationsRouteImport } from './routes
 import { Route as AuthenticatedDashboardAppointmentsRouteImport } from './routes/_authenticated/dashboard.appointments'
 import { Route as AuthenticatedDashboardAutoSummaryRouteImport } from './routes/_authenticated/dashboard.auto-summary'
 import { Route as AuthenticatedDashboardAutomationRouteImport } from './routes/_authenticated/dashboard.automation'
+import { Route as AuthenticatedDashboardBureauAssistantRouteImport } from './routes/_authenticated/dashboard.bureau-assistant'
 import { Route as AuthenticatedDashboardCalendarRouteImport } from './routes/_authenticated/dashboard.calendar'
 import { Route as AuthenticatedDashboardCallCenterRouteImport } from './routes/_authenticated/dashboard.call-center'
 import { Route as AuthenticatedDashboardCallsRouteImport } from './routes/_authenticated/dashboard.calls'
@@ -145,6 +146,12 @@ const AuthenticatedDashboardAutomationRoute =
   AuthenticatedDashboardAutomationRouteImport.update({
     id: '/dashboard/automation',
     path: '/dashboard/automation',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedDashboardBureauAssistantRoute =
+  AuthenticatedDashboardBureauAssistantRouteImport.update({
+    id: '/dashboard/bureau-assistant',
+    path: '/dashboard/bureau-assistant',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
 const AuthenticatedDashboardCalendarRoute =
@@ -332,6 +339,7 @@ export interface FileRoutesByFullPath {
   '/dashboard/appointments': typeof AuthenticatedDashboardAppointmentsRoute
   '/dashboard/auto-summary': typeof AuthenticatedDashboardAutoSummaryRoute
   '/dashboard/automation': typeof AuthenticatedDashboardAutomationRoute
+  '/dashboard/bureau-assistant': typeof AuthenticatedDashboardBureauAssistantRoute
   '/dashboard/calendar': typeof AuthenticatedDashboardCalendarRoute
   '/dashboard/call-center': typeof AuthenticatedDashboardCallCenterRoute
   '/dashboard/calls': typeof AuthenticatedDashboardCallsRoute
@@ -378,6 +386,7 @@ export interface FileRoutesByTo {
   '/dashboard/appointments': typeof AuthenticatedDashboardAppointmentsRoute
   '/dashboard/auto-summary': typeof AuthenticatedDashboardAutoSummaryRoute
   '/dashboard/automation': typeof AuthenticatedDashboardAutomationRoute
+  '/dashboard/bureau-assistant': typeof AuthenticatedDashboardBureauAssistantRoute
   '/dashboard/calendar': typeof AuthenticatedDashboardCalendarRoute
   '/dashboard/call-center': typeof AuthenticatedDashboardCallCenterRoute
   '/dashboard/calls': typeof AuthenticatedDashboardCallsRoute
@@ -426,6 +435,7 @@ export interface FileRoutesById {
   '/_authenticated/dashboard/appointments': typeof AuthenticatedDashboardAppointmentsRoute
   '/_authenticated/dashboard/auto-summary': typeof AuthenticatedDashboardAutoSummaryRoute
   '/_authenticated/dashboard/automation': typeof AuthenticatedDashboardAutomationRoute
+  '/_authenticated/dashboard/bureau-assistant': typeof AuthenticatedDashboardBureauAssistantRoute
   '/_authenticated/dashboard/calendar': typeof AuthenticatedDashboardCalendarRoute
   '/_authenticated/dashboard/call-center': typeof AuthenticatedDashboardCallCenterRoute
   '/_authenticated/dashboard/calls': typeof AuthenticatedDashboardCallsRoute
@@ -474,6 +484,7 @@ export interface FileRouteTypes {
     | '/dashboard/appointments'
     | '/dashboard/auto-summary'
     | '/dashboard/automation'
+    | '/dashboard/bureau-assistant'
     | '/dashboard/calendar'
     | '/dashboard/call-center'
     | '/dashboard/calls'
@@ -520,6 +531,7 @@ export interface FileRouteTypes {
     | '/dashboard/appointments'
     | '/dashboard/auto-summary'
     | '/dashboard/automation'
+    | '/dashboard/bureau-assistant'
     | '/dashboard/calendar'
     | '/dashboard/call-center'
     | '/dashboard/calls'
@@ -567,6 +579,7 @@ export interface FileRouteTypes {
     | '/_authenticated/dashboard/appointments'
     | '/_authenticated/dashboard/auto-summary'
     | '/_authenticated/dashboard/automation'
+    | '/_authenticated/dashboard/bureau-assistant'
     | '/_authenticated/dashboard/calendar'
     | '/_authenticated/dashboard/call-center'
     | '/_authenticated/dashboard/calls'
@@ -728,6 +741,13 @@ declare module '@tanstack/react-router' {
       path: '/dashboard/automation'
       fullPath: '/dashboard/automation'
       preLoaderRoute: typeof AuthenticatedDashboardAutomationRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/dashboard/bureau-assistant': {
+      id: '/_authenticated/dashboard/bureau-assistant'
+      path: '/dashboard/bureau-assistant'
+      fullPath: '/dashboard/bureau-assistant'
+      preLoaderRoute: typeof AuthenticatedDashboardBureauAssistantRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/dashboard/calendar': {
@@ -937,6 +957,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedDashboardAppointmentsRoute: typeof AuthenticatedDashboardAppointmentsRoute
   AuthenticatedDashboardAutoSummaryRoute: typeof AuthenticatedDashboardAutoSummaryRoute
   AuthenticatedDashboardAutomationRoute: typeof AuthenticatedDashboardAutomationRoute
+  AuthenticatedDashboardBureauAssistantRoute: typeof AuthenticatedDashboardBureauAssistantRoute
   AuthenticatedDashboardCalendarRoute: typeof AuthenticatedDashboardCalendarRoute
   AuthenticatedDashboardCallCenterRoute: typeof AuthenticatedDashboardCallCenterRoute
   AuthenticatedDashboardCallsRoute: typeof AuthenticatedDashboardCallsRoute
@@ -980,6 +1001,8 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedDashboardAutoSummaryRoute:
     AuthenticatedDashboardAutoSummaryRoute,
   AuthenticatedDashboardAutomationRoute: AuthenticatedDashboardAutomationRoute,
+  AuthenticatedDashboardBureauAssistantRoute:
+    AuthenticatedDashboardBureauAssistantRoute,
   AuthenticatedDashboardCalendarRoute: AuthenticatedDashboardCalendarRoute,
   AuthenticatedDashboardCallCenterRoute: AuthenticatedDashboardCallCenterRoute,
   AuthenticatedDashboardCallsRoute: AuthenticatedDashboardCallsRoute,

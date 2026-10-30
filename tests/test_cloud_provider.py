@@ -200,6 +200,33 @@ def _settings(**overrides):
     return SimpleNamespace(**values)
 
 
+@pytest.mark.parametrize("effort", ["low", "medium", "high"])
+def test_luna_user_effort_is_request_local_and_cache_separated(effort):
+    settings = _settings(cloud_ai_provider="openrouter", cloud_ai_model="openai/gpt-6-luna",
+                         cloud_ai_reasoning_effort="low")
+    local = _Fake("qwen")
+    provider = pipeline.answer_provider(settings, AIAnswerRequest(question="Soru", reasoning_effort=effort), local)
+    assert isinstance(provider, FallbackProvider)
+    assert provider.primary._generation_options()["reasoning"] == {"effort": effort}
+    assert f":{effort}:" in pipeline.provider_cache_model(provider, "default")
+    assert settings.cloud_ai_reasoning_effort == "low"
+    private = AIAnswerRequest(question="Özel belge", project_id=uuid4(), reasoning_effort=effort)
+    assert pipeline.answer_provider(settings, private, local) is local
+
+
+def test_user_effort_rejects_unknown_values():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        AIAnswerRequest(question="Soru", reasoning_effort="unlimited")
+
+
+def test_luna_effort_missing_preserves_configured_default():
+    provider = pipeline.answer_provider(
+        _settings(cloud_ai_provider="openrouter", cloud_ai_model="openai/gpt-6-luna",
+                  cloud_ai_reasoning_effort="high"), AIAnswerRequest(question="Soru"), _Fake("qwen"))
+    assert provider.primary.reasoning_effort == "high"
+
+
 @pytest.mark.parametrize("scope", [{"case_id": uuid4()}, {"project_id": uuid4()}, {"office_project_id": uuid4()},
                                    {"selected_document_ids": [uuid4()]}])
 def test_case_or_document_questions_always_stay_local(scope):
@@ -279,3 +306,163 @@ def test_openrouter_does_not_force_json_mode():
     provider.transport = _transport(handler)
     provider.generate(system_instruction="Yalnız JSON döndür.", prompt="p")
     assert "response_format" not in seen["body"]
+
+
+def test_openrouter_openai_checker_uses_a_strict_schema_without_forcing_approval():
+    from api.ai.synthesis import CHECK_INSTRUCTION
+    from api.ai.checker_protocol import verdict_status
+    seen = {}
+    verdict = json.dumps({'claims': [{'id': 1, 'supported': False, 'relevant': True,
+        'scope_preserved': False, 'why': 'ifade_duzelt: fixture'}],
+        'coverage_preserved': False, 'source_only': True, 'clarification_safe': True})
+    def handler(request):
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, json={'choices': [{'message': {'content': verdict}, 'finish_reason': 'stop'}]})
+    provider = create_cloud_provider(provider_name='openrouter', model='openai/gpt-6-luna', api_key='fixture')
+    provider.transport = _transport(handler)
+    raw = provider.generate_auxiliary(system_instruction=CHECK_INSTRUCTION, prompt='{}')
+    assert verdict_status(raw, 1) == 'valid'
+    response_format = seen['response_format']
+    assert response_format['type'] == 'json_schema' and response_format['json_schema']['strict'] is True
+    schema = response_format['json_schema']['schema']
+    assert schema['additionalProperties'] is False
+    assert schema['properties']['claims']['items']['properties']['supported'] == {'type': 'boolean'}
+    assert seen['provider']['require_parameters'] is True
+    assert seen['reasoning'] == {'enabled': False}
+
+
+def test_openrouter_openai_plan_is_json_but_normal_answer_remains_plain_text():
+    seen = []
+    def handler(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={'choices': [{'message': {'content': '{}'}, 'finish_reason': 'stop'}]})
+    provider = create_cloud_provider(provider_name='openrouter', model='openai/gpt-6-luna', api_key='fixture')
+    provider.transport = _transport(handler)
+    provider.generate(system_instruction='Yalnız JSON döndür.', prompt='{}')
+    provider.generate(system_instruction='Kaynaklarla doğal Türkçe cevapla.', prompt='{}')
+    assert seen[0]['response_format'] == {'type': 'json_object'}
+    assert 'response_format' not in seen[1]
+
+
+def test_one_empty_cloud_response_is_retried_before_falling_back_to_the_local_model():
+    from api.ai.cloud_provider import FallbackProvider
+    from api.ai.providers import AIProviderError
+
+    class Cloud:
+        name, model = "cloud", "m"
+
+        def __init__(self, *outcomes):
+            self.outcomes, self.calls = list(outcomes), 0
+
+        def generate(self, **kwargs):
+            self.calls += 1
+            outcome = self.outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+    class Local:
+        name, model = "local", "q"
+        calls = 0
+
+        def generate(self, **kwargs):
+            Local.calls += 1
+            return "yerel"
+
+    empty = AIProviderError("openrouter boş bir yanıt döndürdü")
+    retried = FallbackProvider(Cloud(empty, "bulut"), Local())
+    assert retried.generate(system_instruction="s", prompt="p") == "bulut" and not retried.fell_back and Local.calls == 0
+    failing = FallbackProvider(Cloud(empty, empty), Local())
+    assert failing.generate(system_instruction="s", prompt="p") == "yerel" and failing.fell_back
+    other = Cloud(AIProviderError("ağ hatası"))
+    assert FallbackProvider(other, Local()).generate(system_instruction="s", prompt="p") == "yerel" and other.calls == 1
+
+
+def test_gemini_uses_googles_openai_compatible_endpoint_and_masks_identifiers(monkeypatch):
+    from api.ai.cloud_provider import GeminiProvider, create_cloud_provider
+
+    sent = {}
+
+    def fake_post(self, url, headers, payload):
+        sent.update(url=url, payload=payload, auth=headers["authorization"])
+        return {"choices": [{"message": {"content": "tamam"}, "finish_reason": "stop"}], "usage": {}}
+
+    monkeypatch.setattr(GeminiProvider, "_post", fake_post)
+    provider = create_cloud_provider(provider_name="gemini", model="", api_key="k")
+    assert provider.generate(system_instruction="talimat", prompt="TC 12345678901 olan kişi") == "tamam"
+    assert sent["url"] == "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    assert sent["payload"]["model"] == "gemini-3.8-flash" and "max_tokens" not in sent["payload"]
+    assert "12345678901" not in sent["payload"]["messages"][1]["content"]
+
+
+def test_gemini_waits_and_retries_when_google_is_busy_but_not_on_a_bad_key(monkeypatch):
+    import httpx
+
+    from api.ai import cloud_provider
+    from api.ai.cloud_provider import GeminiProvider, create_cloud_provider
+
+    monkeypatch.setattr(cloud_provider.time, "sleep", lambda _s: None)
+    replies = []
+
+    def fake_post(self, url, headers, payload):
+        status = replies.pop(0)
+        if status != 200:
+            response = httpx.Response(status, request=httpx.Request("POST", url))
+            raise cloud_provider._error_for("Gemini", httpx.HTTPStatusError("x", request=response.request, response=response)) \
+                from httpx.HTTPStatusError("x", request=response.request, response=response)
+        return {"choices": [{"message": {"content": "tamam"}, "finish_reason": "stop"}], "usage": {}}
+
+    monkeypatch.setattr(GeminiProvider, "_post", fake_post)
+    provider = create_cloud_provider(provider_name="gemini", model="", api_key="k")
+    replies[:] = [503, 503, 200]
+    assert provider.generate(system_instruction="s", prompt="p") == "tamam"
+    replies[:] = [401, 200]
+    import pytest
+
+    with pytest.raises(cloud_provider.AIProviderError):
+        provider.generate(system_instruction="s", prompt="p")
+def test_openrouter_public_plans_use_bounded_strict_shapes_without_answer_limits():
+    from api.ai.free_answer import PLAN_INSTRUCTION as QUESTION_PLAN
+    from api.ai.research_plan import PLAN_INSTRUCTION as RESEARCH_PLAN
+    provider = create_cloud_provider(provider_name='openrouter', model='openai/gpt-6-luna', api_key='fixture')
+    before = provider.max_output_tokens
+    for instruction, field, maximum in [(QUESTION_PLAN, 'parts', 4), (RESEARCH_PLAN, 'aspects', 5)]:
+        result = provider._json_response_format(instruction)
+        assert result['type'] == 'json_schema'
+        schema = result['json_schema']['schema']
+        assert result['json_schema']['strict'] is True
+        assert schema['additionalProperties'] is False
+        assert schema['properties'][field]['maxItems'] == maximum
+        assert schema['properties'][field]['items']['additionalProperties'] is False
+    assert provider.max_output_tokens == before
+
+
+def test_bedrock_uses_the_converse_endpoint_with_a_bearer_key_and_ignores_reasoning_blocks(monkeypatch):
+    from api.ai import cloud_provider
+    from api.ai.cloud_provider import BedrockProvider, create_cloud_provider
+
+    sent = {}
+
+    def fake_post(self, url, headers, payload):
+        sent.update(url=url, auth=headers["authorization"], payload=payload)
+        return {"output": {"message": {"content": [{"reasoningContent": {"reasoningText": {"text": "gizli"}}},
+                                                   {"text": "tamam"}]}},
+                "stopReason": "end_turn", "usage": {"inputTokens": 7, "outputTokens": 2}}
+
+    monkeypatch.setattr(BedrockProvider, "_post", fake_post)
+    provider = create_cloud_provider(provider_name="bedrock", model="", api_key="k")
+    assert provider.generate(system_instruction="talimat", prompt="TC 12345678901 olan kişi") == "tamam"
+    assert sent["url"] == "https://bedrock-runtime.eu-north-1.amazonaws.com/model/openai.gpt-6-luna/converse"
+    assert sent["auth"] == "Bearer k" and "12345678901" not in json.dumps(sent["payload"])
+    assert provider.last_usage.prompt_eval_count == 7 and "gizli" not in "tamam"
+
+
+def test_bedrock_refuses_a_truncated_answer(monkeypatch):
+    import pytest
+
+    from api.ai.cloud_provider import AIProviderError, BedrockProvider, create_cloud_provider
+
+    monkeypatch.setattr(BedrockProvider, "_post", lambda *a: {"output": {"message": {"content": [{"text": "yarım"}]}},
+                                                              "stopReason": "max_tokens", "usage": {}})
+    with pytest.raises(AIProviderError):
+        create_cloud_provider(provider_name="bedrock", model="", api_key="k").generate(system_instruction="s", prompt="p")

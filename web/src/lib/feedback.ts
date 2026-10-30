@@ -21,7 +21,15 @@ export const canSendFeedback = (message: string): boolean => {
 export const pageOf = (pathname: string): string => pathname.split(/[?#]/)[0].slice(0, 200);
 
 /** Geri bildirimi kaydeder. Belge/sohbet içeriği eklenmez; yalnız yazılan metin ve sayfa yolu gider. */
-export async function sendFeedback(input: { category: FeedbackCategory; message: string; pathname: string }): Promise<void> {
-  const { error } = await db.from("feedback").insert({ category: input.category, message: input.message.trim(), page: pageOf(input.pathname) });
+export async function sendFeedback(input: {
+  category: FeedbackCategory;
+  message: string;
+  pathname: string;
+}): Promise<void> {
+  const { error } = await db.from("feedback").insert({
+    category: input.category,
+    message: input.message.trim(),
+    page: pageOf(input.pathname),
+  });
   if (error) throw new Error(error.message || "Geri bildirim gönderilemedi.");
 }

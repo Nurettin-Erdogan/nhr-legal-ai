@@ -16,7 +16,7 @@ import {
 import { Card } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/components/AuthProvider";
+import { useAuth } from "@/components/AuthContext";
 import { CaseDocPicker } from "@/components/CaseDocPicker";
 import { LegalDocumentEditor } from "@/components/LegalDocumentEditor";
 import { DocumentJobPanel } from "@/components/DocumentJobPanel";
@@ -25,7 +25,8 @@ import { readDocumentContext } from "@/lib/document-workflow";
 import { DEFAULT_DOCUMENT_LAYOUT, documentPageStyle } from "@/lib/document-layout";
 import { buildDocumentDocx } from "@/lib/document-export";
 import { DocumentLayoutControls } from "@/components/DocumentLayoutControls";
-import { useSearchParam, Link } from "@/lib/router-compat";
+import { Link } from "@/lib/router-compat";
+import { useSearchParam } from "@/lib/router-hooks";
 import { db } from "@/lib/db";
 import { toast } from "sonner";
 import { Sparkles, Loader2, Download, FileText, Save, FileSignature } from "lucide-react";
@@ -352,7 +353,8 @@ const Drafts = () => {
 
           <div className="space-y-2">
             <Label htmlFor="subject">
-              Konu <span className="text-destructive">*</span>
+              Konu <span className="text-destructive">*</span>{" "}
+              <span className="text-muted-foreground text-xs">(kısaca, bir cümle)</span>
             </Label>
             <Textarea
               id="subject"
@@ -365,9 +367,14 @@ const Drafts = () => {
 
           <div className="space-y-2">
             <Label htmlFor="details">
-              Ek Detaylar{" "}
+              Olaylar ve ek detaylar{" "}
               <span className="text-muted-foreground text-xs">(tarihler, tutarlar, deliller)</span>
             </Label>
+            <p className="text-xs text-muted-foreground">
+              Açıklamalar bölümü yalnız burada yazdıklarınızdan (ya da seçtiğiniz belgelerden)
+              kurulur; hiçbir olay, tarih veya tutar eklenmez. Boş bırakırsanız bu bölüm
+              doldurmanız için boş kalır.
+            </p>
             <Textarea
               id="details"
               value={details}

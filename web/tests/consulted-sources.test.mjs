@@ -124,3 +124,14 @@ test("a user's own document carries its label and has no link", () => {
 test("nothing is rendered when there is nothing to list", () => {
   assert.equal(renderToStaticMarkup(createElement(ConsultedSourceList, { sources: [] })), "");
 });
+
+test("inside the sources panel, consulted evidence needs no second disclosure", () => {
+  const sources = model.parseConsultedSources([official]);
+  const html = renderToStaticMarkup(
+    createElement(ConsultedSourceList, { sources, collapsible: false }),
+  );
+  assert.ok(html.startsWith("<section"));
+  assert.ok(!html.includes("<details") && !html.includes("<summary"));
+  assert.ok(html.includes(official.reference));
+  assert.ok(html.includes("cevabın dayanağı değildir"));
+});

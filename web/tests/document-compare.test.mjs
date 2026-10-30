@@ -6,7 +6,10 @@ import ts from "typescript";
 
 const require = createRequire(import.meta.url);
 function compile(relative) {
-  const source = readFileSync(new URL(relative, import.meta.url), "utf8").replace("import.meta.env?.VITE_API_URL", "undefined");
+  const source = readFileSync(new URL(relative, import.meta.url), "utf8").replace(
+    "import.meta.env?.VITE_API_URL",
+    "undefined",
+  );
   const { outputText } = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   });
@@ -27,7 +30,16 @@ const payload = (overrides = {}) => ({
   counts: { equal: 3, changed: 1, removed: 0, added: 0 },
   blocks: [
     { kind: "equal", units: ["bir", "iki", "üç"] },
-    { kind: "changed", left: "ücret 20.000", right: "ücret 25.000", words: [{ op: "equal", text: "ücret" }, { op: "delete", text: "20.000" }, { op: "insert", text: "25.000" }] },
+    {
+      kind: "changed",
+      left: "ücret 20.000",
+      right: "ücret 25.000",
+      words: [
+        { op: "equal", text: "ücret" },
+        { op: "delete", text: "20.000" },
+        { op: "insert", text: "25.000" },
+      ],
+    },
   ],
   ...overrides,
 });
@@ -45,7 +57,12 @@ test("a malformed response is rejected as a whole instead of showing a partial d
   assert.equal(compare.parseCompare(null), null);
   assert.equal(compare.parseCompare({}), null);
   assert.equal(compare.parseCompare(payload({ blocks: "x" })), null);
-  assert.equal(compare.parseCompare(payload({ blocks: [{ kind: "equal", units: ["bir"] }, { kind: "bilinmeyen" }] })), null);
+  assert.equal(
+    compare.parseCompare(
+      payload({ blocks: [{ kind: "equal", units: ["bir"] }, { kind: "bilinmeyen" }] }),
+    ),
+    null,
+  );
   assert.equal(compare.parseCompare(payload({ blocks: [{ kind: "added" }] })), null);
   assert.equal(compare.parseCompare(payload({ left: { file_name: "x" } })), null);
   // sayılar geçersizse sıfıra düşer, sahte "değişiklik yok" üretmez ama çökmez
@@ -55,8 +72,14 @@ test("a malformed response is rejected as a whole instead of showing a partial d
 });
 
 test("counts are described in plain Turkish and 'no difference' is explicit", () => {
-  assert.match(compare.describeCounts({ equal: 5, changed: 0, removed: 0, added: 0 }), /fark(ı)? bulunamadı/);
-  assert.equal(compare.describeCounts({ equal: 7, changed: 2, removed: 1, added: 3 }), "2 cümle değişti, 3 cümle eklendi, 1 cümle silindi; 7 cümle aynı.");
+  assert.match(
+    compare.describeCounts({ equal: 5, changed: 0, removed: 0, added: 0 }),
+    /fark(ı)? bulunamadı/,
+  );
+  assert.equal(
+    compare.describeCounts({ equal: 7, changed: 2, removed: 1, added: 3 }),
+    "2 cümle değişti, 3 cümle eklendi, 1 cümle silindi; 7 cümle aynı.",
+  );
   assert.equal(compare.hasDifferences({ equal: 1, changed: 0, removed: 0, added: 1 }), true);
   assert.equal(compare.hasDifferences({ equal: 1, changed: 0, removed: 0, added: 0 }), false);
 });
@@ -90,11 +113,26 @@ test("short equal runs stay visible and a large context unfolds everything", () 
     { kind: "equal", units: ["a", "b", "c"] },
     { kind: "added", text: "y" },
   ];
-  assert.deepEqual(compare.foldBlocks(blocks, 1).map((item) => item.kind), ["removed", "equal", "added"]);
-  const wide = compare.foldBlocks([{ kind: "equal", units: units(50) }, { kind: "added", text: "y" }], Number.MAX_SAFE_INTEGER);
-  assert.deepEqual(wide.map((item) => item.kind), ["equal", "added"]);
+  assert.deepEqual(
+    compare.foldBlocks(blocks, 1).map((item) => item.kind),
+    ["removed", "equal", "added"],
+  );
+  const wide = compare.foldBlocks(
+    [
+      { kind: "equal", units: units(50) },
+      { kind: "added", text: "y" },
+    ],
+    Number.MAX_SAFE_INTEGER,
+  );
+  assert.deepEqual(
+    wide.map((item) => item.kind),
+    ["equal", "added"],
+  );
   const identical = compare.foldBlocks([{ kind: "equal", units: units(50) }], 1);
-  assert.deepEqual(identical.map((item) => `${item.kind}:${item.units.length}`), ["fold:50"]);
+  assert.deepEqual(
+    identical.map((item) => `${item.kind}:${item.units.length}`),
+    ["fold:50"],
+  );
 });
 
 test("the request carries both ids and the token, and failures become readable errors", async () => {
@@ -119,19 +157,30 @@ test("the request carries both ids and the token, and failures become readable e
     assert.equal(calls[1].init.headers, undefined);
 
     globalThis.fetch = respond(409, { detail: '"tarama.tif" karşılaştırılamıyor: OCR gerekli' });
-    await assert.rejects(compare.compareDocuments("c", "a", "b"), (error) => error.status === 409 && /OCR gerekli/.test(error.message));
+    await assert.rejects(
+      compare.compareDocuments("c", "a", "b"),
+      (error) => error.status === 409 && /OCR gerekli/.test(error.message),
+    );
     globalThis.fetch = respond(413, {});
-    await assert.rejects(compare.compareDocuments("c", "a", "b"), (error) => /çok uzun/.test(error.message));
+    await assert.rejects(compare.compareDocuments("c", "a", "b"), (error) =>
+      /çok uzun/.test(error.message),
+    );
     globalThis.fetch = respond(401, {});
-    await assert.rejects(compare.compareDocuments("c", "a", "b"), (error) => /Oturumunuz/.test(error.message));
+    await assert.rejects(compare.compareDocuments("c", "a", "b"), (error) =>
+      /Oturumunuz/.test(error.message),
+    );
     globalThis.fetch = respond(500, {});
     await assert.rejects(compare.compareDocuments("c", "a", "b"), (error) => error.status === 500);
     globalThis.fetch = respond(200, { blocks: [] });
-    await assert.rejects(compare.compareDocuments("c", "a", "b"), (error) => /geçersiz/.test(error.message));
+    await assert.rejects(compare.compareDocuments("c", "a", "b"), (error) =>
+      /geçersiz/.test(error.message),
+    );
     globalThis.fetch = async () => {
       throw new TypeError("network");
     };
-    await assert.rejects(compare.compareDocuments("c", "a", "b"), (error) => /ulaşılamadı/.test(error.message));
+    await assert.rejects(compare.compareDocuments("c", "a", "b"), (error) =>
+      /ulaşılamadı/.test(error.message),
+    );
   } finally {
     globalThis.fetch = original;
   }

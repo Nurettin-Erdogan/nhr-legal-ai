@@ -41,7 +41,7 @@ def test_a_named_law_with_an_article_number_is_an_explicit_reference(question, l
         ("4857 sayılı İş Kanunu madde 18 neyi düzenler?", ("4857",)),
         ("1475 sayılı İş Kanunu madde 14", ("1475",)),  # eski İş Kanunu: ad eşlemesi (4857) açık numarayı EZMEZ
         ("1475 İş Kanunu m. 14", ("1475",)),
-        ("6098 sayılı kanun madde 315", ("6098", "315")),
+        ("6098 sayılı kanun madde 315", ("6098",)),  # 315 is the article, not another law
         ("2004 sayılı Kanun madde 67", ("2004",)),  # yıl gibi görünse de "sayılı" ile kanundur
     ],
 )
@@ -67,6 +67,20 @@ def test_ambiguous_or_other_laws_are_not_guessed():
     assert named_law_numbers("Basın İş Kanunu madde 6") == ()
     assert named_law_numbers("TMK m. 166") == ()  # Medeni Kanun mu, Terörle Mücadele Kanunu mu: bilinemez
     assert question_law_numbers("madde 344 ne der?") == ("344",)  # ad yoksa eski davranış korunur
+
+
+@pytest.mark.parametrize('question', [
+    '2026 yılı itibarıyla işe iade şartları nelerdir?',
+    '2026 yılında kira artışı nasıl belirlenir?',
+    '2025 senesinde işe iade şartları nelerdir?',
+    '2026 itibarıyla işçi sayısı nasıl hesaplanır?',
+])
+def test_temporal_year_without_article_is_not_a_statute_filter(question):
+    assert question_law_numbers(question) == ()
+
+
+def test_temporal_year_does_not_erase_a_real_explicit_statute():
+    assert question_law_numbers('2026 yılında 2004 sayılı Kanun nasıl uygulanır?') == ('2004',)
 
 
 def test_short_article_notation_is_read_but_case_numbers_and_units_are_not():

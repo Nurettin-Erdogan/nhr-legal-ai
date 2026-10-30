@@ -5,12 +5,16 @@ import ts from "typescript";
 
 function load(relative) {
   const code = readFileSync(new URL(relative, import.meta.url), "utf8");
-  const { outputText } = ts.transpileModule(code, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } });
+  const { outputText } = ts.transpileModule(code, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  });
   const module = { exports: {} };
   new Function("module", "exports", outputText)(module, module.exports);
   return module.exports;
 }
-const { docTextState, docTextNote, docSourceLabel, READING_WINDOW_MS } = load("../src/lib/case-doc-text.ts");
+const { docTextState, docTextNote, docSourceLabel, READING_WINDOW_MS } = load(
+  "../src/lib/case-doc-text.ts",
+);
 const now = Date.parse("2026-10-06T09:00:00Z");
 
 test("metni okunmuş belge hazırdır ve satırına ek yazılmaz", () => {

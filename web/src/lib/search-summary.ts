@@ -9,6 +9,8 @@ export interface SearchSummaryData {
   verification_promoted: number;
   verification_stop: string;
   retrieval_partial: boolean;
+  /** "sampled": a lane answered from a bounded sample; "failed": a lane returned nothing. Absent in older messages. */
+  retrieval_limit?: "sampled" | "failed";
   exhaustive: false;
   retrieval_strategy?: "verified_statute" | "full_candidates";
   research_deferred?: boolean;
@@ -17,26 +19,58 @@ export interface SearchSummaryData {
 export function parseSearchSummary(value: unknown): SearchSummaryData | undefined {
   if (!value || typeof value !== "object") return undefined;
   const data = value as Record<string, unknown>;
-  const counts = ["candidate_documents", "verified_documents", "selected_documents",
-    "pending_documents", "unverified_excluded", "verification_attempted", "verification_promoted"];
-  if (counts.some((key) => !Number.isSafeInteger(data[key]) || (data[key] as number) < 0)
-      || typeof data.retrieval_partial !== "boolean"
-      || typeof data.verification_stop !== "string" || data.exhaustive !== false) return undefined;
-  if ((data.selected_documents as number) > (data.verified_documents as number)
-      || (data.verified_documents as number) > (data.candidate_documents as number)) return undefined;
-  const result = Object.fromEntries([...counts, "verification_stop", "retrieval_partial", "exhaustive"]
-    .map((key) => [key, data[key]])) as unknown as SearchSummaryData;
-  if (data.retrieval_strategy === "verified_statute" || data.retrieval_strategy === "full_candidates") {
+  const counts = [
+    "candidate_documents",
+    "verified_documents",
+    "selected_documents",
+    "pending_documents",
+    "unverified_excluded",
+    "verification_attempted",
+    "verification_promoted",
+  ];
+  if (
+    counts.some((key) => !Number.isSafeInteger(data[key]) || (data[key] as number) < 0) ||
+    typeof data.retrieval_partial !== "boolean" ||
+    typeof data.verification_stop !== "string" ||
+    data.exhaustive !== false
+  )
+    return undefined;
+  if (
+    (data.selected_documents as number) > (data.verified_documents as number) ||
+    (data.verified_documents as number) > (data.candidate_documents as number)
+  )
+    return undefined;
+  const result = Object.fromEntries(
+    [...counts, "verification_stop", "retrieval_partial", "exhaustive"].map((key) => [
+      key,
+      data[key],
+    ]),
+  ) as unknown as SearchSummaryData;
+  if (data.retrieval_limit === "sampled" || data.retrieval_limit === "failed") {
+    result.retrieval_limit = data.retrieval_limit;
+  }
+  if (
+    data.retrieval_strategy === "verified_statute" ||
+    data.retrieval_strategy === "full_candidates"
+  ) {
     result.retrieval_strategy = data.retrieval_strategy;
     result.research_deferred = data.research_deferred === true;
   }
   return result;
 }
 
-export function shouldAutoResearch(index: number, messageCount: number, loading: boolean,
-  summary?: SearchSummaryData): boolean {
-  return !loading && index === messageCount - 2 && summary?.retrieval_strategy === "verified_statute"
-    && summary.research_deferred === true;
+export function shouldAutoResearch(
+  index: number,
+  messageCount: number,
+  loading: boolean,
+  summary?: SearchSummaryData,
+): boolean {
+  return (
+    !loading &&
+    index === messageCount - 2 &&
+    summary?.retrieval_strategy === "verified_statute" &&
+    summary.research_deferred === true
+  );
 }
 
 export function verificationNotice(summary: SearchSummaryData): string | undefined {

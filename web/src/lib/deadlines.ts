@@ -27,19 +27,114 @@ export interface DeadlineRule {
 }
 
 export const DEADLINE_RULES: DeadlineRule[] = [
-  { id: "hmk-127", title: "Cevap dilekçesi verme süresi", law: "HMK m. 127/1", quote: "Cevap dilekçesini verme süresi, dava dilekçesinin davalıya tebliğinden itibaren iki haftadır", amount: 2, unit: "hafta", startLabel: "Dava dilekçesinin tebliğ tarihi", hmkRecess: true },
-  { id: "hmk-345", title: "İstinaf (hukuk) başvuru süresi", law: "HMK m. 345/1", quote: "İstinaf yoluna başvuru süresi iki haftadır", amount: 2, unit: "hafta", startLabel: "Kararın tebliğ tarihi", hmkRecess: true },
-  { id: "hmk-361", title: "Temyiz (hukuk) süresi", law: "HMK m. 361/1", quote: "tebliğ tarihinden itibaren iki hafta içinde temyiz yoluna başvurulabilir", amount: 2, unit: "hafta", startLabel: "Kararın tebliğ tarihi", hmkRecess: true },
-  { id: "cmk-273", title: "İstinaf (ceza) istemi süresi", law: "CMK m. 273/1", quote: "hükmün gerekçesiyle birlikte tebliğ edildiği tarihten itibaren iki hafta içinde", amount: 2, unit: "hafta", startLabel: "Gerekçeli hükmün tebliğ tarihi", hmkRecess: false },
-  { id: "cmk-291", title: "Temyiz (ceza) istemi süresi", law: "CMK m. 291/1", quote: "hükmün gerekçesiyle birlikte tebliğ edildiği tarihten itibaren iki hafta içinde", amount: 2, unit: "hafta", startLabel: "Gerekçeli hükmün tebliğ tarihi", hmkRecess: false },
-  { id: "isk-20-arabulucu", title: "İşe iade: arabulucuya başvuru", law: "4857 s. İş K. m. 20/1", quote: "fesih bildiriminin tebliği tarihinden itibaren bir ay içinde işe iade talebiyle … arabulucuya başvurmak zorundadır", amount: 1, unit: "ay", startLabel: "Fesih bildiriminin tebliğ tarihi", hmkRecess: false },
-  { id: "isk-20-dava", title: "İşe iade: arabuluculuk sonrası dava", law: "4857 s. İş K. m. 20/1", quote: "son tutanağın düzenlendiği tarihten itibaren, iki hafta içinde iş mahkemesinde dava açabilir", amount: 2, unit: "hafta", startLabel: "Arabuluculuk son tutanağının tarihi", hmkRecess: false },
-  { id: "iik-62", title: "Ödeme emrine itiraz (ilamsız takip)", law: "İİK m. 62/1", quote: "ödeme emrinin tebliği tarihinden itibaren yedi gün içinde", amount: 7, unit: "gün", startLabel: "Ödeme emrinin tebliğ tarihi", hmkRecess: false },
-  { id: "iik-16", title: "İcra mahkemesine şikâyet", law: "İİK m. 16/1", quote: "Şikayet bu muamelelerin öğrenildiği tarihten yedi gün içinde yapılır", amount: 7, unit: "gün", startLabel: "İşlemin öğrenildiği tarih", hmkRecess: false },
-  { id: "iik-168", title: "Kambiyo senedi takibi: şikâyet / imza itirazı", law: "İİK m. 168/3-4", quote: "beş gün içinde icra mahkemesine şikayet etmesi / imza itirazını beş gün içinde bildirmesi", amount: 5, unit: "gün", startLabel: "Ödeme emrinin tebliğ tarihi", hmkRecess: false },
+  {
+    id: "hmk-127",
+    title: "Cevap dilekçesi verme süresi",
+    law: "HMK m. 127/1",
+    quote:
+      "Cevap dilekçesini verme süresi, dava dilekçesinin davalıya tebliğinden itibaren iki haftadır",
+    amount: 2,
+    unit: "hafta",
+    startLabel: "Dava dilekçesinin tebliğ tarihi",
+    hmkRecess: true,
+  },
+  {
+    id: "hmk-345",
+    title: "İstinaf (hukuk) başvuru süresi",
+    law: "HMK m. 345/1",
+    quote: "İstinaf yoluna başvuru süresi iki haftadır",
+    amount: 2,
+    unit: "hafta",
+    startLabel: "Kararın tebliğ tarihi",
+    hmkRecess: true,
+  },
+  {
+    id: "hmk-361",
+    title: "Temyiz (hukuk) süresi",
+    law: "HMK m. 361/1",
+    quote: "tebliğ tarihinden itibaren iki hafta içinde temyiz yoluna başvurulabilir",
+    amount: 2,
+    unit: "hafta",
+    startLabel: "Kararın tebliğ tarihi",
+    hmkRecess: true,
+  },
+  {
+    id: "cmk-273",
+    title: "İstinaf (ceza) istemi süresi",
+    law: "CMK m. 273/1",
+    quote: "hükmün gerekçesiyle birlikte tebliğ edildiği tarihten itibaren iki hafta içinde",
+    amount: 2,
+    unit: "hafta",
+    startLabel: "Gerekçeli hükmün tebliğ tarihi",
+    hmkRecess: false,
+  },
+  {
+    id: "cmk-291",
+    title: "Temyiz (ceza) istemi süresi",
+    law: "CMK m. 291/1",
+    quote: "hükmün gerekçesiyle birlikte tebliğ edildiği tarihten itibaren iki hafta içinde",
+    amount: 2,
+    unit: "hafta",
+    startLabel: "Gerekçeli hükmün tebliğ tarihi",
+    hmkRecess: false,
+  },
+  {
+    id: "isk-20-arabulucu",
+    title: "İşe iade: arabulucuya başvuru",
+    law: "4857 s. İş K. m. 20/1",
+    quote:
+      "fesih bildiriminin tebliği tarihinden itibaren bir ay içinde işe iade talebiyle … arabulucuya başvurmak zorundadır",
+    amount: 1,
+    unit: "ay",
+    startLabel: "Fesih bildiriminin tebliğ tarihi",
+    hmkRecess: false,
+  },
+  {
+    id: "isk-20-dava",
+    title: "İşe iade: arabuluculuk sonrası dava",
+    law: "4857 s. İş K. m. 20/1",
+    quote:
+      "son tutanağın düzenlendiği tarihten itibaren, iki hafta içinde iş mahkemesinde dava açabilir",
+    amount: 2,
+    unit: "hafta",
+    startLabel: "Arabuluculuk son tutanağının tarihi",
+    hmkRecess: false,
+  },
+  {
+    id: "iik-62",
+    title: "Ödeme emrine itiraz (ilamsız takip)",
+    law: "İİK m. 62/1",
+    quote: "ödeme emrinin tebliği tarihinden itibaren yedi gün içinde",
+    amount: 7,
+    unit: "gün",
+    startLabel: "Ödeme emrinin tebliğ tarihi",
+    hmkRecess: false,
+  },
+  {
+    id: "iik-16",
+    title: "İcra mahkemesine şikâyet",
+    law: "İİK m. 16/1",
+    quote: "Şikayet bu muamelelerin öğrenildiği tarihten yedi gün içinde yapılır",
+    amount: 7,
+    unit: "gün",
+    startLabel: "İşlemin öğrenildiği tarih",
+    hmkRecess: false,
+  },
+  {
+    id: "iik-168",
+    title: "Kambiyo senedi takibi: şikâyet / imza itirazı",
+    law: "İİK m. 168/3-4",
+    quote:
+      "beş gün içinde icra mahkemesine şikayet etmesi / imza itirazını beş gün içinde bildirmesi",
+    amount: 5,
+    unit: "gün",
+    startLabel: "Ödeme emrinin tebliğ tarihi",
+    hmkRecess: false,
+  },
 ];
 
-export const ruleById = (id: string): DeadlineRule | undefined => DEADLINE_RULES.find((rule) => rule.id === id);
+export const ruleById = (id: string): DeadlineRule | undefined =>
+  DEADLINE_RULES.find((rule) => rule.id === id);
 
 /* ---------- Tatil takvimi ----------
    Sabit resmî tatiller her yıl aynıdır. Dinî bayramlar yıla göre değişir; aşağıdaki tarihler Diyanet takvimine göre elle girilmiştir (arife
@@ -109,10 +204,18 @@ export interface DeadlineError {
 }
 
 /** Süreyi HMK 92-93'e göre hesaplar. `start`: ISO tarih (YYYY-MM-DD) — tebliğ/öğrenme günü. */
-export function calculateDeadline(rule: DeadlineRule, start: string): DeadlineResult | DeadlineError {
+export function calculateDeadline(
+  rule: DeadlineRule,
+  start: string,
+): DeadlineResult | DeadlineError {
   const base = parse(start);
   if (!base) return { ok: false, error: "Geçerli bir tarih girin." };
-  const raw = rule.unit === "gün" ? addDays(base, rule.amount) : rule.unit === "hafta" ? addDays(base, 7 * rule.amount) : addMonths(base, rule.amount);
+  const raw =
+    rule.unit === "gün"
+      ? addDays(base, rule.amount)
+      : rule.unit === "hafta"
+        ? addDays(base, 7 * rule.amount)
+        : addMonths(base, rule.amount);
   const steps = [
     rule.unit === "gün"
       ? `${formatDateTr(start)} (${weekdayName(start)}) başlangıç günü hesaba katılmaz; ${rule.amount} gün sonrası ${formatDateTr(iso(raw))} (${weekdayName(iso(raw))}) (HMK m. 92/1).`
@@ -126,10 +229,17 @@ export function calculateDeadline(rule: DeadlineRule, start: string): DeadlineRe
     shifted.push(`${formatDateTr(iso(end))} ${reason}`);
     end = addDays(end, 1);
   }
-  if (shifted.length) steps.push(`Son gün tatile rastlıyor (${shifted.join(", ")}): süre tatili izleyen ilk iş günü biter → ${formatDateTr(iso(end))} (${weekdayName(iso(end))}) (HMK m. 93).`);
+  if (shifted.length)
+    steps.push(
+      `Son gün tatile rastlıyor (${shifted.join(", ")}): süre tatili izleyen ilk iş günü biter → ${formatDateTr(iso(end))} (${weekdayName(iso(end))}) (HMK m. 93).`,
+    );
   const warnings: string[] = [];
   const years = new Set([base.getUTCFullYear(), end.getUTCFullYear()]);
-  for (const year of years) if (!HOLIDAY_YEARS.includes(year)) warnings.push(`${year} yılının dinî bayram tarihleri tabloda yok: yalnız hafta sonu ve sabit resmî tatiller denetlendi; bayram günlerini elle kontrol edin.`);
+  for (const year of years)
+    if (!HOLIDAY_YEARS.includes(year))
+      warnings.push(
+        `${year} yılının dinî bayram tarihleri tabloda yok: yalnız hafta sonu ve sabit resmî tatiller denetlendi; bayram günlerini elle kontrol edin.`,
+      );
   const recessStart = new Date(Date.UTC(raw.getUTCFullYear(), 6, 20));
   const recessEnd = new Date(Date.UTC(raw.getUTCFullYear(), 7, 31));
   let recessEndResult: string | null = null;
@@ -138,14 +248,29 @@ export function calculateDeadline(rule: DeadlineRule, start: string): DeadlineRe
       let extended = addDays(recessEnd, 7);
       while (holidayName(extended)) extended = addDays(extended, 1);
       recessEndResult = iso(extended);
-      warnings.push(`Son gün adli tatile (20 Temmuz–31 Ağustos) rastlıyor. İş adli tatile tabi ise süre, adli tatilin bittiği günden itibaren bir hafta uzamış sayılır → ${formatDateTr(recessEndResult)} (HMK m. 104). İşin adli tatile tabi olup olmadığını kontrol edin; ana tarih uzatma UYGULANMADAN hesaplandı.`);
+      warnings.push(
+        `Son gün adli tatile (20 Temmuz–31 Ağustos) rastlıyor. İş adli tatile tabi ise süre, adli tatilin bittiği günden itibaren bir hafta uzamış sayılır → ${formatDateTr(recessEndResult)} (HMK m. 104). İşin adli tatile tabi olup olmadığını kontrol edin; ana tarih uzatma UYGULANMADAN hesaplandı.`,
+      );
     } else {
-      warnings.push("Son gün adli tatile (20 Temmuz–31 Ağustos) rastlıyor: bu kural için adli tatil etkisi otomatik hesaplanmadı; ilgili kanundaki özel hükme bakın.");
+      warnings.push(
+        "Son gün adli tatile (20 Temmuz–31 Ağustos) rastlıyor: bu kural için adli tatil etkisi otomatik hesaplanmadı; ilgili kanundaki özel hükme bakın.",
+      );
     }
   }
   if (rule.law.startsWith("CMK") || rule.law.startsWith("İİK") || rule.law.startsWith("4857"))
-    warnings.push("Süre hesabı HMK m. 92-93 ilkeleriyle yapıldı; bu kanunun kendi süre/tatil hükmü farklıysa ona göre kontrol edin.");
-  return { ok: true, rule, start, raw: iso(raw), end: iso(end), steps, warnings, recessEnd: recessEndResult };
+    warnings.push(
+      "Süre hesabı HMK m. 92-93 ilkeleriyle yapıldı; bu kanunun kendi süre/tatil hükmü farklıysa ona göre kontrol edin.",
+    );
+  return {
+    ok: true,
+    rule,
+    start,
+    raw: iso(raw),
+    end: iso(end),
+    steps,
+    warnings,
+    recessEnd: recessEndResult,
+  };
 }
 
 /** Safahattaki tarih "gg.aa.yyyy" (bazen saatle) → ISO; okunamazsa null. */
@@ -180,7 +305,9 @@ export function startCandidates(headers: string[], rows: string[][], limit = 12)
     if (!/tebli[gğ]|ödeme emri|odeme emri|karar/.test(text)) continue;
     const date = isoFromTr(row[dateAt] ?? "");
     if (!date) continue;
-    const label = `${row[typeAt] ?? ""}${row[textAt] ? ` — ${row[textAt]}` : ""}`.trim().slice(0, 140);
+    const label = `${row[typeAt] ?? ""}${row[textAt] ? ` — ${row[textAt]}` : ""}`
+      .trim()
+      .slice(0, 140);
     if (!out.some((item) => item.date === date && item.label === label)) out.push({ date, label });
   }
   return out.sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, limit);

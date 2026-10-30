@@ -14,9 +14,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import date
-from uuid import UUID
 
-import psycopg
 
 from api.ai.retrieval import _VERIFIED_SOURCE_FILTER
 
@@ -154,12 +152,57 @@ def parse_reference(query: str) -> tuple[str, str] | None:
     return match.group(1), re.sub(r"\s+", "", match.group(2)).upper()
 
 
+# Kanun ADIYLA ya da kısaltmasıyla anılan madde atfı: "TBK 344", "anayasa m. 38", "iş kanunu 17", "ceza muhakemesi kanunu madde 100".
+# Kısaltma tablosu hukuki içerik değildir; yalnız hangi kanunun açılacağını söyler (numaralar 2026-10-30'da korpustaki resmî kayıt adıyla
+# karşılaştırıldı). "TMK" gibi belirsiz kısaltmalar bilerek yoktur (Medeni Kanun da Terörle Mücadele Kanunu da olabilir); ad yazılırsa çalışır.
+_ABBREVIATIONS = {
+    "tbk": "6098", "tck": "5237", "cmk": "5271", "hmk": "6100", "iik": "2004", "iyuk": "2577", "ttk": "6102",
+    "tkhk": "6502", "kvkk": "6698", "kmk": "634", "vuk": "213", "gvk": "193", "kvk": "5520", "kdvk": "3065",
+    "anayasa": "2709",
+}
+_NAMED_REFERENCE = re.compile(
+    r"^\s*(?P<name>[^\d]*?[^\d\s.])\s*(?:\b(?:m|md|madde|maddesi)\b\.?)?\s*(?P<no>\d{1,4}(?:\s*/\s*[A-Za-z])?)\s*\.?\s*(?:\b(?:m|md|madde|maddesi)\b\.?)?\s*$",
+    re.IGNORECASE,
+)
+
+
+def parse_named_reference(laws: list[Law], query: str) -> tuple[Law, str] | None:
+    """"TBK 344", "anayasa 38", "iş kanunu 17" gibi sorgudan (kanun, madde no) çıkarır; kanun adı tek anlamlı değilse None.
+
+    Sıra: kısaltma tablosu > tam ad eşleşmesi > ad başlangıcı > addaki tüm sözcükler (eşitlikte madde sayısı çok olan). Yalnız kanun,
+    KHK ve Anayasa aranır; yönetmelik/tebliğ adlarında sondaki sayı çoğunlukla madde değil yıl ya da sıra numarasıdır.
+    """
+    match = _NAMED_REFERENCE.match(query)
+    if not match:
+        return None
+    name, number = fold(match.group("name")), re.sub(r"\s+", "", match.group("no")).upper()
+    if not name or name in {"m", "md", "madde", "sayili", "sayili kanun"}:
+        return None
+    pool = [law for law in laws if law.legislation_type in {"law", "constitution", "decree"}]
+    by_no = {law.law_no: law for law in pool}
+    if name in _ABBREVIATIONS:
+        law = by_no.get(_ABBREVIATIONS[name])
+        return (law, number) if law else None
+    words = name.split()
+    exact = [law for law in pool if law.folded == name]
+    starts = [law for law in pool if law.folded.startswith(name)]
+    inside = [law for law in pool if all(word in law.folded for word in words)]
+    for group in (exact, starts, inside if len(words) >= 2 else []):  # tek sözcükle "kira 2024" gibi sorgular kanun sayılmaz
+        if group:
+            best = max(group, key=lambda law: (law.articles, law.law_name))
+            return best, number
+    return None
+
+
 def search_laws(laws: list[Law], query: str, kind: str | None) -> list[Law]:
     """Numara tam eşleşmesi > ad başlangıcı > ad içinde geçme; eşitlikte madde sayısı çok olan önde."""
     wanted = [law for law in laws if not kind or law.legislation_type == kind]
     cleaned = fold(query)
     if not cleaned:
         return sorted(wanted, key=lambda law: (-law.articles, law.law_name))
+    named = parse_named_reference(laws, query)
+    if named and (not kind or named[0].legislation_type == kind):
+        return [named[0]]
     reference = parse_reference(query)
     if reference:
         cleaned_no = reference[0]

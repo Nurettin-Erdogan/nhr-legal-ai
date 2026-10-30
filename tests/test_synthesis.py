@@ -72,7 +72,8 @@ def test_natural_paraphrase_can_combine_sources_and_preserves_original_mapping()
     assert result.text == text + " [K1] [K2]"
     assert result.contexts == (second, first)
     assert len(provider.calls) == 2
-    assert provider.calls[0]["system_instruction"] == WRITE_INSTRUCTION
+    assert provider.calls[0]["system_instruction"].startswith(WRITE_INSTRUCTION)
+    assert "İLK DERECE MAHKEMESİ KARARI" in provider.calls[0]["system_instruction"]
     assert provider.calls[1]["system_instruction"] == CHECK_INSTRUCTION
     checked = json.loads(provider.calls[1]["prompt"])
     assert checked["claims"][0]["evidence"][0]["source"] == 3
@@ -86,7 +87,8 @@ def test_more_than_four_claims_are_not_silently_truncated():
         "evidence": [{"source": 1, "quote": quote}]} for i, quote in enumerate(sentences, 1)]}, approved(8))
     result = synthesize_answer(provider, question="Belge bölümlerini açıklar mısın?", contexts=[context])
     assert result is not None and result.grounded
-    assert result.text.count("[K1]") == 8
+    assert all(f"Belgenin {i} numaralı" in result.text for i in range(1, 9))  # hiçbiri atılmadı
+    assert result.text.count("[K1]") == 1 and result.text.endswith("[K1]")  # aynı kaynak: işaret paragraf sonunda bir kez
     assert "8 numaralı" in result.text
 
 
@@ -124,6 +126,11 @@ def test_compact_evidence_resolves_full_source_before_all_guards_and_checker():
     checked = json.loads(checker.calls[0]['prompt'])
     assert checked['sources'][0]['text'] == context.content
     assert checked['claims'][0]['evidence'] == [{'source': 1, 'quote': context.content}]
+    instruction = writer.calls[0]['system_instruction']
+    assert "Hukuki bilginin tek dayanağı sources" in instruction
+    assert "Yapabilir ifadesini zorundadır yapma" in instruction
+    assert "iki cümleyi aynı text alanına koyma" in instruction
+    assert len(instruction) < len(WRITE_INSTRUCTION)
 
 
 @pytest.mark.parametrize('unit', [0, -1, 2, True, '1', 1.5])
@@ -362,8 +369,9 @@ def test_validity_ceiling_paraphrase_is_checked_semantically_not_rejected_as_mis
 def test_maximum_label_recognizes_an_explicit_source_ceiling_but_checker_can_still_reject():
     quote = "Anlaşma belirtilen oranı geçmemek koşuluyla geçerlidir."
     claim = "Anlaşmada en fazla belirtilen orana kadar artış yapılabilir."
-    # Negation must still be preserved: a ceiling label does not replace it.
-    rejected = Provider(draft(claim, (1, quote)))
+    # A positive grammatical ceiling may preserve the restriction; it still
+    # needs independent support, not automatic approval from the label alone.
+    rejected = Provider(draft(claim, (1, quote)), approved(source_only=False))
     assert synthesize_answer(rejected, question="Artış sınırı?", contexts=[legislation_context(content=quote)], repair_attempts=0) is None
     supported = "Anlaşmada en fazla belirtilen oran esas alınabilir; belirtilen oran geçilemez."
     writer = Provider(draft(supported, (1, quote)))
@@ -613,6 +621,47 @@ def test_repair_is_never_a_second_chance_for_unsupported_partial_claims():
                            "failed_checks": ['condition_omitted']}
 
 
+def test_later_atomic_shape_error_does_not_hide_earlier_support_failure_from_repair():
+    quote = "Kiracıya yazılı olarak bir süre verilebilir."
+    other = "Bildirim yazılı yapılabilir. Süre bildirimden başlar."
+    context = legislation_context(content=quote + " " + other)
+    bad = {"claims": [
+        {"text": "Kiracıya yazılı olarak en az bir süre verilebilir.",
+         "evidence": [{"source": 1, "quote": quote}]},
+        {"text": other, "evidence": [{"source": 1, "quote": "Bildirim yazılı yapılabilir."},
+                                    {"source": 1, "quote": "Süre bildirimden başlar."}]}]}
+    fixed = {"claims": [
+        {"text": quote, "evidence": [{"source": 1, "quote": quote}]},
+        {"text": "Süre bildirimden başlar.",
+         "evidence": [{"source": 1, "quote": "Süre bildirimden başlar."}]}]}
+    writer, checker = Provider(bad, fixed), Provider(approved(2))
+    diagnostics = {}
+    result = synthesize_answer(writer, checker_provider=checker, question="Bildirim nasıl yapılır?",
+        contexts=[context], repair_reasons=frozenset({"draft_shape"}), diagnostics=diagnostics)
+    assert result is not None and result.grounded
+    repair = json.loads(writer.calls[1]["prompt"])["rejection"]
+    assert repair["category"] == "draft_shape" and repair["claim"] == 2
+    assert repair["checks"] == ["atomic_sentence_count"]
+    assert repair["previous_claim_failures"] == [
+        {"category": "numeric_polarity", "claim": 1, "checks": ["minimum_added"]}]
+    assert len(writer.calls) == 2 and len(checker.calls) == 1
+    assert json.loads(checker.calls[0]["prompt"])["claims"][0]["text"] == quote
+
+
+def test_atomic_repair_does_not_accept_an_unchanged_unsupported_claim():
+    quote = "Kiracıya yazılı olarak bir süre verilebilir."
+    context = legislation_context(content=quote)
+    bad = {"claims": [{"text": quote + " " + quote,
+                       "evidence": [{"source": 1, "quote": quote}]}]}
+    still_unsupported = draft("Kiracıya yazılı olarak en az bir süre verilebilir.", (1, quote))
+    writer, checker = Provider(bad, still_unsupported), Provider()
+    diagnostics = {}
+    assert synthesize_answer(writer, checker_provider=checker, question="Bildirim nasıl yapılır?",
+        contexts=[context], diagnostics=diagnostics) is None
+    assert diagnostics["reason"] == "numeric_polarity"
+    assert len(writer.calls) == 2 and checker.calls == []
+
+
 def test_failed_repair_provider_does_not_republish_previous_draft_or_retry():
     quote = "Başvuru ancak tebliğ halinde yapılır."
     provider = Provider(draft("Başvuru yapılır.", (1, quote)), AIProviderError("Unavailable"))
@@ -837,6 +886,189 @@ def test_one_bad_claim_is_dropped_and_the_rest_still_faces_the_checker():
     assert len(writer.calls) == 1 and diagnostics["dropped_claims"] == 1
     checked = json.loads(checker.calls[0]["prompt"])
     assert [claim["text"] for claim in checked["claims"]] == ["Kira artışı önceki yılın on iki aylık ortalamasını aşamaz."]
+
+
+def test_cloud_partial_draft_gets_one_source_bound_repair_before_checker():
+    rule = "Bildirim yazılı yapılır."
+    conditional = "Başvuru ancak tebliğ halinde yapılır."
+    bad = {"claims": [
+        {"text": rule, "evidence": [{"source": 1, "quote": rule}]},
+        {"text": "Başvuru yapılır.", "evidence": [{"source": 1, "quote": conditional}]},
+    ]}
+    fixed = {"claims": [
+        {"text": rule, "evidence": [{"source": 1, "quote": rule}]},
+        {"text": conditional, "evidence": [{"source": 1, "quote": conditional}]},
+    ]}
+    writer, checker = Provider(bad, fixed), Provider(approved(2))
+    diagnostics = {}
+    result = synthesize_answer(writer, checker_provider=checker, question="Bildirim ve başvuru nasıl yapılır?",
+        contexts=[legislation_context(content=rule + " " + conditional)],
+        semantic_repair=True, diagnostics=diagnostics)
+    assert result is not None and result.grounded
+    assert len(writer.calls) == 2 and len(checker.calls) == 1
+    assert diagnostics["repair_attempted"] is True
+    feedback = json.loads(writer.calls[1]["prompt"])["rejection"]
+    assert feedback["checks"] == ["condition_omitted"]
+    assert len(json.loads(checker.calls[0]["prompt"])["claims"]) == 2
+
+
+def test_cloud_partial_repair_never_salvages_the_same_bad_claim():
+    rule = "Bildirim yazılı yapılır."
+    conditional = "Başvuru ancak tebliğ halinde yapılır."
+    bad = {"claims": [
+        {"text": rule, "evidence": [{"source": 1, "quote": rule}]},
+        {"text": "Başvuru yapılır.", "evidence": [{"source": 1, "quote": conditional}]},
+    ]}
+    writer, checker = Provider(bad, bad), Provider()
+    result = synthesize_answer(writer, checker_provider=checker, question="Bildirim ve başvuru nasıl yapılır?",
+        contexts=[legislation_context(content=rule + " " + conditional)], semantic_repair=True)
+    assert result is None
+    assert len(writer.calls) == 2 and not checker.calls
+
+
+def test_general_action_question_cannot_be_answered_only_with_a_supporting_deadline():
+    main = "Kiraya veren kiracıya yazılı olarak bir süre verip, bu sürede ödeme olmazsa sözleşmeyi feshedeceğini bildirebilir."
+    deadline = "Kiracıya verilecek süre en az otuz gündür."
+    context = replace(legislation_context(content=main + " " + deadline), law_no="6098", article_no="315")
+    bad = draft(deadline, (1, deadline))
+    writer, checker = Provider(bad), Provider(approved())
+    diagnostics = {}
+    assert synthesize_answer(writer, checker_provider=checker,
+        question="Kiracı kirayı ödemezse ev sahibi ne yapabilir?", contexts=[context],
+        repair_attempts=0, diagnostics=diagnostics) is None
+    assert diagnostics["reason"] == "answer_focus" and checker.calls == []
+
+
+def test_main_rule_focus_is_repaired_and_independently_checked_not_copied_as_a_canned_answer():
+    main = "Kiraya veren kiracıya yazılı olarak bir süre verip, bu sürede ödeme olmazsa sözleşmeyi feshedeceğini bildirebilir."
+    deadline = "Kiracıya verilecek süre en az otuz gündür."
+    context = replace(legislation_context(content=main + " " + deadline), law_no="6098", article_no="315")
+    writer, checker = Provider(draft(deadline, (1, deadline)), draft(main, (1, main))), Provider(approved())
+    result = synthesize_answer(writer, checker_provider=checker,
+        question="Kiracı kirayı ödemezse ev sahibi ne yapabilir?", contexts=[context])
+    assert result and result.grounded and main in result.text
+    repair = json.loads(writer.calls[1]["prompt"])
+    assert repair["rejection"]["category"] == "answer_focus"
+    assert repair["answer_focus"][0]["reference"] == ["6098", "315"]
+    assert len(checker.calls) == 1
+
+
+def test_narrow_duration_question_does_not_require_an_unrequested_action_explanation():
+    main = "Kiraya veren kiracıya yazılı olarak bir süre verip, bu sürede ödeme olmazsa sözleşmeyi feshedeceğini bildirebilir."
+    deadline = "Kiracıya verilecek süre en az otuz gündür."
+    context = replace(legislation_context(content=main + " " + deadline), law_no="6098", article_no="315")
+    result = synthesize_answer(Provider(draft(deadline, (1, deadline)), approved()),
+        question="Kiracıya verilecek süre kaç gün?", contexts=[context])
+    assert result and result.grounded and result.text == deadline + " [K1]"
+
+
+@pytest.mark.parametrize("quote,claim", [
+    ("Bildirim şartına uymayan taraf tazminat ödemek zorundadır.",
+     "Bildirim şartına uyulmaması durumunda tazminat ödemek zorundadır."),
+    ("Bildirim yapılmadan başvuru reddedilir.", "Bildirim yapılmadıysa başvuru reddedilir."),
+])
+def test_turkish_negative_participles_and_converbs_are_not_positive_evidence(quote, claim):
+    from api.ai.synthesis import _NEGATION
+    assert _NEGATION.search(quote) and _NEGATION.search(claim)
+
+
+@pytest.mark.parametrize("positive", ["bulunması", "bulunmasına", "bulunmaları"])
+def test_positive_bulunma_nominalisation_is_not_a_negation(positive):
+    from api.ai.synthesis import _NEGATION
+    assert not _NEGATION.search(positive)
+
+
+@pytest.mark.parametrize("negative", ["bulunmaz", "bulunmadığı", "bulunmaması", "bulunmayan", "bulunmamış", "bulunmuyor"])
+def test_real_negative_forms_of_bulunmak_remain_guarded(negative):
+    from api.ai.synthesis import _NEGATION
+    assert _NEGATION.search(negative)
+
+
+@pytest.mark.parametrize("noun", ["sözleşmeden doğan", "sözleşmeden kaynaklanan", "mahkemeden", "malzemeden", "kademeden"])
+def test_ablative_legal_noun_is_not_a_negative_converb(noun):
+    from api.ai.synthesis import _NEGATION
+    assert not _NEGATION.search(noun)
+
+
+@pytest.mark.parametrize("negative", ["ödemeden", "incelemeden", "bildirmeden", "uyarmadan", "sözleşmeden işe başladı"])
+def test_ablative_exception_does_not_remove_real_negative_converbs(negative):
+    from api.ai.synthesis import _NEGATION
+    assert _NEGATION.search(negative)
+
+
+def test_wage_rule_can_naturally_use_sozlesmeden_without_false_negation():
+    quote = "İş sözleşmelerinin sona ermesinde, işçinin ücreti ile sözleşme ve Kanundan doğan para ile ölçülmesi mümkün menfaatlerinin tam olarak ödenmesi zorunludur."
+    text = "İş sözleşmesinin sona ermesinde işveren, işçinin ücretini ve kanun ile sözleşmeden doğan parasal menfaatlerini tam olarak ödemek zorundadır."
+    context = replace(legislation_context(content=quote), law_no="4857", article_no="32")
+    checker = Provider(approved())
+    result = synthesize_answer(Provider(draft(text, (1, quote))), checker_provider=checker,
+        question="Sözleşme bitince ücretim ödenir mi?", contexts=[context], repair_attempts=0)
+    assert result and result.grounded and len(checker.calls) == 1
+
+
+def test_temporal_when_preserves_the_explicit_condition_but_not_an_unconditional_claim():
+    quote = "İş sözleşmesinin sona ermesi halinde işçinin hak kazanıp kullanmadığı yıllık izin ücreti ödenir."
+    text = "İş sözleşmesi sona erdiğinde işçinin hak kazanıp kullanmadığı yıllık izin ücreti ödenir."
+    context = replace(legislation_context(content=quote), law_no="4857", article_no="59")
+    checker = Provider(approved())
+    result = synthesize_answer(Provider(draft(text, (1, quote))), checker_provider=checker,
+        question="İş sözleşmesi bitince izin ücreti?", contexts=[context], repair_attempts=0)
+    assert result and result.grounded and len(checker.calls) == 1
+    checker = Provider(approved())
+    assert synthesize_answer(Provider(draft("İşçinin hak kazanıp kullanmadığı yıllık izin ücreti ödenir.", (1, quote))),
+        checker_provider=checker, question="İzin ücreti?", contexts=[context], repair_attempts=0) is None
+    assert checker.calls == []
+
+
+def test_event_locative_and_when_have_the_same_condition_without_weakening_the_checker():
+    quote = "İş sözleşmesinin sona ermesinde işçinin ücretinin tam olarak ödenmesi zorunludur."
+    text = "İş sözleşmesi sona erdiğinde işçinin ücretinin tam olarak ödenmesi zorunludur."
+    context = replace(legislation_context(content=quote), law_no="4857", article_no="32")
+    checker = Provider(approved())
+    result = synthesize_answer(Provider(draft(text, (1, quote))), checker_provider=checker,
+        question="İş sözleşmesi bitince ücret?", contexts=[context], repair_attempts=0)
+    assert result and result.grounded and len(checker.calls) == 1
+    rejecting = Provider(approved(scope_preserved=False, coverage_preserved=False))
+    assert synthesize_answer(Provider(draft(text, (1, quote))), checker_provider=rejecting,
+        question="İş sözleşmesi bitince ücret?", contexts=[context], repair_attempts=0) is None
+
+
+@pytest.mark.parametrize("claim", [
+    "Kiracı kirayı ödemezse kiraya veren sözleşmeyi feshedebilir.",
+    "Kiracı kirayı ödemiyorsa kiraya veren sözleşmeyi feshedebilir.",
+])
+def test_negative_conditional_paraphrase_is_not_mistaken_for_an_unconditional_rule(claim):
+    quote = "Kiracının kirayı ödememesi durumunda kiraya veren sözleşmeyi feshedebilir."
+    writer, checker = Provider(draft(claim, (1,quote))), Provider(approved())
+    result = synthesize_answer(writer, checker_provider=checker, question="Kira ödenmezse ne olur?",
+        contexts=[legislation_context(content=quote)],repair_attempts=0)
+    assert result and result.grounded and len(checker.calls) == 1
+    # The true unconditional variant remains blocked before semantic approval.
+    checker = Provider(approved())
+    assert synthesize_answer(Provider(draft("Kiraya veren sözleşmeyi feshedebilir.", (1,quote))),
+        checker_provider=checker,question="Kira ödenmezse ne olur?",
+        contexts=[legislation_context(content=quote)],repair_attempts=0) is None
+    assert checker.calls == []
+
+
+def test_positive_ceiling_wording_still_preserves_the_same_negative_limit():
+    quote = "Artış oranı yüzde yirmi sınırını geçemez."
+    result = synthesize_answer(Provider(draft("Artış oranının üst sınırı yüzde yirmidir.",(1,quote)),approved()),
+        question="Artış oranı ne kadar?",contexts=[legislation_context(content=quote)],repair_attempts=0)
+    assert result and result.grounded
+
+
+@pytest.mark.parametrize("claim", [
+    "Artış oranı yüzde otuzu geçemez.",
+    "Artış oranı yüzde yirmiden fazla olabilir.",
+    "Anlaşma varsa artış oranının üst sınırı yüzde yirmidir.",
+])
+def test_ceiling_paraphrase_never_drops_a_number_limit_or_an_unrelated_negation(claim):
+    quote = "Anlaşma yoksa artış oranı yüzde yirmiyi geçemez."
+    checker = Provider(approved())
+    assert synthesize_answer(Provider(draft(claim,(1,quote))),checker_provider=checker,
+        question="Artış oranı ne kadar?",contexts=[legislation_context(content=quote)],repair_attempts=0) is None
+    assert checker.calls == []
 
 
 def test_coverage_lost_by_dropping_claims_is_reported_apart_from_a_rejected_claim():

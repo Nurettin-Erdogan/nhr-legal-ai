@@ -12,8 +12,19 @@ from api.ai.relevance import case_law_requested, question_intent
 from api.ai.search_plan import normalize
 
 
+_TRAILING_STYLE = re.compile(
+    r"[?!.;,]\s*(?:lütfen\s+)?(?:kısa(?:ca)?(?:\s+ve\s+(?:anlaşılır|öz))?|"
+    r"anlaşılır|basit(?:çe)?)(?:\s+olarak)?\s+(?:anlat|açıkla|yanıtla|cevap\s+ver)\s*[.!?]*$",
+    re.I,
+)
+
+
 def fast_reference(question):
+    # A presentation-only second clause must not become a second legal topic
+    # merely because it contains "ve". Keep every substantive clause/date and
+    # keep the untouched user question for answer generation.
     q = normalize(question)
+    q = _TRAILING_STYLE.sub("", q).strip() or q
     if len(q) > 200 or case_law_requested(q) or re.search(
         r'\b(?:delil\w*|ispat\w*|kanıt\w*|eski\w*|tarih\w*|önceki|ayrıca|ve|karar\w*|'
         r'tahliye\w*|dilekçe\w*|harç\w*|faiz\w*|görev\w*|yetki\w*|hesap\w*|zamanaşım\w*)\b|\b(?:19|20)\d{2}\b', q

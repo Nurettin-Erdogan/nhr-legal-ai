@@ -24,7 +24,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Plus, FolderKanban, Loader2, Trash2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/components/AuthProvider";
+import { useAuth } from "@/components/AuthContext";
 import { toast } from "sonner";
 import {
   AlertDialog,

@@ -232,22 +232,31 @@ export const UyapSyncAll = ({ liste, disabled, onRunningChange }: Props) => {
       )}
 
       {!running && showUnpulled && unpulled && (
-        <div className="rounded-lg border border-border p-3 text-sm" data-testid="uyap-sync-unpulled">
+        <div
+          className="rounded-lg border border-border p-3 text-sm"
+          data-testid="uyap-sync-unpulled"
+        >
           {unpulled.length === 0 ? (
             <p className="text-muted-foreground">
-              Listedeki {liste.items.length} dosyanın hepsi JurisAI'a eksiksiz aktarılmış görünüyor. Bu, son doğrulamaya göredir:
-              o günden sonra UYAP'ta eklenen evrak burada görünmez; onu yalnız "Tüm dosyaları aktar" ya da "Yalnız denetle" gösterir.
+              Listedeki {liste.items.length} dosyanın hepsi JurisAI'a eksiksiz aktarılmış görünüyor.
+              Bu, son doğrulamaya göredir: o günden sonra UYAP'ta eklenen evrak burada görünmez; onu
+              yalnız "Tüm dosyaları aktar" ya da "Yalnız denetle" gösterir.
             </p>
           ) : (
             <>
               <ul className="divide-y divide-border">
                 {unpulled.map((file) => (
-                  <li key={file.key} className="flex flex-wrap items-baseline justify-between gap-x-4 py-1.5">
+                  <li
+                    key={file.key}
+                    className="flex flex-wrap items-baseline justify-between gap-x-4 py-1.5"
+                  >
                     <span>
                       <span className="font-medium">{file.esas}</span>
                       <span className="text-muted-foreground"> · {file.birim}</span>
                     </span>
-                    <span className="text-xs text-amber-700 dark:text-amber-300">{file.reason}</span>
+                    <span className="text-xs text-amber-700 dark:text-amber-300">
+                      {file.reason}
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -377,12 +386,16 @@ export const UyapSyncAll = ({ liste, disabled, onRunningChange }: Props) => {
                   <ul
                     className={cn(
                       "mt-1 list-disc pl-4 text-xs",
-                      report.outcome === "complete" ? "text-muted-foreground" : "text-amber-700 dark:text-amber-300",
+                      report.outcome === "complete"
+                        ? "text-muted-foreground"
+                        : "text-amber-700 dark:text-amber-300",
                     )}
                     data-testid="uyap-sync-problems"
                   >
                     {report.outcome === "complete" && (
-                      <li className="list-none -ml-4">Aktarım sırasında takılıp yeniden denenenler (hepsi sonunda aktarıldı):</li>
+                      <li className="list-none -ml-4">
+                        Aktarım sırasında takılıp yeniden denenenler (hepsi sonunda aktarıldı):
+                      </li>
                     )}
                     {[
                       ...report.problems,

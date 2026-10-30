@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

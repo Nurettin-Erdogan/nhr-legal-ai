@@ -1,35 +1,7 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { Ctx, type Role, type Profile, type LocalSession } from "./AuthContext";
 import { currentUser, inMemoryAccessToken, logout, type AuthUser } from "@/lib/auth-api";
 import { setSyncOwner } from "@/lib/uyap-sync-store";
-
-type Role = "admin" | "lawyer" | "intern" | "secretary";
-
-interface Profile {
-  id: string;
-  first_name: string | null;
-  last_name: string | null;
-  phone: string | null;
-  office_name: string | null;
-  avatar_url: string | null;
-}
-
-interface LocalSession {
-  access_token: string;
-  user: AuthUser;
-}
-
-interface AuthCtx {
-  user: AuthUser | null;
-  session: LocalSession | null;
-  profile: Profile | null;
-  roles: Role[];
-  loading: boolean;
-  signOut: () => Promise<void>;
-  refreshProfile: () => Promise<void>;
-  refreshAuth: () => Promise<AuthUser | null>;
-}
-
-const Ctx = createContext<AuthCtx | undefined>(undefined);
 
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<AuthUser | null>(null);
@@ -38,7 +10,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [roles, setRoles] = useState<Role[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const applyUser = (nextUser: AuthUser | null) => {
+  const applyUser = useCallback((nextUser: AuthUser | null) => {
     setSyncOwner(nextUser?.id ?? null);
     setUser(nextUser);
     setSession(nextUser ? { access_token: inMemoryAccessToken(), user: nextUser } : null);
@@ -62,19 +34,19 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         ["admin", "lawyer", "intern", "secretary"].includes(role),
       ),
     );
-  };
+  }, []);
 
-  const refreshAuth = async () => {
+  const refreshAuth = useCallback(async () => {
     const nextUser = await currentUser();
     applyUser(nextUser);
     return nextUser;
-  };
+  }, [applyUser]);
 
   useEffect(() => {
     refreshAuth()
       .catch(() => applyUser(null))
       .finally(() => setLoading(false));
-  }, []);
+  }, [applyUser, refreshAuth]);
 
   const signOut = async () => {
     try {
@@ -97,10 +69,4 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       {children}
     </Ctx.Provider>
   );
-};
-
-export const useAuth = () => {
-  const c = useContext(Ctx);
-  if (!c) throw new Error("useAuth must be inside AuthProvider");
-  return c;
 };

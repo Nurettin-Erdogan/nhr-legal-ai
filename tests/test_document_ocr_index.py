@@ -8,7 +8,9 @@ import pytest
 
 from api import document_indexing as indexing
 from api import document_processing
-from tests.test_document_indexing import _chunks, _derived, _office_doc, world  # noqa: F401
+from tests.test_document_indexing import _chunks, _derived, _office_doc, world as _world_fixture
+
+world = _world_fixture
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("NHR_TEST_DATABASE_URL"), reason="Isolated test DB not configured"

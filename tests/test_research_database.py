@@ -2,9 +2,11 @@
 import os
 import pytest
 from tests.test_ai_persistence import (
-    connection, _seed_decision, _seed_legislation, _seed_user,
+    connection as _connection_fixture, _seed_decision, _seed_legislation, _seed_user,
     _seed_project_document, TOKEN,
 )
+
+connection = _connection_fixture
 
 pytestmark = pytest.mark.skipif(not os.getenv('NHR_TEST_DATABASE_URL'), reason='Isolated test DB not configured')
 

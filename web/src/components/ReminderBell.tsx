@@ -2,9 +2,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Bell, Check } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/components/AuthProvider";
-import { useNavigate } from "@/lib/router-compat";
-import { dueReminders, reminderTimeLabel, toAnnounce, type WatchReminder } from "@/lib/reminder-watch";
+import { useAuth } from "@/components/AuthContext";
+import { useNavigate } from "@/lib/router-hooks";
+import {
+  dueReminders,
+  reminderTimeLabel,
+  toAnnounce,
+  type WatchReminder,
+} from "@/lib/reminder-watch";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -19,7 +24,11 @@ const SEEN_KEY = "jurisai.reminders.seen";
 function readSeen(): Set<string> {
   try {
     const parsed: unknown = JSON.parse(window.localStorage.getItem(SEEN_KEY) ?? "[]");
-    return new Set(Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string").slice(-200) : []);
+    return new Set(
+      Array.isArray(parsed)
+        ? parsed.filter((item): item is string => typeof item === "string").slice(-200)
+        : [],
+    );
   } catch {
     return new Set();
   }
@@ -62,8 +71,14 @@ export function ReminderBell() {
     const fresh = toAnnounce(list, new Date(), seen.current);
     for (const item of fresh) {
       seen.current.add(item.id);
-      toast(`Hatırlatma: ${item.title}`, { description: reminderTimeLabel(item.remind_at), duration: 15000 });
-      void supabase.from("reminders").update({ notified_at: new Date().toISOString() }).eq("id", item.id);
+      toast(`Hatırlatma: ${item.title}`, {
+        description: reminderTimeLabel(item.remind_at),
+        duration: 15000,
+      });
+      void supabase
+        .from("reminders")
+        .update({ notified_at: new Date().toISOString() })
+        .eq("id", item.id);
     }
     if (fresh.length) {
       try {
@@ -117,11 +132,18 @@ export function ReminderBell() {
         ) : (
           <ul className="max-h-80 space-y-1 overflow-y-auto px-1 py-1">
             {due.map((item) => (
-              <li key={item.id} className="flex items-start gap-2 rounded-md px-2 py-1.5 hover:bg-muted/60">
+              <li
+                key={item.id}
+                className="flex items-start gap-2 rounded-md px-2 py-1.5 hover:bg-muted/60"
+              >
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{item.title}</p>
-                  <p className="text-xs text-muted-foreground">{reminderTimeLabel(item.remind_at)}</p>
-                  {item.note && <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{item.note}</p>}
+                  <p className="text-xs text-muted-foreground">
+                    {reminderTimeLabel(item.remind_at)}
+                  </p>
+                  {item.note && (
+                    <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{item.note}</p>
+                  )}
                 </div>
                 <button
                   type="button"
@@ -135,7 +157,11 @@ export function ReminderBell() {
           </ul>
         )}
         <DropdownMenuSeparator />
-        <button type="button" className="w-full px-2 py-1.5 text-left text-sm underline" onClick={() => navigate("/dashboard/reminders")}>
+        <button
+          type="button"
+          className="w-full px-2 py-1.5 text-left text-sm underline"
+          onClick={() => navigate("/dashboard/reminders")}
+        >
           Tüm hatırlatmalar
         </button>
       </DropdownMenuContent>

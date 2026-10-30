@@ -53,6 +53,7 @@ def routing(monkeypatch):
     monkeypatch.setattr(pipeline, "unload_ollama_model", lambda *args: calls.append("unload"))
     monkeypatch.setattr(pipeline, "try_fast_statute", lambda **kwargs: calls.append("fast_lookup") or [])
     monkeypatch.setattr(pipeline, "lookup_event_basis", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pipeline, "_planned_statutes", lambda *args, **kwargs: [])
     monkeypatch.setattr(pipeline, "_retrieve", lambda *args, **kwargs: calls.append("retrieval") or [])
     for name in (
         "_embed_question", "create_embedding_provider", "generate_grounded_answer",
@@ -102,6 +103,40 @@ def test_mixed_greeting_and_legal_question_is_not_a_social_shortcut(routing):
     assert response.answer != "Merhaba! Nasıl yardımcı olabilirim?"
     assert [event["stage"] for event in events][0] == "searching"
     assert [event["stage"] for event in events][-1] == "done"
+
+
+@pytest.mark.parametrize("question", [
+    "pizza tarifi verirmisin", "Bana pizza tarifi verir misin?",
+    "En iyi pizza tarifi nedir?", "Kek nasıl yapılır?", "Bugün hava nasıl?",
+])
+def test_explicit_nonlegal_request_needs_neither_search_nor_paid_model(routing, question):
+    response, timings, events = _execute(AIAnswerRequest(question=question))
+    assert routing.calls == []
+    assert "hukuki bir soru değil" in response.answer
+    assert response.model == "scope-router-v1"
+    assert response.answer_kind == "conversation"
+    assert response.grounded is False and response.citations == []
+    assert response.search_summary is None
+    assert timings.embedding_ms == timings.llm_ms == 0
+    assert [e["stage"] for e in events] == ["done"]
+
+
+@pytest.mark.parametrize("question", [
+    "Pizza siparişim gelmedi, paramı geri alabilir miyim?",
+    "Pizza tarifimi izinsiz yayınladılar, ne yapabilirim?",
+    "Pizza tarifi ver, sonra kira artışını açıkla.",
+    "Komşum ağacımı kesti, ne yapabilirim?", "Peki bunu nasıl yaparım?",
+])
+def test_food_legal_disputes_mixed_requests_and_followups_are_not_rejected(routing, question):
+    _execute(AIAnswerRequest(question=question))
+    assert "retrieval" in routing.calls
+
+
+def test_nonlegal_fast_reply_still_requires_ownership_of_saved_conversation(routing):
+    with pytest.raises(HTTPException) as exc:
+        _execute(AIAnswerRequest(question="Pizza tarifi verir misin?", conversation_id=uuid4()))
+    assert exc.value.status_code == 401
+    assert routing.calls == []
 
 
 def test_cloud_answer_does_not_pause_or_unload_bulk_embeddings(routing, monkeypatch):
@@ -414,6 +449,201 @@ def test_natural_answers_are_rechecked_on_identical_repeated_requests_not_blindl
     assert len(answer_cache) == 0
 
 
+def test_verified_cloud_prose_reuses_proof_but_changed_source_requires_new_generation(routing, monkeypatch):
+    from api.ai.verification import VerifiedAnswer
+    source = legislation_context(content=_SOURCE_TEXT)
+    cloud = SimpleNamespace(name="openrouter", model="cloud-test")
+    routing.settings.free_answer_enabled = True
+    calls = []
+    monkeypatch.setattr(pipeline, "answer_provider", lambda *a, **kw: cloud)
+    monkeypatch.setattr(pipeline, "_retrieve", lambda *a, **kw: [source])
+
+    def generate(provider, question, contexts, history, timings, checker, on_draft=None, **kwargs):
+        calls.append(True)
+        timings.extra["free_answer"] = {"status": "accepted", "kept": 1}
+        return VerifiedAnswer(_NATURAL_TEXT, (source,), ())
+
+    monkeypatch.setattr(pipeline, "_free_answer", generate)
+    request = AIAnswerRequest(question=_NATURAL_QUESTION)
+    first, _, _ = _execute(request)
+    second, _, _ = _execute(request)
+    assert first.grounded and second.grounded and second.from_cache
+    assert len(calls) == 1 and first.answer == second.answer
+    source = replace(source, revision=2, content=_SOURCE_TEXT + " Ek bir kaynak cümlesi.")
+    third, _, _ = _execute(request)
+    assert not third.from_cache and len(calls) == 2
+
+
+def test_empty_local_search_reaches_official_web_before_no_source_reply(routing, monkeypatch):
+    from api.ai.verification import VerifiedAnswer
+    from api.ai.official_research import ResearchResult
+    source = legislation_context(content=_SOURCE_TEXT)
+    cloud = SimpleNamespace(name='openrouter', model='cloud-test')
+    routing.settings.free_answer_enabled = True
+    routing.settings.official_web_research_enabled = True
+    monkeypatch.setattr(pipeline, 'answer_provider', lambda *a, **kw: cloud)
+    monkeypatch.setattr(pipeline, '_retrieve', lambda *a, **kw: [])
+    calls = []
+    def web(queries, contexts, *, public_scope):
+        assert public_scope and not contexts
+        calls.append('web')
+        return ResearchResult((source,), ({'source': 'mevzuat', 'status': 'document_verified'},))
+    monkeypatch.setattr('api.ai.official_research.research_official', web)
+    def generate(provider, question, contexts, history, timings, checker, on_draft=None, **kwargs):
+        assert source in contexts and kwargs['public_web_scope']
+        calls.append('writer')
+        timings.extra['free_answer'] = {'status': 'accepted', 'kept': 1}
+        return VerifiedAnswer(_NATURAL_TEXT, (source,), ())
+    monkeypatch.setattr(pipeline, '_free_answer', generate)
+    response, timings, _ = _execute(AIAnswerRequest(question=_NATURAL_QUESTION))
+    assert response.grounded
+    assert calls == ['web', 'writer']
+    assert timings.extra['official_web'][0]['status'] == 'document_verified'
+
+
+def test_offline_web_setting_keeps_current_public_local_fast_path(routing, monkeypatch):
+    from api.ai.verification import VerifiedAnswer
+    source = legislation_context(content=_SOURCE_TEXT)
+    routing.settings.free_answer_enabled = True
+    routing.settings.official_web_research_enabled = False
+    cloud = SimpleNamespace(name='openrouter', model='cloud-test')
+    monkeypatch.setattr(pipeline, 'answer_provider', lambda *a, **kw: cloud)
+    monkeypatch.setattr(pipeline, '_retrieve', lambda *a, **kw: [source])
+    seen = []
+
+    def generate(*args, **kwargs):
+        seen.append(kwargs['public_web_scope'])
+        return VerifiedAnswer(_NATURAL_TEXT, (source,), ())
+
+    monkeypatch.setattr(pipeline, '_free_answer', generate)
+    response, _, _ = _execute(AIAnswerRequest(question=_NATURAL_QUESTION))
+    assert response.grounded and seen == [True]
+
+
+@pytest.mark.parametrize(
+    "part_limit,partial,limit",
+    [("none", False, "none"), ("sampled", True, "sampled"), ("failed", True, "failed")],
+)
+def test_a_part_search_limit_reaches_the_user_summary_with_its_severity(routing, monkeypatch, part_limit, partial, limit):
+    from api.ai.verification import VerifiedAnswer
+    source = legislation_context(content=_SOURCE_TEXT)
+    cloud = SimpleNamespace(name="openrouter", model="cloud-test")
+    routing.settings.free_answer_enabled = True
+    monkeypatch.setattr(pipeline, "answer_provider", lambda *a, **kw: cloud)
+    monkeypatch.setattr(pipeline, "_retrieve", lambda *a, **kw: [source])
+
+    def generate(provider, question, contexts, history, timings, checker, on_draft=None, **kwargs):
+        # The outer search was complete; only a planner part's own search was limited (measured 2026-10-30).
+        timings.extra["free_answer"] = {"status": "accepted", "kept": 1}
+        timings.extra["part_searches"] = [
+            {"query": "faiz", "partial": False, "limit": "none", "branches": []},
+            {"query": "icra takibi", "partial": part_limit != "none", "limit": part_limit, "branches": []},
+        ]
+        return VerifiedAnswer(_NATURAL_TEXT, (source,), ())
+
+    monkeypatch.setattr(pipeline, "_free_answer", generate)
+    response, _, _ = _execute(AIAnswerRequest(question=_NATURAL_QUESTION))
+    assert response.grounded
+    assert response.search_summary["retrieval_partial"] is partial
+    assert response.search_summary["retrieval_limit"] == limit
+
+
+def test_a_part_search_never_softens_a_graver_outer_limit(routing, monkeypatch):
+    from api.ai.verification import VerifiedAnswer
+    source = legislation_context(content=_SOURCE_TEXT)
+    cloud = SimpleNamespace(name="openrouter", model="cloud-test")
+    routing.settings.free_answer_enabled = True
+    monkeypatch.setattr(pipeline, "answer_provider", lambda *a, **kw: cloud)
+
+    def retrieve(*args, diagnostics=None, **kwargs):
+        # the outer search lost a lane entirely
+        if diagnostics is not None:
+            diagnostics.update(partial=True, branches=[{"name": "legislation_m3", "status": "timeout", "seconds": 8.0}])
+        return [source]
+
+    monkeypatch.setattr(pipeline, "_retrieve", retrieve)
+
+    def generate(provider, question, contexts, history, timings, checker, on_draft=None, **kwargs):
+        timings.extra["free_answer"] = {"status": "accepted", "kept": 1}
+        timings.extra["part_searches"] = [{"query": "faiz", "partial": True, "limit": "sampled", "branches": []}]
+        return VerifiedAnswer(_NATURAL_TEXT, (source,), ())
+
+    monkeypatch.setattr(pipeline, "_free_answer", generate)
+    response, _, _ = _execute(AIAnswerRequest(question=_NATURAL_QUESTION))
+    assert response.search_summary["retrieval_limit"] == "failed" and response.search_summary["retrieval_partial"] is True
+
+
+def test_repeated_named_definition_checks_owner_but_does_not_import_old_topic_or_pay_again(routing, monkeypatch):
+    from api.ai.rag import HistoryTurn
+    from api.ai.verification import VerifiedAnswer
+    from tests.test_query_vocabulary import REFERENCE_TEXT
+    owner, conversation = uuid4(), uuid4()
+    source = legislation_context(content=REFERENCE_TEXT)
+    cloud = SimpleNamespace(name="openrouter", model="cloud-test")
+    routing.settings.free_answer_enabled = True
+    seen, generated = [], []
+
+    async def load(request, user_id):
+        assert request.conversation_id == conversation and user_id == owner
+        seen.append("owner_checked")
+        previous = "Pizza tarifi verir misin?" if len(seen) == 1 else "TÜFE nedir?"
+        return (HistoryTurn(previous, "Önceki konu."),), (previous,)
+
+    def generate(provider, question, contexts, history, timings, checker, on_draft=None, **kwargs):
+        assert history == ()
+        generated.append(True)
+        timings.extra["free_answer"] = {"status": "accepted", "kept": 1}
+        return VerifiedAnswer("TÜFE, Tüketici Fiyat Endeksi'nin kısaltmasıdır.", (source,), ())
+
+    monkeypatch.setattr(pipeline, "_load_history", load)
+    monkeypatch.setattr(pipeline, "answer_provider", lambda *a, **kw: cloud)
+    monkeypatch.setattr(pipeline, "_retrieve", lambda *a, **kw: [source])
+    monkeypatch.setattr(pipeline, "persist_answer", lambda *a, **kw: (conversation, uuid4()))
+    monkeypatch.setattr(pipeline, "_free_answer", generate)
+    request = AIAnswerRequest(question="TÜFE nedir?", conversation_id=conversation)
+    first, _, _ = _execute(request, owner)
+    second, _, _ = _execute(request, owner)
+    assert first.grounded and second.grounded and second.from_cache
+    assert len(seen) == 2 and len(generated) == 1
+
+
+@pytest.mark.parametrize("has_sources", [False, True])
+def test_plain_definition_can_return_explicit_unverified_general_information(routing, monkeypatch, has_sources):
+    cloud = SimpleNamespace(name="openrouter", model="cloud-test")
+    routing.settings.free_answer_enabled = True
+    monkeypatch.setattr(pipeline, "answer_provider", lambda *a, **kw: cloud)
+    source = legislation_context(content="Tüketici fiyat endeksi bir sözleşmede kullanılmıştır.")
+    monkeypatch.setattr(pipeline, "_retrieve", lambda *a, **kw: [source] if has_sources else [])
+    def failed(*args, **kwargs):
+        assert args[-1] is None  # no unverified preview escapes to the client
+        return None
+    monkeypatch.setattr(pipeline, "_free_answer", failed)
+    called = []
+    monkeypatch.setattr("api.ai.general_information.generate_definition",
+                        lambda p, q: called.append((p, q)) or "TÜFE, Tüketici Fiyat Endeksi'nin kısaltmasıdır.")
+    response, _, events = _execute(AIAnswerRequest(question="TÜFE nedir?"))
+    assert response.answer_kind == "general_information" and response.grounded is False
+    assert response.citations == response.consulted_sources == []
+    assert response.provider == "openrouter" and response.model == "cloud-test"
+    assert len(called) == 1 and not any(e["stage"] == "draft" for e in events)
+    assert events[-1]["stage"] == "done"
+
+
+@pytest.mark.parametrize("scope", ["project_id", "case_id", "office_project_id", "selected_document_ids", "deep_research"])
+def test_general_information_cannot_escape_private_or_deep_research_scope(monkeypatch, scope):
+    fields = {} if scope == "deep_research" else {
+        scope: [uuid4()] if scope == "selected_document_ids" else uuid4(),
+    }
+    monkeypatch.setattr("api.ai.general_information.generate_definition", _never("general model in private/deep scope"))
+    result = asyncio.run(pipeline._general_definition_fallback(
+        AIAnswerRequest(question="TÜFE nedir?", **fields), uuid4(),
+        provider=SimpleNamespace(name="openrouter", model="cloud"), local_provider=object(),
+        generation_profile="deep_research" if scope == "deep_research" else "default",
+        timings=pipeline.PipelineTimings(), started=0, emit=_never("progress"), audit=None,
+    ))
+    assert result is None
+
+
 def test_invalid_natural_checker_never_dumps_the_full_source_instead_of_an_answer(routing, monkeypatch):
     from api.ai import explanation, statute_summary
     routing.settings.rag_explanations = True
@@ -702,37 +932,206 @@ def test_completed_personal_calculation_never_falls_back_to_dumping_a_statute(ro
     assert source.content not in response.answer and len(response.answer) < 750
 
 
-def test_explicit_rent_amount_and_rate_keep_verified_decimal_calculation_without_a_model(routing, monkeypatch):
+def test_missing_historical_proof_can_explain_current_reference_without_claiming_a_payout(routing, monkeypatch):
     from api.ai import synthesis
-    monkeypatch.setattr(pipeline, "_retrieve", lambda *args, **kwargs: [_rent_context()])
-    monkeypatch.setattr(synthesis, "synthesize_answer", _never("model synthesis for explicit arithmetic"))
+    from api.ai.event_lookup import lookup_event_basis
+    from api.ai.dialogue import outcome_search_query
+    from api.ai.rag import HistoryTurn
+    from api.ai.verification import VerifiedAnswer
+    first = "ben 10 sene çalıştım ne kadar çıkış parası alırım"
+    details = "50000 brüt ücret 12 kasım 2005 13 mart 2016"
+    last = "küçülmeye gittiler çıkardılar"
+    source = replace(legislation_context(content="Bildirim şartına uymayan taraf tazminat ödemek zorundadır."),
+                     law_no="4857", article_no="17", effective_from=None, effective_to=None)
+    temporal = lookup_event_basis(last, outcome_search_query(last, prior_questions=[first,details]),
+        prior_questions=[first,details], loader=lambda *args: [])
+    monkeypatch.setattr(pipeline,"lookup_event_basis",lambda *args,**kwargs:temporal)
+    monkeypatch.setattr(pipeline,"load_current_event_reference",lambda *args:[source])
+    monkeypatch.setattr(pipeline,"_retrieve",_never("unbounded historical retrieval for reference-only explanation"))
+    async def loaded(*args):
+        return (HistoryTurn(details,"Ayrılma nedeni?","clarification"),),(first,details)
+    monkeypatch.setattr(pipeline,"_load_history",loaded)
+    def explain(*args,**kwargs):
+        assert kwargs["event_basis_complete"] is False
+        assert kwargs["contexts"] == [source]
+        return VerifiedAnswer(text=source.content + " [K1]",contexts=(source,),unverified_markers=())
+    monkeypatch.setattr(synthesis,"synthesize_answer",explain)
+    response,timings,_ = _execute(AIAnswerRequest(question=last))
+    assert response.grounded and len(response.citations)==1
+    assert "kesin bir hak veya tutar tespiti değildir" in response.answer
+    assert source.content in response.answer and "10 yıl 4 ay 1 gün" in response.answer
+    assert "500.000" not in response.answer and timings.extra["event_reference_only"] is True
+
+
+def test_explicit_rent_amount_and_rate_do_not_require_a_statute_or_model(routing, monkeypatch):
+    monkeypatch.setattr(pipeline, "_retrieve", _never("retrieval for nonlegal percentage arithmetic"))
+    monkeypatch.setattr(pipeline, "create_provider", _never("model for nonlegal percentage arithmetic"))
     response, _, _ = _execute(AIAnswerRequest(question="Örnek kira artışı: 18 bin kira için %20 artış ne kadar olur?"))
-    assert response.provider == "calculation" and response.model == "decimal+verified-basis-v1"
-    assert response.grounded is True and response.answer_kind == "legal"
-    assert response.answer == _RENT_SOURCE_TEXT + " [K1]"
-    assert len(response.citations) == 1 and len(response.summary) == 1
-    assert "21.600 TL" in response.summary[0] and "3.600 TL" in response.summary[0]
+    assert response.provider == "application" and response.model == "declared-percentage-v1"
+    assert response.grounded is False and response.answer_kind == "conversation"
+    assert response.citations == [] and response.summary == []
+    assert "21.600" in response.answer and "3.600" in response.answer
+    assert "MADDE" not in response.answer and "TL" not in response.answer
 
 
-def test_an_inexact_quote_falls_back_to_the_verified_quote_answer(routing, monkeypatch):
-    """2026-10-22: the writer paraphrased its evidence; the exact-quote gate (no checker yet) rejected it twice and every
-    general question ended as "oluşturamadım". Such a mechanical rejection now falls back to the verified-quote route."""
+def test_percentage_followup_checks_ownership_before_reusing_a_user_amount(routing, monkeypatch):
+    async def denied(*args):
+        raise HTTPException(404, "Sohbet bulunamadı")
+    monkeypatch.setattr(pipeline, "_load_history", denied)
+    with pytest.raises(HTTPException) as error:
+        _execute(AIAnswerRequest(question="%20 artışla kira kaç olur?", conversation_id=uuid4()), uuid4())
+    assert error.value.status_code == 404
+
+
+def test_ambiguous_rent_ceiling_asks_only_missing_scope_instead_of_dumping_all_rules(routing, monkeypatch):
+    monkeypatch.setattr(pipeline,"create_provider",_never("model for missing neutral rent scope"))
+    response,_,_ = _execute(AIAnswerRequest(question="Kira artışı en fazla ne kadar olabilir?"))
+    assert response.answer_kind == "clarification" and not response.grounded
+    assert "ay ve yılı" in response.answer and "konut mu" in response.answer
+    assert "tutarını" not in response.answer and response.citations == []
+
+
+def test_known_renewal_month_and_property_are_not_asked_again(routing, monkeypatch):
+    from api.ai.rag import HistoryTurn
+    first = "Kira artışı en fazla ne kadar olabilir?"
+    async def loaded(*args):
+        return (HistoryTurn(first,"Dönem ve kira türünü paylaşır mısınız?","clarification"),),(first,)
+    monkeypatch.setattr(pipeline,"_load_history",loaded)
+    monkeypatch.setattr(pipeline,"create_provider",_never("model for one missing year"))
+    response,_,_ = _execute(AIAnswerRequest(question="Konut, her yıl eylül ayında yenileniyor, kira 20000 TL."))
+    assert response.answer_kind == "clarification"
+    assert "hangi yılda" in response.answer
+    assert "ay ve yılı" not in response.answer and "konut mu" not in response.answer
+
+
+def test_percentage_reply_does_not_read_amounts_from_private_documents(routing, monkeypatch):
+    def retrieve(*args, **kwargs):
+        routing.calls.append("retrieval")
+        return []
+    monkeypatch.setattr(pipeline, "_retrieve", retrieve)
+    monkeypatch.setattr(pipeline, "persist_answer", lambda *args, **kwargs: (uuid4(), uuid4()))
+    response, _, _ = _execute(AIAnswerRequest(question="%20 artışla kira kaç olur?", selected_document_ids=[uuid4()]),uuid4())
+    assert response.model != "declared-percentage-v1" and "retrieval" in routing.calls
+
+
+def test_a_rejected_natural_answer_does_not_dump_unsolicited_article_text(routing, monkeypatch):
     inexact = {"claims": [{"text": _NATURAL_TEXT, "evidence": [{"source": 1, "quote": "Süre tebliğden başlar."}]}],
                "question": None}
     _use_actual_synthesis(monkeypatch, routing, responses=[inexact, inexact])
-    monkeypatch.setattr(pipeline, "generate_grounded_answer", lambda *args, **kwargs: _SOURCE_TEXT + " [K1]")
+    monkeypatch.setattr(pipeline, "generate_grounded_answer", _never("unsolicited quote fallback"))
     response, timings, _ = _execute(AIAnswerRequest(question=_NATURAL_QUESTION))
     assert timings.extra["synthesis"]["reason"] == "evidence"
-    assert timings.extra["answer_mode"] == "synthesis_then_quotes"
-    assert response.grounded and response.answer_kind == "legal"
-    assert response.answer.endswith(_SOURCE_TEXT + " [K1]") and len(response.citations) == 1
-    assert len(answer_cache) == 0  # the fallback is not cached as a natural answer
+    assert timings.extra["answer_mode"] == "synthesis_unavailable"
+    assert not response.grounded and response.answer_kind == "insufficient_sources"
+    assert response.citations == [] and _SOURCE_TEXT not in response.answer
+    assert len(answer_cache) == 0
 
 
-def test_a_source_gap_the_checker_rejects_falls_back_to_verified_quotes(routing, monkeypatch):
+def test_rejected_source_gap_does_not_bypass_natural_coverage_checks(routing, monkeypatch):
     disagree = {"claims": [], "coverage_preserved": False, "source_only": True, "clarification_safe": False}
     _use_actual_synthesis(monkeypatch, routing, responses=[{"claims": [], "source_gap": True}, disagree])
-    monkeypatch.setattr(pipeline, "generate_grounded_answer", lambda *args, **kwargs: _SOURCE_TEXT + " [K1]")
+    monkeypatch.setattr(pipeline, "generate_grounded_answer", _never("coverage-erasing fallback"))
     response, timings, _ = _execute(AIAnswerRequest(question=_NATURAL_QUESTION))
     assert timings.extra["synthesis"]["reason"] == "unconfirmed_source_gap"
-    assert timings.extra["answer_mode"] == "synthesis_then_quotes" and response.grounded
+    assert timings.extra["answer_mode"] == "synthesis_unavailable" and not response.grounded
+
+
+def test_explicit_request_for_verbatim_text_can_still_use_verified_quotation(routing, monkeypatch):
+    inexact = {"claims": [{"text": _NATURAL_TEXT, "evidence": [{"source": 1, "quote": "Süre tebliğden başlar."}]}], "question": None}
+    _use_actual_synthesis(monkeypatch, routing, responses=[inexact, inexact])
+    monkeypatch.setattr(pipeline, "generate_grounded_answer", lambda *args, **kwargs: _SOURCE_TEXT + " [K1]")
+    response, timings, _ = _execute(AIAnswerRequest(question=_NATURAL_QUESTION + " Kaynağı aynen göster."))
+    assert timings.extra["answer_mode"] == "synthesis_then_quotes"
+    assert response.grounded and _SOURCE_TEXT in response.answer
+
+
+def test_dynamic_research_uses_existing_scoped_retrieval_and_preserves_as_of(routing, monkeypatch):
+    from datetime import date
+    from api.ai import research_plan
+    aspects = (research_plan.Aspect("A1", "Koşullar", "talep koşulları"),
+               research_plan.Aspect("A2", "Başvuru", "başvuru yolları"))
+    cloud = SimpleNamespace(name="openrouter", model="fixture", generate=_never("unplanned generation"))
+    monkeypatch.setattr(pipeline, "answer_provider", lambda *args, **kwargs: cloud)
+    monkeypatch.setattr(research_plan, "make_plan", lambda *args, **kwargs: aspects)
+    queries = []
+    def retrieve(request, **kwargs):
+        queries.append((kwargs["question"], request.as_of, kwargs["user_id"]))
+        return []
+    monkeypatch.setattr(pipeline, "_retrieve", retrieve)
+    requested_date = date(2020, 1, 1)
+    _, timing, _ = _execute(AIAnswerRequest(question="İşçinin hakları nelerdir?", as_of=requested_date))
+    assert {q for q, _, _ in queries} >= {a.query for a in aspects}
+    assert all(d == requested_date and u is None for _, d, u in queries)
+    assert timing.extra["research_plan"]["searched"] == 2
+    assert not {"pause", "unload", "resume"} & set(routing.calls)
+
+
+@pytest.mark.parametrize("scope", ["project_id", "case_id", "office_project_id", "selected_document_ids"])
+def test_private_scope_never_calls_cloud_research_planner_even_if_provider_routing_regresses(routing, monkeypatch, scope):
+    from api.ai import research_plan
+    cloud = SimpleNamespace(name="openrouter", model="fixture", generate=_never("private cloud generation"))
+    monkeypatch.setattr(pipeline, "answer_provider", lambda *args, **kwargs: cloud)
+    monkeypatch.setattr(research_plan, "make_plan", _never("private cloud planning"))
+    monkeypatch.setattr(pipeline, "persist_answer", lambda *args, **kwargs: (uuid4(), uuid4()))
+    async def scoped_history(*args):
+        return (), ()
+    monkeypatch.setattr(pipeline, "_load_history", scoped_history)
+    value = [uuid4()] if scope == "selected_document_ids" else uuid4()
+    response, timing, _ = _execute(AIAnswerRequest(question="Bu işten çıkarılmada haklarım nelerdir?", **{scope:value}), uuid4())
+    assert "research_plan" not in timing.extra and not response.grounded
+
+
+def test_invalid_planner_output_keeps_the_existing_retrieval_path(routing, monkeypatch):
+    cloud = SimpleNamespace(name="openrouter", model="fixture", generate=lambda **kwargs: "not a plan")
+    monkeypatch.setattr(pipeline, "answer_provider", lambda *args, **kwargs: cloud)
+    response, timing, _ = _execute(AIAnswerRequest(question="İşçinin hakları nelerdir?"))
+    assert "retrieval" in routing.calls
+    assert timing.extra["research_plan"]["status"] == "unavailable"
+    assert response.answer_kind == "insufficient_sources"
+
+
+def test_a_precomputed_answer_is_served_before_any_search_or_model_call(routing, monkeypatch):
+    from api.ai.verification import VerifiedAnswer
+    cloud = SimpleNamespace(name="cloud", model="cloud-test", generate=_never("model generation"))
+    routing.settings.free_answer_enabled = True
+    routing.settings.warm_answer_cache_enabled = True
+    monkeypatch.setattr(pipeline, "_answer_providers", lambda settings, request, profile: (routing.provider, cloud))
+    warm = VerifiedAnswer(text="Önceden hazırlanmış kaynaklı cevap.", contexts=(legislation_context(),), unverified_markers=())
+    asked = []
+    monkeypatch.setattr(pipeline, "_warm_cache_lookup", lambda question: asked.append(question) or warm)
+
+    response, timings, events = _execute(AIAnswerRequest(question="Kıdem tazminatı nedir?"))
+
+    assert response.answer == "Önceden hazırlanmış kaynaklı cevap." and response.from_cache and response.grounded
+    assert timings.extra["warm_cache"] is True and asked == ["Kıdem tazminatı nedir?"]
+    assert "retrieval" not in routing.calls and "fast_lookup" not in routing.calls
+    assert events[-1]["stage"] == "done" and len(response.citations) == 1
+
+
+def test_a_scoped_question_never_reads_the_precomputed_answers(routing, monkeypatch):
+    import uuid
+    cloud = SimpleNamespace(name="cloud", model="cloud-test", generate=_never("model generation"))
+    routing.settings.free_answer_enabled = True
+    monkeypatch.setattr(pipeline, "_answer_providers", lambda settings, request, profile: (routing.provider, cloud))
+    monkeypatch.setattr(pipeline, "_warm_cache_lookup", _never("precomputed answer lookup"))
+    request = AIAnswerRequest(question="Kıdem tazminatı nedir?", case_id=uuid.uuid4())
+    assert pipeline._warm_cache_eligible(request, routing.settings, cloud, routing.provider, (), "default") is False
+
+
+def test_the_stored_answers_do_not_answer_for_the_warmup_script_that_is_generating_them(routing, monkeypatch):
+    from api.ai import warm_cache
+    cloud = SimpleNamespace(name="cloud", model="cloud-test", generate=_never("model generation"))
+    routing.settings.free_answer_enabled = True
+    monkeypatch.setattr(pipeline, "_answer_providers", lambda settings, request, profile: (routing.provider, cloud))
+    monkeypatch.setattr(pipeline, "_warm_cache_lookup", _never("stored answer read during warm-up"))
+    token = warm_cache.collector.set(lambda *args: None)
+    try:
+        # the stored-answer read is skipped; the normal pipeline then needs sources, which this fake search does not have
+        try:
+            _execute(AIAnswerRequest(question="Kıdem tazminatı nedir?"))
+        except pytest.fail.Exception:
+            raise
+        except Exception:  # noqa: BLE001 - what happens after the skipped read is not what this test is about
+            pass
+    finally:
+        warm_cache.collector.reset(token)

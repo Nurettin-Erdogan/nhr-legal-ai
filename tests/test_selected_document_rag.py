@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from api.ai import document_selection, pipeline, retrieval, routes
 from api.ai.cache import answer_cache_key
-from api.auth.routes import optional_current_user_id
+from api.auth.routes import current_user_id
 from api.schemas import AIAnswerRequest
 
 QUESTION = "Seçili belgede ödeme tutarı nedir?"
@@ -79,7 +79,7 @@ def test_database_failure_is_not_reported_as_missing_documents(monkeypatch):
 def test_both_endpoints_reject_foreign_selection_before_model_or_stream(monkeypatch, endpoint):
     app = FastAPI()
     app.include_router(routes.router)
-    app.dependency_overrides[optional_current_user_id] = lambda: uuid4()
+    app.dependency_overrides[current_user_id] = lambda: uuid4()
     connection_rows(monkeypatch, [])
     response = TestClient(app).post("/api/ai" + endpoint, json={
         "question": QUESTION, "selected_document_ids": [str(uuid4())],

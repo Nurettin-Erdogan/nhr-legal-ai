@@ -14,9 +14,10 @@ caps the result is identical to the complete search; above them it is returned
 with `partial = true`, the count is a lower bound and the UI says so.
 """
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 import psycopg
 
+from api.auth.routes import current_user_id
 from api.ai.rag import RAGContext
 from api.ai.live_verify import verify_third_party_contexts
 from api.ai.trust import verified_contexts
@@ -25,7 +26,7 @@ from api.ai.search_plan import plan_search, SEARCH_QUERY_SQL
 from api.ai.turkish_text import restore_turkish
 from api.db import database_connection
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(current_user_id)])  # yalnız oturum açmış kullanıcı (erişim listesi)
 
 LEGACY_RESEARCH_SQL = f"""
 WITH search_query AS ({SEARCH_QUERY_SQL}),

@@ -37,7 +37,8 @@ export function ExecutionBreakdown({ caseId }: { caseId: string }) {
     loadBreakdown(caseId, controller.signal)
       .then((data) => setState({ data }))
       .catch((error) => {
-        if (!controller.signal.aborted) setState({ error: error instanceof Error ? error.message : "Döküm yüklenemedi." });
+        if (!controller.signal.aborted)
+          setState({ error: error instanceof Error ? error.message : "Döküm yüklenemedi." });
       });
     return () => controller.abort();
   }, [caseId]);
@@ -49,7 +50,8 @@ export function ExecutionBreakdown({ caseId }: { caseId: string }) {
     try {
       if (!file.storagePath) throw new Error("Bu belgenin dosyası kayıtlı değil.");
       const response = await db.storage.from("case-files").download(file.storagePath);
-      if (response.error || !response.data) throw new Error(response.error?.message || "Dosya indirilemedi.");
+      if (response.error || !response.data)
+        throw new Error(response.error?.message || "Dosya indirilemedi.");
       const url = URL.createObjectURL(response.data);
       const anchor = window.document.createElement("a");
       anchor.href = url;
@@ -92,7 +94,11 @@ export function ExecutionBreakdown({ caseId }: { caseId: string }) {
       onClick={() => void open(file)}
       className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs hover:bg-secondary disabled:opacity-50"
     >
-      {opening === file.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+      {opening === file.id ? (
+        <Loader2 className="h-3 w-3 animate-spin" />
+      ) : (
+        <Download className="h-3 w-3" />
+      )}
       {label}
     </button>
   );
@@ -117,17 +123,24 @@ export function ExecutionBreakdown({ caseId }: { caseId: string }) {
         {replies.items.length > 0 && (
           <>
             <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-2 text-xs text-amber-800 dark:text-amber-300">
-              Bu liste cevabın sonucunu söylemez. Yazıda ne geçtiğine göre sıralar: içinde tutar geçenler üstte, yalnız “bulunmamaktadır” türü
-              ifade geçenler altta. Alıntılar yazıdan aynen alınmıştır; karar vermeden önce yazının kendisini açıp okuyun.
+              Bu liste cevabın sonucunu söylemez. Yazıda ne geçtiğine göre sıralar: içinde tutar
+              geçenler üstte, yalnız “bulunmamaktadır” türü ifade geçenler altta. Alıntılar yazıdan
+              aynen alınmıştır; karar vermeden önce yazının kendisini açıp okuyun.
             </p>
-            <div className="mt-3 flex flex-wrap gap-2 text-xs" role="group" aria-label="Cevap süzgeci">
+            <div
+              className="mt-3 flex flex-wrap gap-2 text-xs"
+              role="group"
+              aria-label="Cevap süzgeci"
+            >
               <button
                 type="button"
                 aria-pressed={filter === "all"}
                 onClick={() => setFilter("all")}
                 className={cn(
                   "rounded-full border px-3 py-1.5 font-medium",
-                  filter === "all" ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card text-muted-foreground hover:text-foreground",
+                  filter === "all"
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : "border-border bg-card text-muted-foreground hover:text-foreground",
                 )}
               >
                 Tümü {replies.items.length}
@@ -140,31 +153,48 @@ export function ExecutionBreakdown({ caseId }: { caseId: string }) {
                   onClick={() => setFilter(group)}
                   className={cn(
                     "rounded-full border px-3 py-1.5 font-medium",
-                    filter === group ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card text-muted-foreground hover:text-foreground",
+                    filter === group
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-border bg-card text-muted-foreground hover:text-foreground",
                   )}
                 >
                   {replyGroupLabels[group]} {replies.groups[group]}
                 </button>
               ))}
             </div>
-            <ul className="mt-3 divide-y divide-border rounded-xl border border-border" data-testid="execution-replies">
+            <ul
+              className="mt-3 divide-y divide-border rounded-xl border border-border"
+              data-testid="execution-replies"
+            >
               {visible.map((item) => (
                 <li key={item.documents[0].id} className="p-3 sm:p-4" data-group={item.group}>
                   <div className="flex flex-wrap items-center gap-2 text-sm">
                     <span className="font-medium">{item.sender ?? "Gönderen okunamadı"}</span>
                     <span className="text-xs text-muted-foreground">{dateTr(item.date)}</span>
-                    <span className={cn("rounded-full border px-2 py-0.5 text-xs", GROUP_TONE[item.group])}>
+                    <span
+                      className={cn(
+                        "rounded-full border px-2 py-0.5 text-xs",
+                        GROUP_TONE[item.group],
+                      )}
+                    >
                       {item.readable ? replyGroupLabels[item.group] : "Metni okunamadı"}
                     </span>
-                    {item.amounts.length > 0 && <span className="text-xs font-medium">{item.amounts.join(" · ")}</span>}
+                    {item.amounts.length > 0 && (
+                      <span className="text-xs font-medium">{item.amounts.join(" · ")}</span>
+                    )}
                   </div>
                   {item.quotes.map((quote) => (
-                    <blockquote key={quote} className="mt-2 border-l-2 border-border pl-3 text-sm text-muted-foreground">
+                    <blockquote
+                      key={quote}
+                      className="mt-2 border-l-2 border-border pl-3 text-sm text-muted-foreground"
+                    >
                       “{quote}”
                     </blockquote>
                   ))}
                   <div className="mt-2 flex flex-wrap gap-2">
-                    {item.documents.map((file, index) => openButton(file, index === 0 ? "Yazıyı aç" : `${index + 1}. kopya`))}
+                    {item.documents.map((file, index) =>
+                      openButton(file, index === 0 ? "Yazıyı aç" : `${index + 1}. kopya`),
+                    )}
                   </div>
                 </li>
               ))}
@@ -178,15 +208,22 @@ export function ExecutionBreakdown({ caseId }: { caseId: string }) {
           Makbuz dökümü
         </h3>
         {receipts.length === 0 ? (
-          <p className="mt-1 text-sm text-muted-foreground">Bu dosyada tahsilat, masraf ya da reddiyat makbuzu yok.</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Bu dosyada tahsilat, masraf ya da reddiyat makbuzu yok.
+          </p>
         ) : (
           <>
-            <p className="mt-1 text-sm text-muted-foreground" data-testid="execution-receipts-headline">
-              {counts.map((item) => `${item.label} ${item.count} (tek tutarı okunan ${item.single})`).join(" · ")}
+            <p
+              className="mt-1 text-sm text-muted-foreground"
+              data-testid="execution-receipts-headline"
+            >
+              {counts
+                .map((item) => `${item.label} ${item.count} (tek tutarı okunan ${item.single})`)
+                .join(" · ")}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Tutarlar makbuz metninden okunur; toplanmaz. Bir makbuzda birden çok farklı tutar varsa hangisinin makbuz tutarı olduğu
-              bilinemez, hepsi yazıldığı gibi gösterilir.
+              Tutarlar makbuz metninden okunur; toplanmaz. Bir makbuzda birden çok farklı tutar
+              varsa hangisinin makbuz tutarı olduğu bilinemez, hepsi yazıldığı gibi gösterilir.
             </p>
             <div className="mt-3 overflow-x-auto rounded-xl border border-border">
               <table className="w-full text-sm" data-testid="execution-receipts">
@@ -203,7 +240,9 @@ export function ExecutionBreakdown({ caseId }: { caseId: string }) {
                     <tr key={item.document.id} className="border-t border-border">
                       <td className="whitespace-nowrap px-3 py-2">{dateTr(item.date)}</td>
                       <td className="px-3 py-2">{item.label}</td>
-                      <td className={cn("px-3 py-2", !item.amount && "text-muted-foreground")}>{receiptCell(item)}</td>
+                      <td className={cn("px-3 py-2", !item.amount && "text-muted-foreground")}>
+                        {receiptCell(item)}
+                      </td>
                       <td className="px-3 py-2">{openButton(item.document, "Aç")}</td>
                     </tr>
                   ))}

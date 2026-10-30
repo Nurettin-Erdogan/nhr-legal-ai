@@ -75,6 +75,9 @@ class RAGContext:
     verification: str = "official"
     # Parçanın kaynak içindeki sırası (madde metni yeniden kurulurken kaynak sırası korunur).
     chunk_index: int | None = None
+    # Server-resolved caption of the next article in the same verified PDF.
+    # It is presentation metadata, never legal evidence or user input.
+    following_article_title: str | None = None
 
     @property
     def kind_label(self) -> str:

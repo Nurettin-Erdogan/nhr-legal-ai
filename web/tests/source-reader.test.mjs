@@ -358,7 +358,7 @@ test("home chat keeps citation identities instead of flattening them into the an
       "@/lib/source-label": labels,
       "@/lib/utils": { cn: (...args) => args.join(" ") },
       "@/lib/extract-text": {},
-      "@/components/AuthProvider": { useAuth: () => ({ user: { id: "owner" }, loading: false }) },
+      "@/components/AuthContext": { useAuth: () => ({ user: { id: "owner" }, loading: false }) },
       "@/lib/ai-api": { askAssistant: async () => ({ answer: "Cevap [K1]", citations }) },
       "react-markdown": { __esModule: true, default: "Markdown" },
       "remark-gfm": { __esModule: true, default: () => {} },

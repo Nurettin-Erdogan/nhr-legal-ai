@@ -25,19 +25,49 @@ export const ACCESS_MODE_LABELS: Record<string, { label: string; description: st
   open: { label: "Herkes", description: "Bağlantıyı bilen herkes hesap açıp giriş yapabilir." },
 };
 
+/** Onay penceresinin içeriği (components/ConfirmDialog). */
+export interface ConfirmText {
+  title: string;
+  description: string;
+  confirmLabel: string;
+  destructive?: boolean;
+}
+
 /** Erişim modunu değiştirmeden önce sorulan soru: kaç hesabın dışarıda kalacağını sayıyla söyler. */
-export function accessModeConfirm(mode: string, unlistedAccounts: number): string {
-  if (mode !== "allowlist") return "Bağlantıyı bilen herkes hesap açıp giriş yapabilecek. Devam edilsin mi?";
+export function accessModeConfirm(mode: string, unlistedAccounts: number): ConfirmText {
+  if (mode !== "allowlist")
+    return {
+      title: "Uygulama herkese açılsın mı?",
+      confirmLabel: "Herkese aç",
+      destructive: true,
+      description: "Bağlantıyı bilen herkes hesap açıp giriş yapabilecek.",
+    };
   if (unlistedAccounts <= 0)
-    return "Bundan sonra yalnız listedeki e-postalar hesap açıp giriş yapabilecek. Devam edilsin mi?";
-  return `Listede olmayan ${unlistedAccounts.toLocaleString("tr-TR")} hesap artık giriş yapamayacak ve açık oturumları hemen kapanacak (yöneticiler hariç). Verileri silinmez. Devam edilsin mi?`;
+    return {
+      title: "Yalnız listedekiler girsin mi?",
+      confirmLabel: "Yalnız listeye aç",
+      description:
+        "Bundan sonra yalnız erişim listesindeki e-postalar hesap açıp giriş yapabilecek.",
+    };
+  return {
+    title: "Yalnız listedekiler girsin mi?",
+    confirmLabel: "Yalnız listeye aç",
+    destructive: true,
+    description: `Listede olmayan ${unlistedAccounts.toLocaleString("tr-TR")} hesap artık giriş yapamayacak ve açık oturumları hemen kapanacak (yöneticiler hariç). Verileri silinmez.`,
+  };
 }
 
 /** Listeden çıkarmadan önce sorulan soru; "Herkes" modunda çıkarmanın hemen etkisi olmadığını da söyler. */
-export function removeAccessConfirm(email: string, mode: string): string {
-  return mode === "allowlist"
-    ? `${email} listeden çıkarılsın mı? Hesabı varsa açık oturumu hemen kapanır ve giriş yapamaz (yöneticiler hariç). Verileri silinmez.`
-    : `${email} listeden çıkarılsın mı? Erişim "Herkes" modunda olduğu için şimdilik girmeye devam eder.`;
+export function removeAccessConfirm(email: string, mode: string): ConfirmText {
+  return {
+    title: "Erişim listesinden çıkarılsın mı?",
+    confirmLabel: "Listeden çıkar",
+    destructive: mode === "allowlist",
+    description:
+      mode === "allowlist"
+        ? `${email} hesabı varsa açık oturumu hemen kapanır ve giriş yapamaz (yöneticiler hariç). Verileri silinmez.`
+        : `${email} — erişim "Herkes" modunda olduğu için şimdilik girmeye devam eder.`,
+  };
 }
 
 /** Erişim listesindeki e-postanın hesabı: henüz açılmamış olabilir. */
@@ -47,7 +77,11 @@ export function accountStateLabel(status: string | null | undefined): string {
   return `Hesabı ${(STATUS_LABELS[status] ?? status).toLocaleLowerCase("tr-TR")}`;
 }
 
-export const FEEDBACK_LABELS: Record<string, string> = { hata: "Hata", oneri: "Öneri", begeni: "Beğeni" };
+export const FEEDBACK_LABELS: Record<string, string> = {
+  hata: "Hata",
+  oneri: "Öneri",
+  begeni: "Beğeni",
+};
 
 const ACTION_LABELS: Record<string, string> = {
   "auth.login": "Giriş yaptı",
@@ -119,7 +153,10 @@ export function formatBytes(value: number | null | undefined): string {
 }
 
 /** Son yedeğin yaşı saat cinsinden; 26 saatten eskiyse panel uyarır (gece yedeği sessizce durabiliyordu, 2026-10-24). */
-export function backupAgeHours(createdAt: string | null | undefined, now: Date = new Date()): number | null {
+export function backupAgeHours(
+  createdAt: string | null | undefined,
+  now: Date = new Date(),
+): number | null {
   if (!createdAt) return null;
   const created = new Date(createdAt);
   if (Number.isNaN(created.getTime())) return null;

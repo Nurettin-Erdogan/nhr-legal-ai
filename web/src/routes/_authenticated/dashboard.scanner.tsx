@@ -15,8 +15,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { jsPDF } from "jspdf";
-import { useNavigate } from "@/lib/router-compat";
-import { useAuth } from "@/components/AuthProvider";
+import { useNavigate } from "@/lib/router-hooks";
+import { useAuth } from "@/components/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { storagePathFor } from "@/lib/uyap";
 
@@ -51,7 +51,7 @@ const Scanner = () => {
         await videoRef.current.play();
       }
       setActive(true);
-    } catch (e: any) {
+    } catch (e: unknown) {
       toast.error("Kameraya erişilemedi. Tarayıcı izinlerini kontrol edin.");
       console.error(e);
     }
@@ -148,17 +148,15 @@ const Scanner = () => {
           .upload(path, blob, { contentType: "application/pdf", upsert: false });
         if (uploaded.error) throw new Error(uploaded.error.message);
         const id = crypto.randomUUID();
-        const inserted = await supabase
-          .from("case_documents")
-          .insert({
-            id,
-            owner_id: user.id,
-            file_name: fileName,
-            storage_path: path,
-            mime_type: "application/pdf",
-            size_bytes: blob.size,
-            source: "manual",
-          });
+        const inserted = await supabase.from("case_documents").insert({
+          id,
+          owner_id: user.id,
+          file_name: fileName,
+          storage_path: path,
+          mime_type: "application/pdf",
+          size_bytes: blob.size,
+          source: "manual",
+        });
         if (inserted.error) {
           // Yalnız bu işlemde oluşturulan, henüz kaydı olmayan dosya geri alınır.
           await supabase.storage.from("case-files").remove([path]);

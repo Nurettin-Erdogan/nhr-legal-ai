@@ -126,7 +126,9 @@ def test_real_pipeline_returns_and_caches_calculation_with_unchanged_verified_ba
     monkeypatch.setattr(explanation, "explain_verified_answer", lambda *_, **__: pytest.fail("Unnecessary extra model call"))
     answer_cache.clear()
     try:
-        request = AIAnswerRequest(question="Örnek kira artışı: 18 bin kira için %20 artış ne kadar olur?")
+        # A legal-limit question still needs its verified statutory basis;
+        # pure user-supplied percentage arithmetic has a separate nonlegal route.
+        request = AIAnswerRequest(question="18 bin kira için %20 artışın yasal sınırı nedir?")
         result, _ = asyncio.run(pipeline.execute_answer(request, None))
         assert result.grounded and result.answer == text + " [K1]"
         assert "21.600 TL" in result.summary[0] and len(result.citations) == 1

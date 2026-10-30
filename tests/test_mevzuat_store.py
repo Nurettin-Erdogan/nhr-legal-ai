@@ -15,12 +15,11 @@ from uuid import UUID
 
 import pytest
 
-psycopg = pytest.importorskip("psycopg")
-
-from ingestion.mevzuat.models import LegislationRecord
 from ingestion.mevzuat.parser import record_from_article
-from ingestion.mevzuat.store import CitedLegislationChangedError, upsert_legislation
+from ingestion.mevzuat.store import upsert_legislation
 from ingestion.text import content_hash
+
+psycopg = pytest.importorskip("psycopg")
 
 DATABASE_URL = os.getenv("NHR_TEST_DATABASE_URL")
 FIXTURES = Path(__file__).parent / "fixtures" / "mevzuat"
@@ -305,7 +304,25 @@ def test_historical_version_identity_is_not_reinserted(connection):
 
 
 def test_corpus_5302_article_14_reingest_preserves_versions(connection):
-    """Canlı 5302 m.14 satırlarını silmeden/ezmeden yeniden aktar."""
+    """5302/m14 regression, using isolated synthetic versions, never live data."""
+    # A reusable isolated DB can already contain an archived fixture version.
+    # Preserve it too rather than assuming an empty corpus or deleting fixtures.
+    existing_ids = {row[0] for row in connection.execute(
+        "SELECT ls.id FROM legal_sources ls "
+        "JOIN legislation_details d ON d.legal_source_id = ls.id "
+        "WHERE d.law_no = %s AND d.article_no = %s AND d.legislation_type = %s",
+        ("5302", "14", "law"),
+    ).fetchall()}
+    base = replace(
+        _record(raw_text="MADDE 14- Isolated versioning regression fixture."),
+        law_no="5302", article_no="14", law_name="TEST ONLY",
+        article_title="TEST ONLY", title="TEST ONLY 5302 m.14",
+        external_id="mevzuat:kanun:5302:m.14",
+    )
+    old = _version(base, day=date(2022, 1, 1), suffix="Old test version")
+    record = _version(base, day=date(2023, 5, 22), suffix="Current test version")
+    upsert_legislation(connection, old)
+    upsert_legislation(connection, record)
     before = connection.execute(
         "SELECT ls.id, ls.revision, ls.is_current, ls.superseded_by_id, "
         "ls.content_hash, ls.source_version, details.version_identity, details.version_date "
@@ -316,37 +333,8 @@ def test_corpus_5302_article_14_reingest_preserves_versions(connection):
         "ORDER BY ls.revision",
         ("5302", "14", "law"),
     ).fetchall()
-    if not before:
-        pytest.skip("5302 m.14 korpusta yok")
-
-    archive = Path(__file__).resolve().parents[1] / "data" / "raw" / "mevzuat" / "mevzuat__kanun__5302__m.14.json"
-    if archive.exists():
-        record = LegislationRecord.from_json(json.loads(archive.read_text(encoding="utf-8")))
-    else:
-        current = connection.execute(
-            "SELECT ls.raw_text, ls.content_hash, ls.title, details.law_name, "
-            "details.article_title, details.official_gazette_no, details.official_gazette_date, "
-            "ls.source_url "
-            "FROM legal_sources ls "
-            "JOIN legislation_details details ON details.legal_source_id = ls.id "
-            "WHERE details.law_no = %s AND details.article_no = %s AND ls.is_current",
-            ("5302", "14"),
-        ).fetchone()
-        record = replace(
-            _record(),
-            law_no="5302",
-            article_no="14",
-            law_name=current[3],
-            article_title=current[4],
-            title=current[2],
-            raw_text=current[0],
-            content_hash=current[1],
-            external_id="mevzuat:kanun:5302:m.14",
-            official_gazette_no=current[5],
-            official_gazette_date=current[6],
-            source_url=current[7],
-            version_date=date(2023, 5, 22),
-        )
+    assert len(before) == len(existing_ids) + 2
+    assert existing_ids <= {row[0] for row in before}
 
     first = upsert_legislation(connection, record)
     assert first.status == "unchanged"

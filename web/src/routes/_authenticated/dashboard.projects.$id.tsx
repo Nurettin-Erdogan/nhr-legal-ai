@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { useParams, Link } from "@/lib/router-compat";
+import { Link } from "@/lib/router-compat";
+import { useParams } from "@/lib/router-hooks";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,7 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Loader2, Plus, ArrowLeft, StickyNote, Sparkles, Trash2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/components/AuthProvider";
+import { useAuth } from "@/components/AuthContext";
 import { toast } from "sonner";
 import { LegalChat } from "@/components/LegalChat";
 import { ProjectDocuments } from "@/components/ProjectDocuments";

@@ -140,6 +140,11 @@ def _date_role(text: str, dates: list[tuple[int, int, date | None]], position: i
     for field, prefix, suffix in (("employment_start", _PREFIX_START, _AFTER_START),
                                    ("employment_end", _PREFIX_END, _AFTER_END)):
         for match in prefix.finditer(before):
+            # A role label must actually introduce this date. In an all-in-one
+            # word problem, "çıkış parası alırım, 50000 brüt ücret ..." is a
+            # payment goal, not an end-date label for the next date encountered.
+            if not re.fullmatch(r"[\s:;=,'’\"()\-–—]*(?:olarak\s*)?", before[match.end():]):
+                continue
             choices.append((len(before) - match.end(), field))
         for match in suffix.finditer(after):
             choices.append((match.start(), field))

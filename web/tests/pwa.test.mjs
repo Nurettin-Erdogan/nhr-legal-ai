@@ -23,7 +23,11 @@ function load() {
   const listeners = {};
   const store = new Map();
   const context = {
-    self: { addEventListener: (type, fn) => (listeners[type] = fn), skipWaiting: () => "skip", clients: { claim: () => "claim" } },
+    self: {
+      addEventListener: (type, fn) => (listeners[type] = fn),
+      skipWaiting: () => "skip",
+      clients: { claim: () => "claim" },
+    },
     caches: {
       open: async () => ({ addAll: async (urls) => urls.forEach((url) => store.set(url, "x")) }),
       keys: async () => ["jurisai-shell-v1", "eski"],

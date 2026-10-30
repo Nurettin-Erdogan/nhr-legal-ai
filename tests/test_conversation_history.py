@@ -92,6 +92,29 @@ def test_explicit_arithmetic_user_input_is_not_lost_as_a_social_greeting():
     assert prior_questions_from_rows(rows) == ("18000 * 1,20",)
 
 
+def test_user_facts_after_the_short_display_excerpt_survive_the_real_history_reader():
+    from api.ai.conversation_history import prior_questions_from_rows
+    from api.ai.user_facts import collect_user_facts
+    from datetime import date
+    details = "Olayın çalışma koşullarını anlatıyorum. " * 12 + " Brüt ücret 50000 TL, 12.11.2005 13.03.2016."
+    assert 300 < len(details) < 2000
+    first = "Ben çalıştım çıkarıldım ne kadar çıkış parası alırım?"
+    rows = [_row("user",first),_row("assistant","Ayrıntıları paylaşır mısınız?",grounded=False,answer_kind="clarification"),
+            _row("user",details),_row("assistant","Ayrılma nedeni?",grounded=False,answer_kind="clarification")]
+    questions = prior_questions_from_rows(rows)
+    assert questions[-1].endswith("12.11.2005 13.03.2016.")
+    facts = collect_user_facts("Küçülme nedeniyle çıkardılar",prior_questions=questions)
+    assert facts.amount == 50000 and facts.start_date == date(2005,11,12) and facts.end_date == date(2016,3,13)
+
+
+def test_server_calculation_keeps_its_user_input_but_not_assistant_inferred_numbers():
+    from api.ai.conversation_history import prior_questions_from_rows
+    user = "Kira 20000 TL, %20 artışla kaç olur?"
+    rows = [_row("user",user),_row("assistant","24.000 TL",grounded=False,answer_kind="conversation")]
+    assert prior_questions_from_rows(rows) == (user,)
+    assert "24.000" not in str(prior_questions_from_rows(rows))
+
+
 def test_history_keeps_only_the_latest_turns_and_ignores_unanswered_question():
     rows = []
     for number in range(5):

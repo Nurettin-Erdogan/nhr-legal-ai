@@ -11,7 +11,9 @@ from fastapi import HTTPException
 
 from api import legal
 from api import legislation_browse as browse
-from tests.test_ai_persistence import TEST_LAW_NO, _seed_legislation, connection  # noqa: F401  (fixture)
+from tests.test_ai_persistence import TEST_LAW_NO, _seed_legislation, connection as _connection_fixture
+
+connection = _connection_fixture
 
 
 def law(no, name, kind="law", articles=10):

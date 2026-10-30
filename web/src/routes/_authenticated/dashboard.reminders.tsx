@@ -34,7 +34,7 @@ import { Plus, Bell, Check, Loader2, Pencil, Trash2, MoreVertical, Clock } from 
 import { cn } from "@/lib/utils";
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/components/AuthProvider";
+import { useAuth } from "@/components/AuthContext";
 import { toast } from "sonner";
 import { accountSecurity } from "@/lib/auth-api";
 import { z } from "zod";

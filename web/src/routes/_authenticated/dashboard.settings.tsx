@@ -5,11 +5,12 @@ import { IntegrationSettings } from "@/components/IntegrationSettings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { useAuth } from "@/components/AuthProvider";
+import { useAuth } from "@/components/AuthContext";
 import { db } from "@/lib/db";
 import { beginGoogleLogin, googleAccountLinked, googleLoginAvailable } from "@/lib/auth-api";
 import { downloadMyData } from "@/lib/account-data";
-import { AccountDeletion, AccountProfile, useAccountSecurity } from "@/components/AccountSettings";
+import { AccountDeletion, AccountProfile } from "@/components/AccountSettings";
+import { useAccountSecurity } from "@/components/account-security";
 
 type CallPreferences = {
   greeting: string;
@@ -45,18 +46,25 @@ function DataRights() {
     }
   };
   return (
-    <section className="space-y-3 rounded-xl border border-border bg-card p-6" data-testid="data-rights">
+    <section
+      className="space-y-3 rounded-xl border border-border bg-card p-6"
+      data-testid="data-rights"
+    >
       <h2 className="text-xl font-semibold">Verilerim (KVKK)</h2>
       <p>
-        Hesabınızdaki müvekkil, dava, görev, takvim, belge üst verileri, yapay zekâ çıktıları ve sohbet geçmişinizi JSON dosyası olarak indirebilirsiniz.
-        Parola ve bağlantı anahtarları güvenlik nedeniyle dahil edilmez; belge dosyalarının kendisi Dosyalar sayfasından tek tek indirilir.
-        Verileriniz yerel sunucumuzda tutulur, yapay zekâ modeli eğitiminde kullanılmaz.
+        Hesabınızdaki müvekkil, dava, görev, takvim, belge üst verileri, yapay zekâ çıktıları ve
+        sohbet geçmişinizi JSON dosyası olarak indirebilirsiniz. Parola ve bağlantı anahtarları
+        güvenlik nedeniyle dahil edilmez; belge dosyalarının kendisi Dosyalar sayfasından tek tek
+        indirilir. Verileriniz yerel sunucumuzda tutulur, yapay zekâ modeli eğitiminde kullanılmaz.
       </p>
       <Button type="button" variant="outline" onClick={() => void run()} disabled={busy}>
         {busy ? "Hazırlanıyor…" : "Verilerimi indir (JSON)"}
       </Button>
       {message && (
-        <p role={failed ? "alert" : "status"} className={failed ? "text-destructive" : "text-emerald-700"}>
+        <p
+          role={failed ? "alert" : "status"}
+          className={failed ? "text-destructive" : "text-emerald-700"}
+        >
           {message}
         </p>
       )}
@@ -182,9 +190,13 @@ const Settings = () => {
         <IntegrationSettings />
         <section className="space-y-5 rounded-xl border border-border bg-card p-6">
           <h2 className="text-xl font-semibold">Çağrı tercihleri</h2>
-          <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
-            Telefon hattı, sesli AI, Google Takvim, WhatsApp ve ödeme sağlayıcısı bu kurulumda bağlı değil. Aşağıdaki tercihler
-            veritabanına kaydedilir; tek başına arama veya bildirim göndermez.
+          <p
+            role="status"
+            className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm"
+          >
+            Telefon hattı, sesli AI, Google Takvim, WhatsApp ve ödeme sağlayıcısı bu kurulumda bağlı
+            değil. Aşağıdaki tercihler veritabanına kaydedilir; tek başına arama veya bildirim
+            göndermez.
           </p>
           {!userId ? (
             <p>Tercihler için oturum açın.</p>

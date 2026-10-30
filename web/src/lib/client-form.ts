@@ -64,6 +64,7 @@ export function clientFormProblem(form: ClientIdentityFields): string | null {
       ? "TC kimlik numarası geçersiz görünüyor; haneleri kontrol edin."
       : "TC kimlik numarası 11 haneli olmalı.";
   }
-  if (phone && !validPhone(phone)) return "Telefon numarası geçersiz; alan koduyla birlikte en az 10 rakam yazın.";
+  if (phone && !validPhone(phone))
+    return "Telefon numarası geçersiz; alan koduyla birlikte en az 10 rakam yazın.";
   return null;
 }

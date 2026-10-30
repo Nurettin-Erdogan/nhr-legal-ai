@@ -11,6 +11,8 @@ from typing import Any
 from uuid import UUID
 
 from api.ai.rag import HistoryTurn, RAGContext
+from api.ai.verification import VerifiedAnswer
+from api.ai.trust import usable_as_evidence
 
 
 def normalize_question(question: str) -> str:
@@ -23,7 +25,9 @@ def source_fingerprint(contexts: list[RAGContext]) -> str:
         content_hash = sha256(context.content.encode("utf-8")).hexdigest()[:16]
         revision = "" if context.revision is None else str(context.revision)
         parts.append(
-            f"{context.chunk_id}:{context.source_version or ''}:{revision}:{content_hash}"
+            f"{context.chunk_id}:{context.source_version or ''}:{revision}:{content_hash}:"
+            f"{context.source_type}:{context.reference_line}:{context.source_url}:"
+            f"{context.verification}:{context.effective_from}:{context.effective_to}:{context.following_article_title}"
         )
     return sha256("|".join(parts).encode("utf-8")).hexdigest()
 
@@ -49,7 +53,7 @@ def answer_cache_key(
 ) -> str:
     material = "\n".join(
         (
-            "natural-sourced-answer-v2",
+            "natural-sourced-answer-v3",
             normalize_question(question),
             "" if project_id is None else str(project_id),
             "" if as_of is None else as_of.isoformat(),
@@ -93,3 +97,23 @@ class AnswerCache:
 
 
 answer_cache = AnswerCache()
+
+
+def restore_verified_natural_answer(payload: dict, contexts: Sequence[RAGContext]) -> VerifiedAnswer | None:
+    """Reuse an already checked answer only against the same current evidence.
+
+    This private in-memory object cannot come from an HTTP payload. No model
+    recheck is required for identical text/evidence; missing, changed or no
+    longer trusted sources invalidate it. Ordinary cached prose is not proof.
+    """
+    from dataclasses import replace
+    answer = payload.get("_verified_natural_answer")
+    if not isinstance(answer, VerifiedAnswer) or not answer.grounded or answer.answer_kind != "legal":
+        return None
+    available = {c.chunk_id: c for c in contexts if usable_as_evidence(c)}
+    if any(c.chunk_id not in available for c in answer.contexts):
+        return None
+    current = tuple(available[c.chunk_id] for c in answer.contexts)
+    if source_fingerprint(list(current)) != source_fingerprint(list(answer.contexts)):
+        return None
+    return replace(answer, contexts=current)

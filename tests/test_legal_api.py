@@ -8,9 +8,9 @@ from datetime import date
 
 import pytest
 
-psycopg = pytest.importorskip("psycopg")
-
 from api import legal
+
+psycopg = pytest.importorskip("psycopg")
 
 DATABASE_URL = os.getenv("NHR_TEST_DATABASE_URL")
 
@@ -310,3 +310,4 @@ def test_corpus_stats_break_down_courts_verification_and_embeddings(connection, 
         + stats.court_decisions.danistay
         + stats.court_decisions.anayasa_mahkemesi
     )
+

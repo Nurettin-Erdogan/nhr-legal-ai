@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react";
-import { useAuth } from "@/components/AuthProvider";
+import { useAuth } from "@/components/AuthContext";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
