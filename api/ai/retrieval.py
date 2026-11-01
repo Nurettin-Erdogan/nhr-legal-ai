@@ -25,7 +25,7 @@ _LAW_NO_RE = re.compile(r"(?<!\d)(\d{3,5})(?!\d)")
 _ARTICLE_RE = re.compile(
     # "madde 18", "18. madde", ve avukatların kısa yazımı "m. 18" / "m.18" / "md. 18".
     r"(?:(?:ek\s+geçici|ek|geçici)\s+)?madde\s+(\d{1,3}(?:\s*/\s*[a-zA-Z]|[a-zA-Z])?)(?![\d/])"
-    r"|(\d{1,3}(?:\s*/\s*[a-zA-Z]|[a-zA-Z])?)\.\s*madd"
+    r"|(?:(?:ek\s+geçici|ek|geçici)\s+)?(\d{1,3}(?:\s*/\s*[a-zA-Z]|[a-zA-Z])?)\.\s*madd"
     r"|(?<![0-9A-Za-zÇĞİÖŞÜçğıöşü])(?:(?:ek\s+geçici|ek|geçici)\s+)?md?\.\s*(\d{1,3}(?:\s*/\s*[a-zA-Z]|[a-zA-Z])?)(?![\d/])",
     re.IGNORECASE,
 )
@@ -1145,6 +1145,7 @@ def retrieve_contexts(
     errors = []
     completed = 0
     state_lock = Lock()
+    deferred_vectors = []
 
     def run(name, sql, params, budget, first_budget_ms=None, *, branch_connection=None):
         nonlocal completed
@@ -1197,8 +1198,17 @@ def retrieve_contexts(
         # Correctness-first operation: PostgreSQL's 0 disables this statement's
         # timeout, not a global server setting. User decision 2026-10-27.
         budget = '0'
-        if not parallel_public_vectors or not _PUBLIC_VECTOR_SLOTS.acquire(blocking=False):
+        if not parallel_public_vectors:
             return run(name, sql, params, budget)
+        if not _PUBLIC_VECTOR_SLOTS.acquire(blocking=False):
+            # Do not make the lexical lane wait behind a third vector scan
+            # when the two isolated workers are already occupied. Retain the
+            # identical query on the caller's connection, but execute it after
+            # lexical retrieval has had a chance to overlap the workers.
+            # No unbounded executor queue, extra workers or source truncation.
+            future = Future()
+            deferred_vectors.append((future, name, sql, params, budget))
+            return future
 
         def worker():
             from api.db import database_connection
@@ -1355,6 +1365,17 @@ def retrieve_contexts(
         concept_sql = _historical_lexical_sql(concept_ctes) if as_of else _current_lexical_sql(concept_ctes)
         lexical = run('lexical_concept', concept_sql, concept_params, '8s', _FULL_RANKING_FIRST_BUDGET_MS)
         info['lexical_strategy'] = 'broad_then_concept'
+    for future, name, deferred_sql, deferred_params, budget in deferred_vectors:
+        try:
+            future.set_result(run(name, deferred_sql, deferred_params, budget))
+        except (psycopg.errors.UndefinedColumn, psycopg.errors.UndefinedTable) as exc:
+            if name.startswith('legislation_'):
+                info['partial'] = True
+                future.set_result([])  # same optional migration guard as an inline lane
+            else:
+                future.set_exception(exc)
+        except Exception as exc:
+            future.set_exception(exc)
     semantic, legislative, m3 = [value.result() if isinstance(value, Future) else value
                                  for value in (semantic, legislative, m3)]
     if legislation_embedding is not None and (not statute or expand_legislation):

@@ -9,11 +9,14 @@ karakter katlamalıdır ("is kanunu" ile "İŞ KANUNU" eşleşir).
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import threading
 import time
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 
 
 from api.ai.retrieval import _VERIFIED_SOURCE_FILTER
@@ -83,7 +86,10 @@ def _iso(value) -> str | None:
 
 
 def load_laws(connection) -> list[Law]:
-    connection.execute("SET LOCAL statement_timeout = '30s'")
+    # Kanun listesi ~90 bin satırı diskten gezer (8 sn boşta; gömme yazımı gibi yoğun disk yükünde 30 sn'yi aşıyor ve soğuk
+    # açılışta her istek aynı zaman aşımına uğruyordu: ölçüldü 2026-11-01; Docker yeniden başlayınca soğuk önbellekle 180 sn'yi de aştı).
+    # Sonuç bellekte ve diskte tutulur, bu yüzden sınır geniş.
+    connection.execute("SET LOCAL statement_timeout = '900s'")
     laws = []
     for row in connection.execute(_LAWS_SQL).fetchall():
         laws.append(
@@ -103,35 +109,70 @@ def load_laws(connection) -> list[Law]:
 _refreshing = False
 
 
-def _refresh_in_background(loader) -> None:
+def _save_file(laws: list[Law], path: Path | None) -> None:
+    """Listeyi diske yazar (yeniden başlatmada soğuk çıkarımı beklememek için); hata sessizce yutulur."""
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps([law.as_dict() for law in laws], ensure_ascii=False), encoding="utf-8")
+        os.replace(temporary, path)
+    except OSError:
+        pass
+
+
+def _load_file(path: Path | None) -> list[Law] | None:
+    if path is None or not path.exists():
+        return None
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+        return [
+            Law(law_no=row["law_no"], law_name=row["law_name"], legislation_type=row["legislation_type"], articles=int(row["articles"]),
+                latest_version=row.get("latest_version"), gazette_date=row.get("gazette_date"),
+                folded=fold(f"{row['law_name']} {row['law_no']}"))
+            for row in rows
+        ] or None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _refresh_in_background(loader, path: Path | None = None) -> None:
     """Süresi dolan listeyi arka planda yeniler; kullanıcı beklemez, yenileme başarısızsa eski liste kalır."""
     global _cache, _refreshing
     try:
         laws = loader()
         with _lock:
             _cache = (time.monotonic(), laws)
+        _save_file(laws, path)
     except Exception:  # noqa: BLE001 - yenileme en iyi çabadır; eski liste kullanılmaya devam eder
         pass
     finally:
         _refreshing = False
 
 
-def cached_laws(loader) -> list[Law]:
+def cached_laws(loader, path: Path | None = None) -> list[Law]:
     """Bellekteki liste. Süresi dolmuşsa eski liste hemen döner ve liste arka planda yenilenir.
 
-    Çıkarım soğukta ~20 saniye sürüyor ve Mevzuat sayfası her saat başı (ve sunucu açılışından sonraki ilk girişte) bu kadar
-    bekletiyordu (ölçüldü: 2026-10-05). Yalnız hiç liste yokken (ilk çağrı) beklenir; açılışta `warm_laws` bunu da önceden yapar.
+    Çıkarım soğukta artık dakikalar sürebilir (mevzuat ~314 bin madde; disk yoğunken ölçüldü 2026-11-01) ve ilk istek tüm
+    istekleri kilidin arkasında bekletiyordu. `path` verilirse liste diske de yazılır: sunucu yeniden başlayınca (bellek boşken)
+    diskteki liste hemen kullanılır, güncelleme arka planda yapılır. Yalnız ne bellekte ne diskte liste yoksa beklenir.
     """
     global _cache, _refreshing
     with _lock:
         cached = _cache
+        if cached is None:
+            stored = _load_file(path)
+            if stored is not None:
+                cached = _cache = (time.monotonic() - LAWS_TTL_SECONDS, stored)  # eski sayılır: arka planda tazelenir
         if cached is not None:
             if time.monotonic() - cached[0] >= LAWS_TTL_SECONDS and not _refreshing:
                 _refreshing = True
-                threading.Thread(target=_refresh_in_background, args=(loader,), name="laws-refresh", daemon=True).start()
+                threading.Thread(target=_refresh_in_background, args=(loader, path), name="laws-refresh", daemon=True).start()
             return cached[1]
         laws = loader()
         _cache = (time.monotonic(), laws)
+        _save_file(laws, path)
         return laws
 
 
@@ -203,6 +244,11 @@ def search_laws(laws: list[Law], query: str, kind: str | None) -> list[Law]:
     named = parse_named_reference(laws, query)
     if named and (not kind or named[0].legislation_type == kind):
         return [named[0]]
+    if cleaned in _ABBREVIATIONS and cleaned != "anayasa":
+        # "TCK", "CMK", "TTK" tek başına yazılınca da o kanun gelir (yalnız madde numarasıyla çalışıyordu).
+        by_abbreviation = [law for law in wanted if law.law_no == _ABBREVIATIONS[cleaned] and law.legislation_type in ("law", "constitution")]
+        if by_abbreviation:
+            return by_abbreviation
     reference = parse_reference(query)
     if reference:
         cleaned_no = reference[0]

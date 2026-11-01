@@ -28,8 +28,10 @@ function compile(relative, dependencies = {}) {
   return module.exports;
 }
 const model = compile("../src/lib/case-detail.ts", { "@/lib/db": { db: {} } });
+const homeSummary = compile("../src/lib/home-summary.ts");
 const { CaseDetailView } = compile("../src/components/CaseDetailView.tsx", {
   "../lib/case-detail": model,
+  "../lib/home-summary": homeSummary,
 });
 const id = "11111111-1111-4111-8111-111111111111";
 const clientId = "22222222-2222-4222-8222-222222222222";

@@ -117,3 +117,128 @@ def test_semantic_queries_do_not_inherit_short_statement_deadlines(monkeypatch):
     retrieval.retrieve_contexts(object(), question='Kira uyuşmazlıklarında arabuluculuk', top_k=4,
         query_embedding=[0.0]*768, embedding_model='test', legislation_embedding=[0.0]*1024)
     assert len(visited) == 3
+
+
+def test_saturated_vector_slots_do_not_block_lexical_start_or_drop_any_lane(monkeypatch):
+    class SaturatedSlots:
+        def acquire(self, blocking=False):
+            assert blocking is False
+            return False
+
+        def release(self):
+            raise AssertionError("An unacquired slot must not be released")
+
+    monkeypatch.setattr(retrieval, "_PUBLIC_VECTOR_SLOTS", SaturatedSlots())
+    monkeypatch.setattr(vector_index, "shared_vector_index_ready", lambda conn: True)
+    monkeypatch.setattr(retrieval, "question_intent", lambda question: None)
+    visited = []
+    original = object()
+    context = court_decision_context(content="Sentetik uyuşmazlık hakkında karar.")
+
+    def execute(connection, sql, params, *, timeout):
+        assert connection is original
+        vector_sqls = (retrieval.SEMANTIC_RETRIEVAL_SQL, retrieval.LEGISLATION_SEMANTIC_SQL, retrieval.LEGISLATION_M3_SQL)
+        if sql in vector_sqls:
+            assert visited and visited[0] == "lexical"
+            assert timeout == "0"  # preserve correctness-first vector deadlines
+            visited.append(vector_sqls.index(sql))
+        else:
+            visited.append("lexical")
+        return [context]
+
+    monkeypatch.setattr(retrieval, "_execute_retrieval", execute)
+    info = {}
+    result = retrieval.retrieve_contexts(original, question="Sentetik uyuşmazlık hakkında karar", top_k=4,
+        query_embedding=[0.0]*768, embedding_model="fixture", legislation_embedding=[0.0]*1024,
+        parallel_public_vectors=True, diagnostics=info)
+    assert result
+    assert [v for v in visited if v != "lexical"] == [0, 1, 2]
+    assert not info["partial"]
+    assert {b["name"] for b in info["branches"]} >= {"semantic", "legislation_semantic", "legislation_m3", "lexical"}
+
+
+def test_third_vector_lane_waits_for_lexical_instead_of_stalling_two_running_lanes(monkeypatch):
+    from threading import BoundedSemaphore, Lock
+
+    monkeypatch.setattr(retrieval, "_PUBLIC_VECTOR_SLOTS", BoundedSemaphore(2))
+    monkeypatch.setattr(vector_index, "shared_vector_index_ready", lambda conn: True)
+    monkeypatch.setattr(retrieval, "question_intent", lambda question: None)
+    original = object()
+    lexical_started, two_workers_started = Event(), Event()
+    worker_count, lock = [], Lock()
+    context = court_decision_context(content="Sentetik uyuşmazlık hakkında karar.")
+
+    @contextmanager
+    def connection():
+        yield object()
+
+    def execute(conn, sql, params, *, timeout):
+        if sql in (retrieval.SEMANTIC_RETRIEVAL_SQL, retrieval.LEGISLATION_SEMANTIC_SQL):
+            assert conn is not original
+            with lock:
+                worker_count.append(sql)
+                if len(worker_count) == 2:
+                    two_workers_started.set()
+            assert lexical_started.wait(2), "third vector blocked the lexical lane"
+        elif sql == retrieval.LEGISLATION_M3_SQL:
+            assert conn is original and lexical_started.is_set()
+        else:
+            assert two_workers_started.wait(2)
+            lexical_started.set()
+        return [context]
+
+    monkeypatch.setattr("api.db.database_connection", connection)
+    monkeypatch.setattr(retrieval, "_execute_retrieval", execute)
+    result = retrieval.retrieve_contexts(original, question="Sentetik uyuşmazlık hakkında karar", top_k=4,
+        query_embedding=[0.0]*768, embedding_model="fixture", legislation_embedding=[0.0]*1024,
+        parallel_public_vectors=True)
+    assert result and len(worker_count) == 2
+
+
+def test_deferred_vector_failure_is_reported_without_erasing_lexical_results(monkeypatch):
+    class SaturatedSlots:
+        def acquire(self, blocking=False):
+            return False
+
+    monkeypatch.setattr(retrieval, "_PUBLIC_VECTOR_SLOTS", SaturatedSlots())
+    monkeypatch.setattr(vector_index, "shared_vector_index_ready", lambda conn: True)
+    monkeypatch.setattr(retrieval, "question_intent", lambda question: None)
+    context = court_decision_context(content="Sentetik uyuşmazlık hakkında karar.")
+
+    def execute(connection, sql, params, *, timeout):
+        if sql == retrieval.SEMANTIC_RETRIEVAL_SQL:
+            raise psycopg.errors.QueryCanceled("synthetic timeout")
+        return [context]
+
+    monkeypatch.setattr(retrieval, "_execute_retrieval", execute)
+    info = {}
+    result = retrieval.retrieve_contexts(object(), question="Sentetik uyuşmazlık hakkında karar", top_k=4,
+        query_embedding=[0.0]*768, embedding_model="fixture", parallel_public_vectors=True, diagnostics=info)
+    assert result
+    assert info["partial"]
+    assert any(b["name"] == "semantic" and b["status"] == "timeout" for b in info["branches"])
+
+
+@pytest.mark.parametrize("missing", [psycopg.errors.UndefinedColumn, psycopg.errors.UndefinedTable])
+def test_deferred_optional_legislation_migration_failure_keeps_other_sources(monkeypatch, missing):
+    class SaturatedSlots:
+        def acquire(self, blocking=False):
+            return False
+
+    monkeypatch.setattr(retrieval, "_PUBLIC_VECTOR_SLOTS", SaturatedSlots())
+    monkeypatch.setattr(vector_index, "shared_vector_index_ready", lambda conn: True)
+    monkeypatch.setattr(retrieval, "question_intent", lambda question: None)
+    context = court_decision_context(content="Sentetik uyuşmazlık hakkında karar.")
+
+    def execute(connection, sql, params, *, timeout):
+        if sql in (retrieval.LEGISLATION_SEMANTIC_SQL, retrieval.LEGISLATION_M3_SQL):
+            raise missing("synthetic optional migration missing")
+        return [context]
+
+    monkeypatch.setattr(retrieval, "_execute_retrieval", execute)
+    info = {}
+    result = retrieval.retrieve_contexts(object(), question="Sentetik uyuşmazlık hakkında karar", top_k=4,
+        query_embedding=[0.0]*768, embedding_model="fixture", legislation_embedding=[0.0]*1024,
+        parallel_public_vectors=True, diagnostics=info)
+    assert result
+    assert info["partial"]

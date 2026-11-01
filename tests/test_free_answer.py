@@ -50,7 +50,8 @@ class RoutedProvider:
         return with_parts(verdict(len(json.loads(kwargs["prompt"])["claims"])), self.part_rows)
 
     def checker_calls(self):
-        return [c for c in self.calls if c["system_instruction"] != free_answer.WRITE_INSTRUCTION]
+        return [c for c in self.calls if c["system_instruction"] not in (free_answer.WRITE_INSTRUCTION,
+                                                                          free_answer._CROSS_PART_DUPLICATE_INSTRUCTION)]
 
 
 def verdict(count, approved=None):
@@ -593,6 +594,8 @@ class PartAwareProvider(RoutedProvider):
             return self.draft
         payload = json.loads(kwargs["prompt"])
         self.calls.append(kwargs)
+        if kwargs["system_instruction"] == free_answer._CROSS_PART_DUPLICATE_INSTRUCTION:
+            return json.dumps({"duplicate_claims": getattr(self, "cross_duplicates", [])})
         count, parts = len(payload["claims"]), len(payload.get("question_parts", ()))
         if self.broken_part_check and parts == 1:
             return "not json"
@@ -900,3 +903,45 @@ def test_a_retry_waits_for_the_background_reasons_and_hands_them_to_the_rewrite(
     assert len(calls) == 2
     assert feedback[1]["checker_findings"] == {"2": "ifade_duzelt: süre sınırı düşmüş"}
     assert feedback[1]["repair_types"] == {"2": "wording_or_condition"}
+
+
+def test_a_sentence_repeated_under_another_part_is_removed_once_the_independent_pass_says_so():
+    other = _other_source()
+    provider = PartAwareProvider(DRAFT)
+    baseline: dict = {}
+    first = free_answer._free_verified_answer(provider, question="Süre nedir, başvuru nasıl yapılır?",
+                                              contexts=[LAW, DECISION, other], parts=_two_parts(other), diagnostics=baseline, parallel_parts=True)
+    assert first is not None and baseline.get("semantic_repeated_removed", 0) == 0
+    assert baseline.get("semantic_repeated_removed", 0) == 0
+
+    provider = PartAwareProvider(DRAFT)
+    provider.cross_duplicates = [{"id": 6, "duplicate_of": 1}]
+    info: dict = {}
+    second = free_answer._free_verified_answer(provider, question="Süre nedir, başvuru nasıl yapılır?",
+                                               contexts=[LAW, DECISION, other], parts=_two_parts(other), diagnostics=info, parallel_parts=True)
+    assert second is not None and info["semantic_repeated_removed"] == 1
+
+
+def _incomplete(count):
+    value = json.loads(verdict(count))
+    value["coverage_preserved"] = False
+    return json.dumps(value)
+
+
+def test_a_sizeable_single_part_answer_the_checker_calls_incomplete_is_not_rewritten(monkeypatch):
+    # Measured 2026-10-31: a second attempt after "not complete" over 13 proven sentences repeated the same verdict (+30 s).
+    monkeypatch.setattr(free_answer, "_MIN_SENTENCES_FOR_FINAL", 2)
+    provider = Provider(DRAFT, _incomplete(3))
+    info: dict = {}
+    answer = free_verified_answer(provider, question="Bildirim süresine uyulmazsa ne olur?", contexts=[LAW, DECISION],
+                                  diagnostics=info)
+    assert answer is not None and info["attempts"] == 1 and info["partial_answer"] is True and len(provider.calls) == 2
+
+
+def test_a_small_single_part_answer_the_checker_calls_incomplete_is_still_rewritten(monkeypatch):
+    monkeypatch.setattr(free_answer, "_MIN_SENTENCES_FOR_FINAL", 5)
+    provider = Provider(DRAFT, _incomplete(3), DRAFT, verdict(3))
+    info: dict = {}
+    answer = free_verified_answer(provider, question="Bildirim süresine uyulmazsa ne olur?", contexts=[LAW, DECISION],
+                                  diagnostics=info)
+    assert answer is not None and info["attempts"] == 2

@@ -60,7 +60,7 @@ function SummaryCard({ document }: { document: SummaryDocument }) {
 
 /**
  * "Dosya Özeti": davaya bağlı belgelerden (1) belirleyici olgu tablosu (tarih, tutar, esas/karar, kanun numarası; yapay zekâ yok) ve
- * (2) yerel modelle belge belge özet. Özet maddeleri sunucuda belgeyle doğrulanır; hukuki dayanak ya da resmî kaynak değildir.
+ * (2) yapılandırılmış AI sağlayıcısıyla belge belge özet. Özet maddeleri sunucuda belgeyle doğrulanır; hukuki dayanak ya da resmî kaynak değildir.
  */
 export function CaseDocumentSummary({ caseId }: { caseId: string }) {
   const [facts, setFacts] = useState<FactsResponse>();
@@ -250,10 +250,10 @@ export function CaseDocumentSummary({ caseId }: { caseId: string }) {
           <Sparkles className="h-4 w-4" /> Yapay zekâ özeti
         </h3>
         <p className="text-sm text-muted-foreground">
-          Seçtiğiniz belgeleri yerel model belge belge özetler (belge başına genellikle yarım ile
-          birkaç dakika). Özet maddeleri belgeyle sunucuda doğrulanır: belgede olmayan tutar, tarih
-          ya da numara içeren ve belgeyle örtüşmeyen maddeler gösterilmez. İşi başlattıktan sonra
-          sayfadan ayrılabilirsiniz; sonuç kaydedilir.
+          Seçtiğiniz belgeleri yapılandırılmış AI sağlayıcısı belge belge özetler. İşlem süresi
+          belge uzunluğuna ve sağlayıcıya bağlıdır. Özet maddeleri belgeyle sunucuda doğrulanır:
+          belgede olmayan tutar, tarih ya da numara içeren ve belgeyle örtüşmeyen maddeler
+          gösterilmez. İşi başlattıktan sonra sayfadan ayrılabilirsiniz; sonuç kaydedilir.
         </p>
         {facts && facts.documents.length > 0 && (
           <div className="space-y-2">

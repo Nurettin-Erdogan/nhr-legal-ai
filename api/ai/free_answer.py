@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 _MIN_SENTENCES_KEPT = 1
 _POOL_CHARS = 36_000
 _RETRY_ONLY_BEFORE_SECONDS = 45.0
+_MIN_SENTENCES_FOR_FINAL = 5  # a single-part answer with fewer proven sentences is rewritten even when the checker only says "incomplete"
 _FORMAT_RETRY_BEFORE_SECONDS = 100.0
 _MAX_ATTEMPTS = 2  # 3 denemede kredi hızla bitiyordu (2026-10-25); biçim ve kanıt hataları düzeltildikten sonra 2 yeterli
 
@@ -48,6 +49,10 @@ PARÇA MODU: Kullanıcı yükünde write_only_part varsa soru birkaç parçaya b
 Yalnız write_only_part.question parçasını yaz: ilk cümle bu parçanın doğrudan cevabı olsun; diğer parçaları ve bütün sorunun
 genel girişini yazma, onlar başka çağrılarda yazılıyor; other_parts_written_separately içindeki konuları ANLATMA ve tekrar etme.
 Bu parça için sources içindeki bütün kaynakları kullanabilirsin.
+ŞART/KOŞUL/SÜREÇ PARÇALARI: Parça şartları, koşulları, adımları ya da hakları soruyorsa ilk cümleyi birden çok kaynak cümlesini
+toplayan bir özet yapma ("şartlar şunlardır: hem işçi hem işyeri…" gibi); denetçi bunu kaynakta olmayan sentez sayıp reddeder ve parça
+eksik görünür. Bunun yerine her şartı kendi cümlesinde, tek bir kaynak cümlesine (en çok yanındaki bir iki cümleye) bağlayarak yaz;
+ilk cümle şartlardan ilkini söylesin.
 Düzen: birbirine bağlı cümleleri AYNI paragrafta art arda satırlara yaz; boş satırı yalnız konu gerçekten değiştiğinde kullan
 (her cümleyi ayrı paragraf yapma). Aynı bilgiyi, aynı kaynakla, iki kez yazma.
 Bunun dışında bütün diğer kurallar aynen geçerlidir.
@@ -126,7 +131,8 @@ _DANGLING = re.compile(
     r"^(?:Bu|Bunun|Bunlar|Bunların|Bunu|Buna|Bunda|Söz konusu|Anılan|Aynı|O|Şu|Ancak|Ayrıca|Bunun yanında|Bunların yanında|"
     r"Öte yandan|Dolayısıyla|Buna göre|Buna karşılık|Bununla birlikte|Ne var ki|Fakat|Ama|Yine|Ek olarak|Ayrıca da|"
     # An enumeration step whose first step was removed ("İkinci şart ise ..." with no first condition shown, 2026-10-30).
-    r"İkinci(?:si)?|Üçüncü(?:sü)?|Dördüncü(?:sü)?|Son olarak|Diğer (?:bir )?(?:şart|koşul))\b", re.I)
+    r"(?:İkinci|Üçüncü|Dördüncü) (?:şart|koşul|olarak)|İkincisi|Üçüncüsü|Dördüncüsü|Son olarak|Diğer (?:bir )?(?:şart|koşul))\b",
+    re.I)
 # "@@ 1.3 2.1" ya da aralık "@@ 4.1-4.4": kaynak.cümle numaraları. Model sık sık BİR SATIRA BİRDEN ÇOK cümle yazıp her birinin sonuna
 # ayrı numara koyuyor ("... @@ 1.1 Bu süre ... @@ 1.3"); satır numara bloklarından bölünür (ölçüldü: 2026-10-25).
 _REFS = re.compile(r"@@\s*((?:\d+\.\d+(?:\s*-\s*\d+\.\d+)?)(?:[\s,]+\d+\.\d+(?:\s*-\s*\d+\.\d+)?)*)")
@@ -226,8 +232,10 @@ def plan_question(provider: AIProvider, question: str, history: Sequence[History
     fallback = [(question, (question,))]
     payload = {"question": question, "history_for_understanding_only": [t.question for t in history][-3:]}
     try:
-        verdict = synthesis._json(provider.generate(system_instruction=PLAN_INSTRUCTION,
-                                                    prompt=json.dumps(payload, ensure_ascii=False)))
+        # The usual planning call takes 3-5 s but one in three took 23 s (measured 2026-10-31); a second identical request after
+        # 8 s keeps the whole answer from waiting for the slow one.
+        verdict = synthesis._json(_generate_hedged(provider, hedge_after=_HEDGE_PLAN_AFTER, system_instruction=PLAN_INSTRUCTION,
+                                                   prompt=json.dumps(payload, ensure_ascii=False)))
         parts = verdict.get("parts")
     except (AIProviderError, ValueError, TypeError, AttributeError, RecursionError):
         return fallback
@@ -301,6 +309,46 @@ def _repeat_of(text: str, shown: list[str]) -> int | None:
         if any(other[start:start + len(words)] == words for start in range(len(other) - len(words) + 1)):
             return index
     return None
+
+
+_CROSS_PART_DUPLICATE_INSTRUCTION = """Aşağıdaki cümlelerin hepsi kaynaklarıyla ayrı ayrı doğrulanmış, bir cevabın farklı bölümlerinden gelen cümlelerdir.
+Görevin yalnız tekrarları bulmak: sonraki bir cümlenin TÜM anlamı (her koşul, istisna, kişi, süre, tutar, karar ve sonuç dahil) daha önceki
+bir cümlede zaten varsa onu tekrar say. Yeni koşul, istisna, sayı, süre, karar veya örnek içeren cümle tekrar değildir. Sözcük benzerliği
+yeterli değildir; emin değilsen listeye alma. Yeni bilgi ekleme, cümleleri değerlendirme.
+Yalnız JSON: {"duplicate_claims":[{"id":4,"duplicate_of":1}]} (duplicate_of, id'den küçük olmalı; tekrar yoksa boş liste)."""
+
+
+def _cross_part_duplicates(provider, candidates, part_starts) -> list[dict]:
+    """Repeats between different question parts, found by one independent call over the candidate sentences.
+
+    It runs while the per-part checks run (measured 2026-10-31: 14.7 s when run after them). The verdict only counts for pairs
+    that both end up approved (see the assembly), so a refused sentence can never be the reason another one is dropped.
+
+    The per-part checkers run in parallel and each sees only its own part, so the same fact written under two or three parts
+    ("hesaplama", "fark", "örnek") was never flagged (measured 2026-10-31: one paragraph shown three times). Any failure here only
+    leaves the repeat in place; it can never remove or add a claim by itself.
+    """
+    from bisect import bisect_right
+    ids = list(range(1, len(candidates) + 1))
+    approved = set(ids)
+    part_of = {i: bisect_right(list(part_starts), candidates[i - 1][0]) for i in ids}
+    if len(set(part_of.values())) < 2 or len(ids) < 4:
+        return []
+    try:
+        raw = provider.generate(system_instruction=_CROSS_PART_DUPLICATE_INSTRUCTION,
+                                prompt=json.dumps({"claims": [{"id": i, "text": candidates[i - 1][1].text} for i in ids]},
+                                                  ensure_ascii=False))
+        entries = synthesis._json(raw).get("duplicate_claims", [])
+        found = []
+        for entry in entries:
+            if (isinstance(entry, dict) and set(entry) == {"id", "duplicate_of"} and entry["id"] in approved
+                    and entry["duplicate_of"] in approved and entry["duplicate_of"] < entry["id"]
+                    and part_of[entry["id"]] != part_of[entry["duplicate_of"]]):
+                found.append({"id": entry["id"], "duplicate_of": entry["duplicate_of"]})
+        return found
+    except Exception:  # noqa: BLE001 - a failed duplicate pass leaves the (proven) repeat in place
+        logger.warning("Çapraz bölüm tekrar denetimi başarısız", exc_info=True)
+        return []
 
 
 def _repeats(text: str, shown: list[str]) -> bool:
@@ -429,6 +477,7 @@ def _repair_lead(provider: AIProvider, checker: AIProvider, question: str, prove
 
 _HEDGE_WRITE_AFTER = 20.0  # seconds; the usual part write takes 8-18 s
 _HEDGE_CHECK_AFTER = 15.0  # seconds; the usual part check takes 4-12 s
+_HEDGE_PLAN_AFTER = 8.0  # seconds; the usual planning call takes 3-5 s
 
 
 def _generate_hedged(provider: AIProvider, *, hedge_after: float, **kwargs) -> str:
@@ -876,7 +925,13 @@ def free_verified_answer(provider: AIProvider, **kwargs) -> VerifiedAnswer | Non
             # itself (measured 2026-10-30: 13 good sentences, then a 60 s retry that made the answer worse).
             retry_worthy = False
         elif not rows:
-            retry_worthy = True  # a single-part question has no table to consult
+            # A single-part question has no per-part table to consult. The checker's global "not complete" next to a sizeable proven
+            # answer was repeated by the rewrite (measured 2026-10-31: 13 proven sentences, a 30 s second attempt with the same
+            # verdict). A rewrite is worth it only for what it can supply: an opening, a large loss, too little, or a source gap.
+            source_gap = any(isinstance(why, str) and why.strip().casefold().startswith('kaynak_eksik:')
+                             for why in (info.get('debug_why') or {}).values())
+            retry_worthy = bool(info.get('lead_removed') or substantial_loss or answer is None
+                                or info.get('kept', 0) < _MIN_SENTENCES_FOR_FINAL or source_gap)
         else:
             retry_worthy = empty_part or any(str(row.get("why", "")).startswith("kaynak_eksik") for row in open_parts)
         # What only a rewrite can supply: no opening, a large loss, or a part with no sentence at all. A part that merely lacks
@@ -1272,6 +1327,8 @@ def _free_verified_answer(
     # reasons for the refused sentences are asked for separately, in the background (see `_explain_rejections`)
     check_instruction = LEAD_CHECK_INSTRUCTION_DEFERRED if explain_in_background else LEAD_CHECK_INSTRUCTION
     verdict = None
+    duplicates_future = (_EXPLAIN_POOL.submit(_cross_part_duplicates, checker_provider or provider, candidates, part_starts)
+                         if part_starts and coverage_parts and len(candidates) >= 4 else None)
     if part_starts and coverage_parts:
         merged = _check_parts_in_parallel(checker_provider or provider, payload=check_payload, candidates=candidates,
                                           part_sources=part_sources, part_starts=part_starts,
@@ -1322,6 +1379,14 @@ def _free_verified_answer(
         sticky = {index for index, (number, _claim) in enumerate(candidates, 1) if _key(*flat[number - 1]) in earlier}
         info["sticky_approved"] = len(sticky - approved)
         approved = approved | sticky
+    if duplicates_future is not None:
+        try:
+            extra = duplicates_future.result(timeout=1.0)
+        except Exception:  # noqa: BLE001 - no verdict in time: the repeat stays, nothing is dropped
+            extra = []
+        known = {row["id"] for row in info.get("checker_duplicates", ())}
+        if extra:
+            info["checker_duplicates"] = [*info.get("checker_duplicates", ()), *(row for row in extra if row["id"] not in known)]
     if explain_in_background and approved is not None and repair_state is not None and not local_structured:
         refused = [(number, claim) for index, (number, claim) in enumerate(candidates, 1) if index not in approved]
         # in the background, so the answer is not delayed: only a retry waits for it (see `free_verified_answer`)
@@ -1403,11 +1468,10 @@ def _free_verified_answer(
                 target = semantic_duplicates.get(cursor + offset + 1)
                 target = duplicate_aliases.get(target, target)
                 if (target in displayed_ids and target in proven
-                        and proven[target].evidence == claim.evidence
                         and same_numeric_scope(proven[target].text, claim.text)):
-                    # Only an explicit independent equivalence verdict, two
-                    # approved claims and the identical evidence binding permit
-                    # semantic deduplication. No fuzzy word similarity gate.
+                    # Only an explicit independent equivalence verdict over two approved claims (the kept one is shown and
+                    # proven, so nothing unproven is added) and the same numeric scope permit semantic deduplication.
+                    # No fuzzy word similarity gate.
                     info['semantic_repeated_removed'] = info.get('semantic_repeated_removed', 0) + 1
                     duplicate_aliases[cursor + offset + 1] = target
                     continue

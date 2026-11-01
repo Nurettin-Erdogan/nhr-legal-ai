@@ -87,7 +87,10 @@ def test_writer_is_warned_when_the_users_number_sits_on_a_source_threshold():
     from api.ai.numeric_support import user_threshold_notes
     notes = user_threshold_notes([_NOTICE_TIERS], _USER_THREE_YEARS)
     assert len(notes) == 1 and "3 yıldan fazla" in notes[0]
-    assert user_threshold_notes([_NOTICE_TIERS], "5 yıldır çalışıyorum") == []
+    # five years exceed the three-year threshold: the upper tier applies, and the writer is told so rather than left to guess
+    above = user_threshold_notes([_NOTICE_TIERS], "5 yıldır çalışıyorum")
+    assert len(above) == 1 and "AŞAR" in above[0] and "EŞİTTİR" not in above[0]
+    assert user_threshold_notes([_NOTICE_TIERS], "2 yıldır çalışıyorum") == []
     assert user_threshold_notes([_NOTICE_TIERS], "") == []
 
 

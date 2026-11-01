@@ -3,6 +3,8 @@ import { DashboardLayout } from "@/components/DashboardLayout";
 import { AIRunner } from "@/components/AIRunner";
 import { CaseLawDatabasePanel } from "@/components/CaseLawDatabasePanel";
 import { DecisionSearch } from "@/components/DecisionSearch";
+import { useAuth } from "@/components/AuthContext";
+import { isAdmin } from "@/lib/admin-panel";
 
 const examples = [
   "Yargıtay'ın haksız fesih davalarında işverenin ispat yüküne ilişkin son içtihat eğilimi nedir?",
@@ -22,7 +24,7 @@ const narrativeExamples = [
   "Kiracı sözleşme süresi dolmadan anahtarı teslim etti, ev sahibi kalan aylar için kira istiyor.",
 ];
 
-const CaseLaw = () => (
+const CaseLawPage = () => (
   <DashboardLayout
     title="İçtihat Araştırması"
     subtitle="Yargıtay, Danıştay ve AYM kararları üzerinden AI analizi"
@@ -36,6 +38,25 @@ const CaseLaw = () => (
     />
   </DashboardLayout>
 );
+
+/** İçtihat araştırması şimdilik yalnız yöneticiye açık: menüde de görünmez, adrese elle gidenler bilgilendirilir. */
+const CaseLaw = () => {
+  const { roles } = useAuth();
+  if (!isAdmin(roles)) {
+    return (
+      <DashboardLayout title="İçtihat" subtitle="">
+        <section role="status" className="max-w-xl rounded-xl border bg-card p-6">
+          <h2 className="font-semibold">Bu sayfa şu an yalnız yöneticilere açıktır</h2>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Karar ve mevzuat araştırması için Hukuk Asistanı ve Mevzuat sayfalarını
+            kullanabilirsiniz.
+          </p>
+        </section>
+      </DashboardLayout>
+    );
+  }
+  return <CaseLawPage />;
+};
 
 export const Route = createFileRoute("/_authenticated/dashboard/case-law")({
   component: CaseLaw,

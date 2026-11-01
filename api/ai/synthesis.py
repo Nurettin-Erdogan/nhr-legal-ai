@@ -107,7 +107,8 @@ _CASE_SCOPE = re.compile(
     r"mahkemece|karar veril\w*|hükmedil\w*)\b"
 )
 _ALLEGATION = re.compile(
-    r"\b(?:iddia\w*|ileri sür\w*|talep et\w*|talep ve dava|dilekçesinde|savun\w*)\b"
+    # "talep etmiştir" ile "talep edilmektedir" (edilgen) aynı taraf talebini anlatır: ikisi de iddia sözcüğüdür.
+    r"\b(?:iddia\w*|ileri sür\w*|talep (?:et|ed)\w*|talep ve dava|dilekçesinde|savun\w*)\b"
 )
 _QUESTION_RISK = re.compile(
     r"\b(?:zorunda\w*|zorunlu\w*|mecbur\w*|hakkınız\w*|gerek(?:ir|iyor|tiğ|mel)\w*|gerekl\w*|yasak\w*|uygulan(?:ır|malı|ması)\w*|"
@@ -513,8 +514,10 @@ def _legislation_body_without_trailing_heading(context: RAGContext) -> str:
             title = line.strip()
             # Typography only: roman/letter/dash numbering and colon-attached
             # footnote references. No number inside a rule is erased.
-            title = re.sub(r'^(?:[IVXLCDM]{1,8}\.|[A-Za-zÇĞİÖŞÜçğıöşü]\)|[0-9]{1,2}\s*[-–—.])\s*', '', title)
+            title = re.sub(r'^(?:[IVXLCDM]{1,8}\.|[A-ZÇĞİÖŞÜ]\.|[A-Za-zÇĞİÖŞÜçğıöşü]\)|[0-9]{1,2}\s*[-–—.])\s*', '', title)
             title = re.sub(r':(?:[0-9]{1,3})?$', '', title).strip()
+            # A footnote reference glued to the heading's last word ("I. Genel olarak2"): typography, not a number of a rule.
+            title = re.sub(r'(?<=[a-zçğıöşüâîû])[0-9]{1,3}$', '', title).strip()
             nominal = re.sub(r'\byapılan\b', 'ilgili', normalize(title))
             if (_QUALIFYING_OPENING.search(nominal) or _OTHERWISE.search(nominal)
                     or not (_nominal_title(nominal) or _short_heading(nominal))):
@@ -765,6 +768,37 @@ def _independent_survivors(claims: list[_Claim], keep: set[int]) -> set[int]:
     return result
 
 
+_COMPLETION_CANDIDATES = 40
+
+
+def _numeric_unit(unit: str) -> bool:
+    """A unit worth trying as number evidence: it carries a digit or a spelled-out number."""
+    from api.ai.numeric_support import spell_numbers
+    return any(ch.isdigit() for ch in unit) or any(ch.isdigit() for ch in spell_numbers(normalize(unit)))
+
+
+def _complete_number_evidence(text: str, quotes: list[tuple[int, str]], sources: list[int], views: list[dict],
+                              references: str, known: str) -> list[tuple[int, str]] | None:
+    """Add the fewest (at most two) unused units of the claim's OWN cited sources that make its numbers/units supported.
+
+    Never reaches into a source the claim did not cite and never touches any other failure: the caller re-runs every gate on the
+    completed evidence and the independent checker still judges the sentence. Returns None when no such unit exists, so an
+    invented number is still refused.
+    """
+    base = "\n".join(span for _, span in quotes)
+    candidates = [(index, unit) for index in sources for unit in views[index - 1]["units"]
+                  if (index, unit) not in quotes and _numeric_unit(unit)][:_COMPLETION_CANDIDATES]
+    for index, unit in candidates:
+        if "number_or_unit" not in _support_failures(text, base + "\n" + unit, references, known):
+            return [*quotes, (index, unit)]
+    for first in range(len(candidates)):
+        for second in range(first + 1, len(candidates)):
+            pair = [candidates[first], candidates[second]]
+            if "number_or_unit" not in _support_failures(text, base + "\n" + "\n".join(unit for _, unit in pair), references, known):
+                return [*quotes, *pair]
+    return None
+
+
 def _checked_claim(claim_index: int, text: str, evidence: list, contexts: list[RAGContext],
                    views: list[dict], *, lenient: bool = False, conclusion: bool = False, known: str = "") -> _Claim:
     quotes: list[tuple[int, str]] = []
@@ -796,7 +830,17 @@ def _checked_claim(claim_index: int, text: str, evidence: list, contexts: list[R
     if court_holding_misattributed(text, quotes, contexts):
         raise _Rejected("evidence", claim_index, ("court_holding_misattributed",))
     quoted = "\n".join(span for _, span in quotes)
-    failures = _support_failures(text, quoted, "\n".join(contexts[i-1].reference_line for i in sources), known)
+    references = "\n".join(contexts[i-1].reference_line for i in sources)
+    failures = _support_failures(text, quoted, references, known)
+    if "number_or_unit" in failures:
+        completed = _complete_number_evidence(text, quotes, sources, views, references, known)
+        if completed is not None:
+            # The number IS in the cited source; the writer only left that unit unbound. The sentence now carries it as evidence
+            # and still faces every other gate and the independent checker (measured 2026-10-31: 3-5 of 11 sentences of a plain
+            # statute answer were refused for exactly this, and the repair round that bound the same units cost ~20 s).
+            quotes = completed
+            quoted = "\n".join(span for _, span in quotes)
+            failures = _support_failures(text, quoted, references, known)
     # Paraphrasing a long compound sentence ("Bu Kanuna tabi işçilerin hizmet akitlerinin: 1. ... 2. ... 3. ...") cannot keep
     # every qualifier word: natural Turkish says "varsa/halinde" where the source says "kıdemi olan işçi", and a summary drops
     # branches. Word-presence guards voided every kıdem / bildirim süresi / işe iade answer that way (2026-10-24: 14 of 20
@@ -1179,6 +1223,10 @@ def synthesize_answer(
             salvaged = bool(dropped)
             if dropped and diagnostics is not None:
                 diagnostics["dropped_claims"] = len(dropped)
+                diagnostics["dropped_reasons"] = [
+                    {"reason": getattr(item, "reason", str(item))[:60], "checks": list(getattr(item, "checks", ()))[:6]}
+                    for item in dropped[:4]
+                ]
             if dropped and semantic_repair and repair_attempts:
                 # A cloud answer may otherwise shrink to a peripheral exception
                 # after its main claims fail mechanical checks. Give the writer

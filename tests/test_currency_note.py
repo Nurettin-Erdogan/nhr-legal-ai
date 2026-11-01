@@ -201,3 +201,49 @@ def test_a_crashing_recheck_is_reported_as_not_reached(monkeypatch):
     monkeypatch.setattr(currency_note, "recheck_official", boom)
     answer = pipeline._with_verification_note(SimpleNamespace(question=QUESTION, as_of=None), VerifiedAnswer("C.", (m18,), ()))
     assert "ulaşılamadığı için" in answer.verification_note and "27 Ekim 2026" in answer.verification_note
+
+
+HEADER = ("İŞ KANUNU\n\nKanun Numarası : 4857\nKabul Tarihi : 22/5/2003\n"
+          "Yayımlandığı Resmî Gazete : Tarih: 10/6/2003 Sayı: 25134\nYayımlandığı Düstur : Tertip: 5 Cilt: 42\n")
+
+
+def test_the_law_identity_is_read_only_from_the_official_header():
+    from datetime import date
+
+    from api.ai import currency_note
+    identity = currency_note.law_identity(HEADER, "4857")
+    assert identity == {"accepted": date(2003, 5, 22), "gazette_date": date(2003, 6, 10), "gazette_no": "25134"}
+    assert currency_note.law_identity(HEADER, "6098") == {}  # another law's header states nothing for this one
+    assert currency_note.law_identity("Madde 1 - metin", "4857") == {}
+
+
+def test_the_identity_sentence_states_only_what_the_header_carries():
+    from datetime import date
+
+    from api.ai import currency_note
+    sentence = currency_note.identity_sentence({"4857": {
+        "accepted": date(2003, 5, 22), "gazette_date": date(2003, 6, 10), "gazette_no": "25134",
+        "url": "https://www.mevzuat.gov.tr/MevzuatMetin/1.5.4857.pdf"}})
+    assert "kabul tarihi 22 Mayıs 2003" in sentence and "Resmî Gazete 10 Haziran 2003, sayı 25134" in sentence
+    assert "https://www.mevzuat.gov.tr/MevzuatMetin/1.5.4857.pdf" in sentence
+    assert currency_note.identity_sentence({}) == "" and currency_note.identity_sentence({"1": {}}) == ""
+
+
+def test_an_unreachable_portal_yields_no_identity_instead_of_a_guess():
+    from api.ai import currency_note
+
+    def down(law):
+        raise OSError("portal down")
+    assert currency_note.fetch_law_identities(["4857"], fetch_law=down) == {}
+    assert currency_note.asks_identity("Kanunun kabul tarihi, Resmî Gazete sayısı ve URL'si nedir?")
+    assert not currency_note.asks_identity("Kıdem tazminatı nasıl hesaplanır?")
+
+
+def test_sentences_claiming_the_official_source_was_unreachable_are_dropped_once_the_identity_is_read():
+    from api.ai import currency_note
+    text = ("4857 sayılı İş Kanunu'nun 17. maddesinin resmi kaynağını doğrulayamam. Kaynak yalnızca madde numarasını ve metnini içermektedir.\n\n"
+            "Kötü niyet tazminatı bildirim süresine ait ücretin üç katıdır. İşçi için kıdem şartı aranmaz.")
+    out = currency_note.drop_cannot_reach_sentences(text)
+    assert "doğrulayamam" not in out and "yalnızca madde numarasını" not in out
+    assert "Kötü niyet tazminatı bildirim süresine ait ücretin üç katıdır." in out and "kıdem şartı" in out
+    assert out.count("\n\n") == 0 or "Kötü niyet" in out

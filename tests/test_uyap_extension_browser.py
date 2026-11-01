@@ -2225,6 +2225,8 @@ def test_reinjecting_the_bridge_into_an_open_jurisai_tab_gives_exactly_one_reply
 
 
 def test_the_jurisai_page_can_write_the_connection_key_into_the_extension(lab):
+    from playwright.sync_api import Error as PlaywrightError
+
     lab.configure(throttleMs=500, apiKey="")
     web = _jurisai_page(lab)
     assert web.evaluate("() => window.ask('PING')")["connected"] is False
@@ -2232,7 +2234,15 @@ def test_the_jurisai_page_can_write_the_connection_key_into_the_extension(lab):
     with lab.context.expect_page() as opened:
         web.evaluate("(key) => { window.pairing = window.ask('SET_KEY', { key }); }", key)
     approval = opened.value
-    approval.locator("#approve").click()
+    try:
+        approval.locator("#approve").click()
+    except PlaywrightError as error:
+        # Approval deliberately closes its own tab after the worker replies.
+        # Chromium can report that close before click() receives its ACK.
+        # Only tolerate that lifecycle race; the pairing/storage assertions
+        # below must still prove that approval actually succeeded.
+        if not approval.is_closed() or "Target page, context or browser has been closed" not in str(error):
+            raise
     assert web.evaluate("() => window.pairing")["ok"] is True
     stored = lab.worker.evaluate("() => chrome.storage.local.get('apiKey')")
     assert stored["apiKey"] == key

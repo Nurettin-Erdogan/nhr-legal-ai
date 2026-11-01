@@ -2,6 +2,8 @@
 export interface NavEntry {
   to: string;
   label: string;
+  /** Yalnız yönetici rolüne gösterilir (sayfa da kendi başına denetler; sunucu yetkisi ayrıdır). */
+  adminOnly?: boolean;
 }
 
 export interface NavGroup {
@@ -24,7 +26,7 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     title: "Araştırma ve üretim",
     items: [
-      { to: "/dashboard/case-law", label: "İçtihat" },
+      { to: "/dashboard/case-law", label: "İçtihat", adminOnly: true },
       { to: "/dashboard/legislation", label: "Mevzuat" },
       { to: "/dashboard/drafts", label: "Belge Hazırla" },
     ],
@@ -38,6 +40,14 @@ export const NAV_GROUPS: NavGroup[] = [
     ],
   },
 ];
+
+/** Menüde gösterilecek gruplar: yönetici dışındaki roller `adminOnly` girdileri görmez. */
+export function visibleNavGroups(admin: boolean): NavGroup[] {
+  return NAV_GROUPS.map((group) => ({
+    ...group,
+    items: group.items.filter((item) => admin || !item.adminOnly),
+  })).filter((group) => group.items.length > 0);
+}
 
 export const ACCOUNT_NAV: NavEntry = { to: "/dashboard/settings", label: "Ayarlar" };
 /** Yalnız yönetici rolündeki kullanıcıya gösterilir (yetki sunucuda ayrıca denetlenir). */

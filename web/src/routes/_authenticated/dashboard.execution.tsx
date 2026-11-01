@@ -138,8 +138,9 @@ const ExecutionPage = () => {
         >
           <h2 className="text-lg font-semibold">Henüz icra dosyası yok</h2>
           <p className="mt-2 text-sm text-muted-foreground">
-            İcra dosyaları UYAP'tan aktarıldığında burada listelenir; adı "İcra Dairesi" ya da "İcra
-            Hukuk Mahkemesi" olan her dosya otomatik tanınır.
+            UYAP'tan aktarılan ya da evrakı yüklenen icra dosyaları burada listelenir; adı "İcra
+            Dairesi" ya da "İcra Hukuk Mahkemesi" olan dosyalar otomatik tanınır. Elle açtığınız ve
+            henüz UYAP bilgisi ya da evrakı olmayan icra dosyaları Davalar sayfasında durur.
           </p>
           <Link to="/dashboard/uyap" className="mt-3 inline-block text-sm text-primary underline">
             UYAP'a Bağlan sayfasına git

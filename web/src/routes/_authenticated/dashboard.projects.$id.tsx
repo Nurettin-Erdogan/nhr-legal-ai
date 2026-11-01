@@ -1,3 +1,4 @@
+import { projectStatusLabel } from "@/lib/project-status";
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Link } from "@/lib/router-compat";
@@ -128,7 +129,7 @@ function ProjectDetailWorkspace() {
   return (
     <DashboardLayout
       title={project.name}
-      subtitle={project.description || "Dava workspace"}
+      subtitle={project.description || "Proje çalışma alanı: notlar, belgeler ve sohbet"}
       actions={
         <Link to="/dashboard/projects">
           <Button variant="outline">
@@ -142,7 +143,7 @@ function ProjectDetailWorkspace() {
           className="h-3 w-3 rounded-full"
           style={{ background: project.color || "hsl(var(--gold))" }}
         />
-        <Badge variant="outline">{project.status}</Badge>
+        <Badge variant="outline">{projectStatusLabel(project.status)}</Badge>
         <span className="text-sm text-muted-foreground">
           Oluşturulma: {new Date(project.created_at).toLocaleString("tr-TR")}
         </span>

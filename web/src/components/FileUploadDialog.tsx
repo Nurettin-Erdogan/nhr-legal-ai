@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { confirmAction } from "@/lib/confirmation";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
@@ -31,11 +32,16 @@ import {
   storagePathFor,
 } from "@/lib/uyap";
 
+import { linkProjectDocuments } from "@/lib/project-documents";
+
 interface Props {
   onUploaded?: () => void;
+  /** Verilirse yüklenen belgeler bu projeye bağlanır (Projeler > Belgeler sekmesi). */
+  projectId?: string;
+  label?: string;
 }
 
-export const FileUploadDialog = ({ onUploaded }: Props) => {
+export const FileUploadDialog = ({ onUploaded, projectId, label = "Dosya Yükle" }: Props) => {
   const { user } = useAuth();
   const [open, setOpen] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
@@ -81,6 +87,7 @@ export const FileUploadDialog = ({ onUploaded }: Props) => {
     setBusy(true);
     setDone(0);
     let success = 0;
+    const created: string[] = [];
     try {
       for (const file of files) {
         // Aynı ad ve boyutta belge zaten yüklüyse sessizce çoğaltılmaz: kullanıcıya sorulur (Büro Asistanı ve arama sonuçları
@@ -94,7 +101,12 @@ export const FileUploadDialog = ({ onUploaded }: Props) => {
         if (
           Array.isArray(existing.data) &&
           existing.data.length > 0 &&
-          !window.confirm(`"${file.name}" zaten yüklü görünüyor. Yine de yeniden yüklensin mi?`)
+          !(await confirmAction({
+            title: "Bu belge zaten yüklü görünüyor",
+            description: `"${file.name}" aynı ad ve boyutta daha önce yüklenmiş. Yine de yeniden yüklensin mi?`,
+            confirmLabel: "Yine de yükle",
+            cancelLabel: "Atla",
+          }))
         ) {
           setDone((d) => d + 1);
           continue;
@@ -111,7 +123,9 @@ export const FileUploadDialog = ({ onUploaded }: Props) => {
         }
 
         const meta = parseUyapMeta(file.name);
+        const documentId = crypto.randomUUID();
         const { error: dbErr } = await supabase.from("case_documents").insert({
+          id: documentId,
           owner_id: user.id,
           case_id: caseId === "none" ? null : caseId,
           file_name: file.name,
@@ -127,11 +141,27 @@ export const FileUploadDialog = ({ onUploaded }: Props) => {
           toast.error(`${file.name}: ${dbErr.message}`);
         } else {
           success++;
+          created.push(documentId);
         }
         setDone((d) => d + 1);
       }
+      if (success && projectId && created.length) {
+        try {
+          await linkProjectDocuments(projectId, created);
+        } catch (error) {
+          toast.error(
+            error instanceof Error
+              ? `Yüklendi ama projeye bağlanamadı: ${error.message}`
+              : "Yüklendi ama projeye bağlanamadı.",
+          );
+        }
+      }
       if (success) {
-        toast.success(`${success} dosya güvenli alana yüklendi`);
+        toast.success(
+          projectId
+            ? `${success} dosya yüklendi ve projeye bağlandı`
+            : `${success} dosya güvenli alana yüklendi`,
+        );
         onUploaded?.();
         setOpen(false);
         reset();
@@ -150,14 +180,14 @@ export const FileUploadDialog = ({ onUploaded }: Props) => {
       }}
     >
       <DialogTrigger asChild>
-        <Button size="sm" aria-label="Dosya Yükle">
+        <Button size="sm" aria-label={label}>
           <Upload className="h-4 w-4 sm:mr-1" />{" "}
-          <span className="hidden sm:inline">Dosya Yükle</span>
+          <span className={projectId ? "" : "hidden sm:inline"}>{label}</span>
         </Button>
       </DialogTrigger>
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>Dosya Yükle</DialogTitle>
+          <DialogTitle>{label}</DialogTitle>
           <DialogDescription>
             Belgeler yalnızca sizin erişebildiğiniz özel alanda saklanır (
             {ALLOWED_EXTENSIONS.join(", ")}).

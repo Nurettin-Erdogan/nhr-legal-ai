@@ -164,12 +164,18 @@ def _fetch_law(law):
     return document, full
 
 
+class OfficialArticleAbsent(ValueError):
+    """The validated official text of the law has no article with this number (not: the portal was unreachable)."""
+
+
 def extract_article(full, article):
     """The exact text of one article from a validated official law document; raises when absent, ambiguous or incomplete."""
     from ingestion.mevzuat.identity import article_headings, canonical_article, primary_article
     from ingestion.text import normalize_text
     headings = article_headings(full)
     matches = [i for i, h in enumerate(headings) if h.identity == canonical_article(article)]
+    if not matches and headings:
+        raise OfficialArticleAbsent('Official article absent')
     if len(matches) != 1:
         raise ValueError('Official article absent or ambiguous')
     index = matches[0]
@@ -304,6 +310,9 @@ def research_official(queries, contexts, *, public_scope: bool,
                 documents[law] = fetch_law(law)
             ids.append(store_article(*documents[law], article))
             statuses.append(dict(source='mevzuat', status='document_verified'))
+        except OfficialArticleAbsent:
+            # The official text was read and identified, and this article number is not in it: a finding, not a failure.
+            statuses.append(dict(source='mevzuat', status='article_absent', law_no=law, article_no=article))
         except Exception as exc:
             # Never log raw questions, provider payloads, cookies or transport errors.
             statuses.append(dict(source='mevzuat', status='unavailable_or_unverified', failure_type=type(exc).__name__))

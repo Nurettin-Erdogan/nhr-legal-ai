@@ -16,6 +16,7 @@ from fastapi import Path as PathParam
 from psycopg.errors import QueryCanceled
 from starlette.concurrency import run_in_threadpool
 
+from api import statute_hints
 from api.auth.routes import current_user_id
 from api.ai.seed_tier import seed_tier
 from api.ai.turkish_text import restore_turkish
@@ -45,6 +46,7 @@ _stats_cache: tuple[float, CorpusStats] | None = None
 # yoksa (hiç hesaplanmadıysa) uç 503 "hazırlanıyor" der ve hesap başlar. Önbellek yalnız bellekteyken her yeniden başlatma
 # ucu bozuyordu (korpus paneli ve "Karar Hukuku" kutusu boş kalıyordu).
 _STATS_FILE = Path(__file__).resolve().parents[1] / "data" / "cache" / "corpus_stats.json"
+_LAWS_FILE = Path(__file__).resolve().parents[1] / "data" / "cache" / "laws_index.json"
 _STATS_REFRESH_SECONDS = 21600.0
 _STATS_REFRESH_TIMEOUT = "900s"
 _stats_lock = threading.Lock()
@@ -1051,7 +1053,7 @@ def _explicit_article_hit(query: str) -> dict | None:
 def search_legal_sources(
     q: str = Query(min_length=2, max_length=300),
     limit: int = Query(default=10, ge=1, le=50),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=200),
     as_of: date | None = None,
 ) -> LegalSearchResponse:
     query = " ".join(q.split())
@@ -1256,11 +1258,54 @@ def _hit_from_context(context) -> dict:
     }
 
 
+def _hit_from_hint(row: dict) -> dict:
+    """Konu ipucundan okunan resmî doğrulanmış madde, arama sonucu biçiminde."""
+    title = (row["article_title"] or "").strip().rstrip(":")
+    name = " ".join(row["law_name"].split())
+    label = f"{name} m. {row['article_no']}" + (f" — {title}" if title and not statute_hints._TITLE_NOISE.match(title) else "")
+    return {
+        "id": row["id"], "source_type": "legislation", "title": label, "source_url": row["source_url"], "authority": None,
+        "court_name": None, "chamber": None, "docket_no": None, "decision_no": None, "decision_date": None,
+        "legislation_type": "law", "law_name": row["law_name"], "law_no": row["law_no"], "article_no": row["article_no"],
+        "article_title": row["article_title"], "official_gazette_date": None, "version_date": None, "effective_from": None,
+        "effective_to": None, "source_version": None, "revision": 1, "excerpt": (row["content"] or "")[:700], "rank": 1.0,
+        "verification": "official",
+    }
+
+
+def _narrative_hits(query: str, contexts: list) -> list[dict]:
+    """"Olayı anlat" sonuç sırası: önce olayın konusuna oturan resmî maddeler (konu tablosu, metni doğrulanmış), sonra kararlar,
+    en sonda konuyla bağı yalnız ortak sözcüklere dayanan diğer mevzuat.
+
+    Getirmenin sözcük kolu kısa mevzuat maddelerine karar metinlerinden çok yüksek puan verir (ölçüldü: işçi alacağı olayında
+    "Kefalet Sandığı Tüzüğü" maddeleri ilk iki sıradaydı); bu uç yalnız sırayı düzenler, hiçbir kaynak uydurulmaz ya da gizlenmez.
+    """
+    topical: list[dict] = []
+    try:
+        hints = statute_hints.suggest(query)
+        if hints:
+            with database_connection() as connection:
+                topical = [_hit_from_hint(row) for row in statute_hints.load_rows(connection, hints)]
+    except psycopg.Error:
+        logger.warning("Olay araması için madde ipuçları yüklenemedi", exc_info=True)
+    seen = {(hit["law_no"], hit["article_no"]) for hit in topical}
+    decisions: list[dict] = []
+    other_laws: list[dict] = []
+    for context in contexts:
+        hit = _hit_from_context(context)
+        if hit["source_type"] == "legislation":
+            if (hit["law_no"], hit["article_no"]) not in seen:
+                other_laws.append(hit)
+        else:
+            decisions.append(hit)
+    return topical + decisions + other_laws
+
+
 @router.get("/semantic", response_model=LegalSearchResponse)
 async def semantic_search_sources(
     q: str = Query(min_length=10, max_length=1500),
     limit: int = Query(default=10, ge=1, le=50),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=200),
 ) -> LegalSearchResponse:
     """Olayı doğal dille anlatan sorgu için benzer karar/mevzuat listesi (sohbet hattıyla aynı hibrit getirme)."""
     from api.ai.pipeline import _embed_question
@@ -1283,11 +1328,11 @@ async def semantic_search_sources(
     unique: dict = {}
     for context in contexts:
         unique.setdefault(context.source_id, context)
-    ordered = list(unique.values())
-    page = [_hit_from_context(context) for context in ordered[offset : offset + limit]]
+    hits = await run_in_threadpool(_narrative_hits, query, list(unique.values()))
+    page = hits[offset : offset + limit]
     response = LegalSearchResponse(
         query=query,
-        total=len(ordered),
+        total=len(hits),
         # Getirme en iyi ~60 kaynakla sınırlıdır: "toplam" bu havuzdaki kaynak sayısıdır, korpusun tamamı değil.
         partial=True,
         limit=limit,
@@ -1309,7 +1354,7 @@ def _load_laws_cached():
             connection.execute("SET TRANSACTION READ ONLY")
             return legislation_browse.load_laws(connection)
 
-    return legislation_browse.cached_laws(loader)
+    return legislation_browse.cached_laws(loader, _LAWS_FILE)
 
 
 @router.get("/laws")

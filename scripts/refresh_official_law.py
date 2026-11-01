@@ -20,7 +20,7 @@ from api.db import admin_database_connection
 from ingestion.mevzuat.identity import article_headings, canonical_article, primary_article
 from ingestion.mevzuat.models import LegislationRecord
 from ingestion.mevzuat.store import upsert_legislation
-from ingestion.mevzuat.text_verify import fetch_official_pdf_text, _comparison_key
+from ingestion.mevzuat.text_verify import fetch_official_pdf_text, _comparison_key, strip_next_article_caption
 from ingestion.text import content_hash, normalize_text
 from psycopg.rows import tuple_row
 from psycopg.types.json import Jsonb
@@ -67,6 +67,8 @@ def official_article(full, article):
     index = matches[0]
     end = headings[index+1].start if index+1 < len(headings) else len(full)
     body = normalize_text(full[headings[index].start:end])
+    if index+1 < len(headings):
+        body = strip_next_article_caption(body)
     if len(body) < 40 or primary_article(body) != canonical_article(article):
         raise ValueError('Incomplete official article')
     return body

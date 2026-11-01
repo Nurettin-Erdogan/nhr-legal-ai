@@ -1,3 +1,4 @@
+import { projectStatusLabel } from "@/lib/project-status";
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Link } from "@/lib/router-compat";
@@ -128,7 +129,7 @@ function Projects() {
   return (
     <DashboardLayout
       title="Projeler"
-      subtitle="Davalarını workspace olarak yönet — notlar, AI çıktıları ve dosyalar tek yerde"
+      subtitle="Dava açılmamış işler ve araştırmalar için çalışma alanları: notlar, belgeler ve sohbet tek yerde"
       actions={
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
@@ -227,7 +228,8 @@ function Projects() {
           <FolderKanban className="h-10 w-10 mx-auto text-muted-foreground mb-3" />
           <h3 className="font-serif text-lg font-semibold mb-1">Henüz proje yok</h3>
           <p className="text-sm text-muted-foreground mb-4">
-            İlk projeni oluşturarak dava workspace'i kur.
+            Dava açılmamış bir danışmanlık işi, sözleşme incelemesi ya da araştırma için proje
+            oluşturun; belgelerinizi ve sohbetinizi tek yerde toplayın.
           </p>
         </div>
       ) : (
@@ -272,7 +274,7 @@ function Projects() {
                   {p.description || "Açıklama yok"}
                 </p>
                 <div className="flex items-center gap-2 flex-wrap">
-                  <Badge variant="outline">{p.status}</Badge>
+                  <Badge variant="outline">{projectStatusLabel(p.status)}</Badge>
                   <span className="text-xs text-muted-foreground ml-auto">
                     {new Date(p.created_at).toLocaleDateString("tr-TR")}
                   </span>

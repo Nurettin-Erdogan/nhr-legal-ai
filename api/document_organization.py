@@ -109,8 +109,11 @@ def organized_documents(
     cte = """WITH matched AS (
         SELECT id, file_name, storage_path, size_bytes, source, uyap_file_no, uyap_birim,
                doc_type, doc_date, case_id, created_at, uyap_account_id, """ + hit_columns + """
-               NULLIF(btrim(uyap_file_no), '') AS folder_no,
-               NULLIF(btrim(uyap_birim), '') AS folder_birim,
+               -- UYAP numarası yoksa belge davaya bağlıysa o davanın dosya no/mahkemesi klasör olur (elle yüklenen evraklar da dosyasına göre gruplanır).
+               COALESCE(NULLIF(btrim(uyap_file_no), ''), (SELECT NULLIF(btrim(oc.case_no), '') FROM office_cases oc
+                        WHERE oc.id = office_case_documents.case_id)) AS folder_no,
+               COALESCE(NULLIF(btrim(uyap_birim), ''), (SELECT NULLIF(btrim(oc.court), '') FROM office_cases oc
+                        WHERE oc.id = office_case_documents.case_id)) AS folder_birim,
                CASE WHEN source IN ('uyap', 'uyap-avukat-eklentisi', 'uyap-extension') THEN 'uyap' ELSE 'manual' END AS origin,
                regexp_replace(translate(lower(COALESCE(NULLIF(btrim(doc_type), ''),
                    regexp_replace(regexp_replace(file_name, '^[0-9a-f]{12,64}[-_]', '', 'i'), '[.][^.]+$', ''))),

@@ -136,3 +136,14 @@ test("ok tuşları listede döner", () => {
   assert.equal(moveSelection(0, -1, 3), 2);
   assert.equal(moveSelection(0, 1, 0), -1);
 });
+
+test("içtihat kısayolu yalnız yöneticiye gösterilir", () => {
+  const empty = { query: "kira", cases: [], clients: [], documents: [], tasks: [] };
+  const hrefs = (admin) => buildSearchRows(empty, "kira", admin).map((row) => row.href);
+  assert.ok(hrefs(true).some((href) => href.startsWith("/dashboard/case-law")));
+  assert.ok(!hrefs(false).some((href) => href.startsWith("/dashboard/case-law")));
+  assert.ok(
+    hrefs(false).some((href) => href.startsWith("/dashboard/legislation")),
+    "mevzuat kısayolu kalır",
+  );
+});

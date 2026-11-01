@@ -83,7 +83,8 @@ def _generation_slot(provider, local_provider):
     behind an entire unrelated writer/checker/repair sequence. The fan-out is
     still bounded, not unlimited paid-provider concurrency.
     """
-    if provider is local_provider or (isinstance(provider, FallbackProvider) and provider.fell_back):
+    if ((provider is local_provider and getattr(provider, "name", "") != "bedrock")
+            or (isinstance(provider, FallbackProvider) and provider.fell_back)):
         return _generation_lock
     loop = asyncio.get_running_loop()
     for old_loop in list(_cloud_generation_slots):
@@ -136,6 +137,12 @@ def answer_provider(
         raise ValueError("Bilinmeyen üretim profili")
     if not cloud_allowed(request):
         return local
+    if getattr(settings, "ai_provider", "") == "bedrock":
+        # Both public and scoped primary providers are Bedrock, but retain
+        # distinct identities so public-only retrieval/cache guards stay intact.
+        # A private request still uses its scoped primary, never public caches/web.
+        from copy import copy
+        return copy(local)
     if profile == "deep_research":
         # Genel sohbetin sağlayıcısını/anahtarını miras alma; ayrı açık onay gerekir.
         if not getattr(settings, "deep_research_cloud_enabled", False):
@@ -192,6 +199,8 @@ def _free_answer(provider: AIProvider, question: str, contexts: list[RAGContext]
     from api.ai.request_memo import memoize_request
 
     settings = get_settings()
+    from api.ai.llm_meter import LLMMeter, metered
+    meter = LLMMeter()
     stage_started = monotonic()
     stage_ms = timings.extra.setdefault('natural_stages_ms', {})
     from api.ai.relevance import case_law_requested
@@ -214,6 +223,22 @@ def _free_answer(provider: AIProvider, question: str, contexts: list[RAGContext]
             embedder = create_embedding_provider(
                 provider_name="ollama", model=model, dimensions=1024, ollama_base_url=settings.ollama_base_url,
                 ollama_timeout_seconds=min(8.0, settings.ollama_timeout_seconds))
+            return embedder.embed_query(semantic_search_text(sentence))
+        except EmbeddingProviderError:
+            return None
+
+    def decision_vector(sentence: str) -> list[float] | None:
+        # The shared (decision) vector of this part. Without it a part searched decisions only by words, and a common legal term
+        # ("nafaka", "itirazın iptali") matches hundreds of thousands of chunks, so the lexical lane fell back to an unranked sample;
+        # the semantic lane over the 21.9 M embedded chunks ran once, for the whole question only (measured 2026-10-30).
+        model = getattr(settings, "embedding_model", "")
+        if not model or not getattr(settings, "rag_query_embedding", False):
+            return None
+        try:
+            from api.ai.relevance import semantic_search_text
+            embedder = create_embedding_provider(
+                provider_name=settings.embedding_provider, model=model, dimensions=settings.embedding_dimensions,
+                ollama_base_url=settings.ollama_base_url, ollama_timeout_seconds=min(8.0, settings.ollama_timeout_seconds))
             return embedder.embed_query(semantic_search_text(sentence))
         except EmbeddingProviderError:
             return None
@@ -243,6 +268,7 @@ def _free_answer(provider: AIProvider, question: str, contexts: list[RAGContext]
         # Kanun maddeleri önce (konu tablosu + bge-m3 anlam araması), sonra aynı cümlenin karar aramaları: karar parçaları
         # çoğu zaman cümle sınırında temiz bölünmediğinden kanıt olarak yalnız resmî madde sık kullanılabilir.
         legislation_vector = vector(sentence)
+        part_vector = decision_vector(sentence)
         search_info: dict = {}
         from concurrent.futures import ThreadPoolExecutor
 
@@ -253,20 +279,33 @@ def _free_answer(provider: AIProvider, question: str, contexts: list[RAGContext]
         # touch the main search's transaction.
         concept_pool = ThreadPoolExecutor(max_workers=len(concept)) if concept else None
         concept_futures = [concept_pool.submit(concept_lookup, query) for query in concept] if concept_pool else []
+        statutes: list[RAGContext] = []
+        found: list[RAGContext] = []
         try:
-            with database_connection() as connection:
-                statutes = _case_statute_contexts(connection, sentence, [])
-                found = retrieve_contexts(connection, question=sentence, top_k=_FREE_ANSWER_SOURCES_PER_SENTENCE,
-                                          legislation_embedding=legislation_vector, expand_legislation=True,
-                                          diagnostics=search_info)
-                # A lane of this part's search ran out of time or was sampled: the user is told the research may be incomplete (the
-                # outer search used to be the only source of that warning).
-                # (not inside "free_answer": the attempt loop clears that dictionary)
-                searches = timings.extra.setdefault("part_searches", [])
-                searches.append({"query": sentence[:60], "partial": bool(search_info.get("partial")),
-                                 "limit": retrieval_limit(search_info),
-                                 "branches": [(b.get("name"), b.get("status"), b.get("seconds"))
-                                              for b in search_info.get("branches", [])]})
+            try:
+                with database_connection() as connection:
+                    statutes = _case_statute_contexts(connection, sentence, [])
+                    found = retrieve_contexts(connection, question=sentence, top_k=_FREE_ANSWER_SOURCES_PER_SENTENCE,
+                                              legislation_embedding=legislation_vector, expand_legislation=True,
+                                              query_embedding=part_vector,
+                                              embedding_model=settings.embedding_model if part_vector is not None else None,
+                                              parallel_public_vectors=part_vector is not None,
+                                              diagnostics=search_info)
+            except psycopg.Error:
+                # The database refused this part's search (overload, timeout): the part keeps what it already found (the topic
+                # statutes), the user is told the research may be incomplete, and the part without any source is named in the
+                # answer by the existing "no proven source for this part" note instead of the whole request failing with a 500.
+                logger.warning("Bölüm araması veritabanı hatasıyla yarım kaldı", exc_info=True)
+                search_info["partial"] = True
+                search_info["decision_search"] = "timeout"
+            # A lane of this part's search ran out of time or was sampled: the user is told the research may be incomplete (the
+            # outer search used to be the only source of that warning).
+            # (not inside "free_answer": the attempt loop clears that dictionary)
+            searches = timings.extra.setdefault("part_searches", [])
+            searches.append({"query": sentence[:60], "partial": bool(search_info.get("partial")),
+                             "limit": retrieval_limit(search_info),
+                             "branches": [(b.get("name"), b.get("status"), b.get("seconds"))
+                                          for b in search_info.get("branches", [])]})
             concept_hits = []
             for future in concept_futures:
                 try:
@@ -292,6 +331,7 @@ def _free_answer(provider: AIProvider, question: str, contexts: list[RAGContext]
     from api.ai.free_answer import plan_question
 
     single = [(question, (question,))]
+    planner_started = monotonic()
     if prepared_plan:
         # The outer pipeline already paid for and validated a research plan.
         # Reuse it instead of asking another planner the same question.
@@ -299,14 +339,14 @@ def _free_answer(provider: AIProvider, question: str, contexts: list[RAGContext]
     else:
         planner = _planner(settings)
         if planner is not None:
-            plan = plan_question(planner, question, history)
+            plan = plan_question(metered(planner, meter), question, history)
         else:
             # No "short question needs no planner" shortcut: it sent every question under 15 words without "ve" straight to a raw
             # word search (measured 2026-10-30: "Aldığım telefon iki ayda bozuldu..." was never turned into "ayıplı mal", and
             # "telefon" brought prison-administration rules). `plan_question` itself skips the model for a recognised one-topic
             # question, so only questions the system does not know pay for the planning call.
             from api.ai.free_answer import simple_search_plan
-            plan = simple_search_plan(question, history) or plan_question(checker, question, history)
+            plan = simple_search_plan(question, history) or plan_question(metered(checker, meter), question, history)
     if not plan:
         timings.extra.setdefault("free_answer", {}).update(reason="not_legal", status="fallback")
         return None
@@ -320,6 +360,7 @@ def _free_answer(provider: AIProvider, question: str, contexts: list[RAGContext]
         plan = [*plan, ("Bu konudaki Yargıtay kararları ne diyor?", research_queries(question))]
     queries = [query for _, part_queries in plan for query in part_queries]
     stage_ms['planning'] = round((monotonic() - stage_started) * 1000, 1)
+    stage_ms['planner_call'] = round((monotonic() - planner_started) * 1000, 1)
     stage_started = monotonic()
     from api.ai.free_answer import simple_search_plan, _usable
     # Progressive retrieval: validate exact local provisions for EVERY planned
@@ -464,8 +505,9 @@ def _free_answer(provider: AIProvider, question: str, contexts: list[RAGContext]
     stage_ms['prewrite_readiness'] = round((monotonic() - stage_started) * 1000, 1)
     stage_started = monotonic()
     timings.extra.setdefault("free_answer", {})["plan"] = [text for text, _ in plan]
-    answer = free_verified_answer(provider, question=question, contexts=contexts, retrieve=retrieve, history=history,
-                                checker_provider=_checker_for(settings, provider, checker), diagnostics=timings.extra.setdefault("free_answer", {}),
+    answer = free_verified_answer(metered(provider, meter), question=question, contexts=contexts, retrieve=retrieve, history=history,
+                                checker_provider=metered(_checker_for(settings, provider, checker), meter),
+                                diagnostics=timings.extra.setdefault("free_answer", {}),
                                 on_draft=on_draft, parts=parts, deferred_research=local_plan_reused,
                                 parallel_parts=getattr(settings, 'free_answer_parallel_parts', True),
                                 triage_sources=getattr(settings, 'free_answer_source_triage', True),
@@ -475,8 +517,9 @@ def _free_answer(provider: AIProvider, question: str, contexts: list[RAGContext]
     answer_info = timings.extra.get('free_answer') or {}
     selected_attempt = {key: answer_info[key] for key in ('write_seconds', 'check_seconds', 'attempts')
                         if isinstance(answer_info.get(key), (int, float))}
-    logger.warning('Assistant stage durations ms=%s readiness=%s selected_attempt=%s',
-                   stage_ms, readiness, selected_attempt)
+    timings.extra['llm_meter'] = meter.summary()
+    logger.warning('Assistant stage durations ms=%s readiness=%s selected_attempt=%s llm=%s attempts=%s',
+                   stage_ms, readiness, selected_attempt, timings.extra['llm_meter'], answer_info.get('attempts'))
     return answer
 
 
@@ -500,6 +543,8 @@ def _planner(settings) -> AIProvider | None:
     """Splitting the question is an easy job: on Gemini it runs on the light model, whose free quota is separate, so the main
     model's daily quota is left for writing and checking (2026-10-25: the free quota ran out after a few test questions). A busy
     light model is not waited for; the caller then plans with the main model."""
+    if getattr(settings, "ai_provider", "") == "bedrock":
+        return None  # all generation uses the single configured primary model
     model = getattr(settings, "cloud_ai_plan_model", "")
     provider_name = getattr(settings, "cloud_ai_provider", "")
     if provider_name not in {"gemini", "bedrock"} or not model:
@@ -557,6 +602,22 @@ def _missing_requested_article(question: str, contexts: Sequence[RAGContext]) ->
     found = any(c.source_type == "legislation" and c.law_no == law_no and (c.article_no or "").lower() == article_no
                 for c in contexts)
     return None if found else (law_no, article_no)
+
+
+def _missing_article_text(law_no: str, article_no: str, official_statuses) -> str:
+    """What the user is told about an article that is not in the verified corpus. Only an official text that was read and
+    identified, and that has no such article, allows "there is no such article"; otherwise only our own records are spoken for."""
+    from datetime import date as _date
+    absent = any(status.get('status') == 'article_absent' and status.get('law_no') == law_no and status.get('article_no') == article_no
+                 for status in official_statuses or ())
+    if absent:
+        from api.ai.currency_note import turkish_date
+        return (f"{law_no} sayılı Kanunun resmî metninde {article_no}. madde bulunmuyor: Mevzuat Bilgi Sistemi'ndeki (mevzuat.gov.tr) "
+                f"güncel metin {turkish_date(_date.today())} tarihinde okundu ve bu numarada bir madde yok. Madde numarasını kontrol "
+                "edip yeniden sorabilir ya da konuyu madde numarası vermeden anlatabilirsiniz.")
+    return (f"{law_no} sayılı Kanunun {article_no}. maddesini doğrulanmış mevzuat kaynaklarımızda bulamadım. Madde numarası "
+            "yanlış yazılmış olabilir ya da bu madde henüz kaynaklarımıza eklenmemiş olabilir; numarayı kontrol edip yeniden "
+            "sorabilir ya da konuyu madde numarası vermeden anlatabilirsiniz.")
 
 
 def _with_decisions(selected: list[RAGContext], pool: Sequence[RAGContext], *, question: str = '') -> list[RAGContext]:
@@ -750,7 +811,8 @@ def _with_verification_note(request: AIAnswerRequest, answer: VerifiedAnswer) ->
     from api.ai import currency_note
     legislation = [c.source_id for c in answer.contexts if c.source_type == "legislation"]
     if (not answer.grounded or not legislation
-            or (request.as_of is None and not currency_note.asks_currency(request.question))):
+            or (request.as_of is None and not (currency_note.asks_currency(request.question)
+                                               or currency_note.asks_identity(request.question)))):
         return _replace(answer, verification_note=None)
     today = _date.today()
     try:
@@ -770,8 +832,17 @@ def _with_verification_note(request: AIAnswerRequest, answer: VerifiedAnswer) ->
             except Exception:  # noqa: BLE001 - a failed check is reported as "not reached", never as verified
                 logger.warning("Resmî metinle yeniden karşılaştırma yapılamadı")
                 live = {str(source): currency_note.UNREACHABLE for source in stale}
-    return _replace(answer, verification_note=currency_note.verification_note(
-        request.question, request.as_of, answer.contexts, records, today, live))
+    identities: dict = {}
+    if currency_note.asks_identity(request.question) and _live_recheck_allowed(request, answer):
+        # The law's own header (acceptance date, Gazette date/number) comes from the official text, never from the model.
+        identities = currency_note.fetch_law_identities(
+            c.law_no for c in answer.contexts if c.source_type == "legislation")
+    note = currency_note.verification_note(request.question, request.as_of, answer.contexts, records, today, live, identities)
+    if identities and currency_note.identity_sentence(identities):
+        trimmed = currency_note.drop_cannot_reach_sentences(answer.text)
+        if trimmed.strip():
+            answer = _replace(answer, text=trimmed)
+    return _replace(answer, verification_note=note)
 
 
 def _verified_on(value, day) -> bool:
@@ -1127,6 +1198,13 @@ def _planned_statutes(request: AIAnswerRequest, question: str) -> list[RAGContex
         return []
 
 
+def _seed_search_only(request: AIAnswerRequest, *, natural_mode: bool, generation_profile: str, cloud_provider: bool,
+                      force_full: bool, has_seed: bool) -> bool:
+    """True when the whole-question search may skip its vector lanes because `_free_answer` runs every part's own vector search."""
+    return bool(natural_mode and generation_profile == 'default' and cloud_provider and cloud_allowed(request)
+                and request.as_of is None and not force_full and not has_seed)
+
+
 def _initial_public_statutes(request: AIAnswerRequest, question: str, diagnostics: dict) -> list[RAGContext]:
     """Provisional seeds, NOT a substitute for the per-part research/checker.
 
@@ -1426,7 +1504,7 @@ async def execute_answer(
                 model_name="dialogue-inputs-v1",
             )
     local_provider, provider = _answer_providers(settings, request, generation_profile)
-    local_resources = provider is local_provider
+    local_resources = provider is local_provider and getattr(provider, "name", "") != "bedrock"
     if local_resources:
         pause_embeddings("assistant")
     try:
@@ -1638,7 +1716,15 @@ async def _execute_answer_body(
             timings.extra["research_plan_ms"] = round((monotonic()-plan_started)*1000, 1)
         timings.extra.update(fast_diagnostics)
         embed_started = monotonic()
-        embedding_requested = settings.rag_query_embedding and not fast_contexts
+        # General cloud chat: `_free_answer` plans the question and runs every part's own semantic search (decision + legislation
+        # vectors). The whole-question semantic lanes of this first search only repeated that work in sequence before it (measured
+        # 2026-10-31: ~20 s retrieval + 4.6 s embedding, then ~23 s of part searches). The first search keeps its word and statute
+        # lanes as the seed pool; private, scoped, historical and local-model requests keep the full search.
+        seed_only = _seed_search_only(request, natural_mode=natural_mode, generation_profile=generation_profile,
+                                      cloud_provider=provider is not local_provider, force_full=_force_full_search,
+                                      has_seed=bool(fast_contexts))
+        timings.extra['seed_search_lexical_only'] = seed_only
+        embedding_requested = settings.rag_query_embedding and not fast_contexts and not seed_only
         query_embedding, legislation_embedding = (
             await asyncio.gather(_embed_question(search_question), _embed_legislation_question(search_question))
             if embedding_requested
@@ -1689,6 +1775,7 @@ async def _execute_answer_body(
             )
 
         retrieval_started = monotonic()
+        seed_failed = False
         retrieval_diagnostics: dict = dict(fast_diagnostics) if fast_contexts else {}
         verification_diagnostics: dict = {}
         try:
@@ -1702,13 +1789,38 @@ async def _execute_answer_body(
                 diagnostics=retrieval_diagnostics,
                 legislation_embedding=legislation_embedding,
             )
+            if seed_only and not contexts and settings.rag_query_embedding:
+                # The word/statute seed found nothing (measured 2026-10-31: a mobbing question): the full search, with the
+                # question's vectors, runs as before instead of ending with "no sources" before the part searches start.
+                timings.extra['seed_search_lexical_only'] = False
+                query_embedding, legislation_embedding = await asyncio.gather(
+                    _embed_question(search_question), _embed_legislation_question(search_question))
+                retrieval_diagnostics.clear()
+                contexts = await _retrieve_with_warm_retry(
+                    request,
+                    user_id=user_id,
+                    query_embedding=query_embedding,
+                    top_k=candidate_pool_size(settings.rag_top_k),
+                    embedding_model=settings.embedding_model,
+                    question=search_question,
+                    diagnostics=retrieval_diagnostics,
+                    legislation_embedding=legislation_embedding,
+                )
         except HTTPException:
             raise
         except psycopg.Error as exc:
             logger.exception("Hukuk kaynakları aranamadı")
-            raise HTTPException(
-                status_code=503, detail="Hukuk kaynakları aranamadı"
-            ) from exc
+            if not seed_only:
+                raise HTTPException(
+                    status_code=503, detail="Hukuk kaynakları aranamadı"
+                ) from exc
+            # The general chat's first search is only the seed pool: `_free_answer` runs its own search for every part. A database
+            # that refused the seed (overload, timeout; measured 2026-10-31: two of twenty questions) is not a reason to fail the
+            # request before the part searches had their chance. The research is flagged incomplete instead.
+            contexts = []
+            seed_failed = True
+            retrieval_diagnostics["partial"] = True
+            retrieval_diagnostics["decision_search"] = "timeout"
         if research_aspects:
             from api.ai.research_plan import search_aspects
             async def retrieve_aspect(query):
@@ -1793,7 +1905,7 @@ async def _execute_answer_body(
     timings.extra['unverified_excluded'] = summary['unverified_excluded']
     logger.info('RAG discovery %s', summary)
     await emit('search_summary', **summary)
-    if not contexts:
+    if not contexts and not seed_failed:
         pending = int((retrieval_diagnostics.get('document_scope') or {}).get('pending') or 0)
         if (request.case_id is not None or request.office_project_id is not None) and pending:
             # Asıl neden "kaynak yok" değil, davadaki belgelerin henüz hazır olmaması (ör. OCR sürüyor).
@@ -1807,6 +1919,14 @@ async def _execute_answer_body(
         scope = retrieval_diagnostics.get('document_scope') or {}
         if scope.get('file_only'):
             raise HTTPException(422, "Bu soru için çalışma alanınızdaki belgelerde yeterli bilgi bulunamadı. Projeye bağlı dava/belge yoksa önce bağlayın; hukuki araştırma için mevzuat veya içtihat istediğinizi belirtin.")
+        missing_article = _missing_requested_article(request.question, [])
+        if missing_article is not None:
+            # A named article that nothing matched is answered about that article, not with the generic "narrow the question /
+            # select a document" reply (measured 2026-10-30: "4857 m. 999 yoksa açıkça belirt" got the generic one).
+            return await _finish_without_evidence(
+                request, user_id, text=_missing_article_text(*missing_article, timings.extra.get('official_web')),
+                kind="insufficient_sources", timings=timings, started=started, emit=emit, audit=audit,
+            )
         if natural_mode:
             definition = await _general_definition_fallback(
                 request, user_id, provider=provider, local_provider=local_provider,
@@ -1831,7 +1951,9 @@ async def _execute_answer_body(
 
     await emit("sources_found", count=len(contexts), sources=_source_preview(contexts))
     if provider is not local_provider and holds_private_documents(contexts):
-        provider = local_provider  # kullanıcı belgesi hiçbir zaman buluta gönderilmez
+        # Scoped primary: local in legacy mode, explicitly authorized Bedrock
+        # in deployment-wide cloud mode. Never reuse the public fallback route.
+        provider = local_provider
     from api.ai.practical_answer import RentCalculationProvider, has_calculation_inputs, rent_basis
     calculation = None
     if not natural_mode or has_calculation_inputs(request.question, prior_questions):
@@ -1918,12 +2040,8 @@ async def _execute_answer_body(
     if missing is not None:
         # "4857 sayılı Kanun madde 999" korpusta yoksa model çağrılmaz: modele ilgisiz kararlar okutmak sayfa numarası gibi
         # anlamsız eşleşmeler doğuruyordu (2026-10-25) ve kredi harcıyordu. Yokluk yalnız bizim doğrulanmış korpusumuz içindir.
-        law_no, article_no = missing
         return await _finish_without_evidence(
-            request, user_id,
-            text=(f"{law_no} sayılı Kanunun {article_no}. maddesini doğrulanmış mevzuat kaynaklarımızda bulamadım. Madde numarası "
-                  "yanlış yazılmış olabilir ya da bu madde henüz kaynaklarımıza eklenmemiş olabilir; numarayı kontrol edip yeniden "
-                  "sorabilir ya da konuyu madde numarası vermeden anlatabilirsiniz."),
+            request, user_id, text=_missing_article_text(*missing, timings.extra.get('official_web')),
             kind="insufficient_sources", timings=timings, started=started, emit=emit, audit=audit,
         )
     try:
@@ -1985,7 +2103,7 @@ async def _execute_answer_body(
                         # cümle cümle kanıtlanamadıysa (free None) eski yola düşülmez; dürüst "doğrulayamadım" cevabı verilir.
                         synthesize_answer = _already_verified(free)
                     budget = getattr(settings, "rag_synthesis_context_chars", 24000)
-                    if provider is local_provider:
+                    if provider is local_provider and getattr(provider, "name", "") != "bedrock":
                         # Leave room for question, prompt and output on small
                         # local models. Never silently clip evidence mid-unit.
                         budget = min(budget, max(2400, settings.ollama_num_ctx * 2))

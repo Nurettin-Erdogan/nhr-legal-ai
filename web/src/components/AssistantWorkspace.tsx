@@ -19,8 +19,10 @@ const allModes = [
 const ENABLED_MODES = ["chat"];
 const modes = allModes.filter((item) => ENABLED_MODES.includes(item.id));
 const examples = [
+  "Kıdem tazminatına hak kazanma şartları nelerdir?",
   "Kira artışında uygulanacak mevzuatı ve ilgili kararları araştır.",
   "İşe iade davasının şartları nelerdir?",
+  "Haksız fiilde zamanaşımı süresi nedir?",
 ];
 
 export function AssistantWorkspace() {

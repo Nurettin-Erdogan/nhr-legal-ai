@@ -10,7 +10,7 @@ import { UyapCaseDetail } from "@/components/UyapCaseDetail";
 import { DeadlineCalculator } from "@/components/DeadlineCalculator";
 import { ExecutionBreakdown } from "@/components/ExecutionBreakdown";
 import { isExecutionCourt } from "@/lib/execution-breakdown";
-import { CaseNotesEditor, CaseTaskComposer } from "@/components/CaseQuickActions";
+import { CaseNotesEditor, CaseTaskActions, CaseTaskComposer } from "@/components/CaseQuickActions";
 import { DocumentTrash } from "@/components/DocumentTrash";
 import { DocumentWorkflowActions } from "@/components/DocumentWorkflowActions";
 import { trashDocument } from "@/lib/document-trash";
@@ -209,6 +209,14 @@ const CaseDetail = () => {
             taskComposer={
               <CaseTaskComposer key={id} caseId={id} onSaved={() => setRevision((n) => n + 1)} />
             }
+            renderTaskActions={(task) => (
+              <CaseTaskActions
+                taskId={task.id}
+                status={task.status}
+                title={task.title}
+                onChanged={() => setRevision((n) => n + 1)}
+              />
+            )}
             trashing={trashing}
             onTrash={(documentId) => void moveToTrash(documentId)}
             documentTrash={

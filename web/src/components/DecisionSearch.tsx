@@ -25,6 +25,7 @@ import { SourceReader } from "@/components/SourceReader";
 import { Copy, Loader2, Search } from "lucide-react";
 
 const PAGE_SIZE = 10;
+const MAX_RESULTS = 200;
 
 function Highlighted({ content, query }: { content: string; query: string }) {
   return (
@@ -209,7 +210,8 @@ export function DecisionSearch({
 
   const facets = useMemo(() => facetsOf(hits), [hits]);
   const shown = useMemo(() => filterAndSort(hits, filters), [hits, filters]);
-  const hasMore = !!page && hits.length < page.total && page.hits.length > 0;
+  // Sunucu derin sayfalamayı 200 sonuçla sınırlar (daha fazlası yavaş aday taraması demek): daha fazlası için aramayı daraltın.
+  const hasMore = !!page && hits.length < Math.min(page.total, MAX_RESULTS) && page.hits.length > 0;
   const hiddenByFilter = hits.length - shown.length;
   const set = <K extends keyof Filters>(key: K, value: Filters[K]) =>
     setFilters((current) => ({ ...current, [key]: value }));

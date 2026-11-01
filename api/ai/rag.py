@@ -45,6 +45,20 @@ class HistoryTurn:
     answer_kind: str = "legal"
 
 
+_PLACEHOLDER_TITLE = re.compile(r"^\s*Madde No:\s*\S+\s*(?:[-–—]\s*(?P<title>.+?))?\s*$", re.IGNORECASE)
+
+
+def real_article_title(title: str | None) -> str | None:
+    """The article's own caption, or None. The portal tree stores "Madde No: 342" where it has no caption and "Madde No: 139 -
+    1. Genel olarak" where it has one: the placeholder part is never shown to a reader."""
+    if not title or not title.strip():
+        return None
+    match = _PLACEHOLDER_TITLE.match(title)
+    if not match:
+        return title.strip()
+    return (match.group('title') or '').strip() or None
+
+
 @dataclass(frozen=True, slots=True)
 class RAGContext:
     chunk_id: UUID
@@ -104,8 +118,9 @@ class RAGContext:
                 head = f"{head} ({self.law_no})"
             if self.article_no:
                 head = f"{head} m. {self.article_no}"
-            if self.article_title:
-                head = f"{head} — {self.article_title}"
+            title = real_article_title(self.article_title)
+            if title:
+                head = f"{head} — {title}"
             return head
 
         if self.source_type == "document":

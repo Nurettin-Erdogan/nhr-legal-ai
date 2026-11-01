@@ -68,10 +68,10 @@ export function searchable(query: string): boolean {
 }
 
 /** Hukuk kaynaklarında aynı terimi aramaya götüren kısayollar; kayıt bulunmasa da gösterilir. */
-export function legalShortcuts(query: string): SearchRow[] {
+export function legalShortcuts(query: string, includeCaseLaw = true): SearchRow[] {
   const text = query.trim();
   if (!searchable(text)) return [];
-  return [
+  const rows: SearchRow[] = [
     {
       key: "legal-case-law",
       group: "Hukuk kaynaklarında ara",
@@ -94,10 +94,16 @@ export function legalShortcuts(query: string): SearchRow[] {
       href: `/dashboard/ai?q=${enc(text)}`,
     },
   ];
+  // İçtihat sayfası yalnız yöneticiye açıktır: diğerlerine o kısayol gösterilmez.
+  return rows.filter((row) => includeCaseLaw || row.key !== "legal-case-law");
 }
 
 /** Sunucu sonucunu, gösterilecek ve tıklanınca açılacak satırlara çevirir. */
-export function buildSearchRows(result: WorkspaceSearchResult | null, query: string): SearchRow[] {
+export function buildSearchRows(
+  result: WorkspaceSearchResult | null,
+  query: string,
+  includeCaseLaw = true,
+): SearchRow[] {
   const rows: SearchRow[] = [];
   for (const item of result?.cases ?? []) {
     rows.push({
@@ -142,7 +148,7 @@ export function buildSearchRows(result: WorkspaceSearchResult | null, query: str
       href: item.case_id ? `/dashboard/cases/${item.case_id}?tab=gorevler` : "/dashboard/tasks",
     });
   }
-  return [...rows, ...legalShortcuts(query)];
+  return [...rows, ...legalShortcuts(query, includeCaseLaw)];
 }
 
 /** Satırları, sırayı bozmadan grup başlıklarıyla ayırır. */

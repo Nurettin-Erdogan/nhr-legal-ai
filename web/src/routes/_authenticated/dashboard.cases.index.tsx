@@ -1,3 +1,4 @@
+import { daysUntil, relativeDay } from "@/lib/home-summary";
 import { createFileRoute } from "@tanstack/react-router";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { Button } from "@/components/ui/button";
@@ -118,6 +119,27 @@ const statusLabel: Record<string, string> = {
   pending: "Beklemede",
   closed: "Kapalı",
 };
+
+/** Duruşma tarihinin altına göreli gün: yaklaşan (≤2 gün) sarı, geçmiş ve kapanmamış dava kırmızı. */
+function HearingHint({ value, closed }: { value: string; closed: boolean }) {
+  const days = daysUntil(value);
+  if (days === null || closed) return null;
+  const late = days < 0;
+  return (
+    <div
+      className={cn(
+        "mt-0.5 font-medium",
+        late
+          ? "text-destructive"
+          : days <= 2
+            ? "text-amber-700 dark:text-amber-400"
+            : "text-muted-foreground",
+      )}
+    >
+      {late ? `${-days} gün önce geçti` : relativeDay(days)}
+    </div>
+  );
+}
 
 const Cases = () => {
   const { user } = useAuth();
@@ -262,7 +284,7 @@ const Cases = () => {
   return (
     <DashboardLayout
       title="Davalar ve Projeler"
-      subtitle="Tüm dava ve dosyalarınızın canlı durumu"
+      subtitle="Mahkeme ve icra dosyalarınız: UYAP'tan aktarılanlar ve elle açtıklarınız. Dava açılmamış işler için Projeler'i kullanın."
       actions={
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
@@ -405,7 +427,7 @@ const Cases = () => {
         ].map((s) => (
           <div key={s.l} className="p-5 rounded-xl bg-card border border-border shadow-card-elite">
             <div className="text-xs text-muted-foreground">{s.l}</div>
-            <div className="mt-2 font-serif text-3xl font-semibold">{s.v}</div>
+            <div className="mt-2 text-3xl font-semibold tabular-nums">{s.v}</div>
           </div>
         ))}
       </div>
@@ -544,12 +566,19 @@ const Cases = () => {
                       </span>
                     </td>
                     <td className="hidden px-6 py-4 text-xs sm:table-cell">
-                      {c.next_hearing
-                        ? new Date(c.next_hearing).toLocaleString("tr-TR", {
-                            dateStyle: "short",
-                            timeStyle: "short",
-                          })
-                        : "—"}
+                      {c.next_hearing ? (
+                        <>
+                          <div>
+                            {new Date(c.next_hearing).toLocaleString("tr-TR", {
+                              dateStyle: "short",
+                              timeStyle: "short",
+                            })}
+                          </div>
+                          <HearingHint value={c.next_hearing} closed={c.status === "closed"} />
+                        </>
+                      ) : (
+                        "—"
+                      )}
                     </td>
                     <td className="px-2 py-4 sm:px-6" onClick={(event) => event.stopPropagation()}>
                       <DropdownMenu>

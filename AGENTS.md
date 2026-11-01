@@ -96,6 +96,22 @@ aynı denetimden geçirilir.
 
 ## Teknik yerleşim
 
+### Tek bulut sağlayıcı kararı — 2026-11-01
+
+Kullanıcı, özel belge/dava/UYAP içeriklerinin de AWS Bedrock'a gönderilmesini
+açıkça onayladı. `AI_PROVIDER=bedrock` seçildiğinde bütün metin üretimi (normal
+sohbet, özel kapsam, büro özeti/taslak, denetim ve araştırma) aynı Bedrock
+modelini kullanır; yerel üretim/fallback yoktur. Bu açık mod, yukarıdaki eski
+"özel kapsam yalnız yerel" sağlayıcı kuralının yerine geçer. RLS, erişim
+kontrolü, kaynak denetimi, özel verilerin dış web aramasına ve genel cevap
+önbelleğine gönderilmemesi kuralları aynen korunur. Diğer sağlayıcı
+ayarlarında eski özel-kapsam davranışı devam eder.
+
+Embedding metin üretiminden ayrıdır. Mevcut nomic/bge-m3 vektörleri farklı
+bir bulut modelinin vektörleriyle karşılaştırılmaz; embedding geçişi ayrı
+uyumluluk/veri göçü gerektirir. Bu geçiş yapılmadan tüm yerel model
+bağımlılıkları kaldırılmış sayılmaz.
+
 | Dizin | Sorumluluk |
 | --- | --- |
 | `database/` | V2 şeması, RLS politikaları, bütünlük tetikleyicileri, migrationlar |

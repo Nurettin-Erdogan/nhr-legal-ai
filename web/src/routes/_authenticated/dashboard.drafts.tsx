@@ -372,8 +372,8 @@ const Drafts = () => {
             </Label>
             <p className="text-xs text-muted-foreground">
               Açıklamalar bölümü yalnız burada yazdıklarınızdan (ya da seçtiğiniz belgelerden)
-              kurulur; hiçbir olay, tarih veya tutar eklenmez. Boş bırakırsanız bu bölüm
-              doldurmanız için boş kalır.
+              kurulur; hiçbir olay, tarih veya tutar eklenmez. Boş bırakırsanız bu bölüm doldurmanız
+              için boş kalır.
             </p>
             <Textarea
               id="details"

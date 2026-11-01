@@ -76,7 +76,12 @@ def retrieval_limit(info: dict) -> str:
     A search flagged partial without lane detail (an older code path, or the outer timeout fallback) is ``failed``: the
     stronger statement is the safe one when the reason is unknown.
     """
-    statuses = {branch.get('status') for branch in info.get('branches') or () if isinstance(branch, dict)}
+    branches = [branch for branch in info.get('branches') or () if isinstance(branch, dict)]
+    semantic_answered = any(b.get('name') == 'semantic' and b.get('status') == 'ok' for b in branches)
+    # The vector lane ranks the embedded decisions on its own: when it answered, a lexical lane that ran out of time left
+    # the decision search a sample, not empty (measured 2026-10-31 under embedding load: warning on a pure statute question).
+    statuses = {('timeout_then_official' if semantic_answered and b.get('name') == 'lexical' and b.get('status') == 'timeout'
+                 else b.get('status')) for b in branches}
     if info.get('decision_search') == 'timeout' or statuses & _FAILED_STATUSES:
         return LIMIT_FAILED
     if statuses & _SAMPLED_STATUSES:

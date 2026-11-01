@@ -131,6 +131,10 @@ def explicit_statute_reference(question: str) -> tuple[str, str] | None:
     article_match = _EXPLICIT_ARTICLE_RE.search(question)
     if not law_numbers or article_match is None:
         return None
+    # "geçici 6. madde" / "ek madde 3" name another article than the plain 6 / 3: never guess the plain one.
+    before = question[max(0, article_match.start() - 14):article_match.start()].casefold()
+    if re.search(r"(?:geçici|gecici|\bek)\s*$", before):
+        return None
     article_no = article_match.group(1) or article_match.group(2)
     return law_numbers[0], article_no.lower()
 

@@ -1,6 +1,7 @@
 """Büro AI akışları: dilekçe/sözleşme üretimi, belge analizi, risk analizi, özet ve OCR.
 
-Üretim yerel modelle (`create_provider`, varsayılan DeepSeek/Ollama) yapılır; buluta gitmez.
+Üretim `create_provider` ile yapılandırılmış sağlayıcıda yapılır.
+`AI_PROVIDER=bedrock` özel belge işlemlerini de açık kullanıcı onayıyla AWS'ye yönlendirir.
 Hukuki dayanak kuralı bu akışlarda da geçerlidir ve **kodda** denetlenir:
 
 * Modele yalnız korpustan getirilen kaynaklar `[K1]`, `[K2]` işaretleriyle verilir; prompt, hukuki
@@ -190,7 +191,7 @@ async def _retrieve_sources(query: str, user_id: UUID, top_k: int = _SOURCE_COUN
 
 
 async def _generate(system: str, prompt: str) -> tuple[str, str]:
-    """Yerel sağlayıcıyla üretir; (metin, model adı) döndürür."""
+    """Yapılandırılmış sağlayıcıyla üretir; (metin, model adı) döndürür."""
     settings = get_settings()
     try:
         provider = create_provider(
@@ -396,7 +397,7 @@ async def run_module(
     body: RunRequest, user_id: Annotated[UUID, Depends(current_user_id)]
 ) -> dict[str, Any]:
     if body.module not in MODULE_PROMPTS:
-        raise HTTPException(status_code=400, detail="Bu modül yerel AI hattında desteklenmiyor")
+        raise HTTPException(status_code=400, detail="Bu modül AI hattında desteklenmiyor")
     label = MODULE_PROMPTS[body.module][0]
     is_analysis = body.module in ("document_analysis", "auto_summary")
     selected = await asyncio.to_thread(_selected_analysis_documents, user_id, body.doc_ids) if is_analysis and body.doc_ids else None

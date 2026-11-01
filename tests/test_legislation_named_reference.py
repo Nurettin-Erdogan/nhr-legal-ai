@@ -53,3 +53,18 @@ def test_queries_that_are_not_a_named_article_reference_fall_through(query):
 
 def test_ambiguous_abbreviation_is_not_guessed():
     assert parse_named_reference(LAWS, "tmk 683") is None
+
+
+def test_a_bare_abbreviation_lists_that_law():
+    from api import legislation_browse as browse
+
+    def law(no, name, kind="law", articles=100):
+        return browse.Law(no, name, kind, articles, None, None, browse.fold(f"{name} {no}"))
+
+    laws = [law("5237", "TÜRK CEZA KANUNU", articles=345), law("5237", "CEZA KANUNU UYGULAMA YÖNETMELİĞİ", "regulation"),
+            law("5271", "CEZA MUHAKEMESİ KANUNU"), law("2709", "TÜRKİYE CUMHURİYETİ ANAYASASI", "constitution"), law("1", "ANAYASA MAHKEMESİ KANUNU")]
+    assert [item.law_name for item in browse.search_laws(laws, "TCK", None)] == ["TÜRK CEZA KANUNU"]
+    assert [item.law_no for item in browse.search_laws(laws, "cmk", None)] == ["5271"]
+    assert browse.search_laws(laws, "xyz", None) == []
+    # "anayasa" kısaltma değil, sözcüktür: Anayasa Mahkemesi Kanunu da gelmeli
+    assert {item.law_no for item in browse.search_laws(laws, "anayasa", None)} == {"2709", "1"}

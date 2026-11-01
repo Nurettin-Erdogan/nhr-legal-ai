@@ -156,18 +156,67 @@ def boundaries_supported(claim: str, source: str) -> bool:
                 or {n for n in claim_le if n in source_lt and n not in source_le})
 
 
+_USER_YEARS = re.compile(r"(\d+(?:,\d+)?)\s*(?:yıl|yil|sene)")
+_USER_MONTHS = re.compile(r"(\d+)\s*(?:ay)\b")
+
+
+def user_duration_months(known: str) -> float | None:
+    """The length of time the user states, in months: "3 yıl 2 ay" -> 38, "3,5 yıl" -> 42, "40 ay" -> 40. None if none is stated.
+
+    Measured 2026-10-31: for "3 yıl 2 ay" the guidance below saw only the number 3, called it EQUAL to the "üç yıldan fazla"
+    threshold and told the writer the six-week tier applies; the right tier for 38 months is the eight-week one.
+    """
+    if not known:
+        return None
+    value = spell_numbers(normalize(known))
+    years = [float(item.replace(",", ".")) for item in _USER_YEARS.findall(value)]
+    months = [int(item) for item in _USER_MONTHS.findall(value)]
+    if not years and not months:
+        return None
+    return sum(years) * 12 + sum(months)
+
+
+def _threshold_months(match: re.Match) -> float | None:
+    """The threshold of an "X yıldan/aydan fazla" match in months; None for another unit."""
+    word = match.group(0).split()[1] if len(match.group(0).split()) > 1 else ""
+    number = float(match.group(1).replace(",", "."))
+    if word.startswith(("yıl", "yil", "sene")):
+        return number * 12
+    if word.startswith("ay"):
+        return number
+    return None
+
+
+def _threshold_relation(match: re.Match, known: str, user_numbers: set[str]) -> str | None:
+    """'equal' / 'above' / 'below': where the user's stated duration sits against the threshold; 'equal' by bare number when no
+    duration with a unit is stated (the earlier behaviour); None when the number is not the user's at all."""
+    duration, limit = user_duration_months(known), _threshold_months(match)
+    if duration is not None and limit is not None:
+        if abs(duration - limit) < 1e-9:
+            return "equal"
+        return "above" if duration > limit else "below"
+    return "equal" if match.group(1) in user_numbers else None
+
+
 def user_threshold_notes(texts: list[str], known: str) -> list[str]:
-    """Plain warnings for the writer: the user's number equals a source's "X'ten fazla" threshold (guidance only, never evidence)."""
+    """Plain warnings for the writer: where the user's stated duration sits against a source's "X'ten fazla" threshold (guidance
+    only, never evidence)."""
     user_numbers = _facts(known)[0] if known else set()
     notes: list[str] = []
     for text in texts:
         value = spell_numbers(normalize(text))
         for match in _EXCLUSIVE.finditer(value):
-            if match.group(1) in user_numbers:
+            relation = _threshold_relation(match, known, user_numbers) if known else None
+            if relation == "equal":
                 note = (f"Kullanıcının verdiği {match.group(1)} sayısı kaynaktaki \"{match.group(0)}\" eşiğine EŞİTTİR, onu aşmaz: "
                         "bu eşiğin açtığı üst dilim kullanıcıya uygulanmaz; \"kadar\" diyen önceki dilim uygulanır.")
-                if note not in notes:
-                    notes.append(note)
+            elif relation == "above":
+                note = (f"Kullanıcının belirttiği süre kaynaktaki \"{match.group(0)}\" eşiğini AŞAR: bu eşiğin açtığı üst dilim "
+                        "kullanıcıya uygulanır; \"kadar\" diyen önceki dilimler uygulanmaz.")
+            else:
+                continue
+            if note not in notes:
+                notes.append(note)
     return notes
 
 
@@ -187,7 +236,8 @@ def user_threshold_misapplied(claim: str, source: str, known: str) -> bool:
     claim_exclusive = _bounds(claim)[0]
     for match in _EXCLUSIVE.finditer(value):
         number = match.group(1)
-        if number not in user_numbers or number in claim_exclusive:
+        # Only a user ON the threshold is misserved by the upper tier; one who exceeds it (3 yıl 2 ay) is owed exactly that tier.
+        if number in claim_exclusive or _threshold_relation(match, known, user_numbers) != "equal":
             continue
         # The tier this threshold opens: its own amounts, up to the next list separator ("... için sekiz hafta sonra,").
         tier = re.split(r"[;,.]", value[match.end():], maxsplit=1)[0]

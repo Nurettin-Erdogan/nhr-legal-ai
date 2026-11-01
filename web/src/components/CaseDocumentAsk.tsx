@@ -12,7 +12,7 @@ import {
 
 const EXAMPLES = [
   "Bu dosyadaki belgelere göre taraflar kimlerdir ve dava konusu nedir?",
-  "Bilirkişi raporunda hangi tutarlar hesaplanmış?",
+  "Belgelerde geçen tutarlar nelerdir?",
   "Dilekçede hangi talepler yer alıyor?",
   "Duruşma hangi tarihte yapılacak?",
   // UYAP'tan çekilen dosya bilgilerinden (taraflar, dosya hesabı, sorgular, safahat) cevaplananlar:

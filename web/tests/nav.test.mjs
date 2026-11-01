@@ -174,3 +174,15 @@ test("execution tracking is a standalone menu entry, not a cases tab", () => {
   assert.equal(nav.activeNavPath("/dashboard/cases"), "/dashboard/cases");
   assert.equal(nav.activeNavPath("/dashboard/projects/5"), "/dashboard/cases");
 });
+
+test("içtihat yalnız yönetici menüsünde görünür", () => {
+  const titles = (admin) =>
+    nav.visibleNavGroups(admin).flatMap((group) => group.items.map((item) => item.to));
+  assert.ok(titles(true).includes("/dashboard/case-law"));
+  assert.ok(!titles(false).includes("/dashboard/case-law"));
+  assert.ok(
+    titles(false).includes("/dashboard/legislation"),
+    "diğer araştırma sayfaları herkese açık kalır",
+  );
+  assert.equal(titles(true).length, titles(false).length + 1);
+});

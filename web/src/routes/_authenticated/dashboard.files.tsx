@@ -107,6 +107,7 @@ const Files = () => {
   const [accounts, setAccounts] = useState<FileBrowserAccount[]>([]);
   const [order, setOrder] = useState("recent");
   const [grouped, setGrouped] = useState(true);
+  const [showFilters, setShowFilters] = useState(false);
   const [openedFolders, setOpenedFolders] = useState<Set<string>>(() => new Set());
   const [folderContents, setFolderContents] = useState<Record<string, FolderContents>>({});
   const [folders, setFolders] = useState<DocumentFolder[]>([]);
@@ -192,6 +193,11 @@ const Files = () => {
       setCategories(documents.categories);
       setAccounts(documents.accounts ?? []);
       setContentCoverage(documents.content_coverage ?? null);
+      // Az klasör varsa kapalı başlıklar boş sayfa izlenimi verir: ilk yüklemede hepsi açılır.
+      if (documents.folders.length <= 3 && documents.total > 0)
+        setOpenedFolders((previous) =>
+          previous.size ? previous : new Set(documents.folders.map((item) => item.key)),
+        );
       if (fileBrowserFilters.search_in === "content" && fileBrowserFilters.q.length >= 2)
         setOpenedFolders(
           new Set(
@@ -583,113 +589,124 @@ const Files = () => {
             </Button>
           </div>
         </div>
-        <div className="grid gap-3 md:grid-cols-[1.3fr_2fr_1fr_1fr]">
-          <label className="text-xs text-muted-foreground space-y-1 block">
-            <span>Kimin UYAP'ından</span>
-            <select
-              aria-label="Kimin UYAP'ından"
-              value={account}
-              onChange={(event) => {
-                setAccount(event.target.value);
-                setFolder("");
-              }}
-              className="block w-full min-w-0 rounded-lg border border-border bg-background p-2 text-sm text-foreground"
-              data-testid="uyap-account-filter"
-            >
-              <option value="">Herkes</option>
-              {account && !accounts.some((item) => item.id === account) && (
-                <option value={account}>Seçili kişi (eşleşen belge yok)</option>
-              )}
-              {accounts.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.id === "unknown"
-                    ? "Kimden geldiği bilinmiyor"
-                    : item.name || "Adı okunamadı"}{" "}
-                  ({item.files} dosya)
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="text-xs text-muted-foreground space-y-1 block">
-            <span>Dava dosyası / birim</span>
-            <select
-              aria-label="Dava dosyası / birim"
-              value={folder}
-              onChange={(event) => {
-                setFolder(event.target.value);
-              }}
-              className="block w-full min-w-0 rounded-lg border border-border bg-background p-2 text-sm text-foreground"
-            >
-              <option value="">Tüm dosyalar</option>
-              {folder && !folders.some((item) => item.key === folder) && (
-                <option value={folder}>Seçili dosya (eşleşen belge yok)</option>
-              )}
-              {folders.map((item) => (
-                <option key={item.key} value={item.key}>
-                  {folderTitle(item)} ({item.count})
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="text-xs text-muted-foreground space-y-1 block">
-            <span>Evrak kategorisi</span>
-            <select
-              aria-label="Evrak kategorisi"
-              value={category}
-              onChange={(event) => {
-                setCategory(event.target.value);
-              }}
-              className="block w-full rounded-lg border border-border bg-background p-2 text-sm text-foreground"
-            >
-              <option value="">Tüm kategoriler</option>
-              {category && !categories.some((item) => item.id === category) && (
-                <option value={category}>Seçili kategori (eşleşen belge yok)</option>
-              )}
-              {categories.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.label} ({item.count})
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="text-xs text-muted-foreground space-y-1 block">
-            <span>Sıralama</span>
-            <select
-              aria-label="Sıralama"
-              value={order}
-              onChange={(event) => {
-                setOrder(event.target.value);
-              }}
-              className="block w-full rounded-lg border border-border bg-background p-2 text-sm text-foreground"
-            >
-              <option value="recent">Son yüklenen</option>
-              <option value="date_desc">Kayıtlı evrak tarihi: yeni → eski</option>
-              <option value="date_asc">Kayıtlı evrak tarihi: eski → yeni</option>
-            </select>
-          </label>
-        </div>
-        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          <p className="flex-1">
-            Kategoriler kayıtlı evrak türüne, tür yoksa dosya adına göre otomatik belirlenir. Tarih
-            sıralaması aktarımda kaydedilen tarihi kullanır. Seçimlerdeki sayılar arama ve kaynak
-            filtresine uyan belgeleri gösterir.
-          </p>
-          {(q || source !== "all" || folder || category || account) && (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => {
-                setQ("");
-                setSearchTerm("");
-                setSource("all");
-                setFolder("");
-                setCategory("");
-                setAccount("");
-              }}
-            >
-              Filtreleri temizle
-            </Button>
-          )}
+        <Button
+          size="sm"
+          variant="outline"
+          className="md:hidden"
+          aria-expanded={showFilters}
+          onClick={() => setShowFilters((value) => !value)}
+        >
+          {showFilters ? "Filtreleri gizle" : "Filtreler"}
+        </Button>
+        <div className={`${showFilters ? "block" : "hidden"} space-y-3 md:block`}>
+          <div className="grid gap-3 md:grid-cols-[1.3fr_2fr_1fr_1fr]">
+            <label className="text-xs text-muted-foreground space-y-1 block">
+              <span>Kimin UYAP'ından</span>
+              <select
+                aria-label="Kimin UYAP'ından"
+                value={account}
+                onChange={(event) => {
+                  setAccount(event.target.value);
+                  setFolder("");
+                }}
+                className="block w-full min-w-0 rounded-lg border border-border bg-background p-2 text-sm text-foreground"
+                data-testid="uyap-account-filter"
+              >
+                <option value="">Herkes</option>
+                {account && !accounts.some((item) => item.id === account) && (
+                  <option value={account}>Seçili kişi (eşleşen belge yok)</option>
+                )}
+                {accounts.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.id === "unknown"
+                      ? "Kimden geldiği bilinmiyor"
+                      : item.name || "Adı okunamadı"}{" "}
+                    ({item.files} dosya)
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="text-xs text-muted-foreground space-y-1 block">
+              <span>Dava dosyası / birim</span>
+              <select
+                aria-label="Dava dosyası / birim"
+                value={folder}
+                onChange={(event) => {
+                  setFolder(event.target.value);
+                }}
+                className="block w-full min-w-0 rounded-lg border border-border bg-background p-2 text-sm text-foreground"
+              >
+                <option value="">Tüm dosyalar</option>
+                {folder && !folders.some((item) => item.key === folder) && (
+                  <option value={folder}>Seçili dosya (eşleşen belge yok)</option>
+                )}
+                {folders.map((item) => (
+                  <option key={item.key} value={item.key}>
+                    {folderTitle(item)} ({item.count})
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="text-xs text-muted-foreground space-y-1 block">
+              <span>Evrak kategorisi</span>
+              <select
+                aria-label="Evrak kategorisi"
+                value={category}
+                onChange={(event) => {
+                  setCategory(event.target.value);
+                }}
+                className="block w-full rounded-lg border border-border bg-background p-2 text-sm text-foreground"
+              >
+                <option value="">Tüm kategoriler</option>
+                {category && !categories.some((item) => item.id === category) && (
+                  <option value={category}>Seçili kategori (eşleşen belge yok)</option>
+                )}
+                {categories.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.label} ({item.count})
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="text-xs text-muted-foreground space-y-1 block">
+              <span>Sıralama</span>
+              <select
+                aria-label="Sıralama"
+                value={order}
+                onChange={(event) => {
+                  setOrder(event.target.value);
+                }}
+                className="block w-full rounded-lg border border-border bg-background p-2 text-sm text-foreground"
+              >
+                <option value="recent">Son yüklenen</option>
+                <option value="date_desc">Kayıtlı evrak tarihi: yeni → eski</option>
+                <option value="date_asc">Kayıtlı evrak tarihi: eski → yeni</option>
+              </select>
+            </label>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <p className="flex-1">
+              Kategoriler kayıtlı evrak türüne, tür yoksa dosya adına göre otomatik belirlenir.
+              Tarih sıralaması aktarımda kaydedilen tarihi kullanır. Seçimlerdeki sayılar arama ve
+              kaynak filtresine uyan belgeleri gösterir.
+            </p>
+            {(q || source !== "all" || folder || category || account) && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setQ("");
+                  setSearchTerm("");
+                  setSource("all");
+                  setFolder("");
+                  setCategory("");
+                  setAccount("");
+                }}
+              >
+                Filtreleri temizle
+              </Button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -758,11 +775,11 @@ const Files = () => {
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-xs text-muted-foreground bg-secondary/40 uppercase tracking-wider">
-                  <th className="font-medium px-6 py-4">Belge</th>
-                  <th className="font-medium px-6 py-4">Dosya No / Birim</th>
-                  <th className="font-medium px-6 py-4">Kategori / Tür</th>
-                  <th className="font-medium px-6 py-4">Kaynak</th>
-                  <th className="font-medium px-6 py-4 text-right">İşlem</th>
+                  <th className="font-medium px-3 py-4 sm:px-6">Belge</th>
+                  <th className="hidden font-medium px-6 py-4 md:table-cell">Dosya No / Birim</th>
+                  <th className="hidden font-medium px-6 py-4 sm:table-cell">Kategori / Tür</th>
+                  <th className="hidden font-medium px-6 py-4 lg:table-cell">Kaynak</th>
+                  <th className="font-medium px-3 py-4 text-right sm:px-6">İşlem</th>
                 </tr>
               </thead>
               <tbody>
@@ -873,7 +890,7 @@ const Files = () => {
                           key={d.id}
                           className="border-t border-border hover:bg-secondary/30 transition"
                         >
-                          <td className="px-6 py-4">
+                          <td className="px-3 py-4 sm:px-6">
                             <div className="flex items-center gap-3">
                               <input
                                 type="checkbox"
@@ -887,7 +904,7 @@ const Files = () => {
                               </div>
                               <div className="min-w-0">
                                 <div
-                                  className="font-medium truncate max-w-[260px]"
+                                  className="font-medium truncate max-w-[180px] sm:max-w-[260px]"
                                   title={d.file_name}
                                 >
                                   {d.file_name.replace(/^[a-f0-9]{12,64}[-_]/i, "")}
@@ -896,19 +913,23 @@ const Files = () => {
                                   {humanSize(d.size_bytes)} ·{" "}
                                   {new Date(d.created_at).toLocaleDateString("tr-TR")}
                                 </div>
+                                <div className="mt-0.5 text-xs text-muted-foreground sm:hidden">
+                                  {categories.find((item) => item.id === d.category)?.label ??
+                                    "Diğer / türü belirsiz"}
+                                </div>
                                 {searchIn === "content" && (
                                   <ContentMatchExcerpt match={d.content_match} />
                                 )}
                               </div>
                             </div>
                           </td>
-                          <td className="px-6 py-4">
+                          <td className="hidden px-6 py-4 md:table-cell">
                             <div className="font-mono text-xs">{d.uyap_file_no ?? "-"}</div>
                             <div className="text-xs text-muted-foreground truncate max-w-[220px]">
                               {d.uyap_birim ?? ""}
                             </div>
                           </td>
-                          <td className="px-6 py-4 text-xs">
+                          <td className="hidden px-6 py-4 text-xs sm:table-cell">
                             <Badge variant="outline" className="mb-1 whitespace-nowrap">
                               {categories.find((item) => item.id === d.category)?.label ??
                                 "Diğer / türü belirsiz"}
@@ -918,7 +939,7 @@ const Files = () => {
                               <div className="text-muted-foreground">{d.doc_date}</div>
                             )}
                           </td>
-                          <td className="px-6 py-4">
+                          <td className="hidden px-6 py-4 lg:table-cell">
                             <Badge
                               variant={isUyapSource(d.source) ? "default" : "outline"}
                               className="text-[10px]"
@@ -926,7 +947,7 @@ const Files = () => {
                               {isUyapSource(d.source) ? "UYAP" : "Elle"}
                             </Badge>
                           </td>
-                          <td className="px-6 py-4 text-right whitespace-nowrap">
+                          <td className="px-3 py-4 text-right whitespace-nowrap sm:px-6">
                             {!d.case_id && (
                               <Button
                                 size="sm"

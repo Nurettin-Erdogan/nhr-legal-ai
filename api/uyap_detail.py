@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field, field_validator
 from api.audit import AuditContext, record_event
 from api.auth.routes import current_user_id
 from api.db import authenticated_database_connection
+from api import uyap_case_fields
 from api.uyap_cases import ensure_case
 
 logger = logging.getLogger(__name__)
@@ -120,6 +121,12 @@ def verified_tabs(tabs: list[DetailTab]) -> tuple[list[dict[str, Any]], bool, li
     return stored, bool(stored) and all(tab["complete"] for tab in stored), problems
 
 
+def fill_case_fields(connection: psycopg.Connection, case_id: UUID, tabs: list[dict[str, Any]], owner_id: UUID) -> None:
+    """Dava listesindeki boş alanları UYAP dosya bilgisinden doldurur (kurallar: api.uyap_case_fields; dolu alan ezilmez)."""
+    own = [row["display_name"] for row in connection.execute("SELECT display_name FROM office_uyap_accounts").fetchall() if row["display_name"]]
+    uyap_case_fields.apply_fields(connection, owner_id, case_id, tabs, own)
+
+
 @router.post("/case-detail")
 def save_case_detail(
     body: CaseDetail, user_id: Annotated[UUID, Depends(current_user_id)], request: Request
@@ -145,6 +152,7 @@ def save_case_detail(
                 "problems = EXCLUDED.problems, fetched_at = now()",
                 (case_id, user_id, Jsonb(tabs), complete and body.complete, Jsonb(problems)),
             )
+            fill_case_fields(connection, case_id, tabs, user_id)
             record_event(
                 connection, action="office.uyap_case_detail", actor_user_id=user_id, context=audit,
                 entity_type="cases", entity_id=case_id,

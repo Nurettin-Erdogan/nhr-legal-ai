@@ -107,8 +107,8 @@ test("the section says these are not the basis of the answer and shows each pass
   assert.ok(html.includes(official.reference));
   assert.ok(html.includes("ihtiyaç nedeniyle tahliye"));
   assert.ok(html.includes('data-testid="source-reader-trigger"'));
-  // Doğrulama rozeti yok (2026-10-18); karar resmî portalda açılabilir.
-  assert.ok(html.includes('href="https://karararama.yargitay.gov.tr/getDokuman?id=1"'));
+  // Doğrulama rozeti yok (2026-10-18); dış bağlantı yok, karar uygulama içinde okunur.
+  assert.ok(!html.includes("getDokuman") && !html.includes("portalda ara"));
   assert.ok(!html.includes("doğrulanmadı") && !html.includes("Resmî metin") && !html.includes("✓"));
 });
 

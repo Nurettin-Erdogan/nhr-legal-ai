@@ -78,6 +78,41 @@ def fetch_official_pdf_text(
         raise MbsTextVerificationError(f"MBS PDF metni ayrıştırılamadı: {exc}") from exc
 
 
+# Cümle ya da fıkra sonu: nokta, noktalı virgül, iki nokta, ünlem, soru, kapanış parantezi/tırnağı; ardından PDF'ten yapışmış dipnot rakamı olabilir.
+_SENTENCE_END = re.compile(r"[.;:!?)»\"”’']\d{0,3}$")
+# Başlık bir harfle başlar; yalnız rakam/ayraç satırları ("9298", "——————") başlık sayılmaz.
+_CAPTION_START = re.compile(r"^[^\W\d_]")
+_MAX_CAPTION_LINES = 3
+_MAX_CAPTION_CHARS = 150
+
+
+def strip_next_article_caption(body: str) -> str:
+    """Madde metninin sonuna yapışan bir sonraki maddenin başlığını ("Sözleşmenin feshinde usul") atar.
+
+    Resmî PDF'te madde başlığı "Madde 19 -" satırından ÖNCE gelir; bir sonraki başlık konumuna kadar kesilen metin bu başlığı da taşır.
+    Yalnız son satır(lar) cümle sonu işareti taşımayan KISA bir başlık gibiyse atılır; önceki satırlardan biri cümleyle bitmiyorsa
+    metne dokunulmaz (gerçek madde metni kesilmesin).
+    """
+    lines = body.rstrip().split(chr(10))
+    dropped = 0
+    while (
+        dropped < _MAX_CAPTION_LINES
+        and len(lines) - dropped > 1
+        and _CAPTION_START.search(lines[-1 - dropped].strip())
+        and not _SENTENCE_END.search(lines[-1 - dropped].rstrip())
+        and len(lines[-1 - dropped].strip()) <= _MAX_CAPTION_CHARS
+    ):
+        dropped += 1
+    if dropped == 0:
+        return body
+    kept = lines[: len(lines) - dropped]
+    # Atılan satırlardan önceki son dolu satır cümleyle bitmiyorsa bu bir başlık değil, kesilmiş metindir.
+    last = next((line for line in reversed(kept) if line.strip()), "")
+    if not last or not _SENTENCE_END.search(last.rstrip()):
+        return body
+    return chr(10).join(kept).rstrip()
+
+
 def extract_article_text(full_text: str, article_no: str) -> str:
     from ingestion.mevzuat.identity import article_headings, canonical_article
     headings = article_headings(full_text)
@@ -85,7 +120,9 @@ def extract_article_text(full_text: str, article_no: str) -> str:
     for index, heading in enumerate(headings):
         if heading.identity == wanted:
             end = headings[index + 1].start if index + 1 < len(headings) else len(full_text)
-            return normalize_text(full_text[heading.start:end])
+            body = normalize_text(full_text[heading.start:end])
+            # Son madde değilse metnin sonu sonraki maddenin başlığıdır; sonuncu maddede sonrası yoktur.
+            return strip_next_article_caption(body) if index + 1 < len(headings) else body
     return ""
 
 

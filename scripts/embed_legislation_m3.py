@@ -52,6 +52,7 @@ FROM legislation_chunk_vectors vector
 JOIN legal_chunks chunk ON chunk.id = vector.chunk_id
 JOIN legal_sources ls ON ls.id = vector.legal_source_id
 WHERE vector.embedding_m3 IS NULL
+  AND mod(('x' || substr(md5(vector.chunk_id::text), 1, 7))::bit(28)::int, %s) = %s
 ORDER BY ls.is_current DESC, vector.chunk_id
 LIMIT %s
 """
@@ -61,6 +62,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--limit", type=int, default=0, help="en çok bu kadar parça (0 = hepsi)")
     parser.add_argument("--batch", type=int, default=32)
+    parser.add_argument("--shard", default="0/1", help="i/N: paralel çalıştırma için kimliğin karma değerinin N'ye bölümünden kalanı i olan parçalar")
     args = parser.parse_args()
     load_dotenv(ROOT / ".env")
     url = os.getenv("DATABASE_ADMIN_URL")
@@ -70,6 +72,7 @@ def main() -> int:
                                          ollama_base_url=get_settings().ollama_base_url)
     signal.signal(signal.SIGINT, _handle_stop)
     signal.signal(signal.SIGTERM, _handle_stop)
+    shard_index, shard_count = (int(part) for part in args.shard.split("/"))
     done, started = 0, time.time()
     with psycopg.connect(url, autocommit=True) as connection:
         added = connection.execute(ENSURE_ROWS_SQL).rowcount
@@ -79,7 +82,7 @@ def main() -> int:
         print(f"bekleyen {remaining} parça", flush=True)
         while not _stop and (not args.limit or done < args.limit):
             size = args.batch if not args.limit else min(args.batch, args.limit - done)
-            rows = connection.execute(PENDING_SQL, (size,)).fetchall()
+            rows = connection.execute(PENDING_SQL, (shard_count, shard_index, size)).fetchall()
             if not rows:
                 break
             try:

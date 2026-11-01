@@ -4,6 +4,7 @@ import { useAuth } from "@/components/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { confirmAction } from "@/lib/confirmation";
 
 const MAX_NOTE_CHARS = 20000;
 
@@ -83,10 +84,12 @@ export function CaseTaskComposer({ caseId, onSaved }: { caseId: string; onSaved:
   const [due, setDue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [added, setAdded] = useState("");
 
   const add = async (event: React.FormEvent) => {
     event.preventDefault();
     setError("");
+    setAdded("");
     const clean = title.trim();
     if (!clean) return setError("Görev başlığı gerekli.");
     if (!user?.id) return setError("Oturum bulunamadı.");
@@ -103,6 +106,7 @@ export function CaseTaskComposer({ caseId, onSaved }: { caseId: string; onSaved:
     if (insertError) return setError(insertError.message || "Görev eklenemedi.");
     setTitle("");
     setDue("");
+    setAdded("Görev eklendi.");
     onSaved();
   };
 
@@ -133,6 +137,78 @@ export function CaseTaskComposer({ caseId, onSaved }: { caseId: string; onSaved:
           {error}
         </p>
       )}
+      {added && !error && (
+        <p role="status" className="basis-full text-xs text-emerald-700 dark:text-emerald-400">
+          {added}
+        </p>
+      )}
     </form>
+  );
+}
+
+/** Görev satırındaki işlemler: tamamlandı olarak işaretle / yeniden aç ve sil (silmeden önce sorulur). */
+export function CaseTaskActions({
+  taskId,
+  status,
+  title,
+  onChanged,
+}: {
+  taskId: string;
+  status: string;
+  title: string;
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const done = status === "done";
+
+  const toggle = async () => {
+    setBusy(true);
+    setError("");
+    const { error: updateError } = await db
+      .from("tasks")
+      .update({ status: done ? "todo" : "done" })
+      .eq("id", taskId);
+    setBusy(false);
+    if (updateError) return setError(updateError.message || "Görev güncellenemedi.");
+    onChanged();
+  };
+
+  const remove = async () => {
+    const confirmed = await confirmAction({
+      title: "Görev silinsin mi?",
+      description: `"${title}" görevi kalıcı olarak silinir.`,
+      confirmLabel: "Sil",
+      cancelLabel: "Vazgeç",
+    });
+    if (!confirmed) return;
+    setBusy(true);
+    setError("");
+    const { error: deleteError } = await db.from("tasks").delete().eq("id", taskId);
+    setBusy(false);
+    if (deleteError) return setError(deleteError.message || "Görev silinemedi.");
+    onChanged();
+  };
+
+  return (
+    <span className="mt-1 flex flex-wrap items-center gap-2">
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        disabled={busy}
+        onClick={() => void toggle()}
+      >
+        {done ? "Yeniden aç" : "Tamamlandı"}
+      </Button>
+      <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => void remove()}>
+        Sil
+      </Button>
+      {error && (
+        <span role="alert" className="text-xs text-destructive">
+          {error}
+        </span>
+      )}
+    </span>
   );
 }

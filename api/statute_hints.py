@@ -251,13 +251,21 @@ LIMIT 1
 _TITLE_NOISE = re.compile(r"^\s*madde\s*no\s*:?\s*\d+\s*$", re.IGNORECASE)
 
 
-def load_verified(connection, hints: list[Hint]) -> list[dict]:
-    """İpuçlarından korpusta resmî doğrulanmış, güncel ve metni beklentiyle uyuşan maddeler (gösterime hazır)."""
+def load_rows(connection, hints: list[Hint]) -> list[dict]:
+    """İpuçlarından korpusta resmî doğrulanmış, güncel ve metni beklentiyle uyuşan maddelerin ham kayıtları."""
     rows: list[dict] = []
     for hint in hints:
         row = connection.execute(_SQL, {"law_no": hint.law_no, "article_no": hint.article_no}).fetchone()
         if row is None or not text_matches(hint, row["content"] or ""):
             continue
+        rows.append(row)
+    return rows
+
+
+def load_verified(connection, hints: list[Hint]) -> list[dict]:
+    """İpuçlarından korpusta resmî doğrulanmış, güncel ve metni beklentiyle uyuşan maddeler (gösterime hazır)."""
+    rows: list[dict] = []
+    for row in load_rows(connection, hints):
         title = (row["article_title"] or "").strip().rstrip(":")
         line = f"{' '.join(row['law_name'].split())} ({row['law_no']}) m. {row['article_no']}"
         if title and not _TITLE_NOISE.match(title):

@@ -22,10 +22,12 @@ export function DocumentJobPanel({
   jobId,
   module,
   onCompleted,
+  onJobChange,
 }: {
   jobId?: string;
   module?: string;
   onCompleted?: (job: DocumentJob) => void;
+  onJobChange?: (job: DocumentJob | undefined) => void;
 }) {
   const owner = useAuth().user?.id;
   const [selected, setSelected] = useState(jobId);
@@ -39,6 +41,8 @@ export function DocumentJobPanel({
   currentOwner.current = owner;
   const callback = useRef(onCompleted);
   callback.current = onCompleted;
+  const changeCallback = useRef(onJobChange);
+  changeCallback.current = onJobChange;
   const delivered = useRef(new Set<string>());
   useEffect(() => {
     if (jobId) setSelected(jobId);
@@ -50,6 +54,7 @@ export function DocumentJobPanel({
     setError("");
     setLoadedFor(undefined);
     delivered.current.clear();
+    changeCallback.current?.(undefined);
     if (!owner) return;
     void listDocumentJobs()
       .then((rows) => {
@@ -67,6 +72,8 @@ export function DocumentJobPanel({
     };
   }, [owner, module, jobId]);
   useEffect(() => {
+    changeCallback.current?.(undefined);
+    setJob(undefined);
     if (!owner || !selected) return;
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
@@ -77,6 +84,7 @@ export function DocumentJobPanel({
         setJob(next);
         setLoadedFor(owner);
         setError("");
+        changeCallback.current?.(next);
         if (["queued", "running"].includes(next.state)) timer = setTimeout(refresh, 2500);
         else if (next.output_id && next.output && !delivered.current.has(next.output_id)) {
           delivered.current.add(next.output_id);
@@ -84,6 +92,8 @@ export function DocumentJobPanel({
         }
       } catch (e) {
         if (active) {
+          setJob(undefined);
+          changeCallback.current?.(undefined);
           setError(e instanceof Error ? e.message : "İş durumu alınamadı.");
           timer = setTimeout(refresh, 5000);
         }
@@ -95,7 +105,7 @@ export function DocumentJobPanel({
       clearTimeout(timer);
     };
   }, [selected, owner, revision]);
-  const shown = loadedFor === owner ? job : undefined;
+  const shown = loadedFor === owner && job?.id === selected ? job : undefined;
   const running = shown && ["queued", "running"].includes(shown.state);
   const action = async (resume: boolean) => {
     if (!shown) return;
@@ -169,7 +179,15 @@ export function DocumentJobPanel({
           <ul className="mt-2 space-y-1">
             {jobs.slice(0, 5).map((item) => (
               <li key={item.id}>
-                <Button variant="ghost" size="sm" onClick={() => setSelected(item.id)}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    changeCallback.current?.(undefined);
+                    setSelected(item.id);
+                  }}
+                >
+                  {item.progress.documents[0]?.file_name || "Belge çalışması"} ·{" "}
                   {labels[item.state]} · {item.progress.done}/{item.progress.total} belge
                 </Button>
               </li>

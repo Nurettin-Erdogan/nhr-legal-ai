@@ -5,6 +5,7 @@ import {
   type CaseDetailData,
   type Section,
 } from "../lib/case-detail";
+import { daysUntil, relativeDay } from "../lib/home-summary";
 
 const tabs = [
   "Özet",
@@ -69,6 +70,7 @@ export function CaseDetailView({
   initialTab = "Özet",
   notesEditor,
   taskComposer,
+  renderTaskActions,
   renderSelectedActions,
   draftAction,
 }: {
@@ -99,6 +101,8 @@ export function CaseDetailView({
   notesEditor?: ReactNode;
   /** "Görevler" sekmesinin üstündeki hızlı görev ekleme formu. */
   taskComposer?: ReactNode;
+  /** Her görev satırının altındaki işlemler (tamamla / sil). */
+  renderTaskActions?: (task: { id: string; status: string; title: string }) => ReactNode;
   renderSelectedActions?: (ids: string[]) => ReactNode;
   draftAction?: ReactNode;
 }) {
@@ -115,6 +119,7 @@ export function CaseDetailView({
       // "İcra Özeti" yalnız icra dairesi/mahkemesi dosyasında anlamlıdır; başka davada boş bir sekme gösterilmez.
       (name !== "İcra Özeti" || Boolean(executionBreakdown)),
   );
+  const hearingDays = daysUntil(c.next_hearing);
   const fields = [
     ["Dosya numarası", c.case_no],
     ["Esas numarası", c.esas_no],
@@ -158,11 +163,53 @@ export function CaseDetailView({
               Müvekkil: {data.clientError}
             </p>
           )}
+          <div className="mb-6 flex flex-wrap items-center gap-2" data-testid="case-summary-strip">
+            <span
+              className={`rounded-full px-3 py-1 text-xs font-medium ${
+                c.status === "active"
+                  ? "bg-success/10 text-success"
+                  : c.status === "pending"
+                    ? "bg-warning/10 text-warning"
+                    : "bg-muted text-muted-foreground"
+              }`}
+            >
+              {caseStatusLabels[c.status] ?? c.status}
+            </span>
+            {hearingDays !== null && c.status !== "closed" && (
+              <span
+                className={`rounded-full px-3 py-1 text-xs font-medium ${
+                  hearingDays < 0
+                    ? "bg-destructive/10 text-destructive"
+                    : hearingDays <= 2
+                      ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
+                      : "bg-muted text-foreground"
+                }`}
+              >
+                Duruşma:{" "}
+                {new Date(c.next_hearing as string).toLocaleString("tr-TR", {
+                  dateStyle: "medium",
+                  timeStyle: "short",
+                })}{" "}
+                · {hearingDays < 0 ? `${-hearingDays} gün önce geçti` : relativeDay(hearingDays)}
+              </span>
+            )}
+            <span className="rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground">
+              {data.documents.rows.length}
+              {data.documents.hasMore ? "+" : ""} evrak
+            </span>
+            <span className="rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground">
+              {data.tasks.rows.filter((task) => task.status !== "done").length} açık görev
+            </span>
+          </div>
           <dl className="grid sm:grid-cols-2 gap-5">
             {fields.map(([label, value]) => (
               <div key={label}>
                 <dt className="text-xs text-muted-foreground">{label}</dt>
-                <dd className="text-sm mt-1 break-words">{value || "Belirtilmemiş"}</dd>
+                <dd
+                  className={`text-sm mt-1 break-words ${value ? "" : "text-muted-foreground/70"}`}
+                >
+                  {value || "Belirtilmemiş"}
+                </dd>
               </div>
             ))}
           </dl>
@@ -305,7 +352,9 @@ export function CaseDetailView({
         <Records section={data.tasks}>
           {(t) => (
             <li key={t.id} className="py-3 text-sm">
-              <p>{t.title}</p>
+              <p className={t.status === "done" ? "text-muted-foreground line-through" : ""}>
+                {t.title}
+              </p>
               <p className="text-xs text-muted-foreground">
                 {(
                   { todo: "Yapılacak", in_progress: "Sürüyor", done: "Tamamlandı" } as Record<
@@ -315,6 +364,7 @@ export function CaseDetailView({
                 )[t.status] ?? t.status}{" "}
                 · Son tarih: {displayCaseDate(t.due_date)}
               </p>
+              {renderTaskActions?.({ id: t.id, status: t.status, title: t.title })}
             </li>
           )}
         </Records>

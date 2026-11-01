@@ -1135,3 +1135,112 @@ def test_the_stored_answers_do_not_answer_for_the_warmup_script_that_is_generati
             pass
     finally:
         warm_cache.collector.reset(token)
+
+
+def test_an_unmatched_named_article_gets_the_article_answer_not_the_generic_one(routing):
+    routing.settings.free_answer_enabled = True
+    response, _, _ = _execute(AIAnswerRequest(
+        question="4857 sayılı İş Kanunu'nun 999. maddesi neyi düzenliyor? Böyle bir madde yoksa açıkça belirt ve madde uydurma."))
+    assert response.answer_kind == "insufficient_sources" and response.grounded is False
+    assert "999. maddesini" in response.answer
+    assert "belgeyi seçebilir" not in response.answer
+
+
+@pytest.mark.parametrize("changes, expected", [
+    ({}, True),
+    ({"natural_mode": False}, False),
+    ({"generation_profile": "deep_research"}, False),
+    ({"cloud_provider": False}, False),
+    ({"force_full": True}, False),
+    ({"has_seed": True}, False),
+])
+def test_the_whole_question_search_skips_vector_lanes_only_for_general_cloud_chat(changes, expected):
+    arguments = dict(natural_mode=True, generation_profile="default", cloud_provider=True, force_full=False, has_seed=False)
+    assert pipeline._seed_search_only(AIAnswerRequest(question="Zamanaşımı nasıl kesilir?"), **{**arguments, **changes}) is expected
+
+
+@pytest.mark.parametrize("field", ["project_id", "case_id", "office_project_id", "selected_document_ids"])
+def test_private_scopes_and_historical_questions_keep_the_full_search(field):
+    value = [uuid4()] if field == "selected_document_ids" else uuid4()
+    arguments = dict(natural_mode=True, generation_profile="default", cloud_provider=True, force_full=False, has_seed=False)
+    assert pipeline._seed_search_only(AIAnswerRequest(question="soru", **{field: value}), **arguments) is False
+    assert pipeline._seed_search_only(AIAnswerRequest(question="soru", as_of="2020-01-01"), **arguments) is False
+
+
+def test_an_empty_word_and_statute_seed_falls_back_to_the_full_vector_search(routing, monkeypatch):
+    from api.ai.verification import VerifiedAnswer
+    source = legislation_context(content=_SOURCE_TEXT)
+    cloud = SimpleNamespace(name='openrouter', model='cloud-test')
+    routing.settings.free_answer_enabled = True
+    routing.settings.rag_query_embedding = True
+    monkeypatch.setattr(pipeline, 'answer_provider', lambda *a, **kw: cloud)
+    embedded = []
+
+    async def shared(question):
+        embedded.append("shared")
+        return [0.1]
+
+    async def legislation(question):
+        embedded.append("legislation")
+        return [0.2]
+
+    seen = []
+
+    def retrieve(*a, **kwargs):
+        seen.append(kwargs.get("query_embedding"))
+        return [source] if kwargs.get("query_embedding") else []
+
+    monkeypatch.setattr(pipeline, '_embed_question', shared)
+    monkeypatch.setattr(pipeline, '_embed_legislation_question', legislation)
+    monkeypatch.setattr(pipeline, '_retrieve', retrieve)
+
+    def generate(provider, question, contexts, history, timings, checker, on_draft=None, **kwargs):
+        timings.extra['free_answer'] = {'status': 'accepted', 'kept': 1}
+        return VerifiedAnswer(_NATURAL_TEXT, (source,), ())
+    monkeypatch.setattr(pipeline, '_free_answer', generate)
+    response, timings, _ = _execute(AIAnswerRequest(question=_NATURAL_QUESTION))
+    # the seed search ran without vectors first; only its empty result paid for the question's vectors and the full search
+    assert seen == [None, [0.1]] and sorted(embedded) == ["legislation", "shared"]
+    assert timings.extra['seed_search_lexical_only'] is False and response.grounded
+
+
+def test_a_database_error_in_the_seed_search_does_not_fail_the_general_chat_request(routing, monkeypatch):
+    import psycopg
+    from api.ai.verification import VerifiedAnswer
+    source = legislation_context(content=_SOURCE_TEXT)
+    cloud = SimpleNamespace(name='openrouter', model='cloud-test')
+    routing.settings.free_answer_enabled = True
+    routing.settings.rag_query_embedding = False
+    monkeypatch.setattr(pipeline, 'answer_provider', lambda *a, **kw: cloud)
+
+    def refused(*a, **kwargs):
+        raise psycopg.errors.QueryCanceled("canceling statement due to statement timeout")
+
+    monkeypatch.setattr(pipeline, '_retrieve', refused)
+    seen = {}
+
+    def generate(provider, question, contexts, history, timings, checker, on_draft=None, **kwargs):
+        seen['contexts'] = list(contexts)
+        timings.extra['free_answer'] = {'status': 'accepted', 'kept': 1}
+        return VerifiedAnswer(_NATURAL_TEXT, (source,), ())
+
+    monkeypatch.setattr(pipeline, '_free_answer', generate)
+    response, timings, _ = _execute(AIAnswerRequest(question=_NATURAL_QUESTION))
+    # the part searches (inside `_free_answer`) got their chance: the answer exists and the research is flagged incomplete
+    assert response.grounded and seen['contexts'] == []
+    assert timings.extra['retrieval']['partial'] is True
+
+
+def test_the_same_database_error_still_fails_a_scoped_or_non_general_request(routing, monkeypatch):
+    import psycopg
+    cloud = SimpleNamespace(name='openrouter', model='cloud-test')
+    routing.settings.free_answer_enabled = True
+    monkeypatch.setattr(pipeline, 'answer_provider', lambda *a, **kw: cloud)
+
+    def refused(*a, **kwargs):
+        raise psycopg.errors.QueryCanceled("canceling statement due to statement timeout")
+
+    monkeypatch.setattr(pipeline, '_retrieve', refused)
+    with pytest.raises(HTTPException) as error:
+        _execute(AIAnswerRequest(question=_NATURAL_QUESTION, as_of="2020-01-01"))
+    assert error.value.status_code == 503

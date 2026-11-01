@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import errno
 import logging
+import re
 import mimetypes
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -241,6 +242,126 @@ def _live_rows(where: sql.Composable, table: str) -> sql.Composable:
     return sql.SQL("({}) AND {} IS NULL").format(where, sql.Identifier(column))
 
 
+# Müvekkil ve dava kayıtlarının sunucu tarafı doğrulaması: arayüz zaten denetler, ama genel uç doğrudan da çağrılabildiğinden
+# (ör. boş ad, uydurma durum, 5000 karakterlik ad) kural burada da uygulanır. Değerler `_value` ile türüne çevrildikten sonra denetlenir.
+_CLIENT_TYPES = {"individual", "corporate"}
+_CASE_STATUSES = {"active", "pending", "closed"}
+_TEXT_LIMITS = {
+    "clients": {"full_name": 200, "email": 254, "phone": 40, "address": 500, "national_id": 11, "tax_id": 11, "notes": 10000},
+    "cases": {"title": 300, "case_no": 100, "esas_no": 100, "court": 300, "case_type": 100, "opponent": 300, "notes": 10000},
+    "projects": {"name": 200, "description": 5000},
+}
+_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+# Arayüzün kabul ettiği uzantılarla aynı liste (web/src/lib/uyap.ts ALLOWED_EXTENSIONS): sunucu da yalnız bunları saklar.
+_ALLOWED_EXTENSIONS = frozenset(
+    "pdf udf odt docx doc txt html tif tiff jpg jpeg png xml eyp zip rar xls xlsx mp3 mp4 wav m4a wma ogg avi wmv mov mpg mpeg 3gp mkv bmp gif webp rtf ppt pptx ods odp csv eml msg p7s p7m 7z".split()
+)
+_BAD_FILE_NAME = re.compile(r'[<>:"|?*\x00-\x1f]')
+
+
+def _validate_file_key(key: str) -> None:
+    """Depolama anahtarının dosya adı bölümü: uzunluk ve işletim sistemlerinin kabul etmediği karakterler (503 yerine 400)."""
+    name = key.replace("\\", "/").rsplit("/", 1)[-1]
+    if not name or len(name) > 200:
+        raise HTTPException(status_code=400, detail="Dosya adı boş olamaz ve en fazla 200 karakter olabilir")
+    extension = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if extension not in _ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Bu dosya türü desteklenmiyor")
+    if _BAD_FILE_NAME.search(name):
+        raise HTTPException(status_code=400, detail='Dosya adı şu karakterleri içeremez: < > : " | ? *')
+
+
+# Görev, takvim ve hatırlatma kayıtları (arayüzün zod şemalarıyla aynı değerler): boş başlık, uydurma durum/öncelik/tür ve
+# 5000 karakterlik başlık sunucuda da reddedilir.
+_AGENDA_RULES: dict[str, dict[str, Any]] = {
+    "tasks": {"title": 300, "text": {"description": 10000},
+              "enums": {"status": {"todo", "in_progress", "done"}, "priority": {"low", "medium", "high", "urgent"}}},
+    "calendar_events": {"title": 300, "text": {"description": 10000, "location": 300},
+                        "enums": {"event_type": {"hearing", "meeting", "task", "deadline", "callback", "other"}}},
+    "reminders": {"title": 300, "text": {"note": 5000},
+                  "enums": {"channel": {"in_app", "email"}, "status": {"pending", "sent", "done", "cancelled"}}},
+}
+
+
+def _validate_agenda(table: str, prepared: dict[str, Any], *, insert: bool) -> None:
+    rules = _AGENDA_RULES[table]
+    title = prepared.get("title")
+    if (insert or "title" in prepared) and not str(title or "").strip():
+        raise HTTPException(status_code=400, detail="Başlık boş olamaz")
+    if isinstance(title, str) and len(title) > rules["title"]:
+        raise HTTPException(status_code=400, detail=f"Başlık en fazla {rules['title']} karakter olabilir")
+    for name, limit in rules["text"].items():
+        value = prepared.get(name)
+        if isinstance(value, str) and len(value) > limit:
+            raise HTTPException(status_code=400, detail=f"{name} en fazla {limit} karakter olabilir")
+    for name, allowed in rules["enums"].items():
+        value = prepared.get(name)
+        if value is not None and value not in allowed:
+            raise HTTPException(status_code=400, detail=f"Geçersiz değer: {name}")
+    start, end = prepared.get("start_at"), prepared.get("end_at")
+    if table == "calendar_events" and start is not None and end is not None:
+        try:
+            ended_before_start = end < start
+        except TypeError:  # saat dilimli ile saat dilimsiz değer karşılaştırılamaz: veritabanı kendi kuralını uygular
+            ended_before_start = False
+        if ended_before_start:
+            raise HTTPException(status_code=400, detail="Bitiş, başlangıçtan önce olamaz")
+
+
+def _validate_prepared(table: str, prepared: dict[str, Any], *, insert: bool, user_id: UUID | None = None) -> None:
+    if table == "case_documents":
+        # Belge kaydı yalnız sahibinin kendi depolama klasöründeki bir dosyaya işaret edebilir (başkasının yoluna kayıt açılamaz).
+        name = prepared.get("file_name")
+        if (insert or "file_name" in prepared) and not str(name or "").strip():
+            raise HTTPException(status_code=400, detail="Belge adı boş olamaz")
+        if isinstance(name, str) and len(name) > 255:
+            raise HTTPException(status_code=400, detail="Belge adı en fazla 255 karakter olabilir")
+        path = prepared.get("storage_path")
+        if path and user_id is not None:
+            try:
+                _storage_path(user_id, str(path))
+            except HTTPException as exc:
+                raise HTTPException(status_code=400, detail="Geçersiz dosya yolu") from exc
+        return
+    if table in _AGENDA_RULES:
+        _validate_agenda(table, prepared, insert=insert)
+        return
+    limits = _TEXT_LIMITS.get(table)
+    if limits is None:
+        return
+    for name, limit in limits.items():
+        value = prepared.get(name)
+        if isinstance(value, str) and len(value) > limit:
+            raise HTTPException(status_code=400, detail=f"{name} en fazla {limit} karakter olabilir")
+    required = {"clients": "full_name", "cases": "title", "projects": "name"}[table]
+    if (insert or required in prepared) and not str(prepared.get(required) or "").strip():
+        raise HTTPException(status_code=400, detail="Ad/başlık boş olamaz")
+    if table == "clients":
+        kind = prepared.get("client_type")
+        if kind is not None and kind not in _CLIENT_TYPES:
+            raise HTTPException(status_code=400, detail="Geçersiz müvekkil tipi")
+        email = prepared.get("email")
+        if email and not _EMAIL.match(str(email).strip()):
+            raise HTTPException(status_code=400, detail="Geçersiz e-posta adresi")
+        national = prepared.get("national_id")
+        if national and not re.fullmatch(r"\d{11}", str(national)):
+            raise HTTPException(status_code=400, detail="TC kimlik numarası 11 haneli olmalı")
+        tax = prepared.get("tax_id")
+        if tax and not re.fullmatch(r"\d{10,11}", str(tax)):
+            raise HTTPException(status_code=400, detail="Vergi numarası 10 ya da 11 haneli olmalı")
+    elif table == "projects":
+        color = prepared.get("color")
+        if color and not _COLOR.match(str(color)):
+            raise HTTPException(status_code=400, detail="Geçersiz renk (örn. #C8A24B)")
+    else:
+        status = prepared.get("status")
+        if status is not None and status not in _CASE_STATUSES:
+            raise HTTPException(status_code=400, detail="Geçersiz dava durumu")
+
+
 def _prepare_values(
     values: dict[str, Any], table: str, columns: dict[str, str], user_id: UUID, *, insert: bool
 ) -> dict[str, Any]:
@@ -328,6 +449,7 @@ def _run(
                     if table == "case_documents" and row.get("source") in UYAP_SOURCES:
                         raise HTTPException(status_code=409, detail="UYAP belgesi güvenli aktarım uç noktasından yüklenmelidir.")
                     prepared = _prepare_values(row, table, columns, user_id, insert=True)
+                    _validate_prepared(table, prepared, insert=True, user_id=user_id)
                     names = list(prepared)
                     statement = sql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
                         ident,
@@ -369,6 +491,7 @@ def _run(
                 if not query.filters:
                     raise HTTPException(status_code=400, detail="Filtresiz toplu güncelleme yapılamaz")
                 prepared = _prepare_values(query.values, table, columns, user_id, insert=False)
+                _validate_prepared(table, prepared, insert=False, user_id=user_id)
                 if not prepared:
                     raise HTTPException(status_code=400, detail="Güncellenecek alan yok")
                 where, params = _where(query, table, columns)
@@ -467,6 +590,7 @@ async def upload_file(
     file: UploadFile = File(...),
 ) -> dict[str, Any]:
     target = _storage_path(user_id, key)
+    _validate_file_key(key)
     if target.exists():
         raise HTTPException(status_code=409, detail="Bu yolda dosya zaten var")
     upload = await _receive(file)

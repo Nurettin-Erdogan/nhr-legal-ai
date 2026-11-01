@@ -9,7 +9,7 @@ import {
   Plus,
   MessageSquare,
   Trash2,
-  Bot,
+  Scale,
   User as UserIcon,
   Sparkles,
   ShieldAlert,
@@ -257,7 +257,7 @@ function ScopedLegalChat({
         "grid min-h-0 min-w-0 gap-4",
         compact
           ? "grid-cols-1 grid-rows-1 h-[600px]"
-          : "grid-cols-1 grid-rows-[auto_minmax(0,1fr)] lg:grid-cols-[280px_minmax(0,1fr)] lg:grid-rows-1 h-[calc(100dvh-220px)]",
+          : "grid-cols-1 grid-rows-[auto_minmax(0,1fr)] lg:grid-cols-[280px_minmax(0,1fr)] lg:grid-rows-1 h-[calc(100dvh-140px)] lg:h-[calc(100dvh-220px)]",
       )}
       aria-label={title}
       data-testid="chat-layout"
@@ -387,22 +387,26 @@ function ScopedLegalChat({
           data-testid="chat-messages"
         >
           {messages.length === 0 ? (
-            <div className="flex flex-col items-center justify-center min-h-full text-center max-w-lg mx-auto">
-              <div className="h-16 w-16 rounded-2xl bg-gradient-gold flex items-center justify-center mb-4">
-                <Sparkles className="h-8 w-8 text-primary" />
+            <div className="mx-auto flex min-h-full max-w-2xl flex-col items-center justify-center text-center">
+              <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary ring-1 ring-primary/20">
+                <Scale className="h-7 w-7" />
               </div>
-              <h3 className="font-serif text-2xl font-semibold mb-2">
+              <h3 className="mb-2 text-2xl font-semibold tracking-tight">
                 Size nasıl yardımcı olabilirim?
               </h3>
-              {intro && <p className="text-sm text-muted-foreground mb-6">{intro}</p>}
-              <div className="grid sm:grid-cols-2 gap-2 w-full">
+              <p className="mb-6 max-w-md text-sm text-muted-foreground">
+                {intro ||
+                  "Cevaplar yalnız doğrulanmış kanun ve karar kaynaklarına dayanır; kaynak bulunamazsa bunu açıkça söylerim."}
+              </p>
+              <div className="grid w-full gap-2 sm:grid-cols-2">
                 {examples.map((s) => (
                   <button
                     key={s}
                     onClick={() => send(s)}
-                    className="text-left text-xs p-3 rounded-lg border border-border hover:border-gold hover:bg-muted/40 transition"
+                    className="group flex items-start gap-2 rounded-xl border border-border bg-background p-3.5 text-left text-sm shadow-sm transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md"
                   >
-                    {s}
+                    <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-primary/70" />
+                    <span className="flex-1">{s}</span>
                   </button>
                 ))}
               </div>
@@ -419,19 +423,21 @@ function ScopedLegalChat({
                       "h-8 w-8 rounded-full flex items-center justify-center shrink-0",
                       m.role === "user"
                         ? "bg-primary text-primary-foreground"
-                        : "bg-gradient-gold text-primary",
+                        : "bg-primary/10 text-primary ring-1 ring-primary/20",
                     )}
                   >
                     {m.role === "user" ? (
                       <UserIcon className="h-4 w-4" />
                     ) : (
-                      <Bot className="h-4 w-4" />
+                      <Scale className="h-4 w-4" />
                     )}
                   </div>
                   <div
                     className={cn(
                       "max-w-[85%] rounded-2xl px-4 py-3",
-                      m.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted/50",
+                      m.role === "user"
+                        ? "bg-primary text-primary-foreground shadow-sm"
+                        : "border border-border/60 bg-muted/40",
                     )}
                   >
                     {m.role === "assistant" && (m.summary?.length ?? 0) > 0 ? (
@@ -451,7 +457,12 @@ function ScopedLegalChat({
                         </div>
                       </>
                     ) : (
-                      <div className="prose prose-sm dark:prose-invert max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+                      <div
+                        className={cn(
+                          "prose prose-sm max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+                          m.role === "user" ? "prose-invert" : "dark:prose-invert",
+                        )}
+                      >
                         <CollapsibleAnswer length={m.role === "assistant" ? m.content.length : 0}>
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
                         </CollapsibleAnswer>
@@ -546,10 +557,10 @@ function ScopedLegalChat({
               ))}
               {loading && (
                 <div className="flex gap-3">
-                  <div className="h-8 w-8 rounded-full bg-gradient-gold flex items-center justify-center">
-                    <Bot className="h-4 w-4 text-primary" />
+                  <div className="h-8 w-8 rounded-full bg-primary/10 text-primary ring-1 ring-primary/20 flex items-center justify-center">
+                    <Scale className="h-4 w-4" />
                   </div>
-                  <div className="bg-muted/50 rounded-2xl px-4 py-3 flex items-center gap-2 text-sm text-muted-foreground">
+                  <div className="border border-border/60 bg-muted/40 rounded-2xl px-4 py-3 flex items-center gap-2 text-sm text-muted-foreground">
                     <Loader2 className="h-4 w-4 animate-spin" /> {stage || "Yazıyor…"}
                   </div>
                 </div>
@@ -573,7 +584,7 @@ function ScopedLegalChat({
                 disabled={loading || opening}
                 onChange={(e) => setReasoningEffort(e.target.value as "low" | "medium" | "high")}
                 aria-describedby="chat-reasoning-help"
-                className="rounded-lg border border-border bg-background px-2 py-1.5 text-foreground"
+                className="rounded-full border border-border bg-background px-3 py-1 text-foreground shadow-sm"
               >
                 <option value="low">Hızlı</option>
                 <option value="medium">Dengeli</option>
@@ -588,7 +599,7 @@ function ScopedLegalChat({
               </span>
             </div>
           )}
-          <div className="max-w-3xl mx-auto flex gap-2">
+          <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-2xl border border-border bg-background p-2 shadow-sm transition focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/15">
             <Textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
@@ -600,7 +611,7 @@ function ScopedLegalChat({
               }}
               placeholder="Sorunuzu yazın…"
               rows={2}
-              className="resize-none"
+              className="resize-none border-0 bg-transparent shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
               disabled={loading}
             />
             <Button
@@ -616,6 +627,10 @@ function ScopedLegalChat({
               )}
             </Button>
           </div>
+          <p className="mx-auto mt-2 max-w-3xl text-center text-[11px] text-muted-foreground">
+            Enter gönderir · Shift+Enter yeni satır. Cevaplar hukuki görüş yerine geçmez; atıfları
+            kontrol edin.
+          </p>
         </div>
       </div>
     </div>

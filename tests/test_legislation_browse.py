@@ -73,6 +73,7 @@ def api(connection, monkeypatch):  # noqa: F811
         yield connection
 
     monkeypatch.setattr(legal, "database_connection", database_connection)
+    monkeypatch.setattr(legal, "_LAWS_FILE", None)  # testler gerçek disk önbelleğini okuyup yazmasın
     browse.reset_cache()
     yield connection
     browse.reset_cache()
@@ -175,4 +176,32 @@ def test_a_failed_background_refresh_keeps_the_old_list(monkeypatch):
             break
         time.sleep(0.02)
     assert browse.cached_laws(lambda: old) is old
+    browse.reset_cache()
+
+
+def test_laws_list_survives_a_restart_through_the_disk_copy(tmp_path):
+    """Bellek boşken (yeniden başlatma) diskteki liste hemen kullanılır; çıkarıcı (yavaş sorgu) beklenmez."""
+    import api.legislation_browse as browse
+
+    path = tmp_path / "laws.json"
+    law = browse.Law("6098", "TÜRK BORÇLAR KANUNU", "law", 649, "2024-01-01", None, browse.fold("TÜRK BORÇLAR KANUNU 6098"))
+    browse.reset_cache()
+    first = browse.cached_laws(lambda: [law], path)
+    assert [item.law_no for item in first] == ["6098"] and path.exists()
+    browse.reset_cache()  # sunucu yeniden başladı
+    calls = []
+
+    def slow_loader():
+        calls.append(1)
+        return [law]
+
+    second = browse.cached_laws(slow_loader, path)
+    assert [item.law_no for item in second] == ["6098"]
+    assert second[0].folded == law.folded
+    import time
+
+    deadline = time.time() + 5
+    while not calls and time.time() < deadline:  # eski sayılan liste arka planda tazelenir
+        time.sleep(0.05)
+    assert calls, "diskten gelen liste arka planda yenilenmeli"
     browse.reset_cache()

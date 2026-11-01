@@ -403,7 +403,10 @@ def explicit_document_references(question: str) -> set[str]:
 
 def missing_document_references(question: str, contexts) -> set[str]:
     hints = [normalize(document_hint(context)) for context in contexts if context.source_type == "document"]
-    return {kind for kind in explicit_document_references(question) if not any(kind in hint for hint in hints)}
+    # Dosya adları sık sık aksansız yazılır ("kira_sozlesmesi.pdf"): tür de ipucu da aksansız karşılaştırılır.
+    from api.ai.turkish_text import fold
+    folded = [fold(hint) for hint in hints]
+    return {kind for kind in explicit_document_references(question) if not any(fold(kind) in hint for hint in folded)}
 
 
 def documents_answer(question: str, contexts) -> bool:

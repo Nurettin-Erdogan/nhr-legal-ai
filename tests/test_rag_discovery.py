@@ -290,6 +290,10 @@ def test_summary_does_not_claim_total_or_expose_source_text():
         # a lane delivered nothing: the graver statement wins over a sampled sibling
         ({"partial": True, "branches": [{"name": "lexical", "status": "timeout_then_tiered"},
                                         {"name": "legislation_m3", "status": "timeout"}]}, "failed"),
+        # the vector lane answered, only the lexical lane ran out of time: a sample, not a failure
+        ({"partial": True, "branches": [{"name": "semantic", "status": "ok"},
+                                        {"name": "lexical", "status": "timeout"}]}, "sampled"),
+        ({"partial": True, "branches": [{"name": "lexical", "status": "timeout"}]}, "failed"),
         ({"partial": True, "branches": [{"name": "semantic", "status": "skipped_unindexed"}]}, "failed"),
         ({"partial": True, "branches": [{"name": "semantic", "status": "connection_error"}]}, "failed"),
         ({"partial": True, "decision_search": "timeout", "branches": []}, "failed"),

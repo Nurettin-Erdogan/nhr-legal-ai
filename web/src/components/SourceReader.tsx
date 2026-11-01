@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { loadSourceDetail, type SourceDetail } from "@/lib/decision-search";
-import { isRawPortalUrl, isSourceId, safeSourceUrl, sourceSiteLabel } from "@/lib/source-reader";
+import { isSourceId, readableParagraphs } from "@/lib/source-reader";
 import { verificationTag } from "@/lib/source-label";
 import { Button } from "@/components/ui/button";
 import {
@@ -29,7 +29,6 @@ export function SourceReader(props: SourceReaderProps) {
 function Reader({
   sourceId,
   reference,
-  sourceUrl,
   excerpt,
   children = "Kaynağı aç",
   className,
@@ -71,7 +70,6 @@ function Reader({
       controller.abort();
     };
   }, [open, sourceId, retry]);
-  const external = safeSourceUrl(detail ? detail.sourceUrl : sourceUrl);
   const tag = detail && verificationTag(detail.verification);
   return (
     <>
@@ -126,9 +124,17 @@ function Reader({
               !error &&
               detail &&
               (detail.rawText ? (
-                <p className="whitespace-pre-wrap break-words" data-testid="source-reader-text">
-                  {detail.rawText}
-                </p>
+                <div className="space-y-3 break-words" data-testid="source-reader-text">
+                  {readableParagraphs(detail.rawText).map((paragraph, index) =>
+                    paragraph.heading ? (
+                      <p key={index} className="pt-2 font-semibold">
+                        {paragraph.text}
+                      </p>
+                    ) : (
+                      <p key={index}>{paragraph.text}</p>
+                    ),
+                  )}
+                </div>
               ) : detail.chunks.length ? (
                 <>
                   <p role="note" className="mb-3 text-muted-foreground">
@@ -152,23 +158,6 @@ function Reader({
             )}
           </div>
           <div className="shrink-0 space-y-2 text-xs">
-            {external && (
-              <a
-                href={external}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="underline underline-offset-2"
-                data-testid="source-reader-external"
-              >
-                {sourceSiteLabel(external)}
-              </a>
-            )}
-            {external && isRawPortalUrl(external) && (
-              <p className="text-muted-foreground">
-                Resmî portalın bu bağlantısı ham XML/HTML gösterebilir. Okunabilir kayıt
-                yukarıdadır.
-              </p>
-            )}
             <Button variant="outline" onClick={() => setOpen(false)}>
               Kapat
             </Button>

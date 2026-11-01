@@ -307,6 +307,21 @@ def create_provider(
     ollama_num_ctx: int = 3072,
     ollama_keep_alive: str = "30m",
 ) -> AIProvider:
+    if provider_name == "bedrock":
+        # Explicit deployment-wide cloud mode, including owner-authorized
+        # private workflows. Never construct an Ollama fallback in this mode.
+        from api.config import get_settings
+        from api.ai.cloud_provider import create_cloud_provider
+
+        settings = get_settings()
+        if settings.cloud_ai_provider != "bedrock":
+            raise AIProviderError("Bedrock tek sağlayıcı ayarı eksik", status_code=503)
+        return create_cloud_provider(
+            provider_name="bedrock", model=model, api_key=settings.cloud_ai_api_key,
+            timeout_seconds=settings.cloud_ai_timeout_seconds,
+            max_output_tokens=settings.cloud_ai_max_output_tokens,
+            reasoning_effort=settings.cloud_ai_reasoning_effort,
+        )
     if provider_name in LOCAL_OLLAMA_PROVIDERS:
         return OllamaProvider(
             model=model,

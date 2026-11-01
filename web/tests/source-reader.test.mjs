@@ -46,6 +46,7 @@ function reader(load, initial = props) {
   return { ...view, calls };
 }
 const byTestId = (tree, name) => nodes(tree).find((node) => node.props?.["data-testid"] === name);
+const bodyText = (tree, id) => textOf(byTestId(tree, id));
 const textOf = (tree) =>
   nodes(tree)
     .flatMap((node) => [node.props?.children].flat(Infinity))
@@ -62,10 +63,10 @@ test("opening a source fetches only the internal corpus endpoint, preserves full
   assert.equal(view.calls[0][0], id);
   await settle();
   tree = view.render();
-  assert.equal(byTestId(tree, "source-reader-text").props.children, detail.rawText);
+  assert.equal(bodyText(tree, "source-reader-text"), "İlk paragraf. Son paragraf.");
   assert.equal(byTestId(tree, "reader-verification"), undefined);
-  assert.equal(byTestId(tree, "source-reader-external").props.href, url);
-  assert.match(textOf(tree), /ham XML\/HTML/);
+  assert.equal(byTestId(tree, "source-reader-external"), undefined);
+  assert.doesNotMatch(textOf(tree), /XML|portalda ara|sitede aç/);
   view.unmount();
 });
 
@@ -89,7 +90,7 @@ test("source close aborts loading and late responses never replace the current s
   resolveOld({ ...detail, rawText: "Eski kaynak" });
   await settle();
   tree = view.render({ ...props, sourceId: other });
-  assert.equal(byTestId(tree, "source-reader-text").props.children, "Yeni kaynak");
+  assert.equal(bodyText(tree, "source-reader-text"), "Yeni kaynak");
   nodes(tree)
     .find((node) => node.type === "Dialog")
     .props.onOpenChange(false);
@@ -134,7 +135,7 @@ test("failure remains an error with retry, not an empty full text", async () => 
   await settle();
   tree = view.render();
   assert.equal(attempts, 2);
-  assert.equal(byTestId(tree, "source-reader-text").props.children, detail.rawText);
+  assert.equal(bodyText(tree, "source-reader-text"), "İlk paragraf. Son paragraf.");
   view.unmount();
 });
 
@@ -168,7 +169,7 @@ test("untrusted source text remains text, never HTML execution", async () => {
   view.render();
   await settle();
   const tree = view.render();
-  assert.equal(byTestId(tree, "source-reader-text").props.children, attack);
+  assert.equal(bodyText(tree, "source-reader-text"), attack);
   assert.ok(nodes(tree).every((node) => !node.props?.dangerouslySetInnerHTML));
   view.unmount();
 });
@@ -391,4 +392,23 @@ test("home chat keeps citation identities instead of flattening them into the an
       .every((node) => !node.props.children.includes("**Kaynaklar**")),
   );
   view.unmount();
+});
+
+test("hard-wrapped official text is reflowed into paragraphs without changing any word", () => {
+  const raw =
+    "MADDE 72 - Tazminat istemi, zarar görenin zararı\nöğrendiği tarihten başlayarak iki yılın geçmesiyle\nzamanaşımına uğrar.\nHaksız fiil dolayısıyla zarar\ngören bakımından.\n\nII. Rücu isteminde\n\n1. Birinci bent\n2. İkinci bent";
+  const result = links.readableParagraphs(raw);
+  assert.deepEqual(
+    result.map((paragraph) => paragraph.text),
+    [
+      "MADDE 72 - Tazminat istemi, zarar görenin zararı öğrendiği tarihten başlayarak iki yılın geçmesiyle zamanaşımına uğrar.",
+      "Haksız fiil dolayısıyla zarar gören bakımından.",
+      "II. Rücu isteminde",
+      "1. Birinci bent",
+      "2. İkinci bent",
+    ],
+  );
+  assert.equal(result[2].heading, true);
+  assert.equal(result[0].heading, false);
+  assert.equal(result.map((paragraph) => paragraph.text).join(" "), raw.split(/\s+/).join(" "));
 });

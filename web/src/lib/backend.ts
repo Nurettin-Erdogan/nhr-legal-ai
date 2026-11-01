@@ -1,6 +1,6 @@
 /**
  * Eski Supabase edge function çağrılarının yerine geçen ince katman. Aynı `{ data, error }` sözleşmesini
- * korur; işler artık kendi FastAPI arka ucumuzda (yerel model, korpus atıfları) yapılır.
+ * korur; işler kendi FastAPI arka ucumuzda (yapılandırılmış AI sağlayıcısı, korpus atıfları) yapılır.
  */
 import { askAssistant } from "@/lib/ai-api";
 import { citationSuffix } from "@/lib/source-label";

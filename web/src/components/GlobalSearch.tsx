@@ -17,7 +17,7 @@ const DEBOUNCE_MS = 250;
  * Üst çubuktaki genel arama: kullanıcının kendi davaları, müvekkilleri, belgeleri ve görevleri; altta aynı terimi içtihatta,
  * mevzuatta ya da asistanda aramaya götüren kısayollar. "/" ya da Ctrl+K ile odaklanır; ok tuşları ve Enter ile gezilir.
  */
-export function GlobalSearch() {
+export function GlobalSearch({ includeCaseLaw = true }: { includeCaseLaw?: boolean } = {}) {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [result, setResult] = useState<WorkspaceSearchResult | null>(null);
@@ -59,7 +59,10 @@ export function GlobalSearch() {
 
   // Sonuç, yazılan terime aitse gösterilir (eski terimin sonucu yeni terimin altında görünmesin).
   const current = result && result.query === query.trim().replace(/\s+/g, " ") ? result : null;
-  const rows = useMemo(() => buildSearchRows(current, query), [current, query]);
+  const rows = useMemo(
+    () => buildSearchRows(current, query, includeCaseLaw),
+    [current, query, includeCaseLaw],
+  );
   const groups = useMemo(() => groupRows(rows), [rows]);
   const workspaceHits = rows.filter((row) => row.group !== "Hukuk kaynaklarında ara").length;
 

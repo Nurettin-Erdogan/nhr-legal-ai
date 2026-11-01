@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { CaseDocPicker } from "@/components/CaseDocPicker";
+import { FileUploadDialog } from "@/components/FileUploadDialog";
 import { DocumentWorkflowActions } from "@/components/DocumentWorkflowActions";
 import {
   getProjectDocuments,
@@ -126,8 +127,13 @@ function ProjectDocumentsPanel({ projectId }: { projectId: string }) {
           <RefreshCw className="h-4 w-4" />
           Yenile
         </Button>
-        <Link to="/dashboard/files" className="text-sm underline">
-          Yeni belge yüklemek için Dosyalar
+        <FileUploadDialog
+          projectId={projectId}
+          label="Belge yükle"
+          onUploaded={() => void load()}
+        />
+        <Link to="/dashboard/files" className="text-sm text-muted-foreground underline">
+          Tüm dosyalar
         </Link>
       </div>
       <p className="text-xs text-muted-foreground">

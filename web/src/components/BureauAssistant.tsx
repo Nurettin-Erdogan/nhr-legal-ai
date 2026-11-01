@@ -38,6 +38,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
+import { BureauReview, BureauWorkHistory } from "@/components/BureauReview";
 
 const when = (date: string) =>
   new Intl.DateTimeFormat("tr-TR", {
@@ -60,6 +61,7 @@ export function BureauAssistant() {
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<BureauProposal | null>(null);
+  const [reviewing, setReviewing] = useState<BureauProposal | null>(null);
   const [title, setTitle] = useState("");
   const [action, setAction] = useState<"approve" | "dismiss">("approve");
   const refresh = useCallback(async (signal?: AbortSignal) => {
@@ -83,6 +85,7 @@ export function BureauAssistant() {
     const requests = requestVersion;
     setData(null);
     setSelected(null);
+    setReviewing(null);
     void refresh(controller.signal);
     return () => {
       ++requests.current;
@@ -187,6 +190,36 @@ export function BureauAssistant() {
               Yeniden dene
             </Button>
           </div>
+        )}
+        {data && (
+          <section
+            aria-label="Günlük büro özeti"
+            className="rounded-2xl border border-border bg-card p-5 sm:p-6"
+          >
+            <h2 className="flex items-center gap-2 text-lg font-semibold">
+              <CalendarDays className="h-5 w-5 text-primary" /> Bugün ne var?
+            </h2>
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">
+              {data.counts.today_hearings === undefined || data.counts.today_tasks === undefined
+                ? "Günlük özet henüz alınamadı. Haftalık kayıtlarınızı aşağıdan inceleyebilirsiniz."
+                : `Bugün ${data.counts.today_hearings} kayıtlı duruşmanız ve son tarihi bugün olan ${data.counts.today_tasks} açık göreviniz var.`}
+              {data.counts.overdue_tasks > 0
+                ? ` Ayrıca ${data.counts.overdue_tasks} görevin kayıtlı son tarihi geçti; öncelikle kontrol edin.`
+                : " Kayıtlı son tarihi geçmiş açık göreviniz yok."}
+            </p>
+            <div className="mt-4 flex flex-wrap gap-4 text-sm font-medium text-primary">
+              <Link to="/dashboard/tasks">
+                İş listesine git <ArrowRight className="ml-1 inline h-4 w-4" />
+              </Link>
+              <Link to="/dashboard/files">
+                Belgeleri incele <ArrowRight className="ml-1 inline h-4 w-4" />
+              </Link>
+            </div>
+            <p className="mt-3 text-xs text-muted-foreground">
+              İstanbul saatine göre kayıtlı tarihler kullanılır. Bu özet belge içeriğinden hukuki
+              süre hesaplamaz.
+            </p>
+          </section>
         )}
         <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
           <section className="rounded-2xl border border-border bg-card">
@@ -309,6 +342,16 @@ export function BureauAssistant() {
                         <div className="mt-5 flex flex-wrap gap-2">
                           <Button
                             size="sm"
+                            variant="outline"
+                            disabled={busy || loading}
+                            onClick={() => setReviewing(p)}
+                          >
+                            {p.kind === "hearing"
+                              ? "Duruşmaya hazırlan"
+                              : "Belgeyi incele ve özetle"}
+                          </Button>
+                          <Button
+                            size="sm"
                             disabled={busy || loading}
                             onClick={() => choose(p, "approve")}
                           >
@@ -360,17 +403,41 @@ export function BureauAssistant() {
               {data?.hearings.length ? (
                 <div className="space-y-4">
                   {data.hearings.map((h) => (
-                    <Link
-                      key={h.id}
-                      to={`/dashboard/cases/${h.id}`}
-                      className="block border-l-2 border-primary/40 pl-3"
-                    >
-                      <p className="text-xs font-medium text-primary">{when(h.next_hearing)}</p>
-                      <p className="mt-1 truncate text-sm font-medium">{h.title}</p>
-                      <p className="mt-1 truncate text-xs text-muted-foreground">
-                        {h.court || h.case_no || "Dava kaydı"}
-                      </p>
-                    </Link>
+                    <div key={h.id}>
+                      <Link
+                        key={h.id}
+                        to={`/dashboard/cases/${h.id}`}
+                        className="block border-l-2 border-primary/40 pl-3"
+                      >
+                        <p className="text-xs font-medium text-primary">{when(h.next_hearing)}</p>
+                        <p className="mt-1 truncate text-sm font-medium">{h.title}</p>
+                        <p className="mt-1 truncate text-xs text-muted-foreground">
+                          {h.court || h.case_no || "Dava kaydı"}
+                        </p>
+                      </Link>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="mt-1"
+                        onClick={() =>
+                          setReviewing({
+                            key: `hearing:${h.id}:${h.next_hearing}`,
+                            kind: "hearing",
+                            title: `Duruşma: ${h.title}`,
+                            description: "Kayıtlı dosya bilgileriyle duruşma hazırlığı.",
+                            case_id: h.id,
+                            case_title: h.title,
+                            source_label: h.case_no || h.court || "Dava kaydı",
+                            source_url: `/dashboard/cases/${h.id}`,
+                            date: h.next_hearing,
+                            priority: "medium",
+                            action_label: "Takvime ekle",
+                          })
+                        }
+                      >
+                        Hazırlık notunu aç
+                      </Button>
+                    </div>
                   ))}
                 </div>
               ) : (
@@ -422,7 +489,35 @@ export function BureauAssistant() {
             </div>
           </aside>
         </div>
+        <BureauWorkHistory key={user?.id} />
       </div>
+      <Dialog
+        open={!!reviewing}
+        onOpenChange={(open) => {
+          if (!open) setReviewing(null);
+        }}
+      >
+        <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              {reviewing?.kind === "hearing" ? "Duruşma hazırlığı" : "Dosya hareketini incele"}
+            </DialogTitle>
+            <DialogDescription>
+              Kaynağı inceleyin, belge özetini oluşturun ve sonraki işlemi ayrıca onaylayın.
+            </DialogDescription>
+          </DialogHeader>
+          {reviewing && (
+            <BureauReview
+              key={`${user?.id}:${reviewing.key}`}
+              proposal={reviewing}
+              onApprove={(current) => {
+                choose(current, "approve");
+                setReviewing(null);
+              }}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
       <Dialog
         open={!!selected}
         onOpenChange={(open) => {

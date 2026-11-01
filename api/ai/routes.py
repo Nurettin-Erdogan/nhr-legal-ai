@@ -47,6 +47,9 @@ def ai_status() -> AIStatusResponse:
     settings = get_settings()
     semantic_search_ready = _semantic_search_ready(settings.embedding_model)
     configured = False
+    if settings.ai_provider == "bedrock":
+        # Configuration readiness, not a paid inference or a credential probe.
+        configured = settings.cloud_ai_provider == "bedrock" and bool(settings.cloud_ai_api_key)
     if settings.ai_provider in LOCAL_OLLAMA_PROVIDERS:
         try:
             configured = OllamaProvider(

@@ -9,7 +9,7 @@ from uuid import UUID, NAMESPACE_URL, uuid4, uuid5
 from zoneinfo import ZoneInfo
 
 import psycopg
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
 from api.audit import AuditContext, record_event
@@ -60,6 +60,9 @@ def proposals(hearings, documents, decisions, calendar, now):
 
 
 def snapshot(db, now):
+    now = now.astimezone(ZONE)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day_start + timedelta(days=1)
     hearings = db.execute("""SELECT id,title,case_no,court,status,next_hearing FROM office_cases
         WHERE status <> 'closed' AND next_hearing >= %s AND next_hearing <= %s
         ORDER BY next_hearing,id LIMIT 101""", (now, now + timedelta(days=7))).fetchall()
@@ -76,8 +79,12 @@ def snapshot(db, now):
     tasks = db.execute("""SELECT id,title,status,due_date,case_id FROM office_tasks
         WHERE status <> 'done' ORDER BY due_date NULLS LAST,id LIMIT 8""").fetchall()
     counts = db.execute("""SELECT count(*) FILTER (WHERE status <> 'done') AS open_tasks,
-        count(*) FILTER (WHERE status <> 'done' AND due_date < %s) AS overdue_tasks
-        FROM office_tasks""", (now,)).fetchone()
+        count(*) FILTER (WHERE status <> 'done' AND due_date < %s) AS overdue_tasks,
+        count(*) FILTER (WHERE status <> 'done' AND due_date >= %s AND due_date < %s) AS today_tasks
+        FROM office_tasks""", (now, day_start, day_end)).fetchone()
+    counts["today_hearings"] = db.execute("""SELECT count(*) AS count FROM office_cases
+        WHERE status <> 'closed' AND next_hearing >= %s AND next_hearing < %s""",
+        (day_start, day_end)).fetchone()["count"]
     counts["upcoming_hearings"] = db.execute("""SELECT count(*) AS count FROM office_cases
         WHERE status <> 'closed' AND next_hearing >= %s AND next_hearing <= %s""",
         (now, now + timedelta(days=7))).fetchone()["count"]
@@ -94,6 +101,102 @@ def overview(owner: Annotated[UUID, Depends(current_user_id)]):
             return snapshot(db, datetime.now(ZONE))
     except psycopg.Error as error:
         raise HTTPException(503, "Büro özeti alınamadı. Veriler boş kabul edilmedi; lütfen yeniden deneyin.") from error
+
+
+def _review_content(db, proposal, now):
+    document_id = UUID(proposal["key"].split(":", 2)[1]) if proposal["kind"] == "document" else None
+    rows = db.execute("""SELECT od.id, od.file_name, d.status,
+        COALESCE((d.metadata->>'ocr') = 'true', false) AS ocr,
+        (SELECT left(c.content,1800) FROM document_chunks c
+         WHERE c.document_id=d.id ORDER BY c.chunk_index,c.id LIMIT 1) AS excerpt
+        FROM office_case_documents od
+        LEFT JOIN documents d ON d.office_case_document_id=od.id
+        WHERE od.deleted_at IS NULL AND
+        ((%s::uuid IS NOT NULL AND od.id=%s) OR
+         (%s::uuid IS NULL AND od.case_id=%s::uuid))
+        ORDER BY od.created_at DESC,od.id LIMIT 11""",
+        (document_id, document_id, document_id, proposal["case_id"])).fetchall()
+    documents = [dict(id=str(r["id"]), file_name=r["file_name"],
+                      ready=r["status"] == "ready" and bool(r["excerpt"]),
+                      ocr=bool(r["ocr"]),
+                      excerpt=r["excerpt"] if r["status"] == "ready" else None)
+                 for r in rows[:10]]
+    return dict(proposal=proposal, documents=documents, limited=len(rows) > 10,
+                suggested_action=proposal["description"], generated_at=now.isoformat(),
+                action_available=True)
+
+
+def review(db, key, now):
+    """Read-only evidence preview; source identities come from the owner's live proposals."""
+    proposal = next((p for p in snapshot(db, now)["proposals"] if p["key"] == key), None)
+    if proposal is None:
+        raise HTTPException(409, "Öneri değişmiş veya artık geçerli değil. Listeyi yenileyin.")
+    return _review_content(db, proposal, now)
+
+
+def preparation(db, case_id, now):
+    """Saved case context, not a legal assessment; remains readable after calendar approval."""
+    case = db.execute("""SELECT id,title,case_no,court,status,next_hearing FROM office_cases
+        WHERE id=%s""", (case_id,)).fetchone()
+    if case is None:
+        raise HTTPException(404, "Dava bulunamadı veya erişim yetkiniz yok.")
+    if case["next_hearing"] is None:
+        raise HTTPException(409, "Bu davanın kayıtlı duruşma tarihi yok.")
+    when = case["next_hearing"]
+    key = f"hearing:{case['id']}:{when.isoformat()}"
+    proposal = dict(key=key, kind="hearing", title=f"Duruşma: {case['title']}"[:200],
+                    description="Kayıtlı duruşma tarihini kontrol ederek takvime ekleyin.",
+                    case_id=str(case["id"]), case_title=case["title"],
+                    source_label=case["case_no"] or case["court"] or "Dava kaydı",
+                    source_url=f"/dashboard/cases/{case['id']}", date=when.isoformat(),
+                    priority="high" if when - now < timedelta(days=2) else "medium",
+                    action_label="Takvime ekle")
+    result = _review_content(db, proposal, now)
+    counts = db.execute("""SELECT count(*) AS total,
+        count(*) FILTER (WHERE EXISTS (SELECT 1 FROM documents d
+          WHERE d.office_case_document_id=od.id AND d.status='ready'
+          AND EXISTS (SELECT 1 FROM document_chunks c WHERE c.document_id=d.id))) AS ready
+        FROM office_case_documents od WHERE case_id=%s AND deleted_at IS NULL""", (case_id,)).fetchone()
+    tasks = db.execute("""SELECT id,title,status,due_date FROM office_tasks
+        WHERE case_id=%s AND status <> 'done' ORDER BY due_date NULLS LAST,id LIMIT 21""", (case_id,)).fetchall()
+    handled = db.execute("SELECT status FROM office_bureau_decisions WHERE proposal_key=%s", (key,)).fetchone()
+    scheduled = db.execute("""SELECT id FROM office_calendar_events
+        WHERE case_id=%s AND event_type='hearing' AND start_at=%s LIMIT 1""", (case_id, when)).fetchone()
+    result["action_available"] = (case["status"] != "closed" and now <= when <= now + timedelta(days=7)
+                                  and not handled and not scheduled)
+    result["preparation"] = dict(
+        case_no=case["case_no"], court=case["court"], status=case["status"], hearing_at=when.isoformat(),
+        total_documents=counts["total"], ready_documents=counts["ready"],
+        tasks=[dict(id=str(t["id"]), title=t["title"], status=t["status"],
+                    due_date=t["due_date"].isoformat() if t["due_date"] else None) for t in tasks[:20]],
+        tasks_limited=len(tasks) > 20,
+        checklist=["Kayıtlı duruşma tarihini ve mahkemeyi asıl dosyadan kontrol edin.",
+                   "Belge özetini kaynak metinlerle karşılaştırın; okunamayan belgeleri ayrıca inceleyin.",
+                   "Açık görevlerin tamamlanma durumunu kontrol edin; bu liste hukuki yükümlülük tespiti değildir."],
+    )
+    return result
+
+
+@router.get("/cases/{case_id}/preparation")
+def case_preparation(case_id: UUID, response: Response,
+                     owner: Annotated[UUID, Depends(current_user_id)]):
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        with authenticated_database_connection(str(owner)) as db:
+            return preparation(db, case_id, datetime.now(ZONE))
+    except psycopg.Error as error:
+        raise HTTPException(503, "Duruşma hazırlık bilgileri alınamadı. Yeniden deneyin.") from error
+
+
+@router.get("/review")
+def review_proposal(response: Response, owner: Annotated[UUID, Depends(current_user_id)],
+                    key: Annotated[str, Query(min_length=1, max_length=240)]):
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        with authenticated_database_connection(str(owner)) as db:
+            return review(db, key, datetime.now(ZONE))
+    except psycopg.Error as error:
+        raise HTTPException(503, "Kaynak belgeler alınamadı. Yeniden deneyin.") from error
 
 
 def decide(db, owner, body, audit, now):

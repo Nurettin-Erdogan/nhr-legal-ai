@@ -1,7 +1,7 @@
 import { Info, ShieldAlert } from "lucide-react";
 import { SourceReader } from "@/components/SourceReader";
 import { groupCitations } from "@/lib/citation-groups";
-import { officialPortalUrl, verificationTag } from "@/lib/source-label";
+import { verificationTag } from "@/lib/source-label";
 import type { ConsultedSource } from "@/lib/consulted-sources";
 import {
   USER_DOCUMENT_NOTE,
@@ -21,8 +21,8 @@ export interface ChatCitation {
 }
 
 /**
- * Atıf rozeti (kural: `@/lib/source-label`, 2026-10-18): kullanıcı belgesinde "kullanıcı belgesi"; kararda resmî portalda açan
- * bağlantı. Uygulamada yalnız doğrulanmış kaynaklar kullanıldığından doğrulama rozeti yoktur.
+ * Atıf rozeti (kural: `@/lib/source-label`, 2026-10-18): yalnız kullanıcı belgesi "kullanıcı belgesi" diye ayrılır. Karar metni
+ * uygulama içinde okunur (kaynak penceresi); resmî portalda karar başına okunur adres olmadığından dış bağlantı verilmez.
  */
 function CitationBadge({ verification, url }: { verification: string; url?: string | null }) {
   const tag = verificationTag(verification);
@@ -32,18 +32,7 @@ function CitationBadge({ verification, url }: { verification: string; url?: stri
         {tag.label}
       </span>
     );
-  const portal = officialPortalUrl(url);
-  return portal ? (
-    <a
-      href={portal}
-      target="_blank"
-      rel="noreferrer"
-      className="text-[10px] font-medium text-primary underline underline-offset-2"
-      data-testid="citation-portal-link"
-    >
-      Resmî sitede aç ↗
-    </a>
-  ) : null;
+  return null;
 }
 
 export function CitationList({ citations }: { citations: ChatCitation[] }) {

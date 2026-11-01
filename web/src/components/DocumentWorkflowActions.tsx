@@ -8,7 +8,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { DOCUMENT_MODES, saveDocumentContext, workflowPath } from "@/lib/document-workflow";
+import {
+  DOCUMENT_MODES,
+  saveDocumentContext,
+  workflowPath,
+  type DocumentMode,
+} from "@/lib/document-workflow";
 import { useNavigate } from "@/lib/router-hooks";
 import { Sparkles, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
@@ -18,11 +23,13 @@ export function DocumentWorkflowActions({
   caseId,
   officeProjectId,
   disabled = false,
+  modes,
 }: {
   ids: string[];
   caseId?: string;
   officeProjectId?: string;
   disabled?: boolean;
+  modes?: DocumentMode[];
 }) {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -37,30 +44,32 @@ export function DocumentWorkflowActions({
       <DropdownMenuContent align="end">
         <DropdownMenuLabel>{ids.length} belge seçili</DropdownMenuLabel>
         <DropdownMenuSeparator />
-        {Object.entries(DOCUMENT_MODES).map(([mode, config]) => (
-          <DropdownMenuItem
-            key={mode}
-            disabled={ids.length > config.max}
-            onSelect={() => {
-              if (!user) return toast.error("Oturum gerekli.");
-              try {
-                const context = saveDocumentContext(
-                  user.id,
-                  ids,
-                  caseId,
-                  undefined,
-                  officeProjectId,
-                );
-                navigate(workflowPath(mode as keyof typeof DOCUMENT_MODES, context));
-              } catch (error) {
-                toast.error(error instanceof Error ? error.message : "Belge seçimi taşınamadı.");
-              }
-            }}
-          >
-            {config.label}
-            {ids.length > config.max ? ` (en fazla ${config.max})` : ""}
-          </DropdownMenuItem>
-        ))}
+        {Object.entries(DOCUMENT_MODES)
+          .filter(([mode]) => !modes || modes.includes(mode as DocumentMode))
+          .map(([mode, config]) => (
+            <DropdownMenuItem
+              key={mode}
+              disabled={ids.length > config.max}
+              onSelect={() => {
+                if (!user) return toast.error("Oturum gerekli.");
+                try {
+                  const context = saveDocumentContext(
+                    user.id,
+                    ids,
+                    caseId,
+                    undefined,
+                    officeProjectId,
+                  );
+                  navigate(workflowPath(mode as keyof typeof DOCUMENT_MODES, context));
+                } catch (error) {
+                  toast.error(error instanceof Error ? error.message : "Belge seçimi taşınamadı.");
+                }
+              }}
+            >
+              {config.label}
+              {ids.length > config.max ? ` (en fazla ${config.max})` : ""}
+            </DropdownMenuItem>
+          ))}
       </DropdownMenuContent>
     </DropdownMenu>
   );

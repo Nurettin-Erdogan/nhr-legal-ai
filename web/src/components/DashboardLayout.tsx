@@ -28,7 +28,7 @@ import {
   NAV_COLLAPSED_KEY,
   ACCOUNT_NAV,
   ADMIN_NAV,
-  NAV_GROUPS,
+  visibleNavGroups,
   activeNavPath,
   isNavGroupCollapsed,
   parseCollapsedGroups,
@@ -130,7 +130,7 @@ export const DashboardLayout = ({
   };
   const nav = (
     <nav className="space-y-4" aria-label="Ana menü">
-      {NAV_GROUPS.map((group) => {
+      {visibleNavGroups(isAdmin(roles)).map((group) => {
         const isActiveGroup = group.items.some((item) => item.to === activePath);
         const isCollapsed = isNavGroupCollapsed(group, collapsed.includes(group.title), activePath);
         return (
@@ -264,7 +264,7 @@ export const DashboardLayout = ({
             <h1 className="truncate text-base font-semibold">{title}</h1>
             {subtitle && <p className="truncate text-xs text-muted-foreground">{subtitle}</p>}
           </div>
-          <GlobalSearch />
+          <GlobalSearch includeCaseLaw={isAdmin(roles)} />
           {actions && (
             <div
               className="order-last flex w-full flex-wrap items-center gap-2 sm:order-none sm:w-auto sm:shrink-0 sm:flex-nowrap"

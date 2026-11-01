@@ -1,6 +1,6 @@
 /**
  * Büro AI ve belge uç noktalarının (`/api/office-ai/*`, `/api/public/*`) istemcisi.
- * Üretim yerel modelle FastAPI'de yapılır; bu dosya yalnız HTTP çağrılarını sarar.
+ * Üretim FastAPI'nin yapılandırılmış AI sağlayıcısıyla yapılır; bu dosya yalnız HTTP çağrılarını sarar.
  */
 import { currentUser, inMemoryAccessToken } from "@/lib/auth-api";
 import { db } from "@/lib/db";
