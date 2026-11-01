@@ -1,0 +1,56 @@
+# Ortam değişkenleri / gizli bilgiler
+.env
+.env.*
+!.env.example
+!web/.env.local.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.pytest-tmp/
+.pytest-tmp-*/
+# Yerel deneyler, test çıktıları ve geri dönüş arşivleri
+/.local/
+/.tmp-*/
+.mypy_cache/
+.ruff_cache/
+
+# Node / frontend
+node_modules/
+dist/
+build/
+.next/
+*.tsbuildinfo
+
+# .NET
+bin/
+obj/
+*.user
+*.suo
+
+# IDE / işletim sistemi
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Loglar
+*.log
+logs/
+
+# Yerel veri / yüklemeler
+uploads/
+data/
+
+# Docker/PostgreSQL yerel hacimleri
+postgres_data/
+
+# Yerel araç artıkları (IDE/ajan yapılandırması, kurulum silici, geçici betikler)
+/.abacusai/
+/.claude/settings.local.json
+/.mcp.json
+/unins000.*
+scripts/_tmp_*.py

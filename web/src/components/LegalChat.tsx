@@ -1,0 +1,638 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { toast } from "sonner";
+import {
+  Send,
+  Loader2,
+  Plus,
+  MessageSquare,
+  Trash2,
+  Scale,
+  User as UserIcon,
+  Sparkles,
+  ShieldAlert,
+} from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import { CollapsibleAnswer } from "@/components/CollapsibleAnswer";
+import remarkGfm from "remark-gfm";
+import { cn } from "@/lib/utils";
+import { Link } from "@/lib/router-compat";
+import { useSearchParam } from "@/lib/router-hooks";
+import { useAuth } from "@/components/AuthContext";
+import { SearchSummary } from "@/components/SearchSummary";
+import { type SearchSummaryData } from "@/lib/search-summary";
+import {
+  askAssistant,
+  deleteConversation,
+  getConversationDetail,
+  listConversations,
+  STAGE_LABELS,
+  type AnswerResult,
+  type ChatMessage,
+  type ConversationSummary,
+  type ConversationScope,
+} from "@/lib/ai-api";
+import { CitationList, ConsultedSourceList, DocumentScopeNotice } from "@/components/ChatCitations";
+import { parseConsultedSources } from "@/lib/consulted-sources";
+
+interface LegalChatProps {
+  title: string;
+  examples: string[];
+  intro: string;
+  caseId?: string;
+  projectId?: string;
+  officeProjectId?: string;
+  compact?: boolean;
+  onAnswered?: () => void;
+}
+
+export function LegalChat(props: LegalChatProps) {
+  const { user } = useAuth();
+  // Hesap veya sabit kapsam değiştiğinde geçmiş/içerik bir sonraki ekrana taşınmaz.
+  return (
+    <ScopedLegalChat
+      key={`${user?.id ?? "anonymous"}:${props.caseId ?? ""}:${props.projectId ?? ""}:${props.officeProjectId ?? ""}`}
+      {...props}
+    />
+  );
+}
+
+function ScopedLegalChat({
+  title,
+  examples,
+  intro,
+  caseId,
+  projectId,
+  officeProjectId,
+  compact = false,
+  onAnswered,
+}: LegalChatProps) {
+  const { user } = useAuth();
+  const ownerId = user?.id;
+  const baseScope: ConversationScope = {
+    caseId: caseId ?? null,
+    projectId: projectId ?? null,
+    officeProjectId: officeProjectId ?? null,
+    selectedDocumentIds: [],
+  };
+  const [activeScope, setActiveScope] = useState<ConversationScope>(baseScope);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [reasoningEffort, setReasoningEffort] = useState<"low" | "medium" | "high">("low");
+  const publicChat =
+    !activeScope.caseId &&
+    !activeScope.projectId &&
+    !activeScope.officeProjectId &&
+    !activeScope.selectedDocumentIds?.length;
+  // Üst çubuktaki genel aramadan gelen metin soru kutusuna yazılır; kullanıcı düzenleyip kendisi gönderir.
+  const urlQuestion = useSearchParam("q");
+  useEffect(() => {
+    if (urlQuestion.trim()) setInput(urlQuestion);
+  }, [urlQuestion]);
+  const [loading, setLoading] = useState(false);
+  const [opening, setOpening] = useState(false);
+  const openSequence = useRef(0);
+  const [stage, setStage] = useState("");
+  const [requestSummary, setRequestSummary] = useState<SearchSummaryData>();
+  const [requestError, setRequestError] = useState("");
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const alive = useRef(true);
+  const listSequence = useRef(0);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+
+  const refresh = useCallback(async () => {
+    if (!ownerId) return;
+    const sequence = ++listSequence.current;
+    try {
+      const rows = await listConversations({ caseId, projectId, officeProjectId });
+      if (alive.current && sequence === listSequence.current) setConversations(rows);
+    } catch {
+      if (alive.current && sequence === listSequence.current)
+        toast.error("Sohbet geçmişi yüklenemedi.");
+    }
+  }, [caseId, projectId, officeProjectId, ownerId]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [messages, loading]);
+
+  const open = async (id: string) => {
+    if (loading) return;
+    const sequence = ++openSequence.current;
+    setOpening(true);
+    setRequestSummary(undefined);
+    setRequestError("");
+    try {
+      const history = await getConversationDetail(id);
+      if (!alive.current || sequence !== openSequence.current) return;
+      if (
+        (caseId && history.scope.caseId !== caseId) ||
+        (projectId && history.scope.projectId !== projectId) ||
+        (officeProjectId && history.scope.officeProjectId !== officeProjectId)
+      ) {
+        throw new Error("Bu sohbet farklı bir dosyaya ait.");
+      }
+      setActiveId(id);
+      setActiveScope(history.scope);
+      setMessages(history.messages);
+    } catch (error) {
+      if (alive.current && sequence === openSequence.current)
+        toast.error(error instanceof Error ? error.message : "Sohbet açılamadı");
+    } finally {
+      if (alive.current && sequence === openSequence.current) setOpening(false);
+    }
+  };
+
+  const newChat = () => {
+    if (loading) return;
+    ++openSequence.current;
+    setOpening(false);
+    setRequestSummary(undefined);
+    setRequestError("");
+    setActiveId(null);
+    setActiveScope(baseScope);
+    setMessages([]);
+    setInput("");
+  };
+
+  const remove = async (id: string) => {
+    if (loading) return;
+    try {
+      await deleteConversation(id);
+    } catch {
+      toast.error("Silinemedi");
+      return;
+    }
+    if (!alive.current) return;
+    if (activeId === id) newChat();
+    refresh();
+  };
+
+  const send = async (text?: string) => {
+    const question = (text ?? input).trim();
+    if (!question || loading || opening) return;
+    setMessages((p) => [...p, { role: "user", content: question }]);
+    setInput("");
+    setLoading(true);
+    setRequestSummary(undefined);
+    setRequestError("");
+    setStage("Yanıt hazırlanıyor…");
+    const asMessage = (result: AnswerResult): ChatMessage => ({
+      id: result.message_id ?? undefined,
+      role: "assistant",
+      content: result.answer,
+      citations: result.citations,
+      consultedSources: parseConsultedSources(result.consulted_sources),
+      grounded: result.grounded,
+      answerKind: result.answer_kind,
+      unverifiedMarkers: result.unverified_markers,
+      searchSummary: result.search_summary,
+      documentScope: result.document_scope ?? undefined,
+      interpretedQuestion:
+        typeof result.interpreted_question === "string" ? result.interpreted_question : undefined,
+      summary: Array.isArray(result.summary) ? result.summary : undefined,
+      verificationNote:
+        typeof result.verification_note === "string" && result.verification_note
+          ? result.verification_note
+          : undefined,
+    });
+    // Özet beklenirken doğrulanmış cevap önizleme olarak gösterilir; kalıcı cevap gelince onun yerini alır.
+    let previewShown = false;
+    try {
+      const result = await askAssistant(question, {
+        reasoningEffort: publicChat ? reasoningEffort : undefined,
+        conversationId: activeId,
+        ...activeScope,
+        onStage: (s) => {
+          if (alive.current) setStage(STAGE_LABELS[s] ?? "");
+        },
+        onSearchSummary: (summary) => {
+          if (alive.current) setRequestSummary(summary);
+        },
+        onPreview: (preview) => {
+          if (!alive.current) return;
+          setRequestSummary(undefined);
+          // Doğrulanan bölümler geldikçe önizleme yerinde güncellenir; kalıcı cevap gelince onun yerini alır.
+          if (previewShown) setMessages((p) => [...p.slice(0, -1), asMessage(preview)]);
+          else {
+            previewShown = true;
+            setMessages((p) => [...p, asMessage(preview)]);
+          }
+        },
+      });
+      if (!alive.current) return;
+      setMessages((p) => [...(previewShown ? p.slice(0, -1) : p), asMessage(result)]);
+      setRequestSummary(undefined);
+      if (result.conversation_id) setActiveId(result.conversation_id);
+      void refresh();
+      onAnswered?.();
+    } catch (e) {
+      if (!alive.current) return;
+      const error = e instanceof Error ? e.message : "Hata oluştu";
+      setRequestError(error);
+      toast.error(error);
+    } finally {
+      if (alive.current) {
+        setLoading(false);
+        setStage("");
+      }
+    }
+  };
+
+  return (
+    <div
+      className={cn(
+        "grid min-h-0 min-w-0 gap-4",
+        compact
+          ? "grid-cols-1 grid-rows-1 h-[600px]"
+          : "grid-cols-1 grid-rows-[auto_minmax(0,1fr)] lg:grid-cols-[280px_minmax(0,1fr)] lg:grid-rows-1 h-[calc(100dvh-140px)] lg:h-[calc(100dvh-220px)]",
+      )}
+      aria-label={title}
+      data-testid="chat-layout"
+    >
+      {!compact && (
+        <div
+          className="min-h-0 min-w-0 max-h-40 lg:max-h-none overflow-hidden rounded-2xl bg-card border border-border p-3 flex flex-col"
+          data-testid="chat-history-panel"
+        >
+          <Button onClick={newChat} variant="elite" size="sm" className="mb-3 shrink-0">
+            <Plus className="h-4 w-4" /> Yeni Sohbet
+          </Button>
+          <ScrollArea className="min-h-0 flex-1" data-testid="chat-history-list">
+            <div className="space-y-1">
+              {conversations.map((c) => (
+                <div
+                  key={c.id}
+                  onClick={() => open(c.id)}
+                  className={cn(
+                    "group flex items-center gap-2 px-2 py-2 rounded-md cursor-pointer hover:bg-muted text-sm",
+                    activeId === c.id && "bg-muted",
+                  )}
+                >
+                  <MessageSquare className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span className="truncate flex-1">{c.title ?? "Sohbet"}</span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      remove(c.id);
+                    }}
+                    className="opacity-0 group-hover:opacity-100 transition"
+                    aria-label="Sohbeti sil"
+                  >
+                    <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                  </button>
+                </div>
+              ))}
+              {conversations.length === 0 && (
+                <p className="text-xs text-muted-foreground p-2">Henüz sohbet yok</p>
+              )}
+            </div>
+          </ScrollArea>
+        </div>
+      )}
+
+      <div
+        className="min-h-0 min-w-0 rounded-2xl bg-card border border-border flex flex-col overflow-hidden"
+        data-testid="chat-main"
+      >
+        {compact && (
+          <div className="shrink-0 border-b border-border p-3 flex flex-wrap gap-2 items-center">
+            <label className="text-xs flex-1 min-w-48">
+              {officeProjectId ? "Bu projenin sohbetleri" : "Bu davanın sohbetleri"} (son 50)
+              <select
+                aria-label="Kayıtlı sohbeti aç"
+                value={activeId ?? ""}
+                disabled={loading || opening}
+                onChange={(event) => {
+                  if (event.target.value) void open(event.target.value);
+                  else newChat();
+                }}
+                className="block w-full mt-1 rounded-md border border-border bg-background p-2 text-sm"
+              >
+                <option value="">Yeni sohbet</option>
+                {conversations.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.title ?? "Sohbet"}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <Button variant="outline" size="sm" onClick={newChat} disabled={loading || opening}>
+              <Plus className="h-4 w-4" />
+              Yeni
+            </Button>
+            {activeId && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void remove(activeId)}
+                disabled={loading || opening}
+              >
+                <Trash2 className="h-4 w-4" />
+                Sohbeti sil
+              </Button>
+            )}
+          </div>
+        )}
+        {Boolean(
+          activeScope.caseId ||
+          activeScope.officeProjectId ||
+          activeScope.projectId ||
+          activeScope.selectedDocumentIds?.length,
+        ) && (
+          <div
+            className="shrink-0 border-b border-border px-4 py-2 text-xs text-muted-foreground"
+            role="status"
+          >
+            {activeScope.officeProjectId
+              ? "Proje kapsamlı sohbet"
+              : activeScope.caseId
+                ? "Dava kapsamlı sohbet"
+                : activeScope.projectId
+                  ? "Araştırma projesi sohbeti"
+                  : "Belge seçimli sohbet"}
+            {activeScope.selectedDocumentIds?.length
+              ? ` · ${activeScope.selectedDocumentIds.length} seçili belge`
+              : ""}
+            {activeScope.caseId && (
+              <Link className="ml-3 underline" to={`/dashboard/cases/${activeScope.caseId}`}>
+                Davayı aç
+              </Link>
+            )}
+            {activeScope.officeProjectId && (
+              <Link
+                className="ml-3 underline"
+                to={`/dashboard/projects/${activeScope.officeProjectId}`}
+              >
+                Projeyi aç
+              </Link>
+            )}
+          </div>
+        )}
+        <div
+          ref={scrollRef}
+          className="min-h-0 flex-1 overflow-y-auto p-6"
+          data-testid="chat-messages"
+        >
+          {messages.length === 0 ? (
+            <div className="mx-auto flex min-h-full max-w-2xl flex-col items-center justify-center text-center">
+              <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary ring-1 ring-primary/20">
+                <Scale className="h-7 w-7" />
+              </div>
+              <h3 className="mb-2 text-2xl font-semibold tracking-tight">
+                Size nasıl yardımcı olabilirim?
+              </h3>
+              <p className="mb-6 max-w-md text-sm text-muted-foreground">
+                {intro ||
+                  "Cevaplar yalnız doğrulanmış kanun ve karar kaynaklarına dayanır; kaynak bulunamazsa bunu açıkça söylerim."}
+              </p>
+              <div className="grid w-full gap-2 sm:grid-cols-2">
+                {examples.map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => send(s)}
+                    className="group flex items-start gap-2 rounded-xl border border-border bg-background p-3.5 text-left text-sm shadow-sm transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md"
+                  >
+                    <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-primary/70" />
+                    <span className="flex-1">{s}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-6 max-w-3xl mx-auto">
+              {messages.map((m, i) => (
+                <div
+                  key={m.id ?? i}
+                  className={cn("flex gap-3", m.role === "user" && "flex-row-reverse")}
+                >
+                  <div
+                    className={cn(
+                      "h-8 w-8 rounded-full flex items-center justify-center shrink-0",
+                      m.role === "user"
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-primary/10 text-primary ring-1 ring-primary/20",
+                    )}
+                  >
+                    {m.role === "user" ? (
+                      <UserIcon className="h-4 w-4" />
+                    ) : (
+                      <Scale className="h-4 w-4" />
+                    )}
+                  </div>
+                  <div
+                    className={cn(
+                      "max-w-[85%] rounded-2xl px-4 py-3",
+                      m.role === "user"
+                        ? "bg-primary text-primary-foreground shadow-sm"
+                        : "border border-border/60 bg-muted/40",
+                    )}
+                  >
+                    {m.role === "assistant" && (m.summary?.length ?? 0) > 0 ? (
+                      // Önce sorunun doğrudan cevabı, sonra koşullar; resmî madde metni açılır "Dayanak" bölümünde (2026-10-18:
+                      // kullanıcı cevabın kanun metninin satır satır kopyası olmasından yakındı). Her cümle sunucuda kaynakla
+                      // denetlendi; hiçbiri geçmezse özet gelmez ve cevap eskisi gibi madde metnidir.
+                      <>
+                        <div className="space-y-2 text-sm" data-testid="answer-summary">
+                          <p className="font-medium leading-relaxed">{m.summary?.[0]}</p>
+                          {(m.summary?.length ?? 0) > 1 && (
+                            <ul className="list-disc space-y-1 pl-5">
+                              {m.summary?.slice(1).map((item) => (
+                                <li key={item}>{item}</li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      </>
+                    ) : (
+                      <div
+                        className={cn(
+                          "prose prose-sm max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+                          m.role === "user" ? "prose-invert" : "dark:prose-invert",
+                        )}
+                      >
+                        <CollapsibleAnswer length={m.role === "assistant" ? m.content.length : 0}>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                        </CollapsibleAnswer>
+                      </div>
+                    )}
+                    {m.role === "assistant" && m.verificationNote && (
+                      <p
+                        className="mt-2 text-xs text-muted-foreground border-l-2 border-border pl-2"
+                        data-testid="verification-note"
+                      >
+                        {m.verificationNote}
+                      </p>
+                    )}
+                    {m.role === "assistant" && m.answerKind === "general_information" && (
+                      <p
+                        className="mt-2 text-xs text-muted-foreground"
+                        data-testid="general-information-label"
+                        title="Kaynakla doğrulanmış hukuki görüş değildir"
+                      >
+                        Genel bilgi
+                      </p>
+                    )}
+                    {m.role === "assistant" &&
+                      m.grounded === false &&
+                      (!m.answerKind ||
+                        m.answerKind === "legal" ||
+                        (m.citations?.length ?? 0) > 0 ||
+                        (m.unverifiedMarkers?.length ?? 0) > 0) && (
+                        <p className="mt-2 text-xs flex items-center gap-1 text-amber-700 dark:text-amber-400">
+                          <ShieldAlert className="h-3.5 w-3.5" /> Bu cevap getirilen kaynaklarla
+                          doğrulanamadı.
+                        </p>
+                      )}
+                    {m.role === "assistant" && (m.unverifiedMarkers?.length ?? 0) > 0 && (
+                      <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+                        Doğrulanamayan atıflar: {m.unverifiedMarkers?.join(", ")}
+                      </p>
+                    )}
+                    {m.role === "assistant" && m.documentScope && (
+                      <DocumentScopeNotice scope={m.documentScope} />
+                    )}
+                    {m.role === "assistant" &&
+                      Boolean(
+                        (m.citations?.length ?? 0) > 0 ||
+                        (m.consultedSources?.length ?? 0) > 0 ||
+                        (m.summary?.length ?? 0) > 0 ||
+                        ((!m.answerKind ||
+                          m.answerKind === "legal" ||
+                          m.answerKind === "insufficient_sources") &&
+                          m.searchSummary),
+                      ) && (
+                        <details className="mt-3 text-xs" data-testid="answer-details">
+                          <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+                            Kaynaklar
+                          </summary>
+                          {m.interpretedQuestion && (
+                            <p
+                              className="mt-2 text-muted-foreground"
+                              data-testid="interpreted-question"
+                            >
+                              Aranan soru: {m.interpretedQuestion}
+                            </p>
+                          )}
+                          {(m.summary?.length ?? 0) > 0 && (
+                            <div className="mt-3" data-testid="answer-basis">
+                              <p className="font-medium">Dayanak metni</p>
+                              <div className="prose prose-sm dark:prose-invert mt-2 max-w-none">
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                  {m.content}
+                                </ReactMarkdown>
+                              </div>
+                            </div>
+                          )}
+                          {m.citations && <CitationList citations={m.citations} />}
+                          {m.consultedSources && (
+                            <ConsultedSourceList sources={m.consultedSources} collapsible={false} />
+                          )}
+                          {m.searchSummary && (
+                            <SearchSummary
+                              compact
+                              summary={m.searchSummary}
+                              citedCount={
+                                new Set((m.citations ?? []).map((c) => c.source_id ?? c.reference))
+                                  .size
+                              }
+                            />
+                          )}
+                        </details>
+                      )}
+                  </div>
+                </div>
+              ))}
+              {loading && (
+                <div className="flex gap-3">
+                  <div className="h-8 w-8 rounded-full bg-primary/10 text-primary ring-1 ring-primary/20 flex items-center justify-center">
+                    <Scale className="h-4 w-4" />
+                  </div>
+                  <div className="border border-border/60 bg-muted/40 rounded-2xl px-4 py-3 flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" /> {stage || "Yazıyor…"}
+                  </div>
+                </div>
+              )}
+              {requestError && (
+                <p role="alert" className="text-sm text-destructive">
+                  {requestError}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="shrink-0 border-t border-border p-4" data-testid="chat-composer">
+          {publicChat && (
+            <div className="max-w-3xl mx-auto mb-2 flex flex-wrap items-center gap-2 text-xs">
+              <label htmlFor="chat-reasoning-effort">Düşünme düzeyi</label>
+              <select
+                id="chat-reasoning-effort"
+                value={reasoningEffort}
+                disabled={loading || opening}
+                onChange={(e) => setReasoningEffort(e.target.value as "low" | "medium" | "high")}
+                aria-describedby="chat-reasoning-help"
+                className="rounded-full border border-border bg-background px-3 py-1 text-foreground shadow-sm"
+              >
+                <option value="low">Hızlı</option>
+                <option value="medium">Dengeli</option>
+                <option value="high">Yüksek</option>
+              </select>
+              <span id="chat-reasoning-help" className="text-muted-foreground">
+                {reasoningEffort === "high"
+                  ? "Daha fazla düşünme; süre ve token tüketimi artabilir."
+                  : reasoningEffort === "medium"
+                    ? "Hız ve düşünme dengesi."
+                    : "Daha az düşünme; hızlı yanıt önceliği."}
+              </span>
+            </div>
+          )}
+          <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-2xl border border-border bg-background p-2 shadow-sm transition focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/15">
+            <Textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  send();
+                }
+              }}
+              placeholder="Sorunuzu yazın…"
+              rows={2}
+              className="resize-none border-0 bg-transparent shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+              disabled={loading}
+            />
+            <Button
+              onClick={() => send()}
+              disabled={loading || opening || !input.trim()}
+              variant="elite"
+              size="lg"
+            >
+              {loading ? (
+                <Loader2 className="h-5 w-5 animate-spin" />
+              ) : (
+                <Send className="h-5 w-5" />
+              )}
+            </Button>
+          </div>
+          <p className="mx-auto mt-2 max-w-3xl text-center text-[11px] text-muted-foreground">
+            Enter gönderir · Shift+Enter yeni satır. Cevaplar hukuki görüş yerine geçmez; atıfları
+            kontrol edin.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}

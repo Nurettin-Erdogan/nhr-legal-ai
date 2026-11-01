@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "JURISAI - UYAP Dosya Aktarımı",
+  "version": "1.6.0",
+  "description": "UYAP portalındaki belgeleri tek tıkla JURISAI hesabınıza aktarır.",
+  "permissions": ["storage", "activeTab", "scripting", "tabs", "webNavigation"],
+  "host_permissions": ["https://*.uyap.gov.tr/*", "http://localhost:8766/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*.uyap.gov.tr/*"],
+      "js": ["sniffer.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://*.uyap.gov.tr/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}

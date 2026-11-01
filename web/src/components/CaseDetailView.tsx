@@ -1,0 +1,418 @@
+import { useState, type ReactNode } from "react";
+import {
+  caseStatusLabels,
+  displayCaseDate,
+  type CaseDetailData,
+  type Section,
+} from "../lib/case-detail";
+import { daysUntil, relativeDay } from "../lib/home-summary";
+
+const tabs = [
+  "Özet",
+  "Evraklar",
+  "UYAP Bilgileri",
+  "İcra Özeti",
+  "Süreler",
+  "Belgelerle Sor",
+  "Belge Kıyasla",
+  "Dosya Özeti",
+  "Notlar",
+  "Görevler",
+  "Takvim",
+  "Aramalar",
+] as const;
+type Tab = (typeof tabs)[number];
+const actionClass =
+  "rounded-md border border-border px-3 py-2 text-sm hover:bg-secondary disabled:opacity-50";
+
+function Records<T>({
+  section,
+  children,
+}: {
+  section: Section<T>;
+  children: (row: T) => ReactNode;
+}) {
+  if (section.error)
+    return (
+      <p role="alert" className="text-sm text-destructive">
+        {section.error}
+      </p>
+    );
+  if (!section.rows.length)
+    return <p className="text-sm text-muted-foreground">Bu davaya bağlı kayıt bulunmuyor.</p>;
+  return (
+    <>
+      {section.hasMore && (
+        <p className="text-sm text-muted-foreground mb-3">
+          Son 50 kayıt gösteriliyor. Diğer kayıtlar ilgili modülden görüntülenebilir.
+        </p>
+      )}
+      <ul className="divide-y divide-border">{section.rows.map(children)}</ul>
+    </>
+  );
+}
+
+export function CaseDetailView({
+  data,
+  onDownload,
+  downloading,
+  downloadError,
+  documentActions,
+  documentAsk,
+  documentCompare,
+  caseSummary,
+  uyapDetail,
+  executionBreakdown,
+  deadlines,
+  documentTrash,
+  onTrash,
+  trashing,
+  initialTab = "Özet",
+  notesEditor,
+  taskComposer,
+  renderTaskActions,
+  renderSelectedActions,
+  draftAction,
+}: {
+  data: CaseDetailData;
+  onDownload: (id: string) => void;
+  downloading?: string;
+  downloadError?: string;
+  documentActions?: ReactNode;
+  /** "Belgelerle Sor" sekmesinin içeriği (dava belgeleriyle sohbet). */
+  documentAsk?: ReactNode;
+  /** "Belge Kıyasla" sekmesinin içeriği (iki belgenin metin farkı). */
+  documentCompare?: ReactNode;
+  /** "Dosya Özeti" sekmesinin içeriği (olgu tablosu ve belge özetleri). */
+  caseSummary?: ReactNode;
+  /** "UYAP Bilgileri" sekmesinin içeriği (taraflar, safahat, dosya hesabı, tahsilat/reddiyat). */
+  uyapDetail?: ReactNode;
+  /** "İcra Özeti" sekmesinin içeriği (haciz ihbarnamesi cevapları ve makbuz dökümü); yalnız icra dosyasında verilir. */
+  executionBreakdown?: ReactNode;
+  /** "Süreler" sekmesinin içeriği (yasal süre hesabı ve takvime ekleme). */
+  deadlines?: ReactNode;
+  /** Evraklar sekmesinin altındaki çöp kutusu bölümü. */
+  documentTrash?: ReactNode;
+  /** Belgeyi çöp kutusuna taşır (geri alınabilir). */
+  onTrash?: (id: string) => void;
+  trashing?: string;
+  initialTab?: Tab;
+  /** "Notlar" sekmesinde düz metin yerine gösterilen düzenleyici (not ekleme/değiştirme). */
+  notesEditor?: ReactNode;
+  /** "Görevler" sekmesinin üstündeki hızlı görev ekleme formu. */
+  taskComposer?: ReactNode;
+  /** Her görev satırının altındaki işlemler (tamamla / sil). */
+  renderTaskActions?: (task: { id: string; status: string; title: string }) => ReactNode;
+  renderSelectedActions?: (ids: string[]) => ReactNode;
+  draftAction?: ReactNode;
+}) {
+  const [tab, setTab] = useState<Tab>(initialTab);
+  const [selectedDocuments, setSelectedDocuments] = useState<string[]>([]);
+  const selectedIds = selectedDocuments.filter((id) =>
+    data.documents.rows.some((document) => document.id === id),
+  );
+  const c = data.record;
+  // Telefon/çağrı hizmeti bağlı değilken "Aramalar" sekmesi boş bir söz olur: yalnız gerçek arama kaydı varsa gösterilir.
+  const visibleTabs = tabs.filter(
+    (name) =>
+      (name !== "Aramalar" || data.calls.rows.length > 0 || tab === "Aramalar") &&
+      // "İcra Özeti" yalnız icra dairesi/mahkemesi dosyasında anlamlıdır; başka davada boş bir sekme gösterilmez.
+      (name !== "İcra Özeti" || Boolean(executionBreakdown)),
+  );
+  const hearingDays = daysUntil(c.next_hearing);
+  const fields = [
+    ["Dosya numarası", c.case_no],
+    ["Esas numarası", c.esas_no],
+    ["Mahkeme", c.court],
+    ["Dava türü", c.case_type],
+    ["Müvekkil", data.clientError ? "Yüklenemedi" : data.clientName],
+    ["Karşı taraf", c.opponent],
+    ["Durum", caseStatusLabels[c.status] ?? c.status],
+    ["Açılış tarihi", displayCaseDate(c.opened_at, true)],
+    ["Kayıtlı duruşma tarihi", displayCaseDate(c.next_hearing)],
+    ["Son kayıt güncellemesi", displayCaseDate(c.updated_at)],
+  ];
+  return (
+    <section className="rounded-2xl bg-card border border-border p-6">
+      <nav
+        aria-label="Dava bölümleri"
+        className="flex flex-wrap gap-2 border-b border-border pb-4 mb-5"
+      >
+        {visibleTabs.map((name) => (
+          <button
+            type="button"
+            key={name}
+            aria-pressed={tab === name}
+            className={
+              tab === name
+                ? // Seçili sekme fare üzerindeyken de kendi rengini korur (hover:bg-secondary yazıyı görünmez yapıyordu).
+                  `${actionClass.replace("hover:bg-secondary", "")} bg-primary text-primary-foreground`
+                : `${actionClass} text-muted-foreground`
+            }
+            onClick={() => setTab(name)}
+          >
+            {name}
+          </button>
+        ))}
+      </nav>
+      <h2 className="text-lg font-semibold mb-4">{tab}</h2>
+      {tab === "Özet" && (
+        <>
+          {data.clientError && (
+            <p role="alert" className="text-destructive text-sm mb-3">
+              Müvekkil: {data.clientError}
+            </p>
+          )}
+          <div className="mb-6 flex flex-wrap items-center gap-2" data-testid="case-summary-strip">
+            <span
+              className={`rounded-full px-3 py-1 text-xs font-medium ${
+                c.status === "active"
+                  ? "bg-success/10 text-success"
+                  : c.status === "pending"
+                    ? "bg-warning/10 text-warning"
+                    : "bg-muted text-muted-foreground"
+              }`}
+            >
+              {caseStatusLabels[c.status] ?? c.status}
+            </span>
+            {hearingDays !== null && c.status !== "closed" && (
+              <span
+                className={`rounded-full px-3 py-1 text-xs font-medium ${
+                  hearingDays < 0
+                    ? "bg-destructive/10 text-destructive"
+                    : hearingDays <= 2
+                      ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
+                      : "bg-muted text-foreground"
+                }`}
+              >
+                Duruşma:{" "}
+                {new Date(c.next_hearing as string).toLocaleString("tr-TR", {
+                  dateStyle: "medium",
+                  timeStyle: "short",
+                })}{" "}
+                · {hearingDays < 0 ? `${-hearingDays} gün önce geçti` : relativeDay(hearingDays)}
+              </span>
+            )}
+            <span className="rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground">
+              {data.documents.rows.length}
+              {data.documents.hasMore ? "+" : ""} evrak
+            </span>
+            <span className="rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground">
+              {data.tasks.rows.filter((task) => task.status !== "done").length} açık görev
+            </span>
+          </div>
+          <dl className="grid sm:grid-cols-2 gap-5">
+            {fields.map(([label, value]) => (
+              <div key={label}>
+                <dt className="text-xs text-muted-foreground">{label}</dt>
+                <dd
+                  className={`text-sm mt-1 break-words ${value ? "" : "text-muted-foreground/70"}`}
+                >
+                  {value || "Belirtilmemiş"}
+                </dd>
+              </div>
+            ))}
+          </dl>
+          <p className="mt-6 text-sm text-muted-foreground">
+            Bu bilgiler kayıtlı dava verileridir; AI değerlendirmesi veya dava sonucu tahmini
+            değildir.
+          </p>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Notlar sekmesinden not ekleyebilir, Görevler sekmesinden bu davaya görev açabilirsiniz.
+            Diğer dava bilgileri dava listesindeki Düzenle işlemiyle güncellenir.
+          </p>
+        </>
+      )}
+      {tab === "UYAP Bilgileri" &&
+        (uyapDetail ?? (
+          <p className="text-sm text-muted-foreground">
+            UYAP dosya bilgileri bu görünümde kullanılamıyor.
+          </p>
+        ))}
+      {tab === "İcra Özeti" && executionBreakdown}
+      {tab === "Süreler" &&
+        (deadlines ?? (
+          <p className="text-sm text-muted-foreground">Süre hesabı bu görünümde kullanılamıyor.</p>
+        ))}
+      {tab === "Belgelerle Sor" &&
+        (documentAsk ?? (
+          <p className="text-sm text-muted-foreground">
+            Belgelerle sohbet bu görünümde kullanılamıyor.
+          </p>
+        ))}
+      {tab === "Belge Kıyasla" &&
+        (documentCompare ?? (
+          <p className="text-sm text-muted-foreground">
+            Belge karşılaştırma bu görünümde kullanılamıyor.
+          </p>
+        ))}
+      {tab === "Dosya Özeti" &&
+        (caseSummary ?? (
+          <p className="text-sm text-muted-foreground">Dosya özeti bu görünümde kullanılamıyor.</p>
+        ))}
+      {tab === "Notlar" &&
+        (notesEditor ?? (
+          <p className="whitespace-pre-wrap break-words text-sm">
+            {c.notes || "Bu dava için kayıtlı not bulunmuyor."}
+          </p>
+        ))}
+      {tab === "Evraklar" && (
+        <>
+          {documentActions}
+          <div className="mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-secondary/20 p-3">
+            <button type="button" className={actionClass} onClick={() => setTab("Belgelerle Sor")}>
+              Belgelerle sor
+            </button>
+            <button type="button" className={actionClass} onClick={() => setTab("Dosya Özeti")}>
+              Dosya özeti
+            </button>
+            <button type="button" className={actionClass} onClick={() => setTab("Belge Kıyasla")}>
+              Belge kıyasla
+            </button>
+            {draftAction}
+            {selectedIds.length > 0 && (
+              <>
+                <span className="text-xs text-muted-foreground">{selectedIds.length} seçili</span>
+                {renderSelectedActions?.(selectedIds)}
+                <button
+                  type="button"
+                  className={actionClass}
+                  onClick={() => setSelectedDocuments([])}
+                >
+                  Seçimi kaldır
+                </button>
+              </>
+            )}
+          </div>
+          <p className="text-sm text-muted-foreground mb-3">
+            Yalnız bu davaya bağlanmış evraklar listelenir; bağlantısız UYAP belgeleri burada
+            görünmez.
+          </p>
+          {downloadError && (
+            <p role="alert" className="text-sm text-destructive mb-3">
+              {downloadError}
+            </p>
+          )}
+          <Records section={data.documents}>
+            {(d) => (
+              <li key={d.id} className="py-3 flex items-center justify-between gap-3">
+                <input
+                  type="checkbox"
+                  aria-label={`Seç: ${d.file_name}`}
+                  checked={selectedIds.includes(d.id)}
+                  onChange={(event) =>
+                    setSelectedDocuments((ids) =>
+                      event.target.checked ? [...ids, d.id] : ids.filter((id) => id !== d.id),
+                    )
+                  }
+                  className="h-4 w-4 shrink-0 accent-primary"
+                />
+                <div className="min-w-0">
+                  <p className="text-sm break-words">{d.file_name}</p>
+                  {d.uyap_path && (
+                    <p
+                      className="text-xs text-muted-foreground break-words"
+                      title="UYAP klasör yolu"
+                    >
+                      📁 {d.uyap_path}
+                    </p>
+                  )}
+                  <p className="text-xs text-muted-foreground">
+                    {d.doc_type || "Evrak"} · {displayCaseDate(d.created_at)}
+                  </p>
+                </div>
+                <div className="flex shrink-0 gap-2">
+                  <button
+                    type="button"
+                    className={actionClass}
+                    disabled={!!downloading}
+                    onClick={() => onDownload(d.id)}
+                  >
+                    {downloading === d.id ? "İndiriliyor…" : "İndir"}
+                  </button>
+                  {onTrash && (
+                    <button
+                      type="button"
+                      className={actionClass}
+                      disabled={!!trashing}
+                      onClick={() => onTrash(d.id)}
+                    >
+                      {trashing === d.id ? "Taşınıyor…" : "Çöpe taşı"}
+                    </button>
+                  )}
+                </div>
+              </li>
+            )}
+          </Records>
+          {documentTrash}
+        </>
+      )}
+      {tab === "Görevler" && taskComposer}
+      {tab === "Görevler" && (
+        <Records section={data.tasks}>
+          {(t) => (
+            <li key={t.id} className="py-3 text-sm">
+              <p className={t.status === "done" ? "text-muted-foreground line-through" : ""}>
+                {t.title}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {(
+                  { todo: "Yapılacak", in_progress: "Sürüyor", done: "Tamamlandı" } as Record<
+                    string,
+                    string
+                  >
+                )[t.status] ?? t.status}{" "}
+                · Son tarih: {displayCaseDate(t.due_date)}
+              </p>
+              {renderTaskActions?.({ id: t.id, status: t.status, title: t.title })}
+            </li>
+          )}
+        </Records>
+      )}
+      {tab === "Takvim" && c.next_hearing && (
+        <div
+          className="mb-4 rounded-lg border border-border bg-secondary/40 p-3 text-sm"
+          data-testid="case-hearing"
+        >
+          <p className="font-medium">Duruşma</p>
+          <p className="text-xs text-muted-foreground">
+            {displayCaseDate(c.next_hearing)} · {c.court || "Mahkeme belirtilmemiş"} · dava
+            kaydındaki "Sonraki Duruşma" tarihi
+          </p>
+        </div>
+      )}
+      {tab === "Takvim" &&
+        (!c.next_hearing || data.events.rows.length > 0 || data.events.error) && (
+          <Records section={data.events}>
+            {(e) => (
+              <li key={e.id} className="py-3 text-sm">
+                <p>{e.title}</p>
+                <p className="text-xs text-muted-foreground">
+                  {displayCaseDate(e.start_at)} · {e.location || "Yer belirtilmemiş"}
+                </p>
+              </li>
+            )}
+          </Records>
+        )}
+      {tab === "Aramalar" && (
+        <Records section={data.calls}>
+          {(a) => (
+            <li key={a.id} className="py-3 text-sm">
+              <p>
+                {a.direction === "inbound"
+                  ? "Gelen arama"
+                  : a.direction === "outbound"
+                    ? "Giden arama"
+                    : a.direction}{" "}
+                · {a.status}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {displayCaseDate(a.started_at)} · {a.duration_sec} saniye
+              </p>
+            </li>
+          )}
+        </Records>
+      )}
+    </section>
+  );
+}

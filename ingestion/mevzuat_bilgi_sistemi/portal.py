@@ -1,0 +1,318 @@
+"""Mevzuat Bilgi Sistemi'nin resmî public arama akışıyla künye doğrulama.
+
+Site arayüzünün yayımladığı ``GenelArama`` JavaScript'i
+``POST /anasayfa/MevzuatDatatable`` isteğini kullanır. Bu istemci yalnız bu
+gözlemlenmiş sözleşmeyi ve sonuçtaki resmî detay sayfasını kullanır; tahminî
+bir API yolu üretmez.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import re
+import time
+from dataclasses import asdict, dataclass
+from datetime import UTC, date, datetime
+from html.parser import HTMLParser
+from http.client import IncompleteRead
+from typing import Any, Mapping
+from urllib.error import HTTPError, URLError
+from urllib.parse import urljoin, urlparse
+from urllib.request import Request, build_opener
+
+from ingestion.http import is_retryable_status, retry_wait_seconds
+from ingestion.text import html_to_text, normalize_text, tr_casefold
+
+BASE_URL = "https://www.mevzuat.gov.tr/"
+SEARCH_PATH = "anasayfa/MevzuatDatatable"
+_ALLOWED_HOSTS = {"mevzuat.gov.tr", "www.mevzuat.gov.tr"}
+
+
+class MbsError(RuntimeError):
+    """MBS yanıtı erişilemez veya doğrulanmış sözleşmeye uymuyor."""
+
+
+@dataclass(frozen=True, slots=True)
+class MbsDocument:
+    law_no: str
+    law_name: str
+    legislation_type: int
+    series: str
+    acceptance_date: date | None
+    official_gazette_date: date | None
+    official_gazette_no: str | None
+    detail_url: str
+    pdf_url: str | None
+    doc_url: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class MbsVerification:
+    verified: bool
+    law_no: str
+    law_name: str
+    detail_url: str | None
+    pdf_url: str | None
+    doc_url: str | None
+    requested_gazette_date: str | None
+    observed_gazette_date: str | None
+    requested_gazette_no: str | None
+    observed_gazette_no: str | None
+    title_matches: bool
+    verified_at: str
+    detail: str
+
+    def to_json(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def _parse_date(value: Any) -> date | None:
+    text = str(value or "").strip().split("T", 1)[0]
+    for pattern in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(text, pattern).date()
+        except ValueError:
+            continue
+    return None
+
+
+_NON_ALNUM = re.compile(r"[^0-9a-zçğıöşü]+")
+
+
+def _title_key(value: str) -> str:
+    """Başlık karşılaştırması için noktalama/boşluk farkını yutan anahtar."""
+    return _NON_ALNUM.sub("", tr_casefold(normalize_text(value or "")))
+
+
+def _official_url(value: Any, *, base_url: str, expected_path: str | None = None) -> str:
+    url = urljoin(base_url, str(value or "").strip())
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname not in _ALLOWED_HOSTS:
+        raise MbsError("MBS resmî olmayan bir URL döndürdü")
+    if expected_path and not parsed.path.casefold().startswith(expected_path.casefold()):
+        raise MbsError("MBS beklenmeyen bir resmî URL yolu döndürdü")
+    return url
+
+
+class _DocumentLinkParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.links: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.casefold() != "a":
+            return
+        href = dict(attrs).get("href")
+        if href:
+            self.links.append(href)
+
+
+class MbsClient:
+    def __init__(
+        self,
+        *,
+        base_url: str = BASE_URL,
+        timeout_seconds: float = 30,
+        max_retries: int = 3,
+        retry_backoff_seconds: float = 1,
+        opener: Any | None = None,
+    ) -> None:
+        self.base_url = base_url.rstrip("/") + "/"
+        self.timeout_seconds = timeout_seconds
+        self.max_retries = max(1, max_retries)
+        self.retry_backoff_seconds = max(0, retry_backoff_seconds)
+        self.opener = opener or build_opener()
+
+    def _request(self, url: str, *, body: Mapping[str, Any] | None = None) -> bytes:
+        data = None
+        headers = {
+            "Accept": "application/json, text/html, */*",
+            "Referer": self.base_url,
+            "User-Agent": "nhr-legal-ai/0.1 (official-public-source-verification)",
+        }
+        if body is not None:
+            data = json.dumps(dict(body), ensure_ascii=False).encode("utf-8")
+            headers["Content-Type"] = "application/json; charset=utf-8"
+        for attempt in range(1, self.max_retries + 1):
+            request = Request(url, data=data, headers=headers, method="POST" if data else "GET")
+            try:
+                with self.opener.open(request, timeout=self.timeout_seconds) as response:
+                    return response.read()
+            except HTTPError as exc:
+                if not is_retryable_status(exc.code) or attempt == self.max_retries:
+                    raise MbsError(f"MBS HTTP hatası: {exc.code} ({url})") from exc
+                time.sleep(
+                    retry_wait_seconds(
+                        attempt,
+                        base_seconds=self.retry_backoff_seconds,
+                        retry_after=exc.headers.get("Retry-After") if exc.headers else None,
+                    )
+                )
+            except (URLError, TimeoutError, IncompleteRead) as exc:
+                # response.read() zaman aşımı bare TimeoutError fırlatır (URLError'ın .reason
+                # sarmalaması yalnız open() sırasındaki hatalarda olur); aksi halde yakalanmadan
+                # turun tamamını başarısız kılıyordu (bkz. resmi_gazete/portal.py, aynı düzeltme).
+                # IncompleteRead de aynı nedenle ayrı yakalanır (http.client.HTTPException,
+                # OSError değil).
+                if attempt == self.max_retries:
+                    detail = getattr(exc, "reason", exc)
+                    raise MbsError(f"MBS bağlantı hatası: {detail}") from exc
+                time.sleep(retry_wait_seconds(attempt, base_seconds=self.retry_backoff_seconds))
+        raise AssertionError("unreachable")
+
+    def search_law(self, law_no: str, *, law_name: str | None = None) -> MbsDocument:
+        encoded = base64.b64encode(law_no.strip().encode("utf-8")).decode("ascii")
+        body = {
+            "draw": 1,
+            "start": 0,
+            "length": 25,
+            "parameters": {
+                "AranacakIfade": encoded,
+                "AranacakYer": "Baslik",
+                "TamCumle": False,
+                "MevzuatTur": 0,
+                "GenelArama": True,
+            },
+        }
+        raw = self._request(urljoin(self.base_url, SEARCH_PATH), body=body)
+        try:
+            payload = json.loads(raw.decode("utf-8-sig"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise MbsError("MBS arama ucu JSON olmayan yanıt döndürdü") from exc
+        if not isinstance(payload, Mapping) or not isinstance(payload.get("data"), list):
+            raise MbsError("MBS arama yanıtı beklenen sözleşmede değil")
+        exact = [
+            item
+            for item in payload["data"]
+            if isinstance(item, Mapping) and str(item.get("mevzuatNo") or "").strip() == law_no.strip()
+        ]
+        if len(exact) > 1:
+            # Aynı numarayı farklı türler paylaşabilir (ör. 6736 hem Kanun hem CB Kararı);
+            # korpus şu an yalnız kanun aldığından tür=1 (Kanunlar) ile daraltılır.
+            exact = [item for item in exact if int(item.get("mevzuatTur") or 0) == 1]
+        if len(exact) > 1 and law_name:
+            # Kanun numaraları farklı dönemlerde (tertip) tekrar kullanılabiliyor; aynı numaralı
+            # ve aynı türden iki bambaşka kanun olabilir (ölçüldü: 2026-09-27, "5661" hem Ziraat
+            # Bankası Kanunu hem Yurt-Kurumları Kanunu). Başlık eşleşmesiyle daraltılır.
+            expected = _title_key(law_name)
+            by_title = [item for item in exact if expected and expected in _title_key(str(item.get("mevAdi") or ""))]
+            if len(by_title) == 1:
+                exact = by_title
+        if len(exact) != 1:
+            raise MbsError(f"{law_no} numaralı mevzuat için tekil MBS kaydı bulunamadı")
+        item = exact[0]
+        detail_url = _official_url(item.get("url"), base_url=self.base_url, expected_path="/mevzuat")
+        direct_path = urlparse(detail_url).path.casefold()
+        if direct_path.startswith("/mevzuatmetin/") and direct_path.endswith((".pdf", ".doc", ".docx")):
+            # Cumhurbaşkanı Kararları gibi türlerde MBS ayrıntı sayfası yerine doğrudan resmî belgeyi
+            # gösterir (ölçüldü: 2026-10-01, tür 20). Adres zaten /MevzuatMetin/ altında resmî bir
+            # belgedir; kimlik yine başlık + tarihle doğrulanır.
+            is_pdf = direct_path.endswith(".pdf")
+            return MbsDocument(
+                law_no=law_no.strip(),
+                law_name=normalize_text(html_to_text(str(item.get("mevAdi") or ""))),
+                legislation_type=int(item.get("mevzuatTur") or 0),
+                series=str(item.get("mevzuatTertip") or "").strip(),
+                acceptance_date=_parse_date(item.get("kabulTarih")),
+                official_gazette_date=_parse_date(item.get("resmiGazeteTarihi")),
+                official_gazette_no=str(item.get("resmiGazeteSayisi") or "").strip() or None,
+                detail_url=detail_url,
+                pdf_url=detail_url if is_pdf else None,
+                doc_url=None if is_pdf else detail_url,
+            )
+        detail_html = self._request(detail_url).decode("utf-8", errors="replace")
+        parser = _DocumentLinkParser()
+        parser.feed(detail_html)
+        pdf_links = [
+            _official_url(link, base_url=self.base_url, expected_path="/MevzuatMetin/")
+            for link in parser.links
+            if urlparse(urljoin(self.base_url, link)).path.casefold().endswith(".pdf")
+        ]
+        doc_links = [
+            _official_url(link, base_url=self.base_url, expected_path="/MevzuatMetin/")
+            for link in parser.links
+            # MBS yeni kanunlar için .docx, eskiler için .doc sunuyor; ikisi de resmî Word kopyasıdır.
+            if urlparse(urljoin(self.base_url, link)).path.casefold().endswith((".doc", ".docx"))
+        ]
+        # Aynı belgenin hem .doc hem .docx sürümü varsa tek bir belge sayılır (ilki alınır).
+        doc_links = list(dict.fromkeys(doc_links))
+        # Kurum tebliğleri gibi bazı türlerde MBS yalnız Word kopyası sunar (PDF yoktur; ölçüldü:
+        # 2026-10-01, tür 9 tebliğler). Kimlik başlık + tarihle doğrulandığından PDF zorunlu değil;
+        # ama birden fazla PDF belirsizlik demektir ve reddedilir.
+        if len(pdf_links) > 1 or not 1 <= len(doc_links) <= 2:
+            raise MbsError("MBS detay sayfasında tekil resmî PDF/DOC bağlantısı bulunamadı")
+        return MbsDocument(
+            law_no=law_no.strip(),
+            law_name=normalize_text(html_to_text(str(item.get("mevAdi") or ""))),
+            legislation_type=int(item.get("mevzuatTur") or 0),
+            series=str(item.get("mevzuatTertip") or "").strip(),
+            acceptance_date=_parse_date(item.get("kabulTarih")),
+            official_gazette_date=_parse_date(item.get("resmiGazeteTarihi")),
+            official_gazette_no=str(item.get("resmiGazeteSayisi") or "").strip() or None,
+            detail_url=detail_url,
+            pdf_url=pdf_links[0] if pdf_links else None,
+            doc_url=doc_links[0],
+        )
+
+    def verify_legislation(
+        self,
+        *,
+        law_no: str,
+        law_name: str,
+        publication_date: date | None,
+        issue_no: str | None,
+    ) -> MbsVerification:
+        document = self.search_law(law_no, law_name=law_name)
+        # Bedesten ve MBS aynı kanunu farklı noktalama ile verebiliyor (ölçüldü: 2026-09-27,
+        # "Ersoy'u" vs "Ersoy U" — kesme işareti kayboluyor). Karşılaştırma yalnız harf/rakam
+        # üzerinden yapılır; noktalama ve boşluk farkları eşleşmeyi bozmaz.
+        expected_title = _title_key(law_name)
+        observed_title = _title_key(document.law_name)
+        title_matches = bool(
+            expected_title
+            and observed_title
+            and (expected_title in observed_title or observed_title in expected_title)
+        )
+        date_matches = publication_date is None or publication_date == document.official_gazette_date
+        requested_issue = str(issue_no or "").strip() or None
+        issue_matches = requested_issue is None or requested_issue == document.official_gazette_no
+        # Sayı yalnız bilgi amaçlıdır: MBS kaydı zaten kanun no ile tekil bulundu (search_law),
+        # başlık ve tarih de eşleşiyorsa kimlik doğrulanmıştır. Bizim kaydettiğimiz RG sayısı
+        # (Bedesten kaynaklı) hatalıysa bu doğrulamayı reddetmez; bkz. resmi_gazete/portal.py.
+        verified = title_matches and date_matches
+        reasons = []
+        if not title_matches:
+            reasons.append("mevzuat başlığı uyuşmuyor")
+        if not date_matches:
+            reasons.append(
+                f"RG tarihi uyuşmuyor: beklenen={publication_date}, bulunan={document.official_gazette_date}"
+            )
+        if not issue_matches:
+            reasons.append(
+                f"not: kayıtlı sayı ({requested_issue}) MBS'de {document.official_gazette_no}; "
+                "kimlik başlık + tarihle doğrulandı"
+            )
+        return MbsVerification(
+            verified=verified,
+            law_no=document.law_no,
+            law_name=document.law_name,
+            detail_url=document.detail_url,
+            pdf_url=document.pdf_url,
+            doc_url=document.doc_url,
+            requested_gazette_date=publication_date.isoformat() if publication_date else None,
+            observed_gazette_date=(
+                document.official_gazette_date.isoformat()
+                if document.official_gazette_date
+                else None
+            ),
+            requested_gazette_no=requested_issue,
+            observed_gazette_no=document.official_gazette_no,
+            title_matches=title_matches,
+            verified_at=datetime.now(UTC).isoformat(),
+            detail=(
+                "MBS künye ve resmî konsolide metin bağlantıları doğrulandı"
+                if verified
+                else "; ".join(reasons)
+            ),
+        )

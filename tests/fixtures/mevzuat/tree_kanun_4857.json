@@ -1,0 +1,121 @@
+{
+  "metadata": {
+    "FMTY": "SUCCESS",
+    "FMC": "ADALET_SUCCESS",
+    "FMTE": "İşlem başarıyla gerçekleştirildi!",
+    "FMU": "İşlem başarıyla gerçekleştirildi!",
+    "PTID": null,
+    "TID": "89e7745225575117",
+    "SID": "2bef6f8632da8ccf"
+  },
+  "data": {
+    "mevzuatId": "103054",
+    "children": [
+      {
+        "children": [
+          {
+            "children": [],
+            "maddeId": "1656862",
+            "maddeNo": 1,
+            "title": "Amaç ve kapsam",
+            "description": null,
+            "maddeBaslik": "Madde No: 1 - Amaç ve kapsam",
+            "gerekceId": null,
+            "guncellemeTarihi": "2026-05-07T08:03:51.000+00:00",
+            "parentMaddeId": "1656859",
+            "mevzuatId": "103054",
+            "content": null
+          },
+          {
+            "children": [],
+            "maddeId": "1656866",
+            "maddeNo": 2,
+            "title": "Tanımlar",
+            "description": null,
+            "maddeBaslik": "Madde No: 2 - Tanımlar",
+            "gerekceId": null,
+            "guncellemeTarihi": "2026-05-07T08:03:51.000+00:00",
+            "parentMaddeId": "1656859",
+            "mevzuatId": "103054",
+            "content": null
+          },
+          {
+            "children": [],
+            "maddeId": "1656870",
+            "maddeNo": 3,
+            "title": "İşyerini bildirme",
+            "description": null,
+            "maddeBaslik": "Madde No: 3 - İşyerini bildirme",
+            "gerekceId": null,
+            "guncellemeTarihi": "2026-05-07T08:03:51.000+00:00",
+            "parentMaddeId": "1656859",
+            "mevzuatId": "103054",
+            "content": null
+          },
+          {
+            "children": [],
+            "maddeId": "1656873",
+            "maddeNo": 4,
+            "title": "İstisnalar",
+            "description": null,
+            "maddeBaslik": "Madde No: 4 - İstisnalar",
+            "gerekceId": null,
+            "guncellemeTarihi": "2026-05-07T08:03:51.000+00:00",
+            "parentMaddeId": "1656859",
+            "mevzuatId": "103054",
+            "content": null
+          },
+          {
+            "children": [],
+            "maddeId": "1656876",
+            "maddeNo": 5,
+            "title": "Eşit davranma ilkesi",
+            "description": null,
+            "maddeBaslik": "Madde No: 5 - Eşit davranma ilkesi",
+            "gerekceId": null,
+            "guncellemeTarihi": "2026-05-07T08:03:51.000+00:00",
+            "parentMaddeId": "1656859",
+            "mevzuatId": "103054",
+            "content": null
+          },
+          {
+            "children": [],
+            "maddeId": "1656879",
+            "maddeNo": 6,
+            "title": "İşyerinin veya bir bölümünün devri",
+            "description": null,
+            "maddeBaslik": "Madde No: 6 - İşyerinin veya bir bölümünün devri",
+            "gerekceId": null,
+            "guncellemeTarihi": "2026-05-07T08:03:51.000+00:00",
+            "parentMaddeId": "1656859",
+            "mevzuatId": "103054",
+            "content": null
+          },
+          {
+            "children": [],
+            "maddeId": "1656882",
+            "maddeNo": 7,
+            "title": "Geçici iş ilişkisi",
+            "description": null,
+            "maddeBaslik": "Madde No: 7 - Geçici iş ilişkisi",
+            "gerekceId": null,
+            "guncellemeTarihi": "2026-05-07T08:03:51.000+00:00",
+            "parentMaddeId": "1656859",
+            "mevzuatId": "103054",
+            "content": null
+          }
+        ],
+        "maddeId": "1656859",
+        "maddeNo": null,
+        "title": "BİRİNCİ BÖLÜM",
+        "description": "Genel Hükümler",
+        "maddeBaslik": "BİRİNCİ BÖLÜM - Genel Hükümler",
+        "gerekceId": null,
+        "guncellemeTarihi": "2026-05-07T08:03:51.000+00:00",
+        "parentMaddeId": "1656856",
+        "mevzuatId": "103054",
+        "content": null
+      }
+    ]
+  }
+}

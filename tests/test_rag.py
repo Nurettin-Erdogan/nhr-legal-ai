@@ -1,0 +1,184 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from uuid import uuid4
+
+import pytest
+from fastapi import HTTPException
+
+from api.ai.rag import RAGContext, build_grounded_prompt, generate_grounded_answer
+from api.ai.routes import _require_project_access
+from tests.factories import court_decision_context, document_context, legislation_context
+
+DECISION = court_decision_context()
+LEGISLATION = legislation_context()
+DOCUMENT = document_context()
+
+
+class FakeProvider:
+    name = "fake"
+    model = "test-model"
+
+    def __init__(self) -> None:
+        self.system_instruction = ""
+        self.prompt = ""
+
+    def generate(self, *, system_instruction: str, prompt: str) -> str:
+        self.system_instruction = system_instruction
+        self.prompt = prompt
+        return '{"evidence_ids":["E1"]}'
+
+
+def test_prompt_contains_question_and_stable_source_marker():
+    prompt = build_grounded_prompt("Kıdem tazminatı alınabilir mi?", [DECISION])
+
+    assert "KULLANICI SORUSU" in prompt
+    assert "Kıdem tazminatı alınabilir mi?" in prompt
+    assert "[K1] Yargıtay 9. Hukuk Dairesi, E. 2026/1, K. 2026/2, T. 02.01.2026" in prompt
+    assert "URL: https://example.test/decision/1" in prompt
+    assert DECISION.content in prompt
+
+
+def test_prompt_clips_long_source_text():
+    long_context = replace(DECISION, content=("A" * 2000))
+    prompt = build_grounded_prompt("Soru?", [long_context], max_context_chars=80)
+
+    assert "A" * 2000 not in prompt
+    assert "A" * 79 not in prompt
+    assert "tam kaynak cümlesi yok" in prompt
+
+
+def test_prompt_labels_legislation_with_law_and_article():
+    prompt = build_grounded_prompt("Haklı fesih nedir?", [LEGISLATION])
+
+    assert "[K1] İş Kanunu (4857) m. 25 — İşverenin haklı nedenle derhal fesih hakkı" in prompt
+    assert "URL: https://example.test/law/4857/25" in prompt
+
+
+def test_aym_reference_uses_application_number_not_fake_case_number():
+    context = replace(
+        DECISION,
+        court_name="Anayasa Mahkemesi",
+        chamber="İkinci Bölüm",
+        docket_no="2099/123",
+        decision_no=None,
+    )
+
+    assert context.reference_line.startswith(
+        "Anayasa Mahkemesi İkinci Bölüm, B. No: 2099/123"
+    )
+    assert "E. 2099/123" not in context.reference_line
+
+
+def test_prompt_numbers_mixed_source_types_in_order():
+    prompt = build_grounded_prompt("Fesih", [LEGISLATION, DECISION])
+
+    assert prompt.index("[K1] İş Kanunu") < prompt.index("[K2] Yargıtay")
+
+
+def test_prompt_labels_user_document_with_page_and_section():
+    prompt = build_grounded_prompt("Fesih tarihi nedir?", [DOCUMENT])
+
+    assert "[K1] iş_sözleşmesi.pdf, s. 3, Fesih" in prompt
+    assert DOCUMENT.content in prompt
+
+
+def test_prompt_labels_kdk_as_administrative_official_source():
+    context = RAGContext(
+        chunk_id=uuid4(),
+        source_id=uuid4(),
+        source_type="other",
+        title="KDK, 2099/1 — Tavsiye Kararı",
+        source_url="https://kararlar.ombudsman.gov.tr/Arama/Download?id=1",
+        authority="Kamu Denetçiliği Kurumu",
+        court_name="Kamu Denetçiliği Kurumu",
+        chamber=None,
+        docket_no=None,
+        decision_no="2099/1",
+        decision_date=None,
+        law_name=None,
+        law_no=None,
+        article_no=None,
+        article_title=None,
+        content="Sentetik KDK karar metni.",
+        rank=1.0,
+    )
+
+    prompt = build_grounded_prompt("İdarenin işlemi uygun mu?", [context])
+
+    assert "Kamu Denetçiliği Kurumu" in prompt
+    assert context.source_url in prompt
+
+
+def test_project_rag_requires_authentication_before_retrieval():
+    with pytest.raises(HTTPException) as error:
+        _require_project_access(None, uuid4())
+
+    assert error.value.status_code == 401
+
+
+def test_provider_receives_grounding_rules_and_context():
+    provider = FakeProvider()
+
+    answer = generate_grounded_answer(
+        provider,
+        question="Haklı fesih nedir?",
+        contexts=[DECISION],
+    )
+
+    assert answer.endswith("[K1]")
+    assert "bilgi, karar veya madde uydurma" in provider.system_instruction
+    assert "olmayan bir kaynağa atıf yapma" in provider.system_instruction
+    assert DECISION.content in provider.prompt
+
+
+def test_generate_does_not_blindly_repair_missing_citation_markers():
+    class RepairProvider:
+        name = "fake"
+        model = "test-model"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def generate(self, *, system_instruction: str, prompt: str) -> str:
+            self.calls += 1
+            if self.calls == 1:
+                return "Bir yıllık kıdemi dolduran işçi kıdem tazminatına hak kazanır."
+            assert "[K1]" in prompt
+            assert "TASLAK" in prompt
+            return "Bir yıllık kıdemi dolduran işçi kıdem tazminatına hak kazanır. [K1]"
+
+    provider = RepairProvider()
+    answer = generate_grounded_answer(
+        provider,
+        question="Kıdem tazminatı şartları nelerdir?",
+        contexts=[DECISION],
+    )
+
+    assert provider.calls == 1
+    assert "[K1]" not in answer
+
+
+def test_generate_does_not_attach_citations_to_an_unsupported_draft():
+    class RepairProvider:
+        name = "fake"
+        model = "test-model"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def generate(self, *, system_instruction: str, prompt: str) -> str:
+            self.calls += 1
+            if self.calls == 1:
+                return "İşçi kıdem tazminatına hak kazanabilir. [K1] İşveren ödeme yapar."
+            return "İşçi kıdem tazminatına hak kazanabilir. [K1] İşveren ödeme yapar. [K1]"
+
+    provider = RepairProvider()
+    answer = generate_grounded_answer(
+        provider,
+        question="Kıdem tazminatı şartları nelerdir?",
+        contexts=[DECISION],
+    )
+
+    assert provider.calls == 1
+    assert "[K1]" not in answer

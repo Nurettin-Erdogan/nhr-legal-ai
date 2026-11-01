@@ -1,0 +1,44 @@
+services:
+  db:
+    image: pgvector/pgvector:0.8.6-pg16
+    container_name: nhr-legal-ai-db
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    # ~21M parçalı korpusta arama darboğazı disk okumasıdır. Varsayılan 128 MB önbellekle
+    # yaygın sözcük aramaları soğuk diskte 15-90 sn sürüyordu. Değerler 15,5 GB'lık Docker
+    # belleğine göre seçildi; POSTGRES_* değişkenleriyle ezilebilir.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-6GB}
+      - -c
+      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-10GB}
+      - -c
+      - maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-1GB}
+      # SSD: rastgele okuma sıralı okumadan çok pahalı değil (varsayılan 4.0 disk çağından kalma).
+      - -c
+      - random_page_cost=${POSTGRES_RANDOM_PAGE_COST:-1.5}
+      - -c
+      - effective_io_concurrency=${POSTGRES_EFFECTIVE_IO_CONCURRENCY:-200}
+    # Paralel taramalar /dev/shm kullanır; 64 MB varsayılanı "could not resize shared memory
+    # segment" hatası veriyordu (paralel VACUUM ve geniş aramalar).
+    shm_size: 10gb
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+      - ./database:/nhr-database:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:

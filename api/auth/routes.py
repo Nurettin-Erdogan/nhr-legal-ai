@@ -1,0 +1,696 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+import logging
+import secrets
+from time import monotonic
+from typing import Annotated
+from urllib.parse import urlencode
+from uuid import UUID, uuid4
+
+import jwt
+import psycopg
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
+from fastapi.responses import RedirectResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from psycopg.errors import UniqueViolation
+
+from api.access import DEFAULT_MODE, DENIED, AccessDenied, access_mode, registration_gate, user_allowed
+from api.audit import (
+    AUTH_LOGIN,
+    AUTH_LOGIN_BLOCKED,
+    AUTH_LOGIN_FAILED,
+    AUTH_LOGOUT,
+    AUTH_REGISTER,
+    AuditContext,
+    email_fingerprint,
+    record_event,
+    record_event_standalone,
+)
+from api.auth.schemas import (
+    AuthResponse,
+    AuthStatusResponse,
+    LoginRequest,
+    RegisterRequest,
+    UserResponse,
+)
+from api.auth.google_oauth import (
+    FLOW_COOKIE,
+    FLOW_COOKIE_PATH,
+    GoogleAccountExists,
+    GoogleOAuthError,
+    authorization_url,
+    exchange_code,
+    google_settings,
+    new_flow,
+    verify_identity,
+)
+from api.auth.security import (
+    TokenError,
+    create_access_token,
+    decode_access_token_claims,
+    hash_password,
+    verify_password,
+)
+from api.config import get_settings
+from api.db import admin_database_connection
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/api/auth", tags=["auth"])
+bearer = HTTPBearer(auto_error=False)
+COOKIE_NAME = "nhr_access_token"
+GOOGLE_FLOW_SECONDS = 600
+
+_USER_SELECT = """
+SELECT
+    users.id,
+    users.email,
+    users.full_name,
+    users.status,
+    users.created_at,
+    users.password_hash,
+    COALESCE(
+        array_agg(roles.code ORDER BY roles.code) FILTER (WHERE roles.code IS NOT NULL),
+        ARRAY[]::text[]
+    ) AS roles
+FROM users
+LEFT JOIN user_roles ON user_roles.user_id = users.id
+LEFT JOIN roles ON roles.id = user_roles.role_id
+WHERE users.{field} = %s AND users.deleted_at IS NULL
+GROUP BY users.id
+"""
+
+
+def _auth_secret() -> str:
+    secret = get_settings().jwt_secret
+    if not secret or len(secret) < 32:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="JWT_SECRET en az 32 karakter olacak şekilde tanımlanmalı",
+        )
+    return secret
+
+
+def _as_user(row: dict) -> UserResponse:
+    return UserResponse(
+        id=row["id"],
+        email=row["email"],
+        full_name=row["full_name"],
+        status=row["status"],
+        roles=row["roles"],
+        created_at=row["created_at"],
+    )
+
+
+def _set_auth_cookie(response: Response, token: str, max_age: int) -> None:
+    response.set_cookie(
+        COOKIE_NAME,
+        token,
+        max_age=max_age,
+        httponly=True,
+        secure=get_settings().auth_cookie_secure,
+        samesite="lax",
+        path="/",
+    )
+
+
+def _issue_auth_response(response: Response, row: dict) -> AuthResponse:
+    settings = get_settings()
+    token, expires_in = create_access_token(
+        user_id=row["id"],
+        secret=_auth_secret(),
+        expires_minutes=settings.jwt_expire_minutes,
+    )
+    _set_auth_cookie(response, token, expires_in)
+    return AuthResponse(
+        access_token=token,
+        expires_in=expires_in,
+        user=_as_user(row),
+    )
+
+
+# Çıkışta oturum iptali. Jetonlar durumsuzdur; `users.sessions_valid_after`dan ÖNCE verilmiş jetonlar
+# geçersiz sayılır. Değer kısa süre bellekte tutulur ki her istek veritabanına gitmesin; çıkış yapan
+# işçi kendi önbelleğini hemen temizler, diğer işçilerde en fazla SESSION_CACHE_SECONDS gecikir.
+# Erişim (api/access.py) de burada sorulur: erişim listesinden çıkarılan, askıya alınan ya da erişim modu değişince dışarıda
+# kalan hesabın açık oturumu da reddedilir. Önbelleğe yalnız erişimi OLAN hesap yazılır: erişim yeni verilen kişi girişten
+# hemen sonra eski bir "erişim yok" kaydına takılmaz.
+SESSION_CACHE_SECONDS = 5.0
+_SESSION_CACHE_LIMIT = 10_000
+_session_cache: dict[UUID, tuple[int, float]] = {}
+
+
+def _session_state(user_id: UUID) -> tuple[int, bool]:
+    """(Bu andan önce verilmiş jetonlar geçersiz: unix saniyesi, hesabın erişimi var mı)."""
+    cached = _session_cache.get(user_id)
+    now = monotonic()
+    if cached is not None and now - cached[1] < SESSION_CACHE_SECONDS:
+        return cached[0], True
+    with admin_database_connection() as connection:
+        row = connection.execute(
+            "SELECT sessions_valid_after FROM users WHERE id = %s", (user_id,)
+        ).fetchone()
+        allowed = row is not None and user_allowed(connection, user_id)
+    stamp = row.get("sessions_valid_after") if row else None
+    value = int(stamp.timestamp()) if stamp else 0
+    if allowed:
+        if len(_session_cache) >= _SESSION_CACHE_LIMIT:
+            _session_cache.clear()
+        _session_cache[user_id] = (value, now)
+    return value, allowed
+
+
+def resolve_session(token: str) -> UUID:
+    """Jetonu çözer; çıkışla iptal edilmediğini ve hesabın erişimi olduğunu doğrular.
+    TokenError / psycopg.Error / RuntimeError atar."""
+    user_id, issued_at = decode_access_token_claims(token, secret=_auth_secret())
+    valid_after, allowed = _session_state(user_id)
+    if issued_at < valid_after:
+        raise TokenError("Oturum sonlandırıldı; yeniden giriş yapın")
+    if not allowed:
+        raise TokenError("Bu hesabın uygulamaya erişimi yok; yöneticinizle görüşün")
+    return user_id
+
+
+def revoke_sessions(user_id: UUID) -> None:
+    _session_cache.pop(user_id, None)
+    with admin_database_connection() as connection:
+        connection.execute(
+            "UPDATE users SET sessions_valid_after = now() WHERE id = %s", (user_id,)
+        )
+
+
+def revoke_sessions_without_access(user_ids: list[UUID] | None = None) -> int:
+    """Erişimi kalmayan hesapların açık oturumlarını kapatır (erişim listesi ya da modu değişince). `user_ids` verilmezse
+    bütün hesaplara bakılır. Erişim geri verilse bile eski jetonlar canlanmaz. Dönüş: oturumu kapatılan hesap sayısı."""
+    with admin_database_connection() as connection, connection.transaction():
+        rows = connection.execute(
+            "SELECT id FROM users WHERE deleted_at IS NULL AND NOT public.app_user_access_allowed(id) "
+            "AND (%(ids)s::uuid[] IS NULL OR id = ANY(%(ids)s::uuid[]))",
+            {"ids": user_ids},
+        ).fetchall()
+        denied = [row["id"] for row in rows]
+        if denied:
+            connection.execute("UPDATE users SET sessions_valid_after = now() WHERE id = ANY(%s)", (denied,))
+    for user_id in denied:
+        _session_cache.pop(user_id, None)
+    return len(denied)
+
+
+def current_user_id(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
+    cookie_token: Annotated[str | None, Cookie(alias=COOKIE_NAME)] = None,
+) -> UUID:
+    token = credentials.credentials if credentials else cookie_token
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Oturum açılması gerekiyor",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        return resolve_session(token)
+    except TokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    except (psycopg.Error, RuntimeError) as exc:
+        # İptal durumu okunamıyorsa oturum doğrulanmış sayılmaz.
+        logger.exception("Oturum iptal durumu okunamadı")
+        raise HTTPException(status_code=503, detail="Oturum doğrulanamadı") from exc
+
+
+def optional_current_user_id(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
+    cookie_token: Annotated[str | None, Cookie(alias=COOKIE_NAME)] = None,
+) -> UUID | None:
+    """Resolve the caller when a session exists, without demanding one."""
+    token = credentials.credentials if credentials else cookie_token
+    if not token:
+        return None
+    try:
+        return resolve_session(token)
+    except TokenError:
+        return None
+    except (psycopg.Error, RuntimeError):
+        # İptal durumu bilinmiyorsa kimliksiz (anonim) davranılır, oturumlu değil.
+        logger.exception("Oturum iptal durumu okunamadı")
+        return None
+
+
+@router.get("/status", response_model=AuthStatusResponse)
+def auth_status() -> AuthStatusResponse:
+    settings = get_settings()
+    mode = DEFAULT_MODE
+    try:
+        with admin_database_connection() as connection:
+            mode = access_mode(connection)
+    except (psycopg.Error, RuntimeError):
+        pass  # okunamazsa varsayılan gösterilir; asıl karar kayıt ve giriş anında yeniden verilir
+    return AuthStatusResponse(
+        configured=bool(settings.jwt_secret and len(settings.jwt_secret) >= 32),
+        registration_enabled=settings.allow_registration,
+        access_mode=mode,
+    )
+
+
+@router.post("/register", response_model=AuthResponse, status_code=201)
+def register(
+    request: RegisterRequest, response: Response, http_request: Request
+) -> AuthResponse:
+    settings = get_settings()
+    if not settings.allow_registration:
+        raise HTTPException(status_code=403, detail="Yeni kullanıcı kaydı kapalı")
+    if not request.terms_accepted:
+        raise HTTPException(
+            status_code=400,
+            detail="Kayıt için Kullanım Şartları'nı ve Gizlilik Politikası'nı (KVKK aydınlatma metni) kabul etmelisiniz.",
+        )
+    _auth_secret()
+
+    email = str(request.email).strip().lower()
+    try:
+        with admin_database_connection() as connection, connection.transaction():
+            try:
+                # Yöneticinin seçtiği erişim (herkes / yalnız listedeki e-postalar) aynı transaction'da denetlenir.
+                registration_gate(connection, email)
+            except AccessDenied as exc:
+                raise HTTPException(status_code=403, detail=exc.detail) from exc
+            row = connection.execute(
+                """
+                INSERT INTO users (email, password_hash, full_name, terms_accepted_at, terms_version)
+                VALUES (%s, %s, %s, now(), %s)
+                RETURNING id, email, full_name, status, created_at,
+                          password_hash, ARRAY[]::text[] AS roles
+                """,
+                (email, hash_password(request.password), request.full_name.strip(), (request.terms_version or "").strip() or None),
+            ).fetchone()
+            connection.execute(
+                """
+                INSERT INTO user_roles (user_id, role_id)
+                SELECT %s, id FROM roles WHERE code = 'lawyer'
+                """,
+                (row["id"],),
+            )
+            row["roles"] = ["lawyer"]
+            # E-posta ve ad günlüğe yazılmaz; yalnız yeni hesabın kimliği.
+            record_event(
+                connection,
+                action=AUTH_REGISTER,
+                actor_user_id=row["id"],
+                context=AuditContext.from_request(http_request),
+                entity_type="user",
+                entity_id=row["id"],
+                strict=False,
+            )
+    except UniqueViolation as exc:
+        raise HTTPException(status_code=409, detail="Bu e-posta zaten kayıtlı") from exc
+    except (psycopg.Error, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail="Kullanıcı kaydı oluşturulamadı") from exc
+
+    return _issue_auth_response(response, row)
+
+
+# Kaba kuvvet koruması: aynı e-posta + aynı IP için ya da tek IP'den gelen başarısız girişler sayılır.
+# Sayım denetim kaydından yapılır (veritabanı tabanlı): sunucu yeniden başlasa veya birden çok
+# işçi çalışsa da geçerlidir. E-posta+IP çifti, bir saldırganın mağdurun hesabını kendi IP'sinden
+# kilitlemesini engeller; IP toplamı ise tek makineden çok e-posta denemesini sınırlar.
+LOGIN_WINDOW_MINUTES = 15
+LOGIN_MAX_FAILURES_PER_EMAIL_IP = 8
+LOGIN_MAX_FAILURES_PER_IP = 40
+
+_LOGIN_FAILURE_COUNTS = """
+SELECT
+  count(*) FILTER (
+    WHERE metadata->>'email_fingerprint' = %(fingerprint)s
+      AND ip_address IS NOT DISTINCT FROM %(ip)s::inet
+  ) AS email_ip_failures,
+  count(*) FILTER (WHERE ip_address IS NOT DISTINCT FROM %(ip)s::inet) AS ip_failures
+FROM activity_logs
+WHERE action = 'auth.login_failed'
+  AND created_at > now() - make_interval(mins => %(minutes)s)
+"""
+
+
+def login_retry_after_seconds(email_ip_failures: int, ip_failures: int) -> int | None:
+    """Sınır aşıldıysa istemcinin beklemesi gereken saniye, değilse None."""
+    if (
+        email_ip_failures >= LOGIN_MAX_FAILURES_PER_EMAIL_IP
+        or ip_failures >= LOGIN_MAX_FAILURES_PER_IP
+    ):
+        return LOGIN_WINDOW_MINUTES * 60
+    return None
+
+
+def _login_throttle(
+    connection: psycopg.Connection, email: str, ip_address: str | None
+) -> int | None:
+    row = connection.execute(
+        _LOGIN_FAILURE_COUNTS,
+        {
+            "fingerprint": email_fingerprint(email),
+            "ip": ip_address,
+            "minutes": LOGIN_WINDOW_MINUTES,
+        },
+    ).fetchone()
+    return login_retry_after_seconds(int(row["email_ip_failures"]), int(row["ip_failures"]))
+
+
+@router.post("/login", response_model=AuthResponse)
+def login(
+    request: LoginRequest, response: Response, http_request: Request
+) -> AuthResponse:
+    _auth_secret()
+    email = str(request.email).strip().lower()
+    context = AuditContext.from_request(http_request)
+    failure: str | None = None
+    blocked = False
+    try:
+        with admin_database_connection() as connection, connection.transaction():
+            retry_after = _login_throttle(connection, email, context.ip_address)
+            if retry_after is not None:
+                # Parola hiç denenmez: kilitli bir istemci doğru parolayı bile bu yolla sınayamaz.
+                raise HTTPException(
+                    status_code=429,
+                    detail=(
+                        f"Çok fazla başarısız deneme. Güvenlik için giriş {LOGIN_WINDOW_MINUTES} dakika kapatıldı; "
+                        "sonra tekrar deneyin ya da şifrenizi sıfırlayın."
+                    ),
+                    headers={"Retry-After": str(retry_after)},
+                )
+            row = connection.execute(
+                _USER_SELECT.format(field="email"), (email,)
+            ).fetchone()
+            valid = verify_password(request.password, row["password_hash"] if row else None)
+            if not row or not valid or row["status"] != "active":
+                # Hata fırlatmak transaction'ı geri alacağından başarısızlık burada yalnız
+                # işaretlenir; kayıt ve 401 transaction bittikten sonra yapılır.
+                failure = "account_inactive" if row and valid else "invalid_credentials"
+            elif not user_allowed(connection, row["id"]):
+                # Parola doğru, yani kim olduğu doğrulandı: nedeni söylenir (erişim listesinde değil).
+                blocked = True
+            else:
+                connection.execute(
+                    "UPDATE users SET last_login_at = NOW() WHERE id = %s", (row["id"],)
+                )
+                record_event(
+                    connection,
+                    action=AUTH_LOGIN,
+                    actor_user_id=row["id"],
+                    context=context,
+                    entity_type="user",
+                    entity_id=row["id"],
+                    strict=False,
+                )
+    except (psycopg.Error, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail="Oturum açılamadı") from exc
+
+    if failure is not None:
+        # Kim olduğu doğrulanamadığından aktör boş kalır; e-posta düz yazılmaz.
+        record_event_standalone(
+            action=AUTH_LOGIN_FAILED,
+            context=context,
+            metadata={"reason": failure, "email_fingerprint": email_fingerprint(email)},
+        )
+        # Hesap yok / parola yanlış / hesap pasif aynı yanıtı verir (kullanıcı sayımı yapılamaz).
+        raise HTTPException(status_code=401, detail="E-posta veya parola hatalı")
+    if blocked:
+        record_event_standalone(
+            action=AUTH_LOGIN_BLOCKED, actor_user_id=row["id"], context=context, entity_type="user", entity_id=row["id"]
+        )
+        raise HTTPException(status_code=403, detail=DENIED)
+
+    return _issue_auth_response(response, row)
+
+
+@router.get("/me", response_model=UserResponse)
+def me(user_id: Annotated[UUID, Depends(current_user_id)]) -> UserResponse:
+    try:
+        with admin_database_connection() as connection:
+            row = connection.execute(
+                _USER_SELECT.format(field="id"), (user_id,)
+            ).fetchone()
+    except (psycopg.Error, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail="Kullanıcı bilgisi alınamadı") from exc
+    if not row or row["status"] != "active":
+        raise HTTPException(status_code=401, detail="Oturum kullanıcısı bulunamadı")
+    return _as_user(row)
+
+
+@router.get("/session")
+def session(user_id: Annotated[UUID | None, Depends(optional_current_user_id)]) -> dict[str, UserResponse | None]:
+    """Oturum var mı? Giriş yapılmamışsa 401 yerine `{"user": null}` döner.
+
+    Açık sayfalar (ana sayfa, fiyat, SSS) her açılışta oturumu yoklar; `/me` giriş yapmamış ziyaretçide 401 verdiği için
+    tarayıcı konsoluna her sayfada hata düşüyordu. Yetki gerektiren uçlar değişmedi: onlar 401 vermeye devam eder.
+    """
+    if user_id is None:
+        return {"user": None}
+    try:
+        with admin_database_connection() as connection:
+            row = connection.execute(_USER_SELECT.format(field="id"), (user_id,)).fetchone()
+    except (psycopg.Error, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail="Kullanıcı bilgisi alınamadı") from exc
+    if not row or row["status"] != "active":
+        return {"user": None}
+    return {"user": _as_user(row)}
+
+
+@router.post("/logout", status_code=204)
+def logout(
+    http_request: Request,
+    user_id: Annotated[UUID | None, Depends(optional_current_user_id)],
+) -> Response:
+    if user_id is not None:
+        record_event_standalone(
+            action=AUTH_LOGOUT,
+            actor_user_id=user_id,
+            context=AuditContext.from_request(http_request),
+            entity_type="user",
+            entity_id=user_id,
+        )
+    if user_id is not None:
+        try:
+            revoke_sessions(user_id)
+        except (psycopg.Error, RuntimeError):
+            # Çerez yine de silinir; iptal yazılamadıysa jeton süresi dolana kadar geçerli kalır.
+            logger.exception("Oturum iptali yazılamadı")
+    # Enjekte edilen `Response` nesnesi döndürülmez: yeni FastAPI sürümlerinde durum kodu boş kalır ve
+    # bağlantı kesilirdi (çıkış hiç çalışmazdı). 204'ü açıkça kendimiz kurarız.
+    response = Response(status_code=204)
+    response.delete_cookie(COOKIE_NAME, path="/")
+    return response
+
+
+@router.get("/google/status")
+def google_status() -> dict[str, bool]:
+    secret = get_settings().jwt_secret
+    if not google_settings().configured or not secret or len(secret) < 32:
+        return {"configured": False}
+    try:
+        with admin_database_connection() as connection:
+            row = connection.execute(
+                "SELECT to_regclass('public.auth_google_identities') IS NOT NULL AS ready"
+            ).fetchone()
+    except (psycopg.Error, RuntimeError):
+        return {"configured": False}
+    return {"configured": bool(row and row["ready"])}
+
+
+@router.get("/google/connection")
+def google_connection(user_id: Annotated[UUID, Depends(current_user_id)]) -> dict[str, bool]:
+    try:
+        with admin_database_connection() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM auth_google_identities WHERE user_id = %s", (user_id,)
+            ).fetchone()
+    except (psycopg.Error, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail="Google bağlantısı kontrol edilemedi") from exc
+    return {"linked": bool(row)}
+
+
+@router.get("/google/start")
+def google_start(
+    user_id: Annotated[UUID | None, Depends(optional_current_user_id)],
+    link: bool = False,
+    terms: str | None = None,
+) -> RedirectResponse:
+    settings = google_settings()
+    if not settings.configured:
+        raise HTTPException(status_code=503, detail="Google ile giriş henüz yapılandırılmadı")
+    if link and user_id is None:
+        raise HTTPException(status_code=401, detail="Bağlamak için önce oturum açın")
+    state, nonce, verifier = new_flow()
+    now = datetime.now(timezone.utc)
+    flow = jwt.encode(
+        {
+            "state": state,
+            "nonce": nonce,
+            "verifier": verifier,
+            "link_user_id": str(user_id) if link else None,
+            # Google ile yeni hesap açılırsa, giriş sayfasında gösterilen şartların sürümü hesaba yazılır.
+            "terms": (terms or "").strip()[:40] or None,
+            "iat": now,
+            "exp": now + timedelta(seconds=GOOGLE_FLOW_SECONDS),
+        },
+        _auth_secret(),
+        algorithm="HS256",
+    )
+    response = RedirectResponse(
+        authorization_url(settings, state=state, nonce=nonce, verifier=verifier),
+        status_code=303,
+    )
+    response.set_cookie(
+        FLOW_COOKIE,
+        flow,
+        max_age=GOOGLE_FLOW_SECONDS,
+        httponly=True,
+        secure=get_settings().auth_cookie_secure,
+        samesite="lax",
+        path=FLOW_COOKIE_PATH,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _google_result_redirect(error: str | None = None, *, linked: bool = False) -> RedirectResponse:
+    target = google_settings().web_callback_url
+    suffix = "?" + urlencode({"error": error} if error else {"linked": "1"}) if error or linked else ""
+    response = RedirectResponse(target + suffix, status_code=303)
+    response.delete_cookie(FLOW_COOKIE, path=FLOW_COOKIE_PATH)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _google_user(
+    subject: str, email: str, name: str, *, link_user_id: UUID | None, context: AuditContext, terms_version: str | None = None
+) -> dict:
+    """Link explicitly or provision a new account; never auto-link by email."""
+    try:
+        with admin_database_connection() as connection, connection.transaction():
+            linked = connection.execute(
+                "SELECT user_id FROM auth_google_identities WHERE google_subject = %s",
+                (subject,),
+            ).fetchone()
+            if link_user_id:
+                row = connection.execute(
+                    _USER_SELECT.format(field="id"), (link_user_id,)
+                ).fetchone()
+                if not row or row["status"] != "active" or row["email"].lower() != email:
+                    raise GoogleOAuthError("The accounts cannot be linked")
+                if linked and linked["user_id"] != link_user_id:
+                    raise GoogleOAuthError("Google account is already linked")
+                if not linked:
+                    connection.execute(
+                        "INSERT INTO auth_google_identities (user_id, google_subject) VALUES (%s, %s)",
+                        (link_user_id, subject),
+                    )
+                record_event(
+                    connection, action="auth.google_link", actor_user_id=link_user_id,
+                    context=context, entity_type="user", entity_id=link_user_id, strict=False,
+                )
+                return row
+            if linked:
+                row = connection.execute(
+                    _USER_SELECT.format(field="id"), (linked["user_id"],)
+                ).fetchone()
+                if not row or row["status"] != "active":
+                    raise GoogleOAuthError("Linked account is unavailable")
+                if not user_allowed(connection, row["id"]):
+                    record_event_standalone(
+                        action=AUTH_LOGIN_BLOCKED, actor_user_id=row["id"], context=context, entity_type="user",
+                        entity_id=row["id"], metadata={"method": "google"},
+                    )
+                    raise AccessDenied()
+            else:
+                try:
+                    registration_gate(connection, email)
+                except AccessDenied as exc:
+                    if exc.reason != "not_listed":
+                        raise GoogleOAuthError("Registration disabled") from exc
+                    raise
+                existing = connection.execute(
+                    "SELECT 1 FROM users WHERE lower(email) = %s AND deleted_at IS NULL", (email,)
+                ).fetchone()
+                if existing:
+                    raise GoogleAccountExists("Existing account needs explicit linking")
+                user_id = uuid4()
+                connection.execute(
+                    "INSERT INTO users (id, email, password_hash, full_name, terms_accepted_at, terms_version) "
+                    "VALUES (%s, %s, NULL, %s, CASE WHEN %s::text IS NULL THEN NULL ELSE now() END, %s)",
+                    (user_id, email, name or None, terms_version, terms_version),
+                )
+                connection.execute(
+                    "INSERT INTO user_roles (user_id, role_id) SELECT %s, id FROM roles WHERE code = 'lawyer'",
+                    (user_id,),
+                )
+                connection.execute(
+                    "INSERT INTO auth_google_identities (user_id, google_subject) VALUES (%s, %s)",
+                    (user_id, subject),
+                )
+                row = connection.execute(
+                    _USER_SELECT.format(field="id"), (user_id,)
+                ).fetchone()
+                record_event(
+                    connection, action=AUTH_REGISTER, actor_user_id=user_id,
+                    context=context, entity_type="user", entity_id=user_id,
+                    metadata={"method": "google"}, strict=False,
+                )
+            connection.execute("UPDATE users SET last_login_at = NOW() WHERE id = %s", (row["id"],))
+            record_event(
+                connection, action=AUTH_LOGIN, actor_user_id=row["id"],
+                context=context, entity_type="user", entity_id=row["id"],
+                metadata={"method": "google"}, strict=False,
+            )
+            return row
+    except UniqueViolation as exc:
+        raise GoogleAccountExists("Existing account needs explicit linking") from exc
+    except (psycopg.Error, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail="Google hesabı kaydedilemedi") from exc
+
+
+@router.get("/google/callback")
+def google_callback(
+    request: Request,
+    user_id: Annotated[UUID | None, Depends(optional_current_user_id)],
+    state: str | None = None,
+    code: str | None = None,
+    error: str | None = None,
+    flow_cookie: Annotated[str | None, Cookie(alias=FLOW_COOKIE)] = None,
+) -> RedirectResponse:
+    settings = google_settings()
+    if not settings.configured or not flow_cookie or not state:
+        raise HTTPException(status_code=400, detail="Google oturum isteği geçersiz")
+    try:
+        flow = jwt.decode(
+            flow_cookie, _auth_secret(), algorithms=["HS256"],
+            options={"require": ["state", "nonce", "verifier", "iat", "exp"]},
+        )
+        if not secrets.compare_digest(state, flow["state"]):
+            raise GoogleOAuthError("OAuth state mismatch")
+        link_user_id = UUID(flow["link_user_id"]) if flow.get("link_user_id") else None
+        if link_user_id and link_user_id != user_id:
+            raise GoogleOAuthError("Linking session changed")
+    except (jwt.PyJWTError, GoogleOAuthError, KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Google oturum isteği geçersiz") from exc
+    if error or not code:
+        return _google_result_redirect("cancelled")
+    try:
+        token = exchange_code(settings, code=code, verifier=flow["verifier"])
+        identity = verify_identity(token, client_id=settings.client_id, nonce=flow["nonce"])
+        row = _google_user(
+            identity["subject"], identity["email"], identity["name"],
+            link_user_id=link_user_id, context=AuditContext.from_request(request),
+            terms_version=flow.get("terms"),
+        )
+    except GoogleAccountExists:
+        return _google_result_redirect("account_exists")
+    except AccessDenied:
+        return _google_result_redirect("access_denied")
+    except GoogleOAuthError:
+        return _google_result_redirect("failed")
+    response = _google_result_redirect(linked=bool(link_user_id))
+    _issue_auth_response(response, row)
+    return response

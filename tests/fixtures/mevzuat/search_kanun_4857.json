@@ -1,0 +1,37 @@
+{
+  "data": {
+    "mevzuatList": [
+      {
+        "mevzuatId": "103054",
+        "mevzuatNo": 4857,
+        "mevzuatAdi": "İŞ KANUNU",
+        "mevzuatTur": {
+          "id": 1,
+          "name": "KANUN",
+          "description": "Kanunlar",
+          "maddeSonuRegex": ".*Bu.*Kanun.*hükümlerini.*yürütür\\."
+        },
+        "mevzuatTertip": 5,
+        "kayitTarihi": "2026-05-04T08:51:22.797",
+        "guncellemeTarihi": null,
+        "resmiGazeteTarihi": null,
+        "resmiGazeteSayisi": "25134",
+        "url": "https://www.mevzuat.gov.tr/mevzuat?MevzuatNo=4857&MevzuatTur=1&MevzuatTertip=5",
+        "mukerrer": "HAYIR",
+        "ekler": null,
+        "gerekceId": null
+      }
+    ],
+    "total": 1,
+    "start": 0
+  },
+  "metadata": {
+    "FMTY": "SUCCESS",
+    "FMC": "ADALET_SUCCESS",
+    "FMTE": "İşlem başarıyla gerçekleştirildi!",
+    "FMU": "İşlem başarıyla gerçekleştirildi!",
+    "PTID": null,
+    "TID": "e2cf6a81fd95c316",
+    "SID": "16ecab5cc911a509"
+  }
+}

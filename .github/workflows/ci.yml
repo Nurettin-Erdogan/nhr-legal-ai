@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - feature/legal-ai
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.6-pg16
+        env:
+          POSTGRES_USER: nhr_app
+          POSTGRES_PASSWORD: ci-test-only
+          POSTGRES_DB: nhr_legal_ai_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nhr_app -d nhr_legal_ai_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NHR_TEST_DATABASE_URL: postgresql://nhr_app:ci-test-only@localhost:5432/nhr_legal_ai_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Install Python dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Python lint
+        run: ruff check api ingestion scripts tests
+      - name: Expose migrations at the docker-compose path
+        # init/*.sql dosyaları migration'ları docker-compose'daki gibi `\i /nhr-database/...` ile çağırır;
+        # bu yol CI'da yoktu ve python işi 2026-09-28'den beri şema adımında düşüyordu.
+        run: sudo ln -sfn "$GITHUB_WORKSPACE/database" /nhr-database
+      - name: Apply database schema
+        env:
+          PGPASSWORD: ci-test-only
+        # Yeni kurulumdaki gibi: Docker'ın yaptığı sıralamayla database/init/*.sql
+        # (CONCURRENTLY dizinleri transaction dışında, dosya başına bir psql).
+        run: |
+          set -e
+          for f in database/init/*.sql
+          do
+            psql -h localhost -U nhr_app -d nhr_legal_ai_test -v ON_ERROR_STOP=1 -f "$f"
+          done
+      - name: Pytest
+        run: python -m pytest -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run lint -- --max-warnings 0
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  uyap-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NHR_BROWSER_TESTS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install isolated browser test dependencies
+        # Shared conftest also loads the API auth/indexing fixtures.
+        run: pip install -r requirements.txt playwright cryptography
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Test UYAP extension against local synthetic portals
+        run: python -m pytest tests/test_uyap_extension_browser.py -q --junitxml=uyap-browser-results.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uyap-browser-results
+          path: uyap-browser-results.xml

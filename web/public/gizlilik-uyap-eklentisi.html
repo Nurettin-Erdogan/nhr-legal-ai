@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JurisAI UYAP Eklentisi · Gizlilik Politikası</title>
+  <style>
+    :root { color-scheme: light dark; --fg: #1f2933; --bg: #ffffff; --muted: #52606d; --line: #d9e2ec; --accent: #2563eb; }
+    @media (prefers-color-scheme: dark) { :root { --fg: #e4e7eb; --bg: #11151a; --muted: #9aa5b1; --line: #2d3748; --accent: #7aa7ff; } }
+    body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+    h1 { font-size: 1.6rem; margin: 0 0 4px; }
+    h2 { font-size: 1.15rem; margin: 32px 0 8px; }
+    p, li { color: var(--fg); }
+    .muted { color: var(--muted); font-size: .9rem; }
+    table { border-collapse: collapse; width: 100%; font-size: .95rem; }
+    th, td { text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); padding: 8px 10px 8px 0; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>JurisAI UYAP Eklentisi · Gizlilik Politikası</h1>
+  <p class="muted">Son güncelleme: 3 Ekim 2026 · Yayımlayan: NHR Yazılım · İletişim: [İLETİŞİM E-POSTASI]</p>
+
+  <p>Bu eklenti, UYAP'ta kendi hesabınızla açtığınız dosyalardan <strong>sizin seçtiğiniz</strong> evrakları JurisAI hesabınıza aktarır.
+  Aşağıda hangi verinin okunduğu, nereye gittiği ve nelerin hiç alınmadığı açıkça yazılıdır.</p>
+
+  <h2>Alınmayanlar</h2>
+  <ul>
+    <li><strong>UYAP, e-Devlet ya da e-imza şifreniz, onay kodlarınız ve PIN'leriniz</strong> eklenti tarafından okunmaz, saklanmaz, iletilmez. Giriş her zaman UYAP/e-Devlet'in kendi sayfasında sizin tarafınızdan yapılır.</li>
+    <li>Tarayıcınızın oturum çerezleri okunmaz ve saklanmaz. Evrak indirilirken tarayıcı, UYAP'a yaptığı isteğe çerezleri kendiliğinden ekler; eklentinin kodu çerez değerlerine erişmez (eklentinin çerez izni yoktur).</li>
+    <li>Web geçmişiniz, UYAP dışındaki sitelerdeki etkinliğiniz izlenmez. Eklenti UYAP sayfalarında ve JurisAI sayfalarında çalışır.</li>
+    <li>Kullanım istatistiği, reklam, analiz ya da izleme (telemetri) kodu yoktur.</li>
+  </ul>
+
+  <h2>Okunan ve gönderilen veriler</h2>
+  <table>
+    <thead><tr><th>Veri</th><th>Ne zaman</th><th>Nereye</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Dosya listesi (esas no, birim, tür gibi satır metinleri)</td>
+        <td>JurisAI sayfasındaki "UYAP Dosyalarım" bölümünü kullandığınızda</td>
+        <td>Yalnız JurisAI sayfasına, tarayıcınızda. JurisAI sunucusuna gönderilmez.</td>
+      </tr>
+      <tr>
+        <td>Evrak ağacı (klasör adları, evrak başlıkları)</td>
+        <td>"Evrak çek" ile seçim penceresini açtığınızda</td>
+        <td>Yalnız tarayıcınızda gösterilir.</td>
+      </tr>
+      <tr>
+        <td>Seçtiğiniz evrakların dosyaları ve künyesi (evrak adı, türü, klasör yolu, dosya esas no, birim)</td>
+        <td>Yalnız "JurisAI'ya aktar"ı onayladığınızda</td>
+        <td>JurisAI hesabınıza (bağlantı anahtarınızla). Evraklar müvekkil verisi içerebilir.</td>
+      </tr>
+      <tr>
+        <td>Evrak dosyaları</td>
+        <td>Yalnız "bilgisayarıma indir"i seçtiğinizde</td>
+        <td>Bilgisayarınızın İndirilenler klasörü (JurisAI'ya gitmez).</td>
+      </tr>
+      <tr>
+        <td>JurisAI bağlantı anahtarı ve ayarlar</td>
+        <td>Eklenti ayarlarına girdiğinizde</td>
+        <td>Tarayıcının eklenti depolaması. Anahtar yalnız JurisAI'ya yapılan isteklerde kimlik olarak kullanılır. JurisAI sayfası, yeni oluşturduğunuz anahtarı eklentiye doğrudan yazabilir (elle yapıştırmak gerekmez).</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>Varsayılan olarak hiçbir evrak kendiliğinden gönderilmez; "otomatik aktarım" ayarı kapalı gelir ve yalnız siz açarsanız çalışır.
+  Açarsanız, görüntülediğiniz dosyanın evrakları ve künyesi (mahkeme, esas no, duruşma tarihi, taraf adı) hesabınıza kendiliğinden gönderilir.</p>
+  <p>Eklenti, tanı amacıyla yalnız sayfa yapısını (öğe türleri, sayılar; ad, kimlik ya da içerik değeri olmadan) anlatan bir rapor dosyasını,
+  siz isterseniz İndirilenler klasörüne yazabilir. Bu dosya hiçbir yere gönderilmez.</p>
+
+  <h2>Verilerin kullanımı</h2>
+  <p>Aktarılan evraklar yalnız sizin JurisAI hesabınızda, size ait çalışma alanında saklanır ve yalnız o hesabın sahibi tarafından görülür
+  (kullanıcı bazlı erişim kontrolü). Evraklar, hizmetin işlevleri (belge arama, dava dosyası içi soru-cevap) dışında amaçlarla kullanılmaz,
+  satılmaz, reklam ya da kredi değerlendirmesi için kullanılmaz ve üçüncü taraflarla paylaşılmaz. Eklentinin kullandığı bilgiler,
+  Chrome Web Mağazası Kullanıcı Verileri Politikası'nın "Sınırlı Kullanım" şartlarına uygun olarak yalnız bu tek amaç için kullanılır.</p>
+
+  <h2>Saklama ve silme</h2>
+  <p>Aktarılan evrakları JurisAI içindeki çöp kutusuyla silebilirsiniz; çöpteki evrak varsayılan olarak 30 gün sonra kendiliğinden, isterseniz hemen
+  kalıcı silinir. Kalıcı silmede evrak dosyası, metin dizini ve evraka dayanan sohbet alıntıları kaldırılır. Eklentinin kendi
+  verilerini (anahtar ve ayarlar) Chrome'dan eklentiyi kaldırarak silersiniz. Bağlantı anahtarınızı JurisAI'da istediğiniz zaman iptal edebilirsiniz.</p>
+
+  <h2>Veri sorumlusu ve KVKK</h2>
+  <p>Müvekkillerinize ait kişisel veriler bakımından veri sorumlusu, evrakı aktaran avukat/büro; JurisAI hizmetini sunan NHR Yazılım ise
+  veri işleyen sıfatıyla hareket eder. Yetkili olmadığınız dosyalardan evrak aktarmamalısınız. 6698 sayılı Kanun kapsamındaki haklarınız için
+  yukarıdaki iletişim adresine başvurabilirsiniz.</p>
+
+  <h2>Değişiklikler</h2>
+  <p>Bu politika değiştiğinde bu sayfa güncellenir; önemli değişiklikler eklenti sürüm notlarında duyurulur.</p>
+</main>
+</body>
+</html>
