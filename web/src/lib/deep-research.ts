@@ -32,6 +32,7 @@ export interface ResearchStep {
   /** Gerçekte cevap veren model; eski raporlarda bulunmayabilir. */
   provider?: string | null;
   model?: string | null;
+  coverageComplete?: boolean | null;
 }
 
 export type JobState = "running" | "done" | "failed";
@@ -107,6 +108,7 @@ function parseStep(raw: unknown): ResearchStep | null {
     note: typeof raw.note === "string" && raw.note ? raw.note : null,
     provider: typeof raw.provider === "string" && raw.provider ? raw.provider : null,
     model: typeof raw.model === "string" && raw.model ? raw.model : null,
+    coverageComplete: typeof raw.coverage_complete === "boolean" ? raw.coverage_complete : null,
   };
 }
 
@@ -162,10 +164,13 @@ export function verificationLabel(verification: StepCitation["verification"]): s
 export function progressLine(job: ResearchJob): string {
   if (job.state === "running") return job.stage || `${job.done}/${job.total} başlık tamamlandı…`;
   if (job.state === "failed") return job.error ?? "Araştırma tamamlanamadı.";
-  const failed = job.steps.filter((step) => step.error).length;
-  return failed
-    ? `${job.total} başlıktan ${job.total - failed} tanesi tamamlandı; ${failed} başlık için cevap üretilemedi.`
-    : `${job.total} başlık tamamlandı.`;
+  const verified = job.steps.filter(
+    (step) =>
+      step.grounded === true && step.coverageComplete !== false && !step.error && !step.note,
+  ).length;
+  return verified === job.total
+    ? `${job.total} başlık tamamlandı.`
+    : `${job.total} başlıktan ${verified} tanesi kaynaklarla doğrulandı; diğer başlıkların sonuçlarını inceleyin.`;
 }
 
 export const canStart = (question: string): boolean =>

@@ -14,9 +14,8 @@ const allModes = [
   { id: "summary", label: "Özetle" },
   { id: "risk", label: "Risk incelemesi" },
 ];
-// Yayına yalnız Sohbet açık (kullanıcı kararı 2026-10-25): diğer sekmeler doğrulama katmanı bitince açılır. Kodları ve
-// sunucu uçları yerinde; açmak için bu listeye modun kimliğini eklemek yeter.
-const ENABLED_MODES = ["chat"];
+// Kullanıcı kararı 2026-11-02: hazırlık sırasında kapatılan çalışma modları yeniden açık.
+const ENABLED_MODES = ["chat", "deep", "analysis", "summary", "risk"];
 const modes = allModes.filter((item) => ENABLED_MODES.includes(item.id));
 const examples = [
   "Kıdem tazminatına hak kazanma şartları nelerdir?",
@@ -59,11 +58,6 @@ export function AssistantWorkspace() {
         <p role="alert" className="rounded-lg border border-amber-500/30 p-3 text-sm">
           Belge seçiminin süresi dolmuş veya bu oturumda erişilemiyor. Belgeler ekranından yeniden
           seçin.
-        </p>
-      )}
-      {context && modes.length < 2 && (
-        <p role="status" className="rounded-lg border border-amber-500/30 p-3 text-sm">
-          Belge analizi, özetleme ve risk incelemesi şimdilik kapalı; çok yakında açılacak.
         </p>
       )}
       {context && !config && modes.length > 1 && (

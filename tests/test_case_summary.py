@@ -22,6 +22,26 @@ SOURCE = (
 )
 
 
+def test_payment_percent_spelling_preserves_supported_schedule():
+    source = "Ödemenin %50’si başlangıçta, %50’si teslimde yapılacaktır."
+    assert summary.bullet_supported(
+        "Ödemenin yüzde 50’si başlangıçta, kalan yüzde 50’si teslimde yapılacaktır.", source,
+    )
+    assert not summary.bullet_supported(
+        "Ödemenin yüzde 60’ı başlangıçta, yüzde 40’ı teslimde yapılacaktır.", source,
+    )
+    assert not summary.bullet_supported("Ödeme 50 TL olarak teslimde yapılacaktır.", source)
+    assert summary.bullet_supported("Ödemenin yarısı başlangıçta, kalan yarısı teslim sırasında yapılacaktır.", source)
+    assert not summary.bullet_supported(
+        "Ödemenin yarısı başlangıçta yapılacaktır.", "Ödemenin %40'ı başlangıçta yapılacaktır.",
+    )
+    assert summary.bullet_supported("Ödemenin yüzde ellisi başlangıçta, kalan yüzde ellisi teslimde yapılacaktır.", source)
+    assert not summary.bullet_supported("Ödemenin yüzde kırkı başlangıçta yapılacaktır.", source)
+    from api.ai.numeric_support import numeric_claims_supported
+    assert numeric_claims_supported("Ödeme yüzde elli iki olarak yapılır.", "Ödeme %52 olarak yapılır.")
+    assert not numeric_claims_supported("Ödeme yüzde elli iki olarak yapılır.", "Ödeme %50 olarak yapılır.")
+
+
 # --- Olgu çıkarımı --------------------------------------------------------------------------------
 
 

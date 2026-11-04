@@ -33,7 +33,7 @@ export interface BureauData {
   };
   limited: boolean;
   generated_at: string;
-  window_days: number;
+  window_days: number | null;
 }
 const BASE = (import.meta.env.VITE_API_URL ?? "http://localhost:8766").replace(/\/$/, "");
 

@@ -56,6 +56,33 @@ def test_a_very_long_question_still_fits_the_answer_limit():
     assert all(len(question) <= 2000 for _, question in research.plan(long_question))
 
 
+def test_hinted_statute_does_not_erase_the_case_or_negation():
+    question = "Konut kiracısına süre verdim fakat ihtarda fesih uyarısı yazmadım. İhtar yeterli mi?"
+    steps = research.plan(question, [{"law_no": "6098", "article_no": "315"}])
+    assert all("fesih uyarısı yazmadım" in text for _, text in steps)
+    assert "6098 sayılı kanun madde 315" in steps[0][1]
+    assert "kanun özetiyle ikame etme" in steps[1][1]
+    assert "ilgisiz süreler ekleme" in steps[2][1]
+
+
+def test_condensed_topic_never_replaces_original_facts_in_answer_calls():
+    question = "Konut kiracısına otuz gün süre verdim fakat ihtarda fesih uyarısı yazmadım. İhtarın sonuçlarını, süreyi ve ispat konusunu ayrıntılı olarak açıkla."
+    seen = []
+
+    async def condense(text):
+        return "Konut kiracısı kira borcu ve ihtar"
+
+    async def answer(text, conversation_id):
+        seen.append(text)
+        return _response(answer=text)
+
+    job = research.ResearchJob(id=uuid4(), owner_id=uuid4(), question=question)
+    asyncio.run(research.run_job(job, answer, condense=condense))
+    assert job.topic == "Konut kiracısı kira borcu ve ihtar"
+    assert len(seen) == 3
+    assert all("fesih uyarısı yazmadım" in text for text in seen)
+
+
 # --- İş akışı -----------------------------------------------------------------------------------------------------------------
 
 

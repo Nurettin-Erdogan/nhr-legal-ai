@@ -1,0 +1,29 @@
+# HTTPS ve yönlendirme. SITE_ADDRESS bir alan adı olmalıdır (ör. 13-60-1-2.sslip.io): Caddy sertifikayı kendisi alır.
+{$SITE_ADDRESS} {
+	encode zstd gzip
+
+	# Yapay zekâ cevapları akış olarak gelir (NDJSON): ara belleğe alma.
+	handle /api/* {
+		reverse_proxy api:8766 {
+			flush_interval -1
+			transport http {
+				response_header_timeout 5m
+			}
+		}
+	}
+
+	handle /health {
+		reverse_proxy api:8766
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}

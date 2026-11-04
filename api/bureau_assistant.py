@@ -18,7 +18,6 @@ from api.db import authenticated_database_connection
 
 router = APIRouter(prefix="/api/bureau-assistant", tags=["bureau-assistant"])
 ZONE = ZoneInfo("Europe/Istanbul")
-LIMIT = 100
 
 
 class Decision(BaseModel):
@@ -34,7 +33,7 @@ def proposals(hearings, documents, decisions, calendar, now):
     result = []
     for row in hearings:
         when = row["next_hearing"]
-        if row["status"] == "closed" or not now <= when <= now + timedelta(days=7):
+        if row["status"] == "closed" or when < now:
             continue
         key = f"hearing:{row['id']}:{when.isoformat()}"
         if key in handled or (str(row["id"]), when) in scheduled:
@@ -45,13 +44,11 @@ def proposals(hearings, documents, decisions, calendar, now):
             source_url=f"/dashboard/cases/{row['id']}", date=when.isoformat(),
             priority="high" if when - now < timedelta(days=2) else "medium", action_label="Takvime ekle"))
     for row in documents:
-        if row["created_at"] < now - timedelta(days=7):
-            continue
         key = f"document:{row['id']}"
         if key in handled:
             continue
         result.append(dict(key=key, kind="document", title=f"Belgeyi incele: {row['file_name']}"[:200],
-            description="Son 7 günde eklenen belge için inceleme görevi önerisi. Belgenin içeriği yorumlanmadı ve tebligat/süre sonucu çıkarılmadı.",
+            description="Henüz işlem yapılmamış belge için inceleme görevi önerisi. Belgenin içeriği yorumlanmadı ve tebligat/süre sonucu çıkarılmadı.",
             case_id=str(row["case_id"]) if row["case_id"] else None,
             case_title=row.get("case_title") or "Davaya bağlı değil", source_label=row["file_name"],
             source_url=f"/dashboard/cases/{row['case_id']}" if row["case_id"] else "/dashboard/files",
@@ -64,20 +61,20 @@ def snapshot(db, now):
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     day_end = day_start + timedelta(days=1)
     hearings = db.execute("""SELECT id,title,case_no,court,status,next_hearing FROM office_cases
-        WHERE status <> 'closed' AND next_hearing >= %s AND next_hearing <= %s
-        ORDER BY next_hearing,id LIMIT 101""", (now, now + timedelta(days=7))).fetchall()
+        WHERE status <> 'closed' AND next_hearing >= %s
+        ORDER BY next_hearing,id""", (now,)).fetchall()
     documents = db.execute("""SELECT d.id,d.case_id,d.file_name,d.created_at,c.title AS case_title
         FROM office_case_documents d LEFT JOIN office_cases c ON c.id=d.case_id
-        WHERE d.deleted_at IS NULL AND d.created_at >= %s
-        ORDER BY d.created_at DESC,d.id LIMIT 101""", (now - timedelta(days=7),)).fetchall()
-    keys = [f"hearing:{r['id']}:{r['next_hearing'].isoformat()}" for r in hearings[:LIMIT]]
-    keys += [f"document:{r['id']}" for r in documents[:LIMIT]]
+        WHERE d.deleted_at IS NULL
+        ORDER BY d.created_at DESC,d.id""").fetchall()
+    keys = [f"hearing:{r['id']}:{r['next_hearing'].isoformat()}" for r in hearings]
+    keys += [f"document:{r['id']}" for r in documents]
     decisions = db.execute("SELECT proposal_key FROM office_bureau_decisions WHERE proposal_key=ANY(%s)", (keys,)).fetchall()
     calendar = db.execute("""SELECT case_id,start_at FROM office_calendar_events
-        WHERE event_type='hearing' AND start_at >= %s AND start_at <= %s""",
-        (now, now + timedelta(days=7))).fetchall()
+        WHERE event_type='hearing' AND start_at >= %s""",
+        (now,)).fetchall()
     tasks = db.execute("""SELECT id,title,status,due_date,case_id FROM office_tasks
-        WHERE status <> 'done' ORDER BY due_date NULLS LAST,id LIMIT 8""").fetchall()
+        WHERE status <> 'done' ORDER BY due_date NULLS LAST,id""").fetchall()
     counts = db.execute("""SELECT count(*) FILTER (WHERE status <> 'done') AS open_tasks,
         count(*) FILTER (WHERE status <> 'done' AND due_date < %s) AS overdue_tasks,
         count(*) FILTER (WHERE status <> 'done' AND due_date >= %s AND due_date < %s) AS today_tasks
@@ -86,12 +83,12 @@ def snapshot(db, now):
         WHERE status <> 'closed' AND next_hearing >= %s AND next_hearing < %s""",
         (day_start, day_end)).fetchone()["count"]
     counts["upcoming_hearings"] = db.execute("""SELECT count(*) AS count FROM office_cases
-        WHERE status <> 'closed' AND next_hearing >= %s AND next_hearing <= %s""",
-        (now, now + timedelta(days=7))).fetchone()["count"]
-    return dict(proposals=proposals(hearings[:LIMIT], documents[:LIMIT], decisions, calendar, now),
-        hearings=hearings[:8], tasks=tasks, counts=counts,
-        limited=len(hearings) > LIMIT or len(documents) > LIMIT,
-        generated_at=now.isoformat(), window_days=7)
+        WHERE status <> 'closed' AND next_hearing >= %s""",
+        (now,)).fetchone()["count"]
+    return dict(proposals=proposals(hearings, documents, decisions, calendar, now),
+        hearings=hearings, tasks=tasks, counts=counts,
+        limited=False,
+        generated_at=now.isoformat(), window_days=None)
 
 
 @router.get("")
@@ -114,14 +111,14 @@ def _review_content(db, proposal, now):
         WHERE od.deleted_at IS NULL AND
         ((%s::uuid IS NOT NULL AND od.id=%s) OR
          (%s::uuid IS NULL AND od.case_id=%s::uuid))
-        ORDER BY od.created_at DESC,od.id LIMIT 11""",
+        ORDER BY od.created_at DESC,od.id""",
         (document_id, document_id, document_id, proposal["case_id"])).fetchall()
     documents = [dict(id=str(r["id"]), file_name=r["file_name"],
                       ready=r["status"] == "ready" and bool(r["excerpt"]),
                       ocr=bool(r["ocr"]),
                       excerpt=r["excerpt"] if r["status"] == "ready" else None)
-                 for r in rows[:10]]
-    return dict(proposal=proposal, documents=documents, limited=len(rows) > 10,
+                 for r in rows]
+    return dict(proposal=proposal, documents=documents, limited=False,
                 suggested_action=proposal["description"], generated_at=now.isoformat(),
                 action_available=True)
 
@@ -158,18 +155,18 @@ def preparation(db, case_id, now):
           AND EXISTS (SELECT 1 FROM document_chunks c WHERE c.document_id=d.id))) AS ready
         FROM office_case_documents od WHERE case_id=%s AND deleted_at IS NULL""", (case_id,)).fetchone()
     tasks = db.execute("""SELECT id,title,status,due_date FROM office_tasks
-        WHERE case_id=%s AND status <> 'done' ORDER BY due_date NULLS LAST,id LIMIT 21""", (case_id,)).fetchall()
+        WHERE case_id=%s AND status <> 'done' ORDER BY due_date NULLS LAST,id""", (case_id,)).fetchall()
     handled = db.execute("SELECT status FROM office_bureau_decisions WHERE proposal_key=%s", (key,)).fetchone()
     scheduled = db.execute("""SELECT id FROM office_calendar_events
         WHERE case_id=%s AND event_type='hearing' AND start_at=%s LIMIT 1""", (case_id, when)).fetchone()
-    result["action_available"] = (case["status"] != "closed" and now <= when <= now + timedelta(days=7)
+    result["action_available"] = (case["status"] != "closed" and now <= when
                                   and not handled and not scheduled)
     result["preparation"] = dict(
         case_no=case["case_no"], court=case["court"], status=case["status"], hearing_at=when.isoformat(),
         total_documents=counts["total"], ready_documents=counts["ready"],
         tasks=[dict(id=str(t["id"]), title=t["title"], status=t["status"],
-                    due_date=t["due_date"].isoformat() if t["due_date"] else None) for t in tasks[:20]],
-        tasks_limited=len(tasks) > 20,
+                    due_date=t["due_date"].isoformat() if t["due_date"] else None) for t in tasks],
+        tasks_limited=False,
         checklist=["Kayıtlı duruşma tarihini ve mahkemeyi asıl dosyadan kontrol edin.",
                    "Belge özetini kaynak metinlerle karşılaştırın; okunamayan belgeleri ayrıca inceleyin.",
                    "Açık görevlerin tamamlanma durumunu kontrol edin; bu liste hukuki yükümlülük tespiti değildir."],

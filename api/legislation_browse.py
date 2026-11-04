@@ -235,12 +235,16 @@ def parse_named_reference(laws: list[Law], query: str) -> tuple[Law, str] | None
     return None
 
 
+_TYPE_ORDER = {"constitution": 0, "law": 1, "decree": 2, "regulation": 3, "communique": 4, "other": 5}
+
+
 def search_laws(laws: list[Law], query: str, kind: str | None) -> list[Law]:
     """Numara tam eşleşmesi > ad başlangıcı > ad içinde geçme; eşitlikte madde sayısı çok olan önde."""
     wanted = [law for law in laws if not kind or law.legislation_type == kind]
     cleaned = fold(query)
     if not cleaned:
-        return sorted(wanted, key=lambda law: (-law.articles, law.law_name))
+        # Boş sorgu: önce Anayasa, kanunlar, KHK'ler; yönetmelikler ve tebliğler sonra. Grup içinde madde sayısı çok olan önde.
+        return sorted(wanted, key=lambda law: (_TYPE_ORDER.get(law.legislation_type, len(_TYPE_ORDER)), -law.articles, law.law_name))
     named = parse_named_reference(laws, query)
     if named and (not kind or named[0].legislation_type == kind):
         return [named[0]]
@@ -271,7 +275,13 @@ def search_laws(laws: list[Law], query: str, kind: str | None) -> list[Law]:
         else:
             continue
         scored.append((score, law))
-    scored.sort(key=lambda item: (item[0], -item[1].articles, item[1].law_name))
+    # "Anayasa" yazan önce Anayasa'nın kendisini görür; Anayasa Mahkemesi kanunu, yönetmelikleri vb. ardından gelir.
+    pinned = _ABBREVIATIONS.get(cleaned)
+
+    def is_pinned(law: Law) -> int:
+        return 0 if pinned and law.law_no == pinned and law.legislation_type in ("law", "constitution") else 1
+
+    scored.sort(key=lambda item: (is_pinned(item[1]), item[0], -item[1].articles, item[1].law_name))
     return [law for _, law in scored]
 
 

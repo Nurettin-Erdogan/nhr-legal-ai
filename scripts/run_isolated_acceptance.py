@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+from uuid import uuid4
 
 import psycopg
 
@@ -47,13 +48,23 @@ def main():
                NHR_OFFLINE_AUDIT="1", NHR_OFFLINE_FIXTURE_PORTS="55439",
                PYTHONPATH=str(ROOT / "scripts/offline_guard") + os.pathsep + str(ROOT),
                PYTHONIOENCODING="utf-8")
-    env.pop("NHR_BROWSER_TESTS", None)
+    requested_args = sys.argv[1:]
+    browser_fixtures = "--with-browser-fixtures" in requested_args
+    requested_args = [arg for arg in requested_args if arg != "--with-browser-fixtures"]
+    if browser_fixtures:
+        env["NHR_BROWSER_TESTS"] = "1"
+    else:
+        env.pop("NHR_BROWSER_TESTS", None)
     for key in list(env):
         if key.endswith("API_KEY"):
             env.pop(key)
-    args = sys.argv[1:] or ["--ignore=tests/test_uyap_extension_browser.py"]
+    args = requested_args or ([] if browser_fixtures else ["--ignore=tests/test_uyap_extension_browser.py"])
+    # A fixed basetemp collides with concurrent runs and Windows file handles.
+    # Let pytest create a fresh, workspace-scoped directory; never delete or
+    # take ownership of another run's directory to make a test pass.
+    temporary_root = ROOT / ".local" / "tmp" / ("acceptance-" + uuid4().hex)
     return subprocess.run([sys.executable, "-X", "utf8", "-m", "pytest", "-q", "-ra",
-                           "-p", "tests.offline_network_guard", *args], cwd=ROOT,
+                           "-p", "tests.offline_network_guard", "--basetemp", str(temporary_root), *args], cwd=ROOT,
                           env=env, check=False).returncode
 
 

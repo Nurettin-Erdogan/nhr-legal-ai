@@ -12,6 +12,7 @@ export interface DocumentJobInput {
   parties?: string[];
   subject?: string;
   details?: string;
+  draft_fields?: import("./draft-fields").DraftFields;
 }
 export interface DocumentJob {
   id: string;

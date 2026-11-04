@@ -15,6 +15,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
 from api import case_summary
+from api.draft_documents import DraftFields
 from api.audit import AuditContext, record_event
 from api.auth.routes import current_user_id
 from api.db import authenticated_database_connection
@@ -27,6 +28,7 @@ _tasks: dict[tuple[UUID, UUID], asyncio.Task] = {}
 
 
 class JobRequest(BaseModel):
+    draft_fields: DraftFields = Field(default_factory=DraftFields)
     module: Literal["document_analysis", "auto_summary", "risk_analysis", "draft"]
     document_ids: list[UUID] = Field(default_factory=list, max_length=MAX_DOCUMENTS)
     text: str = Field(default="", max_length=2_000_000)
@@ -218,7 +220,9 @@ async def process_window(
             "answer": result["content"],
             "sources": result["sources"],
             "bullets": [],
-            "errors": [],
+            # A completed research loop is not necessarily a fully verified
+            # report. Preserve section failures so the queue becomes partial.
+            "errors": result.get("errors", []),
         }
 
     async def generate(system: str, text: str) -> str:
@@ -580,6 +584,7 @@ async def draft_from_progress(
         subject,
         paragraphs,
         legal,
+        payload.get("draft_fields"),
     )
     content += "\n\n## Belge okuma kapsamı\n"
     for document in progress["documents"]:

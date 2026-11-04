@@ -143,6 +143,14 @@ def test_fabricated_model_facts_never_reach_the_document(monkeypatch):
     assert "sizin yazdığınız bilgilerle oluşturuldu" in result["content"]
 
 
+def test_draft_retains_late_facts_when_model_omits_them(monkeypatch):
+    _patch(monkeypatch, contexts=[], output="1. Müvekkil 8 yıl 1 ay çalışmıştır.")
+    details = "Müvekkil 8 yıl 1 ay çalışmıştır. " + "İşyeri teslim tutanağı düzenlendi. " * 65 + "Hosting ücreti kapsam dışıdır."
+    result = _draft(details=details)
+    assert "Hosting ücreti kapsam dışıdır." in result["content"]
+    assert "Kullanıcının verdiği açıklama:" in result["content"]
+
+
 def test_a_model_failure_still_yields_a_draft_from_the_users_own_facts(monkeypatch):
     _patch(monkeypatch, contexts=[], error=HTTPException(status_code=502, detail="Ollama yanıtı token sınırında kesildi"))
     result = _draft()
@@ -243,11 +251,20 @@ def test_verified_statutes_and_decisions_are_listed_by_code_not_by_the_model(mon
     decision = _context(source_type="court_decision", law_name=None, law_no=None, article_no=None, court_name="Yargıtay", chamber="9. Hukuk Dairesi", docket_no="2025/412", decision_no="2026/118")
     other = _context(source_type="other", law_name=None, law_no=None, article_no=None, title="Sayıştay ilamı")
     _patch(monkeypatch, contexts=[_context(), _context(), decision, other], output="1. Müvekkil 8 yıl 1 ay çalışmıştır.")
-    result = _draft()
+    result = _draft(subject="Türk Borçlar Kanunu kira artışına ilişkin talepler")
     assert result["content"].count("Türk Borçlar Kanunu (6098) m. 344") == 1  # tekrar edilmez
     assert "Yargıtay 9. Hukuk Dairesi, E. 2025/412, K. 2026/118" in result["content"]
     assert "Sayıştay" not in result["content"]
     assert [item["verification"] for item in result["sources"]] == ["official", "official"]
+
+
+def test_unrelated_regulation_cannot_become_contract_legal_basis(monkeypatch):
+    from api.draft_documents import legal_references
+
+    unrelated = _context(law_name="Tarımda kullanılan gübrelerin piyasa gözetimi ve denetimi yönetmeliği",
+                         title="Gübre yönetmeliği", law_no="38682", article_no="10")
+    legal = legal_references([unrelated], question="Web sitesi hazırlanması ve hosting hizmeti")
+    assert legal.statutes == [] and legal.sources == []
 
 
 @pytest.mark.parametrize("doc_type,marker", [("dilekce", "SONUÇ VE İSTEM"), ("ihtarname", "İHTAR:"), ("sozlesme", "MADDE 7 – Uyuşmazlık"), ("diger", "SONUÇ VE İSTEM")])
@@ -258,6 +275,41 @@ def test_every_document_type_has_its_skeleton_and_unfilled_gaps(monkeypatch, doc
 
 
 # --- Analiz ve risk -------------------------------------------------------------------------------------------
+
+
+def test_analysis_filters_unrelated_sources_using_document_not_instruction():
+    import json
+    from api import office_analysis
+
+    async def generate(system, prompt):
+        if "denetçisisin" in system:
+            return json.dumps({"results": [True] * len(json.loads(prompt)["MADDELER"])})
+        return "- Teslim süresi 30 gündür."
+
+    unrelated = _context(law_name="Tarımsal destekler kararı", content="Gübre ve tohum desteği ödenir.")
+    markdown, sources = asyncio.run(office_analysis.analyze(
+        "Tarımsal destekler kararı hakkında incele", generate, [unrelated],
+        documents=[("Hizmet", "Web sitesi hazırlanacaktır. Teslim süresi 30 gündür.")],
+    ))
+    assert sources == []
+    assert "Tarımsal destekler kararı" not in markdown
+
+
+def test_analysis_preserves_percent_payment_and_explicitly_related_source():
+    import json
+    from api import office_analysis
+
+    async def generate(system, prompt):
+        if "denetçisisin" in system:
+            return json.dumps({"results": [True] * len(json.loads(prompt)["MADDELER"])})
+        return "- Ödemenin yüzde 50’si başlangıçta, kalan yüzde 50’si teslimde yapılacaktır."
+
+    document = "Türk Borçlar Kanunu kapsamında hizmet. Ödemenin %50’si başlangıçta, %50’si teslimde yapılacaktır."
+    related = _context(content=document)
+    markdown, sources = asyncio.run(office_analysis.analyze(document, generate, [related]))
+    assert "kalan yüzde 50’si teslimde" in markdown
+    assert "madde belgeyle eşleşmediği" not in markdown
+    assert len(sources) == 1
 
 
 def test_document_analysis_summarises_each_marked_document_and_lists_sources_by_code(monkeypatch):
@@ -275,8 +327,8 @@ def test_document_analysis_summarises_each_marked_document_and_lists_sources_by_
     assert "## 1. Kira A" in markdown and "## 2. Kira B" in markdown
     assert "Kira bedeli 10.000 TL olarak belirlenmiştir." in markdown  # belgeyle doğrulanan madde
     assert "12.000 TL" in markdown and "Belgede geçen olgular" in markdown  # B belgesinin olgusu; uydurma 10.000 B'de elenir
-    assert "Hukuki değerlendirme içermez" in markdown and "Türk Borçlar Kanunu (6098) m. 344" in markdown
-    assert len(sources) == 1  # üçüncü taraf listelenmez
+    assert "Hukuki değerlendirme içermez" in markdown
+    assert all(source["verification"] == "official" for source in sources)
 
 
 def test_selected_analysis_keeps_documents_separate_and_does_not_summarize_the_instruction():
@@ -338,3 +390,28 @@ def test_risk_analysis_never_predicts_outcomes_and_reports_sources(monkeypatch):
     result = asyncio.run(office_ai._risk("İşçiye fazla mesai ücreti ödenmedi, puantaj var, dava açılırsa riskler neler?", USER_ID))
     assert "Dava sonucu tahmini yapılmaz" in result["content"] and "Risk analizi" in result["content"]
     assert result["sources"] and result["sources"][0]["reference"] == "İŞ KANUNU (4857) m. 41"
+
+
+def test_risk_exposes_unverified_sections_to_document_queue(monkeypatch):
+    from types import SimpleNamespace
+
+    async def answer(user_id, question, conversation_id):
+        return SimpleNamespace(answer=f"Eksik: {question}", grounded=False, citations=[], conversation_id=None)
+
+    monkeypatch.setattr(office_ai, "_deep_answer", answer)
+    result = asyncio.run(office_ai._risk("Sentetik olay için süre ve ispat incelemesi", USER_ID))
+    assert len(result["errors"]) == 3
+    assert "her bölümün cevabı kendi kaynaklarına karşı doğrulanmıştır" not in result["content"]
+
+
+def test_risk_grounded_but_incomplete_sections_are_still_partial(monkeypatch):
+    from types import SimpleNamespace
+
+    async def answer(user_id, question, conversation_id):
+        return SimpleNamespace(answer=f"Kaynaklı: {question}", grounded=True, coverage_complete=False,
+                               citations=[], conversation_id=None)
+
+    monkeypatch.setattr(office_ai, "_deep_answer", answer)
+    result = asyncio.run(office_ai._risk("Sentetik olay için kaynak ve kapsam incelemesi", USER_ID))
+    assert len(result["errors"]) == 3
+    assert all("tamamı karşılanmadı" in error for error in result["errors"])

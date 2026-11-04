@@ -1,0 +1,107 @@
+# Üretim: tek sunucuda (8 GiB RAM'li m7i-flex.large için ayarlı). Başlatma: deploy/README.md
+#   cd /srv/nhr/app && docker compose -f deploy/docker-compose.prod.yml --env-file /srv/nhr/.env.production up -d --build
+# Veritabanı dışarıya AÇILMAZ (yalnız compose ağı); dışarıya yalnız Caddy'nin 80/443 portu açıktır.
+name: nhr
+
+networks:
+  nhr:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+
+services:
+  db:
+    image: pgvector/pgvector:0.8.6-pg16
+    restart: unless-stopped
+    networks: [nhr]
+    shm_size: 1gb
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - /srv/nhr/pgdata:/var/lib/postgresql/data
+    # 8 GiB makine: sunucu belleğinin yaklaşık 3/8'i veritabanı önbelleği; geri kalanı işletim sistemi önbelleği, API,
+    # Ollama ve web için. Ölçüm sonrası ayarlanır.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=2GB
+      - -c
+      - effective_cache_size=5GB
+      - -c
+      - work_mem=16MB
+      - -c
+      - maintenance_work_mem=256MB
+      - -c
+      - max_connections=80
+      - -c
+      - max_wal_size=8GB
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=200
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nhr_app -d nhr_legal_ai"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 120s
+
+  ollama:
+    image: ollama/ollama:0.31.2
+    restart: unless-stopped
+    networks: [nhr]
+    mem_limit: 2500m
+    environment:
+      OLLAMA_KEEP_ALIVE: 10m
+      OLLAMA_MAX_LOADED_MODELS: "2"
+      OLLAMA_NUM_PARALLEL: "1"
+    volumes:
+      - /srv/nhr/ollama:/root/.ollama
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    restart: unless-stopped
+    networks: [nhr]
+    mem_limit: 1500m
+    env_file: ${NHR_ENV_FILE:-/srv/nhr/.env.production}
+    environment:
+      DOCUMENT_STORAGE_DIR: /data/uploads
+      FORWARDED_ALLOW_IPS: 172.28.0.0/24
+      OLLAMA_BASE_URL: http://ollama:11434
+    volumes:
+      - /srv/nhr/uploads:/data/uploads
+      - /srv/nhr/api-data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ../web
+      dockerfile: ../deploy/Dockerfile.web
+    restart: unless-stopped
+    networks: [nhr]
+    mem_limit: 512m
+    depends_on: [api]
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    networks: [nhr]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [api, web]
+
+volumes:
+  caddy_data:
+  caddy_config:

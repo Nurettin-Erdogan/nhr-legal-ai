@@ -120,6 +120,7 @@ def test_declared_source_gap_is_rendered_not_silently_counted_as_complete():
         contexts=[a,b], research_evidence=evidence(a,b), diagnostics=diagnostic)
     assert result and result.grounded and "doğrulayamıyorum" in result.text
     assert diagnostic["aspect_coverage"][1]["status"] == "source_gap"
+    assert diagnostic["coverage_preserved"] is False
 
 
 def test_source_number_overlap_cannot_override_independent_relevance_rejection():

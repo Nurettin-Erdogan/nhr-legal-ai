@@ -1,0 +1,22 @@
+# Apply only on the future server, never to the running local database:
+# docker compose -f docker-compose.yml -f docker-compose.server.yml config --quiet
+# !override requires Docker Compose 2.24.4 or later.
+# This is the database override, NOT a complete application deployment.
+services:
+  db:
+    ports: !override
+      - "127.0.0.1:5433:5432"
+    # Initial 16 GiB RAM pilot settings; measure before increasing concurrency.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=4GB
+      - -c
+      - effective_cache_size=10GB
+      - -c
+      - maintenance_work_mem=512MB
+      - -c
+      - random_page_cost=1.5
+      - -c
+      - effective_io_concurrency=200
+    shm_size: 2gb

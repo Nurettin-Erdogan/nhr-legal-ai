@@ -1,0 +1,32 @@
+# API (FastAPI). Bağlam: depo kökü.  docker build -f deploy/Dockerfile.api -t nhr-api .
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1
+
+# OCR (taranmış belgeler) ve sağlık kontrolü için.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-tur curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+COPY api ./api
+COPY ingestion ./ingestion
+COPY worker ./worker
+# UYAP eklentisi paketi: /api/uyap-extension/package bu genel zipin içine kullanıcının anahtarını ekler.
+COPY web/public/jurisai-avukat.zip ./web/public/jurisai-avukat.zip
+
+# Önbellek dosyaları (data/cache) ve yüklenen belgeler kapsayıcı dışındaki birimlerde durur.
+RUN useradd --create-home --uid 10001 app \
+    && mkdir -p /app/data/cache /data/uploads \
+    && chown -R app:app /app/data /data
+USER app
+
+EXPOSE 8766
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:8766/health || exit 1
+
+# Vekil (Caddy) başlıkları yalnız compose ağındaki adresten kabul edilir (FORWARDED_ALLOW_IPS).
+CMD ["sh", "-c", "exec uvicorn api.main:app --host 0.0.0.0 --port 8766 --proxy-headers --forwarded-allow-ips \"${FORWARDED_ALLOW_IPS:-127.0.0.1}\" --workers 2"]

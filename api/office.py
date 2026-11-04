@@ -669,6 +669,54 @@ def _schedule_document_index(user_id: UUID, document_id: UUID, request: Request)
         logger.warning("Belge indeksleme zamanlanamadı id=%s", document_id, exc_info=True)
 
 
+@router.get("/documents/picker")
+def document_picker(
+    user_id: Annotated[UUID, Depends(current_user_id)],
+    case_id: UUID | None = None,
+    project_id: UUID | None = None,
+    q: str = Query(default="", max_length=255),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=100),
+):
+    """Bounded metadata only; RLS applies to every page and search."""
+    from api.ai.workspace_scope import project_document_predicate
+
+    with authenticated_database_connection(str(user_id)) as connection:
+        clauses = ["od.deleted_at IS NULL"]
+        params: dict[str, Any] = {"offset": offset, "limit": limit + 1}
+        if case_id:
+            _case_for_document(connection, case_id)
+            clauses.append("od.case_id = %(case_id)s")
+            params["case_id"] = case_id
+        if project_id:
+            if not connection.execute(
+                "SELECT id FROM office_projects WHERE id = %s", (project_id,)
+            ).fetchone():
+                raise HTTPException(status_code=404, detail="Proje bulunamadı")
+            clauses.append(project_document_predicate())
+            params["office_project_id"] = project_id
+        if q.strip():
+            # Treat wildcard characters as literal user input.
+            params["search"] = "%" + re.sub(r"([\\%_])", r"\\\1", q.strip()) + "%"
+            clauses.append(
+                "(od.file_name ILIKE %(search)s OR od.uyap_file_no ILIKE %(search)s "
+                "OR od.uyap_birim ILIKE %(search)s)"
+            )
+        rows = connection.execute(
+            "SELECT od.id, od.file_name, od.uyap_file_no, od.uyap_birim, od.doc_date, "
+            "od.source, CASE WHEN NULLIF(btrim(od.content_excerpt), '') IS NOT NULL "
+            "THEN 'ready' WHEN od.created_at > now() - interval '3 minutes' "
+            "THEN 'reading' ELSE 'none' END AS text_state "
+            "FROM office_case_documents od WHERE " + " AND ".join(clauses)
+            + " ORDER BY od.created_at DESC, od.id DESC LIMIT %(limit)s OFFSET %(offset)s",
+            params,
+        ).fetchall()
+    return JSONResponse(
+        jsonable_encoder({"documents": rows[:limit], "has_more": len(rows) > limit}),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 def _case_for_document(connection, case_id: UUID):
     # RLS applies; a foreign case is indistinguishable from a missing one.
     case = connection.execute(

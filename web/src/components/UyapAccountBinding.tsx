@@ -27,10 +27,10 @@ export function UyapAccountBinding() {
   if (!data && !error) return null;
   return (
     <section
-      className="mb-6 rounded-xl border bg-card p-4 text-sm space-y-2"
+      className="space-y-2 rounded-xl border bg-card p-5 text-sm"
       data-testid="uyap-accounts"
     >
-      <p className="font-medium">Dosyalar kimin UYAP'ından geldi</p>
+      <h2 className="font-semibold">Dosyalar kimin UYAP'ından geldi</h2>
       {error ? (
         <p className="text-destructive">{error}</p>
       ) : !data?.accounts.length && !data?.unknown.files ? (

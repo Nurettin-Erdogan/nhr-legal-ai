@@ -21,6 +21,13 @@ import { CaseDocPicker } from "@/components/CaseDocPicker";
 import { LegalDocumentEditor } from "@/components/LegalDocumentEditor";
 import { DocumentJobPanel } from "@/components/DocumentJobPanel";
 import { startDocumentJob } from "@/lib/document-jobs";
+import {
+  CONTRACT_FIELDS,
+  PETITION_FIELDS,
+  NOTICE_FIELDS,
+  fieldsForDocument,
+  type DraftFields,
+} from "@/lib/draft-fields";
 import { readDocumentContext } from "@/lib/document-workflow";
 import { DEFAULT_DOCUMENT_LAYOUT, documentPageStyle } from "@/lib/document-layout";
 import { buildDocumentDocx } from "@/lib/document-export";
@@ -68,6 +75,7 @@ const Drafts = () => {
   const [partiesText, setPartiesText] = useState("");
   const [subject, setSubject] = useState("");
   const [details, setDetails] = useState("");
+  const [draftFields, setDraftFields] = useState<DraftFields>({});
   const [generating, setGenerating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [content, setContent] = useState("");
@@ -90,6 +98,7 @@ const Drafts = () => {
     setSubject("");
     setPartiesText("");
     setDetails("");
+    setDraftFields({});
     if (!currentOwner.current) return;
     const context = contextKey ? readDocumentContext(currentOwner.current, contextKey) : null;
     if (contextKey && !context) {
@@ -182,6 +191,7 @@ const Drafts = () => {
           title: title || subject.slice(0, 100),
           subject,
           details,
+          draft_fields: fieldsForDocument(docType, draftFields),
           parties: partiesText.split("\n").filter(Boolean),
           prompt: subject,
         });
@@ -198,7 +208,15 @@ const Drafts = () => {
     try {
       const parties = partiesText.split("\n").filter(Boolean);
       const { data, error } = await invokeFunction("generate-legal-document", {
-        body: { docType, title, parties, subject, details, docIds },
+        body: {
+          docType,
+          title,
+          parties,
+          subject,
+          details,
+          docIds,
+          draftFields: fieldsForDocument(docType, draftFields),
+        },
       });
       if (currentOwner.current !== initiatedBy) return;
       if (error) throw error;
@@ -231,6 +249,7 @@ const Drafts = () => {
         metadata: {
           subject,
           details,
+          draft_fields: fieldsForDocument(docType, draftFields),
           case_id: caseId ?? null,
           office_project_id: officeProjectId ?? null,
           document_ids: docIds,
@@ -383,6 +402,49 @@ const Drafts = () => {
               rows={4}
             />
           </div>
+
+          {(docType === "dilekce" || docType === "sozlesme" || docType === "ihtarname") && (
+            <fieldset className="space-y-3 rounded-lg border p-4">
+              <legend className="px-2 font-medium">
+                {docType === "sozlesme"
+                  ? "Sözleşme koşulları"
+                  : docType === "ihtarname"
+                    ? "İhtarname bilgileri"
+                    : "Dilekçe bilgileri"}
+              </legend>
+              <p className="text-xs text-muted-foreground">
+                Yazdığınız bilgiler taslağa aktarılır; hukuken uygun oldukları otomatik kabul
+                edilmez. Boş alanlar […] olarak bırakılır, koşul veya talep uydurulmaz.
+              </p>
+              {(docType === "sozlesme"
+                ? CONTRACT_FIELDS
+                : docType === "ihtarname"
+                  ? NOTICE_FIELDS
+                  : PETITION_FIELDS
+              ).map(([key, label]) => (
+                <div key={key} className="space-y-1">
+                  <Label htmlFor={`draft-${key}`}>{label}</Label>
+                  <Textarea
+                    id={`draft-${key}`}
+                    value={draftFields[key] ?? ""}
+                    maxLength={
+                      key === "evidence" || key === "requests" || key === "obligations"
+                        ? 8000
+                        : key === "authority" ||
+                            key === "representative" ||
+                            key === "effective_date"
+                          ? 500
+                          : 4000
+                    }
+                    onChange={(event) =>
+                      setDraftFields((previous) => ({ ...previous, [key]: event.target.value }))
+                    }
+                    rows={2}
+                  />
+                </div>
+              ))}
+            </fieldset>
+          )}
 
           <CaseDocPicker
             value={docIds}

@@ -69,5 +69,8 @@ export function documentInlineRuns(
     previous = match.index + match[0].length;
   }
   if (previous < text.length) runs.push({ text: text.slice(previous) });
-  return runs.length ? runs : [{ text }];
+  return (runs.length ? runs : [{ text }]).map((run) => ({
+    ...run,
+    text: run.text.replace(/\\([\\`*_{}[\]<>#!|])/g, "$1"),
+  }));
 }

@@ -330,7 +330,6 @@ def _free_answer(provider: AIProvider, question: str, contexts: list[RAGContext]
 
     from api.ai.free_answer import plan_question
 
-    single = [(question, (question,))]
     planner_started = monotonic()
     if prepared_plan:
         # The outer pipeline already paid for and validated a research plan.
@@ -773,6 +772,15 @@ def _response_from_verified(
         raise HTTPException(503, "Kaynak doğrulaması tamamlanamadı; doğrulanmamış atıflar gösterilmiyor.")
     if not from_cache:
         _queue_cited_third_party(answer)
+    coverage_info = {} if timings is None else (
+        timings.extra.get("free_answer") or timings.extra.get("synthesis") or {})
+    coverage_complete = None
+    if coverage_info:
+        if (coverage_info.get("partial_answer") or coverage_info.get("uncovered_parts")
+                or coverage_info.get("coverage_preserved") is False):
+            coverage_complete = False
+        elif coverage_info.get("coverage_preserved") is True:
+            coverage_complete = True
     return AIAnswerResponse(
         question=request.question,
         as_of=request.as_of,
@@ -786,6 +794,7 @@ def _response_from_verified(
         consulted_sources=consulted_sources(answer, consulted, request.question),
         grounded=answer.grounded,
         answer_kind=answer.answer_kind,
+        coverage_complete=coverage_complete,
         unverified_markers=list(answer.unverified_markers),
         conversation_id=conversation_id,
         message_id=message_id,
@@ -2123,7 +2132,12 @@ async def _execute_answer_body(
                         # than recopying fragile PDF text into a JSON quote.
                         # Resolution and all semantic/numeric checks stay on.
                         compact_evidence=provider is not local_provider or 'qwen' in provider.model,
-                        semantic_repair=provider is not local_provider and generation_profile == "default",
+                        # The primary provider object is also named local_provider
+                        # in single-provider Bedrock mode. Object identity is not
+                        # a capability check; research needs the same bounded
+                        # source-bound repair as ordinary cloud synthesis.
+                        semantic_repair=provider is not local_provider or getattr(provider, "name", "") == "bedrock",
+                        checker_format_retry=generation_profile == "deep_research",
                         as_of=request.as_of,
                         event_basis_complete=False if event_reference_contexts else None,
                         research_evidence=research_evidence,

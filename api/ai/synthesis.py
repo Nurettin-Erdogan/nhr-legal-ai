@@ -967,6 +967,13 @@ def _source_gap_text(question: str, contexts: Sequence[RAGContext]) -> str:
     return _SOURCE_GAP_TEXT
 
 
+_INPUT_CONTROLS = (
+    "Sözleşmeniz hangi tarihte başladı ve ne zaman yenileniyor?",
+    "Tebliğ size hangi tarihte ulaştı?",
+    "Mevcut tutar nedir ve hangi para biriminde?",
+)
+
+
 def _clarification_options(contexts: list[RAGContext], user_question: str,
                            history: Sequence[HistoryTurn], prior_questions: Sequence[str] = ()) -> list[str]:
     """Finite application text, not model-authored legal conclusions.
@@ -979,16 +986,23 @@ def _clarification_options(contexts: list[RAGContext], user_question: str,
     from api.ai.dialogue import user_inputs
     facts = normalize(" ".join(user_inputs(user_question, history, prior_questions)))
     options = []
+    # A contract/payment word in a retrieved source does not make that fact
+    # necessary to answer the user's question. Offer input controls only for
+    # concrete amount/date calculations, never instead of explaining a rule.
+    requested = normalize(user_question)
+    calculation = bool(re.search(r"ne kadar|kaç|hesapla\w*|ne zamana kadar|son gün|hangi tarih|hangi ay|yenilen\w*", requested))
+    if not calculation:
+        return options
     dated_contract = bool(re.search(r"\b(?:19|20)\d{2}\b", facts)
                           and re.search(r"başla\w*|yenilen\w*|sözleşme tarihi", facts))
     if re.search(r"\b(?:sözleşme\w*|anlaşma\w*)", source) and not dated_contract:
-        options.append("Sözleşmeniz hangi tarihte başladı ve ne zaman yenileniyor?")
+        options.append(_INPUT_CONTROLS[0])
     if "tebliğ" in source and not re.search(r"\b(?:19|20)\d{2}\b", facts):
-        options.append("Tebliğ size hangi tarihte ulaştı?")
+        options.append(_INPUT_CONTROLS[1])
     if re.search(r"\b(?:bedel\w*|tutar\w*|ücret\w*|ödeme\w*|alacak\w*)", source):
         from api.ai.practical_answer import _amounts
         if not _amounts(facts):
-            options.append("Mevcut tutar nedir ve hangi para biriminde?")
+            options.append(_INPUT_CONTROLS[2])
     return options
 
 
@@ -1007,6 +1021,7 @@ def synthesize_answer(
     compact_evidence: bool = False,
     prior_questions: Sequence[str] = (),
     semantic_repair: bool = False,
+    checker_format_retry: bool = False,
     ask_missing_inputs: bool = True,
     _review: dict | None = None,
     as_of: date | None = None,
@@ -1202,7 +1217,10 @@ def synthesize_answer(
     def parse_candidate(candidate, *, dropped=None):
         nonlocal aspect_coverage
         if research_evidence is None:
-            return _parse_draft(candidate, contexts, views, dropped=dropped)
+            result = _parse_draft(candidate, contexts, views, dropped=dropped)
+            if not result[0] and result[1] in _INPUT_CONTROLS and result[1] not in clarification_options:
+                raise _Rejected("answer_focus", checks=("input_not_required_by_question",))
+            return result
         from api.ai.research_plan import prepare_draft
         try:
             result, aspect_coverage = prepare_draft(candidate, research_evidence, contexts,
@@ -1243,7 +1261,8 @@ def synthesize_answer(
             # discard its ENTIRE text (including the question). Independently
             # check only the source-gap status against the original inputs;
             # never salvage or publish any rejected claim from that draft.
-            if _gap_only_candidate(raw):
+            if _gap_only_candidate(raw) and not (
+                    semantic_repair and repair_attempts and _json(raw).get("claims")):
                 claims, clarification, source_gap = [], None, True
                 if diagnostics is not None:
                     diagnostics["gap_only_projection"] = True
@@ -1351,6 +1370,14 @@ def synthesize_answer(
                 'Gerekçeli kaynak/olay eksikliğinin açıkça belirtilmesi tam cevap iddiası değildir; '
                 'iddialar doğruysa bu açık kısmi kapsam onaylanabilir. Aynı dört alanlı denetim JSON şemasını kullan.')
         verdict = generate(checker_provider or provider, "check", system_instruction=check_instruction, prompt=check_prompt)
+        if checker_format_retry and not _well_formed_verdict(verdict, len(claims)):
+            # Retry the evaluation from the original evidence, not from the
+            # malformed verdict. Never infer approval or coerce flags/IDs.
+            if diagnostics is not None:
+                diagnostics["checker_format_retry"] = True
+            verdict = generate(checker_provider or provider, "check_format_retry",
+                               system_instruction=check_instruction,
+                               prompt=check_prompt)
         if not _approved(verdict, len(claims)):
             # Claims the checker rejected are removed (never shown, never rewritten) and the remaining fully approved
             # ones are checked ONCE more as a whole, so coverage is judged again on what would be published. One
@@ -1396,6 +1423,9 @@ def synthesize_answer(
                     if revised is not None:
                         if diagnostics is not None:
                             diagnostics.update(status="accepted", reason=child.get("reason", "legal"))
+                            for key in ("coverage_preserved", "aspect_coverage"):
+                                if key in child:
+                                    diagnostics[key] = child[key]
                         return revised
                 # When WE left claims out and every remaining claim is supported but the answer incomplete, the gap is
                 # ours, not a misstatement: reported apart so the caller may use the verified-quote route.
@@ -1437,7 +1467,8 @@ def synthesize_answer(
         if source_gap or missing_subjects or any(a["status"] == "source_gap" for a in aspect_coverage):
             lines.append(_source_gap_text(question, contexts))
         if diagnostics is not None:
-            diagnostics.update(status="accepted", reason="legal")
+            diagnostics.update(status="accepted", reason="legal", coverage_preserved=not bool(
+                source_gap or missing_subjects or any(a["status"] != "answered" for a in aspect_coverage)))
         return VerifiedAnswer(text="\n\n".join(lines), contexts=tuple(cited_contexts), unverified_markers=())
     except _Rejected as exc:
         if diagnostics is not None and exc.checks:

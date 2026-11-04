@@ -44,13 +44,15 @@ export function StepCard({ step, index }: { step: ResearchStep; index: number })
           <div className="prose prose-sm max-w-none dark:prose-invert">
             <ReactMarkdown>{step.answer}</ReactMarkdown>
           </div>
-          {!step.grounded && (
+          {(!step.grounded || step.coverageComplete === false) && (
             <p
               className="flex items-start gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/5 p-2 text-xs text-amber-800 dark:text-amber-300"
               data-testid="research-ungrounded"
             >
-              <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" /> Bu bölümün cevabı kaynaklarla
-              yeterince desteklenemedi; dikkatle okuyun.
+              <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              {step.grounded
+                ? "Bu başlıkta kaynaklı cevap var; istenen konuların tamamı karşılanmadı."
+                : "Bu bölümün cevabı kaynaklarla yeterince desteklenemedi; dikkatle okuyun."}
             </p>
           )}
           {step.citations.length > 0 && (
@@ -150,7 +152,7 @@ export function DeepResearch({ examples = [] }: { examples?: string[] }) {
           <strong>yargı kararları</strong>, <strong>süre, ispat ve usul</strong>. Her başlığın
           cevabı yalnız korpustaki kaynaklara dayanır ve sunucuda kaynaklara karşı doğrulanır;
           kaynak bulunamayan başlık açıkça belirtilir. Doktrin ve karşılaştırmalı hukuk kaynakları
-          korpusta yoktur. Yerel model kullanıldığından rapor birkaç dakika sürebilir; sayfadan
+          korpusta yoktur. Süre, kaynak taraması ve model yanıtına göre değişir; sayfadan
           ayrılabilirsiniz, sonuç kaydedilir.
         </p>
         <Textarea
@@ -201,6 +203,9 @@ export function DeepResearch({ examples = [] }: { examples?: string[] }) {
           className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm"
         >
           {error}
+          <Button variant="outline" size="sm" onClick={() => void refresh()}>
+            Durumu yeniden kontrol et
+          </Button>
         </div>
       )}
       {state.job && (

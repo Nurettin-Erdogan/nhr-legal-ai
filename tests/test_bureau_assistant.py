@@ -35,7 +35,8 @@ def test_expired_closed_existing_calendar_and_handled_records_are_excluded():
     h, d = hearing(), document()
     assert not bureau.proposals([dict(h, status="closed")], [], [], [], NOW)
     assert not bureau.proposals([dict(h, next_hearing=NOW-timedelta(days=1))], [], [], [], NOW)
-    assert not bureau.proposals([], [dict(d, created_at=NOW-timedelta(days=8))], [], [], NOW)
+    assert bureau.proposals([], [dict(d, created_at=NOW-timedelta(days=365))], [], [], NOW)
+    assert bureau.proposals([dict(h, next_hearing=NOW+timedelta(days=365))], [], [], [], NOW)
     assert not bureau.proposals([h], [], [], [{"case_id":h["id"],"start_at":h["next_hearing"]}], NOW)
     row = bureau.proposals([], [d], [], [], NOW)[0]
     assert not bureau.proposals([], [d], [{"proposal_key":row["key"]}], [], NOW)
@@ -182,13 +183,13 @@ def test_review_only_reads_source_scoped_documents_and_never_exposes_unready_tex
 
     db = ReviewConnection()
     result = bureau.review(db, proposal["key"], NOW)
-    assert len(result["documents"]) == 10 and result["limited"]
+    assert len(result["documents"]) == 11 and not result["limited"]
     assert result["documents"][0]["excerpt"] is None
     assert result["documents"][0]["ready"] is False
     assert result["documents"][1]["ready"] is True
     assert result["suggested_action"] == proposal["description"]
     sql, params = db.calls[0]
-    assert "deleted_at IS NULL" in sql and "LIMIT 11" in sql
+    assert "deleted_at IS NULL" in sql and "LIMIT 11" not in sql
     assert params[0] == (d["id"] if kind == "document" else None)
     assert params[3] == proposal["case_id"]
     assert all("INSERT" not in s and "UPDATE" not in s for s, _ in db.calls)

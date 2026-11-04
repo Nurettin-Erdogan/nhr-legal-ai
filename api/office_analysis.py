@@ -68,7 +68,9 @@ async def analyze(text: str, generate, contexts, *, title: str = "Belge analizi"
         lines.append("")
     if skipped:
         lines.append(f"_{skipped} belge sınır nedeniyle işlenmedi (en çok {MAX_DOCUMENTS})._\n")
-    legal = legal_references(contexts)
+    # Retrieval similarity alone is not a relevance check. Use the actual
+    # evidence, never the instruction (which can contain assumed facts).
+    legal = legal_references(contexts, question="\n".join(body for _, body in documents))
     lines.append("## İlgili resmî kaynaklar (otomatik arama)")
     if legal.statutes or legal.decisions:
         lines.append("_Bu liste metne benzer kaynakları bulur; belgenin bu kaynaklara dayandığı ya da uyduğu anlamına gelmez._")

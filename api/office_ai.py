@@ -295,6 +295,7 @@ async def _draft(
     user_id: UUID,
     *,
     extra: str = "",
+    draft_fields: draft_documents.DraftFields | None = None,
 ) -> dict[str, Any]:
     """Taslak: kodla kurulan iskelet + doğrulanmış olay anlatımı + kodla listelenen resmî dayanaklar (api.draft_documents)."""
     label = draft_documents.DOC_LABELS.get(doc_type, draft_documents.DOC_LABELS["diger"])
@@ -302,13 +303,13 @@ async def _draft(
     topic = f"{subject} {(details or '')[:300]}"
     contexts = await _retrieve_sources(topic, user_id, top_k=12)
     suggested = await asyncio.to_thread(_statute_hints, f"{subject} {(details or '')[:1500]}")
-    legal = draft_documents.legal_references(contexts, question=topic, suggested=suggested)
+    legal = draft_documents.legal_references(contexts, question=subject, suggested=suggested)
     model = None
     paragraphs: list[str] = []
     facts = draft_documents.facts_source(subject, details, extra)
     prompt = (
         f"Belge türü: {label}\nTaraflar: {'; '.join(parties) or '(belirtilmedi)'}\nKonu: {draft_documents.short_subject(subject)}\n"
-        f"Olgular: {(facts or '(yok)')[:1500]}{extra[:1200]}\n\nOlguları numaralı paragraflar hâlinde yaz."
+        f"Olgular: {facts or '(yok)'}\n{extra}\n\nOlguları numaralı paragraflar hâlinde yaz."
     )
     if draft_documents.has_facts(facts, extra):
         try:
@@ -320,15 +321,24 @@ async def _draft(
 
             # Kod denetimi koşulun/olumsuzluğun ters çevrilmesini göremez; cümleler bir de modele denetletilir (yalnız eler).
             flat = [sentence for sentences in grouped for sentence in sentences]
-            approved, _rejected = await case_summary.check_bullets(flat, [given[:6000]], check)
+            approved, _rejected = await case_summary.check_bullets(flat, [given], check)
             allowed = set(approved)
             paragraphs = draft_documents.join_paragraphs([[s for s in sentences if s in allowed] for sentences in grouped])
         except HTTPException:
             logger.warning("Taslak olay anlatımı modelden alınamadı; kullanıcının olguları kullanılacak")
+    # Preserve approved prose, but retain omitted input explicitly as the user's
+    # own narration, not as a model-verified factual or legal conclusion.
+    original = draft_documents.fallback_paragraphs(subject, "\n".join(part for part in [facts, extra] if part))
+    retained = " ".join(" ".join(paragraphs).split())
+    if paragraphs:
+        paragraphs.extend(
+            "Kullanıcının verdiği açıklama: " + part
+            for part in original if " ".join(part.split()) not in retained
+        )
     from_user = not paragraphs
     if from_user:
-        paragraphs = draft_documents.fallback_paragraphs(subject, facts or extra[:600])
-    content = draft_documents.build_document(doc_type, title, parties, subject, paragraphs, legal)
+        paragraphs = original
+    content = draft_documents.build_document(doc_type, title, parties, subject, paragraphs, legal, draft_fields)
     if from_user and draft_documents.has_facts(facts, extra):
         content += "_Olay anlatımı model çıktısı doğrulanamadığı ya da alınamadığı için sizin yazdığınız bilgilerle oluşturuldu; üslubu düzeltin._\n"
     elif from_user:
@@ -341,7 +351,7 @@ async def _risk(prompt: str, user_id: UUID) -> dict[str, Any]:
     job = deep_research.ResearchJob(id=uuid4(), owner_id=user_id, question=prompt.strip()[: deep_research.MAX_QUESTION_CHARS])
     await deep_research.run_job(
         job, lambda question, conversation_id: _deep_answer(user_id, question, conversation_id),
-        condense=_condense_topic, statute_hints=_statute_hints_async,
+        statute_hints=_statute_hints_async,
     )
     if job.state != "done":
         raise HTTPException(status_code=502, detail=job.error or "Kaynaklı inceleme tamamlanamadı")
@@ -349,7 +359,11 @@ async def _risk(prompt: str, user_id: UUID) -> dict[str, Any]:
         "# Derin araştırma raporu", "# Risk analizi: kaynaklı inceleme\n\n_Dava sonucu tahmini yapılmaz; aşağıda olay üç başlıkta kaynaklara göre incelenmiştir._", 1
     )
     sources = [{"reference": c["reference"], "source_url": c.get("source_url"), "verification": c.get("verification")} for step in job.steps for c in step.citations]
-    return {"content": markdown, "model": None, "sources": sources, "unverified_references": [], "label": "Risk Analizi"}
+    errors = [
+        f"{step.title}: {step.error or step.note or ('İstenen konuların tamamı karşılanmadı.' if step.coverage_complete is False else 'Kaynaklarla desteklenen cevap üretilemedi.')}"
+        for step in job.steps if step.error or step.note or not step.grounded or step.coverage_complete is False
+    ]
+    return {"content": markdown, "model": None, "sources": sources, "unverified_references": [], "label": "Risk Analizi", "errors": errors}
 
 
 def _selected_analysis_documents(user_id: UUID, ids: list[UUID]) -> list[tuple[str, str]]:
@@ -449,6 +463,7 @@ async def run_module(
 
 
 class DocumentRequest(BaseModel):
+    draft_fields: draft_documents.DraftFields = Field(default_factory=draft_documents.DraftFields)
     doc_type: str = Field(max_length=40)
     title: str | None = Field(default=None, max_length=200)
     parties: list[str] = Field(default_factory=list, max_length=20)
@@ -462,7 +477,7 @@ async def generate_document(
     body: DocumentRequest, user_id: Annotated[UUID, Depends(current_user_id)]
 ) -> dict[str, Any]:
     docs = await asyncio.to_thread(_document_context, user_id, body.doc_ids, _MAX_USER_CHARS // 2)
-    result = await _draft(body.doc_type, body.title, [party for party in body.parties if party.strip()], body.subject.strip(), body.details, user_id, extra=docs)
+    result = await _draft(body.doc_type, body.title, [party for party in body.parties if party.strip()], body.subject.strip(), body.details, user_id, extra=docs, draft_fields=body.draft_fields)
     return {"content": result["content"], "model": result["model"], "sources": result["sources"], "unverified_references": result["unverified_references"]}
 
 
@@ -690,7 +705,7 @@ async def _deep_run(job: deep_research.ResearchJob) -> None:
         job, lambda question, conversation_id: _deep_answer(
             job.owner_id, question, conversation_id, generation_profile="deep_research",
         ), on_done=save,
-        condense=_condense_topic, statute_hints=_statute_hints_async,
+        statute_hints=_statute_hints_async,
     )
 
 

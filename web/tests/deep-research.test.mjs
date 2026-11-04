@@ -167,13 +167,24 @@ test("progress lines explain running, failed and partially failed jobs", () => {
     "Hiçbir başlık için cevap üretilemedi.",
   );
   assert.equal(
-    lib.progressLine(job("done", { steps: [{ error: null }, { error: null }, { error: null }] })),
+    lib.progressLine(job("done", { steps: [step(), step(), step()] })),
     "3 başlık tamamlandı.",
   );
   assert.equal(
-    lib.progressLine(job("done", { steps: [{ error: null }, { error: "x" }, { error: null }] })),
-    "3 başlıktan 2 tanesi tamamlandı; 1 başlık için cevap üretilemedi.",
+    lib.progressLine(job("done", { steps: [step(), step({ error: "x" }), step()] })),
+    "3 başlıktan 2 tanesi kaynaklarla doğrulandı; diğer başlıkların sonuçlarını inceleyin.",
   );
+  assert.equal(
+    lib.progressLine(
+      job("done", { steps: [step(), step({ grounded: false }), step({ note: "Tekrar" })] }),
+    ),
+    "3 başlıktan 1 tanesi kaynaklarla doğrulandı; diğer başlıkların sonuçlarını inceleyin.",
+  );
+  const parsed = lib.parseResearchState({
+    job: { id: "j", state: "done", total: 1, steps: [step({ coverage_complete: false })] },
+  });
+  assert.equal(parsed.job.steps[0].coverageComplete, false);
+  assert.match(lib.progressLine(parsed.job), /0 tanesi/);
 });
 
 test("a question must be long enough and not too long", () => {

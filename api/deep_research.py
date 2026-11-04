@@ -49,13 +49,19 @@ def plan(question: str, hints: list[dict] | None = None) -> list[tuple[Axis, str
     Konu ipucu varsa (api.statute_hints) mevzuat ekseni doğrudan o maddeyi sorar ("6098 sayılı kanun madde 315"): arama, uzun bir
     olay anlatımının sözcükleriyle madde bulamıyor ve bölüm "yeterli bilgi yok" diye boş kalıyordu (ölçüldü: 2026-10-05).
     """
-    base = " ".join(question.split())[: MAX_QUESTION_CHARS - 60].rstrip(" ?.")
+    base = " ".join(question.split())[:MAX_QUESTION_CHARS].rstrip(" ?.")
+    focus = {
+        "mevzuat": "Bu bölümde yalnız ilgili mevzuat hükümlerini ve bunların bu olaya uygulanmasını açıkla.",
+        "ictihat": "Bu bölümde yalnız konuyla doğrudan ilgili yargı kararlarını ve gerekçelerini incele; kanun özetiyle ikame etme.",
+        "usul": "Bu bölümde yalnız soruda istenen başvuru yolu, süre, başlangıç ve ispat konularını incele; ilgisiz süreler ekleme.",
+    }
     steps = []
     for axis in AXES:
         if axis.key == "mevzuat" and hints:
-            steps.append((axis, f"{hints[0]['law_no']} sayılı kanun madde {hints[0]['article_no']}"))
+            reference = f"{hints[0]['law_no']} sayılı kanun madde {hints[0]['article_no']}"
+            steps.append((axis, f"{base}\n{focus[axis.key]} İlgili madde adayı: {reference}. {axis.suffix}"))
         else:
-            steps.append((axis, f"{base} {axis.suffix}"))
+            steps.append((axis, f"{base}\n{focus[axis.key]} {axis.suffix}"))
     return steps
 
 
@@ -129,6 +135,7 @@ class StepResult:
     # Gerçekte cevap veren model (bulut hatasında yerel olabilir); düşünme metni saklanmaz.
     provider: str | None = None
     model: str | None = None
+    coverage_complete: bool | None = None
 
     def as_dict(self, *, with_question: bool = False) -> dict[str, Any]:
         data = {
@@ -141,6 +148,7 @@ class StepResult:
             "note": self.note,
             "provider": self.provider,
             "model": self.model,
+            "coverage_complete": self.coverage_complete,
         }
         if with_question:
             data["question"] = self.question
@@ -257,7 +265,9 @@ async def run_job(
                 job.hints = await statute_hints(job.question)
             except Exception:  # noqa: BLE001 - ipucu yoksa plan arama ile sürer
                 logger.warning("Madde ipuçları alınamadı")
-        steps = plan(topic, job.hints)
+        # A condensed topic is a discovery hint, never a replacement for the
+        # user's facts, negations or sub-questions in the actual answer task.
+        steps = plan(job.question, job.hints)
         seen: set[str] = set()
         for index, (axis, question) in enumerate(steps, start=1):
             job.stage = f"{index}/{len(steps)}: {axis.title} aranıyor ve yazılıyor…"
@@ -267,6 +277,7 @@ async def run_job(
                 step.answer = response.answer
                 step.provider = getattr(response, "provider", None)
                 step.model = getattr(response, "model", None)
+                step.coverage_complete = getattr(response, "coverage_complete", None)
                 fingerprint = " ".join(response.answer.split())
                 if fingerprint in seen:
                     # Tanınan konularda (ör. kıdem tazminatı) hat her eksende aynı kanun metnini döndürebilir: tekrarlanmaz.
@@ -320,7 +331,7 @@ def render_markdown(question: str, steps: list[StepResult], *, topic: str | None
         lines.extend(f"- {hint['reference']}" for hint in hints)
         lines.append("")
     lines.append(
-        "_Bu rapor yalnız JurisAI hukuk korpusundaki kaynaklara dayanır; her bölümün cevabı kendi kaynaklarına karşı doğrulanmıştır. "
+        "_Bu rapor JurisAI hukuk korpusundaki kaynaklarla hazırlanır; her bölümün doğrulama sonucu ayrıca gösterilir. "
         "Doktrin ve karşılaştırmalı hukuk kaynakları korpusta yoktur. Hukuki görüş yerine geçmez._"
     )
     lines.append("")
@@ -334,6 +345,8 @@ def render_markdown(question: str, steps: list[StepResult], *, topic: str | None
             lines.append(step.answer.strip())
             if not step.grounded:
                 lines.append("_Bu bölümün cevabı kaynaklarla yeterince desteklenemedi; dikkatle okuyun._")
+            elif step.coverage_complete is False:
+                lines.append("_Bu başlıkta kaynaklı cevap var; istenen konuların tamamı karşılanmadı._")
             if step.citations:
                 lines.append("")
                 lines.append("**Kaynaklar**")

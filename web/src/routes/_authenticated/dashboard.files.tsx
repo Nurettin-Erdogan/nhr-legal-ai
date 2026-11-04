@@ -3,6 +3,13 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { useSearchParam } from "@/lib/router-hooks";
 import { DocumentTrash } from "@/components/DocumentTrash";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { DocumentWorkflowActions } from "@/components/DocumentWorkflowActions";
 import { GoogleDriveImport } from "@/components/GoogleDriveImport";
 import { ContentMatchExcerpt } from "@/components/ContentMatchExcerpt";
@@ -109,6 +116,8 @@ const Files = () => {
   const [grouped, setGrouped] = useState(true);
   const [showFilters, setShowFilters] = useState(false);
   const [openedFolders, setOpenedFolders] = useState<Set<string>>(() => new Set());
+  // Kişi başlıkları (UYAP · AD SOYAD) tek tıkla kapanır; kapalı kişinin klasörleri ve belgeleri gizlenir.
+  const [collapsedPeople, setCollapsedPeople] = useState<Set<string>>(() => new Set());
   const [folderContents, setFolderContents] = useState<Record<string, FolderContents>>({});
   const [folders, setFolders] = useState<DocumentFolder[]>([]);
   const [categories, setCategories] = useState<DocumentCategory[]>([]);
@@ -123,6 +132,7 @@ const Files = () => {
   const [linkError, setLinkError] = useState("");
   const [linkBusy, setLinkBusy] = useState(false);
   const [trashKey, setTrashKey] = useState(0);
+  const [trashOpen, setTrashOpen] = useState(false);
   const [selectedDocumentIds, setSelectedDocumentIds] = useState<Set<string>>(() => new Set());
   const [selectingAll, setSelectingAll] = useState(false);
   const [batchTrashBusy, setBatchTrashBusy] = useState(false);
@@ -222,7 +232,8 @@ const Files = () => {
   );
 
   const documentGroups = useMemo(() => {
-    if (!grouped) return [{ key: "all", folder: undefined, docs, heading: null as string | null }];
+    if (!grouped)
+      return [{ key: "all", folder: undefined, docs, heading: null as string | null, person: "" }];
     // Sıra: kişiler (sayım sırasıyla), sonra kimden geldiği bilinmeyen UYAP dosyaları, en son UYAP dışı klasörler.
     const rank = (item: DocumentFolder) => {
       if (item.source !== "uyap") return accounts.length + 2;
@@ -240,9 +251,27 @@ const Files = () => {
         const label = accountLabel(item);
         const heading = label !== previous ? label : null;
         previous = label;
-        return { key: item.key, folder: item, docs: folderContents[item.key]?.rows ?? [], heading };
+        return {
+          key: item.key,
+          folder: item,
+          docs: folderContents[item.key]?.rows ?? [],
+          heading,
+          person: label,
+        };
       });
   }, [docs, folders, grouped, folderContents, accounts, accountLabel]);
+
+  const personTotals = useMemo(() => {
+    const totals = new Map<string, { files: number; documents: number }>();
+    for (const group of documentGroups) {
+      if (!group.folder) continue;
+      const entry = totals.get(group.person) ?? { files: 0, documents: 0 };
+      entry.files += 1;
+      entry.documents += group.folder.matching_count;
+      totals.set(group.person, entry);
+    }
+    return totals;
+  }, [documentGroups]);
 
   const loadFolder = useCallback(
     async (key: string) => {
@@ -456,6 +485,9 @@ const Files = () => {
           <UyapSyncDialog onSynced={load} />
           <FileUploadDialog onUploaded={load} />
           <GoogleDriveImport onImported={() => void load()} />
+          <Button size="sm" variant="outline" onClick={() => setTrashOpen(true)}>
+            <Trash2 className="mr-1.5 h-4 w-4" /> Çöp kutusu
+          </Button>
         </div>
       }
     >
@@ -790,196 +822,230 @@ const Files = () => {
                         <th
                           colSpan={5}
                           scope="colgroup"
-                          className="px-6 pt-5 pb-2 text-left text-sm font-semibold text-primary"
+                          className="p-0 text-left text-sm font-semibold text-primary"
                         >
-                          {group.heading}
-                        </th>
-                      </tr>
-                    )}
-                    {grouped && group.folder && (
-                      <tr className="border-t border-border bg-secondary/50">
-                        <th
-                          colSpan={5}
-                          scope="colgroup"
-                          className="px-6 py-3 text-left font-medium"
-                        >
-                          <div className="flex flex-wrap items-center gap-2">
-                            <button
-                              type="button"
-                              className="flex min-w-0 flex-1 flex-wrap items-center gap-2 rounded-md text-left hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                              aria-expanded={openedFolders.has(group.key)}
-                              aria-label={`Klasör: ${folderTitle(group.folder)}`}
-                              title={openedFolders.has(group.key) ? "Klasörü kapat" : "Klasörü aç"}
-                              onClick={() =>
-                                setOpenedFolders((previous) => {
-                                  const next = new Set(previous);
-                                  if (next.has(group.key)) next.delete(group.key);
-                                  else next.add(group.key);
-                                  return next;
-                                })
-                              }
-                            >
-                              {!openedFolders.has(group.key) ? (
-                                <>
-                                  <ChevronRight className="h-4 w-4 shrink-0" />
-                                  <Folder className="h-4 w-4 shrink-0 text-primary" />
-                                </>
-                              ) : (
-                                <>
-                                  <ChevronDown className="h-4 w-4 shrink-0" />
-                                  <FolderOpen className="h-4 w-4 shrink-0 text-primary" />
-                                </>
-                              )}
-                              <span className="break-words">{folderTitle(group.folder)}</span>
-                              <span className="text-xs text-muted-foreground font-normal">
-                                {group.folder.matching_count} belge
-                              </span>
-                            </button>
-                            {folder !== group.key && (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="ml-auto"
-                                onClick={() => {
-                                  setFolder(group.key);
-                                  setOpenedFolders((previous) => new Set(previous).add(group.key));
-                                }}
-                              >
-                                Bu dosyayı göster
-                              </Button>
+                          <button
+                            type="button"
+                            className="flex w-full cursor-pointer items-center gap-2 px-6 pt-5 pb-2 text-left transition-colors hover:bg-secondary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                            aria-expanded={!collapsedPeople.has(group.person)}
+                            title={collapsedPeople.has(group.person) ? "Kişiyi aç" : "Kişiyi kapat"}
+                            onClick={() =>
+                              setCollapsedPeople((previous) => {
+                                const next = new Set(previous);
+                                if (next.has(group.person)) next.delete(group.person);
+                                else next.add(group.person);
+                                return next;
+                              })
+                            }
+                          >
+                            {collapsedPeople.has(group.person) ? (
+                              <ChevronRight className="h-4 w-4 shrink-0" />
+                            ) : (
+                              <ChevronDown className="h-4 w-4 shrink-0" />
                             )}
-                          </div>
+                            <span>{group.heading}</span>
+                            {personTotals.get(group.person) && (
+                              <span className="text-xs font-normal text-muted-foreground">
+                                {personTotals.get(group.person)?.files} dosya ·{" "}
+                                {personTotals.get(group.person)?.documents} belge
+                              </span>
+                            )}
+                          </button>
                         </th>
                       </tr>
                     )}
-                    {grouped &&
-                      openedFolders.has(group.key) &&
-                      folderContents[group.key]?.loading && (
-                        <tr>
-                          <td colSpan={5} className="px-6 py-5 text-sm text-muted-foreground">
-                            <span role="status" className="flex items-center gap-2">
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                              Belgeler yükleniyor…
-                            </span>
-                          </td>
-                        </tr>
-                      )}
-                    {grouped &&
-                      openedFolders.has(group.key) &&
-                      folderContents[group.key]?.error && (
-                        <tr>
-                          <td colSpan={5} className="px-6 py-4">
-                            <div className="flex items-center gap-3">
-                              <span role="alert" className="text-sm text-destructive">
-                                {folderContents[group.key].error}
-                              </span>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => void loadFolder(group.key)}
-                              >
-                                Yeniden dene
-                              </Button>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    {(!grouped || openedFolders.has(group.key)) &&
-                      group.docs.map((d) => (
-                        <tr
-                          key={d.id}
-                          className="border-t border-border hover:bg-secondary/30 transition"
-                        >
-                          <td className="px-3 py-4 sm:px-6">
-                            <div className="flex items-center gap-3">
-                              <input
-                                type="checkbox"
-                                className="h-4 w-4 shrink-0 accent-primary"
-                                aria-label={`${d.file_name} belgesini seç`}
-                                checked={selectedDocumentIds.has(d.id)}
-                                onChange={() => toggleDocumentSelection(d.id)}
-                              />
-                              <div className="h-9 w-9 rounded-lg bg-secondary flex items-center justify-center shrink-0">
-                                <FileText className="h-4 w-4 text-primary" />
-                              </div>
-                              <div className="min-w-0">
-                                <div
-                                  className="font-medium truncate max-w-[180px] sm:max-w-[260px]"
-                                  title={d.file_name}
+                    {!(grouped && collapsedPeople.has(group.person)) && (
+                      <>
+                        {grouped && group.folder && (
+                          <tr className="border-t border-border bg-secondary/50">
+                            <th
+                              colSpan={5}
+                              scope="colgroup"
+                              className="px-6 py-3 text-left font-medium"
+                            >
+                              <div className="flex flex-wrap items-center gap-2">
+                                <button
+                                  type="button"
+                                  className="flex min-w-0 flex-1 flex-wrap items-center gap-2 rounded-md text-left hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                                  aria-expanded={openedFolders.has(group.key)}
+                                  aria-label={`Klasör: ${folderTitle(group.folder)}`}
+                                  title={
+                                    openedFolders.has(group.key) ? "Klasörü kapat" : "Klasörü aç"
+                                  }
+                                  onClick={() =>
+                                    setOpenedFolders((previous) => {
+                                      const next = new Set(previous);
+                                      if (next.has(group.key)) next.delete(group.key);
+                                      else next.add(group.key);
+                                      return next;
+                                    })
+                                  }
                                 >
-                                  {d.file_name.replace(/^[a-f0-9]{12,64}[-_]/i, "")}
-                                </div>
-                                <div className="text-xs text-muted-foreground">
-                                  {humanSize(d.size_bytes)} ·{" "}
-                                  {new Date(d.created_at).toLocaleDateString("tr-TR")}
-                                </div>
-                                <div className="mt-0.5 text-xs text-muted-foreground sm:hidden">
-                                  {categories.find((item) => item.id === d.category)?.label ??
-                                    "Diğer / türü belirsiz"}
-                                </div>
-                                {searchIn === "content" && (
-                                  <ContentMatchExcerpt match={d.content_match} />
+                                  {!openedFolders.has(group.key) ? (
+                                    <>
+                                      <ChevronRight className="h-4 w-4 shrink-0" />
+                                      <Folder className="h-4 w-4 shrink-0 text-primary" />
+                                    </>
+                                  ) : (
+                                    <>
+                                      <ChevronDown className="h-4 w-4 shrink-0" />
+                                      <FolderOpen className="h-4 w-4 shrink-0 text-primary" />
+                                    </>
+                                  )}
+                                  <span className="break-words">{folderTitle(group.folder)}</span>
+                                  <span className="text-xs text-muted-foreground font-normal">
+                                    {group.folder.matching_count} belge
+                                  </span>
+                                </button>
+                                {folder !== group.key && (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="ml-auto"
+                                    onClick={() => {
+                                      setFolder(group.key);
+                                      setOpenedFolders((previous) =>
+                                        new Set(previous).add(group.key),
+                                      );
+                                    }}
+                                  >
+                                    Bu dosyayı göster
+                                  </Button>
                                 )}
                               </div>
-                            </div>
-                          </td>
-                          <td className="hidden px-6 py-4 md:table-cell">
-                            <div className="font-mono text-xs">{d.uyap_file_no ?? "-"}</div>
-                            <div className="text-xs text-muted-foreground truncate max-w-[220px]">
-                              {d.uyap_birim ?? ""}
-                            </div>
-                          </td>
-                          <td className="hidden px-6 py-4 text-xs sm:table-cell">
-                            <Badge variant="outline" className="mb-1 whitespace-nowrap">
-                              {categories.find((item) => item.id === d.category)?.label ??
-                                "Diğer / türü belirsiz"}
-                            </Badge>
-                            <div>{d.doc_type ?? "Tür bilgisi yok"}</div>
-                            {d.doc_date && (
-                              <div className="text-muted-foreground">{d.doc_date}</div>
-                            )}
-                          </td>
-                          <td className="hidden px-6 py-4 lg:table-cell">
-                            <Badge
-                              variant={isUyapSource(d.source) ? "default" : "outline"}
-                              className="text-[10px]"
+                            </th>
+                          </tr>
+                        )}
+                        {grouped &&
+                          openedFolders.has(group.key) &&
+                          folderContents[group.key]?.loading && (
+                            <tr>
+                              <td colSpan={5} className="px-6 py-5 text-sm text-muted-foreground">
+                                <span role="status" className="flex items-center gap-2">
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                  Belgeler yükleniyor…
+                                </span>
+                              </td>
+                            </tr>
+                          )}
+                        {grouped &&
+                          openedFolders.has(group.key) &&
+                          folderContents[group.key]?.error && (
+                            <tr>
+                              <td colSpan={5} className="px-6 py-4">
+                                <div className="flex items-center gap-3">
+                                  <span role="alert" className="text-sm text-destructive">
+                                    {folderContents[group.key].error}
+                                  </span>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => void loadFolder(group.key)}
+                                  >
+                                    Yeniden dene
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        {(!grouped || openedFolders.has(group.key)) &&
+                          group.docs.map((d) => (
+                            <tr
+                              key={d.id}
+                              className="border-t border-border hover:bg-secondary/30 transition"
                             >
-                              {isUyapSource(d.source) ? "UYAP" : "Elle"}
-                            </Badge>
-                          </td>
-                          <td className="px-3 py-4 text-right whitespace-nowrap sm:px-6">
-                            {!d.case_id && (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                title="Davaya bağla"
-                                aria-label="Davaya bağla"
-                                onClick={() => void openCaseLink(d)}
-                              >
-                                <FolderPlus className="h-4 w-4" />
-                              </Button>
-                            )}
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              title="Belgeyi indir"
-                              aria-label="Belgeyi indir"
-                              onClick={() => void download(d)}
-                            >
-                              <Download className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              title="Çöp kutusuna taşı"
-                              aria-label="Çöp kutusuna taşı"
-                              onClick={() => void remove(d)}
-                            >
-                              <Trash2 className="h-4 w-4 text-destructive" />
-                            </Button>
-                          </td>
-                        </tr>
-                      ))}
+                              <td className="px-3 py-4 sm:px-6">
+                                <div className="flex items-center gap-3">
+                                  <input
+                                    type="checkbox"
+                                    className="h-4 w-4 shrink-0 accent-primary"
+                                    aria-label={`${d.file_name} belgesini seç`}
+                                    checked={selectedDocumentIds.has(d.id)}
+                                    onChange={() => toggleDocumentSelection(d.id)}
+                                  />
+                                  <div className="h-9 w-9 rounded-lg bg-secondary flex items-center justify-center shrink-0">
+                                    <FileText className="h-4 w-4 text-primary" />
+                                  </div>
+                                  <div className="min-w-0">
+                                    <div
+                                      className="font-medium truncate max-w-[180px] sm:max-w-[260px]"
+                                      title={d.file_name}
+                                    >
+                                      {d.file_name.replace(/^[a-f0-9]{12,64}[-_]/i, "")}
+                                    </div>
+                                    <div className="text-xs text-muted-foreground">
+                                      {humanSize(d.size_bytes)} ·{" "}
+                                      {new Date(d.created_at).toLocaleDateString("tr-TR")}
+                                    </div>
+                                    <div className="mt-0.5 text-xs text-muted-foreground sm:hidden">
+                                      {categories.find((item) => item.id === d.category)?.label ??
+                                        "Diğer / türü belirsiz"}
+                                    </div>
+                                    {searchIn === "content" && (
+                                      <ContentMatchExcerpt match={d.content_match} />
+                                    )}
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="hidden px-6 py-4 md:table-cell">
+                                <div className="font-mono text-xs">{d.uyap_file_no ?? "-"}</div>
+                                <div className="text-xs text-muted-foreground truncate max-w-[220px]">
+                                  {d.uyap_birim ?? ""}
+                                </div>
+                              </td>
+                              <td className="hidden px-6 py-4 text-xs sm:table-cell">
+                                <Badge variant="outline" className="mb-1 whitespace-nowrap">
+                                  {categories.find((item) => item.id === d.category)?.label ??
+                                    "Diğer / türü belirsiz"}
+                                </Badge>
+                                <div>{d.doc_type ?? "Tür bilgisi yok"}</div>
+                                {d.doc_date && (
+                                  <div className="text-muted-foreground">{d.doc_date}</div>
+                                )}
+                              </td>
+                              <td className="hidden px-6 py-4 lg:table-cell">
+                                <Badge
+                                  variant={isUyapSource(d.source) ? "default" : "outline"}
+                                  className="text-[10px]"
+                                >
+                                  {isUyapSource(d.source) ? "UYAP" : "Elle"}
+                                </Badge>
+                              </td>
+                              <td className="px-3 py-4 text-right whitespace-nowrap sm:px-6">
+                                {!d.case_id && (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    title="Davaya bağla"
+                                    aria-label="Davaya bağla"
+                                    onClick={() => void openCaseLink(d)}
+                                  >
+                                    <FolderPlus className="h-4 w-4" />
+                                  </Button>
+                                )}
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  title="Belgeyi indir"
+                                  aria-label="Belgeyi indir"
+                                  onClick={() => void download(d)}
+                                >
+                                  <Download className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  title="Çöp kutusuna taşı"
+                                  aria-label="Çöp kutusuna taşı"
+                                  onClick={() => void remove(d)}
+                                >
+                                  <Trash2 className="h-4 w-4 text-destructive" />
+                                </Button>
+                              </td>
+                            </tr>
+                          ))}
+                      </>
+                    )}
                   </Fragment>
                 ))}
               </tbody>
@@ -987,7 +1053,15 @@ const Files = () => {
           </div>
         )}
       </div>
-      <DocumentTrash refreshKey={trashKey} onChanged={() => void load()} />
+      <Sheet open={trashOpen} onOpenChange={setTrashOpen}>
+        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-xl">
+          <SheetHeader className="sr-only">
+            <SheetTitle>Çöp kutusu</SheetTitle>
+            <SheetDescription>Çöpe taşınan belgeleri geri yükle ya da kalıcı sil.</SheetDescription>
+          </SheetHeader>
+          <DocumentTrash refreshKey={trashKey} onChanged={() => void load()} />
+        </SheetContent>
+      </Sheet>
       <AlertDialog
         open={confirmingBatchTrash}
         onOpenChange={(open) => {

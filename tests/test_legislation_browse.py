@@ -205,3 +205,15 @@ def test_laws_list_survives_a_restart_through_the_disk_copy(tmp_path):
         time.sleep(0.05)
     assert calls, "diskten gelen liste arka planda yenilenmeli"
     browse.reset_cache()
+
+
+def test_the_unfiltered_list_opens_with_constitution_then_laws_before_bigger_regulations():
+    crowded = LAWS + [
+        law("2709", "TÜRKİYE CUMHURİYETİ ANAYASASI", "constitution", 177),
+        law("700", "BİR KANUN HÜKMÜNDE KARARNAME", "decree", 900),
+        law("315481", "GIDA YÖNETMELİĞİ", "regulation", 721),
+    ]
+    order = [item.law_no for item in browse.search_laws(crowded, "", None)]
+    assert order[:2] == ["2709", "6098"]  # Anayasa, sonra en çok maddeli kanun
+    assert order.index("1475") < order.index("700") < order.index("315481") < order.index("20147052")
+

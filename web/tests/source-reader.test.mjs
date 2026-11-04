@@ -339,59 +339,27 @@ test("deep research forwards structured citations to the same reader list, not d
   view.unmount();
 });
 
-test("home chat keeps citation identities instead of flattening them into the answer", async () => {
-  const citations = [
-    {
-      marker: "K1",
-      source_id: id,
-      reference: "Karar",
-      source_url: url,
-      verification: "official",
-      excerpt: "Pasaj",
-    },
-  ];
-  const view = componentView(
-    new URL("../src/routes/index.tsx", import.meta.url),
-    "Route",
-    {},
-    {
-      "@tanstack/react-router": { createFileRoute: () => (options) => options.component },
-      "@/lib/source-label": labels,
-      "@/lib/utils": { cn: (...args) => args.join(" ") },
-      "@/lib/extract-text": {},
-      "@/components/AuthContext": { useAuth: () => ({ user: { id: "owner" }, loading: false }) },
-      "@/lib/ai-api": { askAssistant: async () => ({ answer: "Cevap [K1]", citations }) },
-      "react-markdown": { __esModule: true, default: "Markdown" },
-      "remark-gfm": { __esModule: true, default: () => {} },
-      sonner: {
-        toast: {
-          error: (message) => {
-            throw Error(message);
-          },
-        },
+test("the root address sends visitors to the panel or the login page", () => {
+  for (const [auth, expected] of [
+    [{ user: { id: "owner" }, loading: false }, "/dashboard"],
+    [{ user: null, loading: false }, "/auth"],
+    [{ user: null, loading: true }, null],
+  ]) {
+    const visited = [];
+    const view = componentView(
+      new URL("../src/routes/index.tsx", import.meta.url),
+      "Route",
+      {},
+      {
+        "@tanstack/react-router": { createFileRoute: () => (options) => (props) => ({ type: options.component, props, key: "root" }) },
+        "@/components/AuthContext": { useAuth: () => auth },
+        "@/lib/router-hooks": { useNavigate: () => (to, options) => visited.push([to, options]) },
       },
-    },
-  );
-  let tree = view.render();
-  nodes(tree)
-    .find((node) => node.type === "Textarea")
-    .props.onChange({ target: { value: "Hukuki bir soru" } });
-  tree = view.render();
-  await nodes(tree)
-    .find((node) => node.type === "Textarea")
-    .props.onKeyDown({ key: "Enter", shiftKey: false, preventDefault() {} });
-  await settle();
-  tree = view.render();
-  assert.equal(nodes(tree).find((node) => node.type === "CitationList").props.citations, citations);
-  assert.ok(
-    nodes(tree).some((node) => node.type === "Markdown" && node.props.children === "Cevap [K1]"),
-  );
-  assert.ok(
-    nodes(tree)
-      .filter((node) => node.type === "Markdown")
-      .every((node) => !node.props.children.includes("**Kaynaklar**")),
-  );
-  view.unmount();
+    );
+    view.render();
+    assert.deepEqual(visited, expected ? [[expected, { replace: true }]] : []);
+    view.unmount();
+  }
 });
 
 test("hard-wrapped official text is reflowed into paragraphs without changing any word", () => {

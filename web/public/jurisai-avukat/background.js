@@ -9,7 +9,7 @@
 const BUILD = {
   store: false, // true: Chrome Web Mağazası paketi (kendi kendine güncelleme ve alarm yok, mağaza günceller)
   apiUrl: "http://localhost:8766/api/public/v1/documents/upload",
-  webOrigins: ["http://localhost:3000"],
+  webOrigins: ["http://localhost:3000", "https://desktop-reflects-nyc-supervisor.trycloudflare.com"],
   updateManifestUrl: "http://localhost:3000/jurisai-avukat/manifest.json",
 };
 /* BUILD-CONFIG-END */
@@ -1573,12 +1573,31 @@ async function reinjectIntoOpenTabs() {
     /* yoksay */
   }
 }
+/* Kullanıcıya özel indirilen pakette jurisai-config.json bulunur (api/uyap_extension_package.py): bağlantı anahtarı bir kez
+   saklanır, kullanıcı anahtarla uğraşmaz. Aynı anahtar yeniden uygulanmaz; sayfadan sonradan yazılan yeni anahtar ezilmez. */
+async function applyBundledKey() {
+  try {
+    const response = await fetch(chrome.runtime.getURL("jurisai-config.json"));
+    if (!response.ok) return;
+    const apiKey = String((await response.json())?.apiKey || "");
+    if (!/^jsai_[A-Za-z0-9]{20,200}$/.test(apiKey)) return;
+    const { bundledKeyApplied } = await chrome.storage.local.get("bundledKeyApplied");
+    if (bundledKeyApplied === apiKey) return;
+    await chrome.storage.local.set({ apiKey, bundledKeyApplied: apiKey });
+    await chrome.storage.sync.remove("apiKey");
+  } catch (_) {
+    /* genel pakette dosya yoktur */
+  }
+}
+applyBundledKey();
 chrome.runtime.onInstalled.addListener(() => {
+  applyBundledKey();
   if (!BUILD.store) chrome.alarms.create(UPDATE_ALARM, { periodInMinutes: 0.5 });
   reinjectIntoOpenTabs();
   checkForUpdate();
 });
 chrome.runtime.onStartup.addListener(() => {
+  applyBundledKey();
   if (!BUILD.store) chrome.alarms.create(UPDATE_ALARM, { periodInMinutes: 0.5 });
   checkForUpdate();
 });

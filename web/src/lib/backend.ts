@@ -27,6 +27,7 @@ const handlers: Record<string, (body: Record<string, unknown>) => Promise<unknow
       parties: Array.isArray(body.parties) ? (body.parties as string[]) : [],
       subject: String(body.subject ?? ""),
       details: typeof body.details === "string" ? body.details : undefined,
+      draftFields: body.draftFields as import("./draft-fields").DraftFields | undefined,
       docIds: Array.isArray(body.docIds) ? (body.docIds as string[]) : [],
     }),
   "check-subscription": async () => ({

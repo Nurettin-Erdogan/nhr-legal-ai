@@ -180,6 +180,20 @@ panelleri temizlenir). Çekme ya da kayıt sürerken beklenir. Karar `decideUpda
 - Bu yalnızca geliştirme kurulumu içindir. Avukatlara dağıtımda otomatik güncelleme **Chrome Web Mağazası** yayınıyla (listelenmemiş de olabilir)
   sağlanır; kendi barındırdığımız bir güncelleme adresi Chrome'da yalnız kurumsal politikayla kurulan eklentilerde çalışır.
 
+## Kişiye özel paket: anahtar zipin içinde (v2.26.46, kullanıcı kararı 2026-11-02)
+
+UYAP sayfasındaki "Eklentiyi indir" düğmesi genel zipi değil `POST /api/uyap-extension/package` yanıtını indirir
+([api/uyap_extension_package.py](../api/uyap_extension_package.py)): genel paketin bayt bayt aynısı + o kullanıcının yeni bağlantı anahtarını
+taşıyan `jurisai-config.json`. Eklenti açılışta (`applyBundledKey`, background.js) bu dosyayı okuyup anahtarı `chrome.storage.local`'a yazar;
+kullanıcı anahtar oluşturmaz, yapıştırmaz, onay penceresi görmez. Aynı anahtar yeniden uygulanmaz (`bundledKeyApplied`), sayfadan sonradan
+yazılan yeni anahtar ezilmez.
+
+- Anahtar veritabanında yalnız SHA-256 özetiyle durur; düz değer yalnız indirilen zipte bulunur, denetim kaydına yalnız ilk 9 karakteri yazılır.
+- Her indirme önceki etkin anahtarları iptal eder: eski zip kopyaları ve ikinci bilgisayardaki kurulum çalışmaz olur (tek anahtar modeli,
+  "Anahtarı yenile" ile aynı). Zip hesabın anahtarını taşıdığı için kimseyle paylaşılmamalıdır.
+- Genel zip (`web/public/jurisai-avukat.zip`) anahtar içermez; elle kurulumda eski "bağla" akışı (onay penceresi) çalışmaya devam eder.
+- Testler: `tests/test_uyap_extension_package.py` (sunucu), `tests/test_uyap_extension_bundled_key.py` (gerçek Chromium, `NHR_BROWSER_TESTS=1`).
+
 ## Ağaç eksik yüklenirse: onarım ve yeniden tarama (v2.19.0)
 
 Canlıda aynı dosya her açılışta farklı sayıda evrak veriyordu (463, sonra 456) ve eksik klasör değişiyordu: "aynı evrak iki klasörde"

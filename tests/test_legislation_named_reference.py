@@ -68,3 +68,6 @@ def test_a_bare_abbreviation_lists_that_law():
     assert browse.search_laws(laws, "xyz", None) == []
     # "anayasa" kısaltma değil, sözcüktür: Anayasa Mahkemesi Kanunu da gelmeli
     assert {item.law_no for item in browse.search_laws(laws, "anayasa", None)} == {"2709", "1"}
+    # Anayasa'nın kendisi, adında "anayasa" geçen daha uzun/çok maddeli kayıtların önünde gelir
+    crowded = laws + [law("999", "ANAYASA MAHKEMESİ PERSONEL YÖNETMELİĞİ", "regulation", articles=900)]
+    assert browse.search_laws(crowded, "anayasa", None)[0].law_no == "2709"

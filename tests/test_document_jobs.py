@@ -116,6 +116,19 @@ def test_risk_uses_the_whole_window_and_preserves_verification(monkeypatch):
     assert "SON_TUTAR" in calls[-1]
 
 
+def test_risk_section_failure_is_not_reported_as_complete(monkeypatch):
+    async def risk(prompt, owner):
+        return {"content": "Kısmi rapor", "sources": [],
+                "errors": ["Yargı kararları: Kaynaklarla desteklenen cevap üretilemedi."]}
+
+    monkeypatch.setattr(office_ai, "_risk", risk)
+    result = asyncio.run(jobs.process_window(
+        "risk_analysis", "Sentetik belge metni", "test.txt", uuid4(), OWNER, "Süreyi incele.",
+    ))
+    assert result["errors"] == ["Yargı kararları: Kaynaklarla desteklenen cevap üretilemedi."]
+    assert result["answer"] == "Kısmi rapor"
+
+
 def test_unverified_model_bullets_are_visible_as_partial_errors(monkeypatch):
     async def summarize(*args, **kwargs):
         return case_summary.DocumentSummary(

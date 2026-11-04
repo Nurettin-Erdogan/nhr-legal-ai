@@ -204,6 +204,10 @@ def adds_normative_term(bullet: str, source: str) -> bool:
 
 
 def _stems(text: str, *, minimum: int) -> list[str]:
+    from api.ai.numeric_support import normalize_half_percentage
+    # Percent notation and its spoken form carry the same lexical evidence.
+    # Numeric/unit checks still run independently before this overlap check.
+    text = normalize_half_percentage(text.translate(_LOWER_TR).lower()).replace("%", " yüzde ")
     words = (word.translate(_LOWER_TR).lower() for word in _WORD.findall(text))
     return [word[:5] for word in words if len(word) >= minimum and word not in _STOP]
 

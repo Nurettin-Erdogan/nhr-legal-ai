@@ -102,6 +102,7 @@ test("editing preserves Turkish names, amounts, dates, citations and paragraph/l
 });
 
 test("Word export retains emphasis, literal underscores, references and exact amounts", () => {
+  assert.deepEqual(editor.documentInlineRuns("Boş alan: \\[…\\]"), [{ text: "Boş alan: […]" }]);
   assert.deepEqual(editor.documentInlineRuns("Dosya_A: **340.000 TL**, *07.10.2026* [K1]."), [
     { text: "Dosya_A: " },
     { text: "340.000 TL", bold: true },

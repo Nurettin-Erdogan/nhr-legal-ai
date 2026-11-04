@@ -3,7 +3,7 @@
 ## Mevcut akış
 
 - Günlük özet kayıtlı duruşma ve görev tarihlerini İstanbul saatine göre gösterir.
-- Son 7 gündeki belge girişleri ve gelecek 7 gündeki duruşmalar öneriye dönüşür.
+- Tarih ve kayıt sayısı sınırı olmadan işlem bekleyen belgeler ve yaklaşan kayıtlı duruşmalar öneriye dönüşür.
 - İnceleme paneli kaynak metnin başlangıcını gösterir; bu alıntı özet değildir.
 - Duruşma hazırlığı dosyanın kayıtlı bilgilerini, açık görevlerini ve belge durumunu bir araya getirir.
 - Kullanıcı, okunabilir belgelerden hangilerinin özet işine alınacağını seçer.
@@ -16,7 +16,7 @@
 
 ## Sınırlar
 
-İnceleme paneli en yeni 10 belgeyi, hazırlık notu ilk 20 açık görevi gösterir; sınırlı listeler ekranda belirtilir.
+İnceleme paneli dosyanın tüm belgelerini, hazırlık notu tüm açık görevlerini gösterir. Belge önizlemesi tam metin veya tüm belgelerin incelendiği anlamına gelmez; özet ayrıca seçilen belgelerle başlatılır.
 Hazırlık notu hukuki strateji raporu değildir. Kayıtlı tarihlerden yeni hukuki süre veya yükümlülük türetilmez.
 Özetin tamamlanması her hukuki sorunun cevaplandığı anlamına gelmez; belge kuyruğunun okuma/başarısız bölüm uyarıları korunur.
 Öneriyi kapatmak veya takvime eklemek duruşma hazırlığını erişilemez yapmaz; yaklaşan duruşma listesinden yeniden açılır.

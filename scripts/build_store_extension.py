@@ -43,9 +43,11 @@ def build(web_origin: str, api_url: str, out_dir: Path) -> Path:
     api_origin = _validate(web_origin, api_url)
     manifest = json.loads((SOURCE / "manifest.json").read_text(encoding="utf-8"))
     manifest["permissions"] = [permission for permission in manifest["permissions"] if permission != "alarms"]
+    # Development can contain temporary tunnels. A production package must not
+    # inherit those grants merely because their hostname lacks "localhost".
     manifest["host_permissions"] = [
-        host for host in manifest["host_permissions"] if "localhost" not in host
-    ] + [f"{api_origin}/*"]
+        "*://*.adalet.gov.tr/*", "*://*.uyap.gov.tr/*", f"{api_origin}/*",
+    ]
     for script in manifest["content_scripts"]:
         if script["js"] == ["bridge.js"]:
             script["matches"] = [f"{web_origin}/*"]

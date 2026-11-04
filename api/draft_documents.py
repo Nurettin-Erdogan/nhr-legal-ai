@@ -16,14 +16,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from pydantic import BaseModel, ConfigDict, Field
 
 from api.case_summary import bullet_supported, parse_bullets
 
-MAX_PARAGRAPHS = 6
-
 FACT_SYSTEM = (
     "Sen bir avukat asistanısın. Aşağıda müvekkilin verdiği olgular var. Bunları resmî dilekçe üslubuyla, numaralı kısa "
-    "paragraflar hâlinde (en çok 6) yeniden yaz. YALNIZCA verilen bilgileri kullan. Kanun, madde, karar numarası, hukuki sonuç "
+    "paragraflar hâlinde yeniden yaz. Hiçbir olay veya koşulu atlama. YALNIZCA verilen bilgileri kullan. Kanun, madde, karar numarası, hukuki sonuç "
     "ya da tavsiye YAZMA; verilmeyen isim, tarih, tutar uydurma. Her paragraf '1.', '2.' gibi numarayla başlasın. Başlık ya da "
     "giriş cümlesi yazma."
 )
@@ -35,6 +34,31 @@ DOC_LABELS = {
     "diger": "Hukuki Belge",
 }
 GAP = "[…]"
+
+
+class DraftFields(BaseModel):
+    """Explicit user instructions, never inferred legal findings or model evidence."""
+    model_config = ConfigDict(extra="forbid")
+    authority: str = Field(default="", max_length=500)
+    representative: str = Field(default="", max_length=500)
+    evidence: str = Field(default="", max_length=8000)
+    requests: str = Field(default="", max_length=8000)
+    payment: str = Field(default="", max_length=4000)
+    term: str = Field(default="", max_length=4000)
+    obligations: str = Field(default="", max_length=8000)
+    termination: str = Field(default="", max_length=4000)
+    confidentiality: str = Field(default="", max_length=4000)
+    dispute: str = Field(default="", max_length=4000)
+    effective_date: str = Field(default="", max_length=500)
+    notice_period: str = Field(default="", max_length=1000)
+    notice_demand: str = Field(default="", max_length=8000)
+    notice_consequence: str = Field(default="", max_length=4000)
+
+
+def _field_text(fields: DraftFields, name: str) -> str:
+    # Keep user terms literal: do not let a typed heading become Markdown structure.
+    value = getattr(fields, name).strip()
+    return re.sub(r"([\\`*_{}\[\]<>#!|])", r"\\\1", value) if value else GAP
 NOTICE = (
     "_Taslaktır: `[…]` alanlarını doldurun. Olay anlatımı yalnız sizin verdiğiniz bilgilerle yazıldı ve kodla denetlendi; "
     "hukuki dayanak listesi korpustaki resmî doğrulanmış kaynaklardan otomatik eklendi, uygunluğunu avukat kontrol etmelidir._"
@@ -87,6 +111,19 @@ def legal_references(contexts, *, question: str = "", suggested: list[dict] | No
     for position, context in enumerate(contexts):
         if context.verification != "official":
             continue
+        if question and context.source_type == "legislation":
+            # A corpus-relative score is not a relevance proof: an unrelated
+            # regulation can be the "best" of a poor candidate pool. Require
+            # topic overlap in its title as well, unless this is a code explicitly
+            # identified by a verified subject hint.
+            from api.ai.consulted_relevance import _stems
+            from api.ai.search_plan import normalize
+
+            title = normalize(context.law_name or "")
+            anchors = _stems(question)
+            hinted_laws = {row.get("law_no") for row in suggested or []}
+            if context.law_no not in hinted_laws and not any(stem in title for stem in anchors):
+                continue
         if context.source_type == "legislation" and context.law_name and context.article_no:
             if (context.law_no, context.article_no) in hinted:
                 continue  # aynı madde önerilenlerde zaten var
@@ -159,7 +196,7 @@ def split_sentences(paragraph: str) -> list[str]:
 
 
 def verified_paragraphs(model_output: str, given: str) -> list[list[str]]:
-    """Model paragraflarının verilen bilgiyle desteklenen CÜMLELERİ (paragraf başına liste; en çok `MAX_PARAGRAPHS` paragraf).
+    """Model paragraflarının verilen bilgiyle desteklenen CÜMLELERİ (paragraf başına liste).
 
     Denetim cümle düzeyindedir: doğru bir cümlenin yanına eklenen uydurma cümle ("Bu tutar … yetersizliği sonucu oluşmuştur")
     paragrafla birlikte geçiyordu (ölçüldü: 2026-10-05). Desteklenmeyen cümle atılır, paragrafın geri kalanı korunur.
@@ -169,7 +206,7 @@ def verified_paragraphs(model_output: str, given: str) -> list[list[str]]:
         kept = [sentence for sentence in split_sentences(paragraph) if bullet_supported(sentence, given)]
         if kept:
             paragraphs.append(kept)
-    return paragraphs[:MAX_PARAGRAPHS]
+    return paragraphs
 
 
 def join_paragraphs(paragraphs: list[list[str]]) -> list[str]:
@@ -182,9 +219,9 @@ def fallback_paragraphs(subject: str, details: str | None) -> list[str]:
     Olgu verilmemişse konu cümlesi ilk paragraf olur ve ayrıntı için boşluk bırakılır (bölüm tümüyle boş kalmaz).
     """
     text = " ".join((details or "").split())
-    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if len(part.strip()) > 3]
+    sentences = [part for part in split_sentences(text) if len(part) > 3]
     if sentences:
-        return sentences[:MAX_PARAGRAPHS]
+        return sentences
     gap = f"{GAP} (olayları, tarihleri ve tutarları burada anlatın)"
     topic = " ".join(subject.split()).rstrip(".")
     return [f"Dava konusu: {topic}.", gap] if topic else [gap]
@@ -252,21 +289,29 @@ def _party(parties: list[str], index: int) -> str:
     return parties[index].strip() if len(parties) > index and parties[index].strip() else GAP
 
 
-def build_document(doc_type: str, title: str | None, parties: list[str], subject: str, paragraphs: list[str], legal: Legal) -> str:
+def build_document(doc_type: str, title: str | None, parties: list[str], subject: str, paragraphs: list[str], legal: Legal,
+                   draft_fields: DraftFields | dict | None = None) -> str:
+    fields = draft_fields if isinstance(draft_fields, DraftFields) else DraftFields.model_validate(draft_fields or {})
+    def supplied(name: str) -> str:
+        return _field_text(fields, name)
     label = DOC_LABELS.get(doc_type, DOC_LABELS["diger"])
     subject_line = short_subject(subject)
     body = _numbered(paragraphs)
+    # A short KONU line is presentation only, not permission to drop the rest.
+    full_subject = " ".join(subject.split())
+    if doc_type != "sozlesme" and full_subject.rstrip(".") != subject_line and full_subject not in " ".join(paragraphs):
+        body = f"Konuya ilişkin verilen açıklama: {full_subject}\n\n{body}"
     parties = order_parties(parties)
     head = f"# {title.strip() if title and title.strip() else label}"
     if doc_type == "dilekce":
         parts = [
-            head, "", f"**{GAP} MAHKEMESİNE**", "",
-            f"**DAVACI:** {_party(parties, 0)}", f"**VEKİLİ:** Av. {GAP}", f"**DAVALI:** {_party(parties, 1)}", "",
+            head, "", f"**{supplied('authority') if fields.authority.strip() else GAP + ' MAHKEMESİNE'}**", "",
+            f"**DAVACI:** {_party(parties, 0)}", f"**VEKİLİ:** {supplied('representative')}", f"**DAVALI:** {_party(parties, 1)}", "",
             f"**KONU:** {subject_line}", "", "**AÇIKLAMALAR:**", "", body, "",
             "**HUKUKİ NEDENLER:**", "", _legal_section(legal), "",
-            f"**DELİLLER:** {GAP}", "",
+            f"**DELİLLER:** {supplied('evidence')}", "",
             "**SONUÇ VE İSTEM:**", "",
-            f"Yukarıda açıklanan nedenlerle; {subject_line} yönündeki talebimin kabulüne karar verilmesini, yargılama giderleri ve vekâlet ücretinin davalıya yükletilmesini saygılarımla arz ve talep ederim. {GAP} (tarih)",
+            supplied('requests'),
             "", f"Davacı Vekili Av. {GAP}",
         ]
     elif doc_type == "ihtarname":
@@ -274,16 +319,19 @@ def build_document(doc_type: str, title: str | None, parties: list[str], subject
             head, "", f"**KEŞİDECİ:** {_party(parties, 0)}", f"**MUHATAP:** {_party(parties, 1)}", "", f"**KONU:** {subject_line}", "",
             "**AÇIKLAMALAR:**", "", body, "", "**DAYANAK:**", "", _legal_section(legal), "",
             "**İHTAR:**", "",
-            f"Yukarıda açıklanan hususlar nedeniyle, işbu ihtarnamenin tebliğinden itibaren {GAP} gün içinde {GAP} yerine getirilmediği takdirde yasal yollara başvuracağımı, bunun doğuracağı her türlü masraf ve zarardan sorumlu olacağınızı ihtar ederim. {GAP} (tarih)",
+            f"**Talep edilen işlem:** {supplied('notice_demand')}",
+            f"**Süre ve başlangıcı:** {supplied('notice_period')}",
+            f"**Yerine getirilmemesi hâlindeki bildirim:** {supplied('notice_consequence')}",
+            f"**Tarih:** {supplied('effective_date')}",
             "", f"Keşideci / Vekili: {GAP}",
         ]
     elif doc_type == "sozlesme":
         parts = [
             head, "", f"**TARAFLAR:** {_party(parties, 0)} ile {_party(parties, 1)}", "",
-            f"**MADDE 1 – Sözleşmenin konusu:** {subject_line}", "", "**Olgular ve ön açıklamalar:**", "", body, "",
-            f"**MADDE 2 – Bedel ve ödeme koşulları:** {GAP}", f"**MADDE 3 – Süre:** {GAP}", f"**MADDE 4 – Tarafların hak ve yükümlülükleri:** {GAP}",
-            f"**MADDE 5 – Sona erme ve fesih:** {GAP}", f"**MADDE 6 – Gizlilik ve kişisel veriler:** {GAP}", f"**MADDE 7 – Uyuşmazlık çözümü ve yetkili mahkeme:** {GAP}",
-            f"**MADDE 8 – Yürürlük:** {GAP}", "", "**Mevzuat dayanakları (otomatik; avukat kontrol etmelidir):**", "", _legal_section(legal), "",
+            f"**MADDE 1 – Sözleşmenin konusu:** {subject.strip()}", "", "**Olgular ve ön açıklamalar:**", "", body, "",
+            f"**MADDE 2 – Bedel ve ödeme koşulları:** {supplied('payment')}", f"**MADDE 3 – Süre:** {supplied('term')}", f"**MADDE 4 – Tarafların hak ve yükümlülükleri:** {supplied('obligations')}",
+            f"**MADDE 5 – Sona erme ve fesih:** {supplied('termination')}", f"**MADDE 6 – Gizlilik ve kişisel veriler:** {supplied('confidentiality')}", f"**MADDE 7 – Uyuşmazlık çözümü ve yetkili mahkeme:** {supplied('dispute')}",
+            f"**MADDE 8 – Yürürlük:** {supplied('effective_date')}", "", "**Mevzuat dayanakları (otomatik; avukat kontrol etmelidir):**", "", _legal_section(legal), "",
             f"İmzalar: {_party(parties, 0)} / {_party(parties, 1)}  {GAP} (tarih)",
         ]
     else:

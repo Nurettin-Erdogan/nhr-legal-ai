@@ -37,6 +37,22 @@ def approved(count=1, **fields):
             "coverage_preserved": True, "source_only": True, "clarification_safe": True, **fields}
 
 
+@pytest.mark.parametrize("second,accepted", [(approved(), True), ("not JSON", False),
+                                               (approved(source_only=False), False)])
+def test_research_checker_format_retry_is_bounded_and_never_implies_approval(second, accepted):
+    context = legislation_context(content="Başvuru süresi tebliğ tarihinden başlar.")
+    writer = Provider(draft("Başvuru süresinin başlangıcı tebliğ tarihidir.", (1, context.content)))
+    checker = Provider("not JSON", second)
+    diagnostics = {}
+    result = synthesize_answer(writer, checker_provider=checker, question="Başvuru süresi?",
+                               contexts=[context], checker_format_retry=True, diagnostics=diagnostics)
+    assert bool(result and result.grounded) is accepted
+    assert len(writer.calls) == 1
+    assert len(checker.calls) == 2
+    assert checker.calls[0] == checker.calls[1]
+    assert diagnostics["checker_format_retry"] is True
+
+
 @pytest.mark.parametrize("separator", ["-", "–", "—", ":"])
 def test_article_label_is_structural_but_full_original_evidence_reaches_checker(separator):
     proposition = "Başvuru süresi tebliğ tarihinden başlar."
@@ -201,6 +217,22 @@ def test_exact_server_owned_input_question_cannot_be_rejected_by_a_claim_checker
     assert result and result.text == question and result.answer_kind == "clarification" and not result.grounded
     assert len(writer.calls) == 1 and checker.calls == []
     assert question in json.loads(writer.calls[0]["prompt"])["clarification_options"]
+
+
+@pytest.mark.parametrize("control", [
+    "Sözleşmeniz hangi tarihte başladı ve ne zaman yenileniyor?",
+    "Tebliğ size hangi tarihte ulaştı?",
+    "Mevcut tutar nedir ve hangi para biriminde?",
+])
+def test_rule_explanation_cannot_be_replaced_by_unnecessary_source_keyword_input(control):
+    context = legislation_context(content="Sözleşmede ödeme için yazılı ihtar tebliğ edilir.")
+    writer = Provider({"claims": [], "question": control})
+    checker = Provider(approved(0))
+    result = synthesize_answer(writer, checker_provider=checker,
+        question="Konut kiracısına ihtarın şartlarını ve fesih bildiriminin gerekliliğini açıkla.",
+        contexts=[context], repair_attempts=0)
+    assert result is None and checker.calls == []
+    assert "clarification_options" not in json.loads(writer.calls[0]["prompt"])
 
 
 def test_server_owned_question_with_even_one_legal_claim_still_requires_independent_check():
@@ -576,7 +608,8 @@ def test_success_diagnostics_are_categories_not_answer_text(kind):
     result = synthesize_answer(Provider(value, approved(0 if kind == "clarification" else 1)),
                                question="Başvuru?", contexts=[context], diagnostics=diagnostics)
     assert result is not None
-    assert diagnostics == {"status": "accepted", "reason": kind}
+    assert diagnostics == {"status": "accepted", "reason": kind,
+                           **({"coverage_preserved": True} if kind == "legal" else {})}
 
 
 @pytest.mark.parametrize("bad", [
@@ -596,7 +629,8 @@ def test_one_mechanical_repair_revalidates_entire_draft_before_independent_check
     assert result is not None and result.grounded
     assert result.text == "Tebliğ halinde başvuru yapılır. [K1]"
     assert len(writer.calls) == 2 and len(checker.calls) == 1
-    assert diagnostics == {"status": "accepted", "reason": "legal", "repair_attempted": True}
+    assert diagnostics == {"status": "accepted", "reason": "legal", "repair_attempted": True,
+                           "coverage_preserved": True}
     repair = json.loads(writer.calls[1]["prompt"])
     assert repair["sources"][0]["text"] == quote
     assert repair["question"] == "Başvuru nasıl yapılır?"
@@ -1180,6 +1214,7 @@ def test_optional_semantic_revision_is_verified_again_and_never_publishes_reject
     assert rejected_text not in answer.text
     assert len(writer.calls) == len(checker.calls) == 2
     assert diagnostics["semantic_repair_attempted"] is True
+    assert diagnostics["coverage_preserved"] is True
     revised_payload = json.loads(writer.calls[1]["prompt"])
     assert "rejected_draft" in revised_payload and revised_payload["sources"][0]["text"] == context.content
 

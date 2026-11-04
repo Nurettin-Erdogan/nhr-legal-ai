@@ -48,8 +48,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       },
     });
   } catch {
-    throw new Error(
-      "Kimlik doğrulama sunucusuna ulaşılamadı. API servisinin çalıştığını kontrol edin.",
+    throw Object.assign(
+      new Error(
+        "Kimlik doğrulama sunucusuna ulaşılamadı. API servisinin çalıştığını kontrol edin.",
+      ),
+      { status: 0 },
     );
   }
 
@@ -64,11 +67,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 /** Oturumdaki kullanıcı; giriş yapılmamışsa null. `/session` giriş yapmamış ziyaretçide 401 vermez (konsola hata düşmez). */
 export async function currentUser(): Promise<AuthUser | null> {
-  try {
-    return (await request<{ user: AuthUser | null }>("/api/auth/session")).user ?? null;
-  } catch (error) {
-    if (error instanceof Error && "status" in error && error.status === 401) return null;
-    throw error;
+  // Only retry the read-only session lookup, never login or other mutations.
+  // A restart/proxy interruption is not an expired session or permission denial.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return (
+        (
+          await request<{ user: AuthUser | null }>("/api/auth/session", {
+            signal: AbortSignal.timeout(4000),
+          })
+        ).user ?? null
+      );
+    } catch (error) {
+      const status = error instanceof Error && "status" in error ? error.status : undefined;
+      if (status === 401) return null;
+      if (attempt >= 3 || ![0, 502, 503, 504].includes(status as number)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+    }
   }
 }
 

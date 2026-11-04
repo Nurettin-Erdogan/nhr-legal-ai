@@ -182,7 +182,7 @@ test("generated DOCX really contains Turkish text, selected page layout, emphasi
     "@/lib/document-layout": layout,
   });
   const buffer = await docx.Packer.toBuffer(
-    exporter.buildDocumentDocx("# SONUÇ\nÇağrı Şahin: **340.000 TL**, 07.10.2026. [K1]", {
+    exporter.buildDocumentDocx("# SONUÇ\n\n**BÖLÜM:**\n[…] _(Kontrol notu)_\n---\nÇağrı Şahin: **340.000 TL**, 07.10.2026. [K1]", {
       ...layout.DEFAULT_DOCUMENT_LAYOUT,
       paper: "letter",
       marginMm: 25,
@@ -194,6 +194,10 @@ test("generated DOCX really contains Turkish text, selected page layout, emphasi
   const files = unzipSync(buffer);
   const xml = strFromU8(files["word/document.xml"]);
   assert.match(xml, /Çağrı Şahin/);
+  assert.match(xml, /w:pStyle w:val="Title"/);
+  assert.match(xml, /w:color w:val="000000"/);
+  assert.match(xml, /w:keepNext/);
+  assert.doesNotMatch(xml, /_\(Kontrol notu\)_|>---<|>\s+<\/w:t>/);
   assert.match(xml, /340.000 TL/);
   assert.match(xml, /07.10.2026/);
   assert.match(xml, /\[K1\]/);

@@ -226,6 +226,8 @@ class AIAnswerResponse(BaseModel):
     consulted_sources: list[AICitation] = Field(default_factory=list)
     grounded: bool
     answer_kind: AnswerKind = "legal"
+    # Source support and answering every requested sub-question are distinct.
+    coverage_complete: bool | None = None
     unverified_markers: list[str] = Field(default_factory=list)
     conversation_id: UUID | None = None
     message_id: UUID | None = None

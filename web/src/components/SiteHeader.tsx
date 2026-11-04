@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Logo } from "./Logo";
 import { ThemeToggle } from "./ThemeToggle";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/components/AuthContext";
 
 const navItems = [
   { to: "/", label: "Ana Sayfa" },
@@ -12,6 +13,7 @@ const navItems = [
 
 export const SiteHeader = () => {
   const location = useLocation();
+  const { user } = useAuth();
 
   return (
     <header className="sticky top-0 z-40 w-full border-b border-border bg-background/85 backdrop-blur-xl">
@@ -37,9 +39,9 @@ export const SiteHeader = () => {
             </Link>
           ))}
           <ThemeToggle />
-          <Link to="/auth" className="ml-1">
+          <Link to={user ? "/dashboard" : "/auth"} className="ml-1">
             <Button size="sm" className="shrink-0 whitespace-nowrap rounded-full">
-              Avukat Girişi
+              {user ? "Panele Git" : "Avukat Girişi"}
             </Button>
           </Link>
         </nav>

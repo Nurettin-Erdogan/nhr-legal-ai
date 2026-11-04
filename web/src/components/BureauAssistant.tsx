@@ -161,7 +161,7 @@ export function BureauAssistant() {
                 icon: Sparkles,
               },
               {
-                label: "7 günde duruşma",
+                label: "Yaklaşan duruşmalar",
                 value: data?.counts.upcoming_hearings ?? "—",
                 icon: CalendarDays,
               },
@@ -287,7 +287,7 @@ export function BureauAssistant() {
                 <p className="mt-2 max-w-sm text-sm leading-6 text-muted-foreground">
                   {proposals.length
                     ? "Başka bir filtre veya arama sözcüğü deneyin."
-                    : "Son 7 günün yeni belgeleri ve gelecek 7 günün kayıtlı duruşmaları burada değerlendirilir. Yeni kayıt eklediğinizde listeyi yenileyin."}
+                    : "İşlem bekleyen tüm belgeler ve yaklaşan tüm kayıtlı duruşmalar burada değerlendirilir. Yeni kayıt eklediğinizde listeyi yenileyin."}
                 </p>
                 <Link
                   to="/dashboard/files"
@@ -442,7 +442,7 @@ export function BureauAssistant() {
                 </div>
               ) : (
                 <p className="text-sm leading-6 text-muted-foreground">
-                  {data ? "Gelecek 7 günde kayıtlı duruşma yok." : "Duruşma bilgisi bekleniyor."}
+                  {data ? "Yaklaşan kayıtlı duruşma yok." : "Duruşma bilgisi bekleniyor."}
                 </p>
               )}
             </section>

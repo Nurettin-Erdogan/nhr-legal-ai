@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "JurisAI - UYAP Avukat Portalı Aktarımı",
+  "version": "2.26.44",
+  "description": "UYAP'ta açtığınız dosyanın evraklarından seçtiklerinizi JurisAI hesabınıza aktarır. UYAP şifreniz size ait kalır.",
+  "permissions": ["activeTab", "scripting", "downloads", "storage", "webRequest", "alarms"],
+  "host_permissions": [
+    "*://*.adalet.gov.tr/*",
+    "*://*.uyap.gov.tr/*",
+    "https://desktop-reflects-nyc-supervisor.trycloudflare.com/*",
+    "https://desktop-reflects-nyc-supervisor.trycloudflare.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "JurisAI - UYAP Aktarımı",
+    "default_icon": {
+      "16": "images/icon-16.png",
+      "48": "images/icon-48.png",
+      "128": "images/icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "images/icon-16.png",
+    "48": "images/icon-48.png",
+    "128": "images/icon-128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.adalet.gov.tr/*", "*://*.uyap.gov.tr/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle",
+      "all_frames": true
+    },
+    {
+      "matches": ["https://desktop-reflects-nyc-supervisor.trycloudflare.com/*"],
+      "js": ["bridge.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

@@ -32,6 +32,21 @@ _DISTRIBUTIVE = {"birer": 1, "ikişer": 2, "üçer": 3, "dörder": 4, "beşer": 
                  "altışar": 6, "yedişer": 7, "sekizer": 8, "dokuzar": 9, "onar": 10}
 
 
+def normalize_half_percentage(text: str) -> str:
+    """Explicit 'yarısı/yarısını' is 50 percent, not an unquantified word.
+
+    Apply to both evidence and claim, so a claim saying half cannot pass
+    against an evidence-only 40 percent payment schedule.
+    """
+    text = re.sub(r"\byarısı(?:nı|na|nın|ndan)?\b", "%50", text)
+    # Percent values often carry a possessive suffix: "yüzde ellisi".
+    # Without stripping that suffix the number tokenizer sees no number at
+    # all, allowing an incorrect "yüzde kırkı" to evade the numeric guard.
+    names = {**_UNITS_WORDS, **_TENS_WORDS, "yüz": 100}
+    pattern = r"\byüzde\s+(" + "|".join(sorted(names, key=len, reverse=True)) + r")(?:['’]?(?:s[ıi]|[ıi])(?:n[ıi]n|n[ıi]|na|ne|ndan|nden)?)\b"
+    return re.sub(pattern, lambda match: f"%{names[match.group(1)]}", text)
+
+
 def _word_value(word: str) -> int | None:
     """Tek sözcüklük Türkçe sayı ("beş", "oniki", "yüzyirmi"); "bir" yalnız birleşik sayının parçasıysa."""
     match = _JOINED.match(word)
@@ -92,7 +107,7 @@ def spell_numbers(value: str) -> str:
 def _facts(text: str) -> tuple[set[str], set[tuple[str, str]]]:
     # The statutes write "işgünü" (one word), a sentence writes "iş günü": the same unit (measured 2026-10-30: a correct
     # "on iş günü" sentence was refused against "on işgünü").
-    value = spell_numbers(normalize(text).replace("−", "-").replace("işgün", "iş gün"))
+    value = spell_numbers(normalize_half_percentage(normalize(text)).replace("−", "-").replace("işgün", "iş gün"))
     numbers, typed = set(), set()
     for match in _NUMBER.finditer(value):
         number = match.group()

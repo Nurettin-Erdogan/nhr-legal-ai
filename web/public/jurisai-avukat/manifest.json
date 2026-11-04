@@ -1,14 +1,15 @@
 {
   "manifest_version": 3,
   "name": "JurisAI - UYAP Avukat Portalı Aktarımı",
-  "version": "2.26.43",
+  "version": "2.26.46",
   "description": "UYAP'ta açtığınız dosyanın evraklarından seçtiklerinizi JurisAI hesabınıza aktarır. UYAP şifreniz size ait kalır.",
   "permissions": ["activeTab", "scripting", "downloads", "storage", "webRequest", "alarms"],
   "host_permissions": [
     "*://*.adalet.gov.tr/*",
     "*://*.uyap.gov.tr/*",
     "http://localhost:8766/*",
-    "http://localhost:3000/*"
+    "http://localhost:3000/*",
+    "https://desktop-reflects-nyc-supervisor.trycloudflare.com/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -36,7 +37,7 @@
       "all_frames": true
     },
     {
-      "matches": ["http://localhost:3000/*"],
+      "matches": ["http://localhost:3000/*", "https://desktop-reflects-nyc-supervisor.trycloudflare.com/*"],
       "js": ["bridge.js"],
       "run_at": "document_start"
     }

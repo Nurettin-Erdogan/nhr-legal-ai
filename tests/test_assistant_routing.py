@@ -377,6 +377,28 @@ def _use_actual_synthesis(monkeypatch, routing, *, contexts=None, responses=None
     return provider
 
 
+@pytest.mark.parametrize("name,profile,repair", [
+    ("bedrock", "deep_research", True), ("bedrock", "default", True),
+    ("ollama", "deep_research", False), ("ollama", "default", False),
+])
+def test_single_provider_bedrock_gets_bounded_synthesis_repair(routing, monkeypatch, name, profile, repair):
+    from api.ai import synthesis
+    provider = _use_actual_synthesis(monkeypatch, routing)
+    provider.name = name
+    routing.settings.free_answer_enabled = False
+    seen = []
+    original = synthesis.synthesize_answer
+    def captured(*args, **kwargs):
+        seen.append(kwargs)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(synthesis, "synthesize_answer", captured)
+    response, _ = asyncio.run(pipeline.execute_answer(
+        AIAnswerRequest(question=_NATURAL_QUESTION), None, generation_profile=profile))
+    assert response.grounded
+    assert len(seen) == 1 and seen[0]["semantic_repair"] is repair
+    assert seen[0]["checker_format_retry"] is (profile == "deep_research")
+
+
 def test_owned_general_conversation_keeps_current_rule_lookup_after_greeting(routing, monkeypatch):
     conversation_id, owner = uuid4(), uuid4()
     _use_actual_synthesis(monkeypatch, routing)

@@ -128,6 +128,7 @@ export const runOfficeModule = (input: {
   });
 
 export const generateDocument = (input: {
+  draftFields?: import("./draft-fields").DraftFields;
   docType: string;
   title?: string;
   parties?: string[];
@@ -144,6 +145,7 @@ export const generateDocument = (input: {
       subject: input.subject,
       details: input.details || null,
       doc_ids: input.docIds ?? [],
+      draft_fields: input.draftFields ?? {},
     },
   );
 
@@ -201,4 +203,30 @@ export async function saveTextDocument(input: {
     throw new Error("Belge kaydedilemedi");
   }
   return { id: data?.id ?? null };
+}
+
+/** Kullanıcıya özel UYAP eklenti paketi: bağlantı anahtarı pakete gömülüdür, kurulumdan sonra anahtar girilmez. */
+export async function downloadExtensionPackage(): Promise<Blob> {
+  const token = inMemoryAccessToken();
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}/api/uyap-extension/package`, {
+      method: "POST",
+      credentials: "include",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+  } catch {
+    throw new Error("Sunucuya ulaşılamadı. API servisinin çalıştığını kontrol edin.");
+  }
+  if (!response.ok) {
+    let detail = "Eklenti paketi indirilemedi.";
+    try {
+      const payload = (await response.json()) as { detail?: unknown };
+      if (typeof payload.detail === "string") detail = payload.detail;
+    } catch {
+      /* JSON değil */
+    }
+    throw new Error(detail);
+  }
+  return response.blob();
 }

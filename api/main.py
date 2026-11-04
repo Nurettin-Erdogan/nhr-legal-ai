@@ -40,6 +40,7 @@ from api.document_jobs import router as document_jobs_router
 from api.project_documents import router as project_documents_router
 from api.integrations import router as integrations_router
 from api.office_public import router as office_public_router
+from api.uyap_extension_package import router as uyap_extension_package_router
 from api.office_trash import router as office_trash_router
 from api.projects import router as projects_router
 from api.schemas import HealthResponse
@@ -214,6 +215,7 @@ app.include_router(document_jobs_router)
 app.include_router(project_documents_router)
 app.include_router(integrations_router)
 app.include_router(office_public_router)
+app.include_router(uyap_extension_package_router)
 app.include_router(admin_ingestion_router)
 app.include_router(admin_audit_router)
 app.include_router(admin_panel_router)

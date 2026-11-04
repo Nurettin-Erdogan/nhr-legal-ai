@@ -19,8 +19,8 @@ export function UyapCaseLinks() {
     }
   };
   return (
-    <section className="mb-6 space-y-3 rounded-2xl border bg-card p-5">
-      <h2 className="font-semibold">UYAP belgeleri ve dava bağlantıları</h2>
+    <section className="space-y-3 rounded-xl border bg-card p-5">
+      <h2 className="font-semibold">Belgeleri davalara bağla</h2>
       <p className="text-sm text-muted-foreground">
         Yeni evraklar dosya numarası ve UYAP birimi birlikte eşleşen davaya bağlanır. Dava yoksa
         beklemede bir kayıt oluşturulur; müvekkil ve dosya durumu tahmin edilmez. Eski belgeleri de

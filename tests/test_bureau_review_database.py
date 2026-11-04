@@ -9,6 +9,39 @@ from tests.test_case_document_rag import _case, _indexed_document, db, needs_db 
 
 
 @needs_db
+def test_snapshot_and_preparation_do_not_truncate_old_documents_or_tasks(db):  # noqa: F811
+    from uuid import uuid4
+
+    case = _case(db, db.alice)
+    other_case = _case(db, db.bob)
+    excluded = _indexed_document(db, db.bob, other_case, "Diğer kullanıcı belgesi.")
+    now = datetime.now(bureau.ZONE)
+    db.become(None)
+    db.connection.execute("UPDATE office_cases SET next_hearing=%s WHERE id=%s",
+                          (now + timedelta(days=30), case))
+    ids = [uuid4() for _ in range(105)]
+    for doc_id in ids:
+        db.connection.execute("""INSERT INTO office_case_documents
+            (id,owner_id,case_id,file_name,created_at,storage_path,size_bytes)
+            VALUES (%s,%s,%s,%s,%s,%s,0)""",
+            (doc_id, db.alice, case, "Eski belge.pdf", now - timedelta(days=365), f"isolated/{doc_id}"))
+    for _ in range(25):
+        db.connection.execute("INSERT INTO office_tasks(id,owner_id,case_id,title,status) VALUES (%s,%s,%s,'İş','todo')",
+                              (uuid4(), db.alice, case))
+    db.become(db.alice)
+    snapshot = bureau.snapshot(db.connection, now)
+    documents = [p for p in snapshot["proposals"] if p["kind"] == "document"]
+    assert {p["key"] for p in documents} == {f"document:{doc_id}" for doc_id in ids}
+    assert not snapshot["limited"]
+    assert len(snapshot["tasks"]) == 25
+    result = bureau.preparation(db.connection, case, now)
+    assert len(result["documents"]) == 105
+    assert len(result["preparation"]["tasks"]) == 25
+    assert result["action_available"]
+    assert str(excluded) not in str(result)
+
+
+@needs_db
 def test_review_reads_only_current_owners_selected_document_and_denies_other_owner(db):  # noqa: F811 - imported pytest fixture
     case = _case(db, db.alice)
     document = _indexed_document(db, db.alice, case, "Sentetik belge metni. Dosya incelemesi gereklidir.")

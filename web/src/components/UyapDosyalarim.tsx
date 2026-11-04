@@ -202,7 +202,6 @@ export const UyapDosyalarim = () => {
   return (
     <section className="mb-6 rounded-xl border bg-card p-5 space-y-4" data-testid="uyap-dosyalarim">
       <div className="flex flex-wrap items-center gap-2">
-        <Badge>Yeni</Badge>
         <FolderOpen className="h-4 w-4 text-primary" />
         <h2 className="font-semibold">UYAP Dosyalarım</h2>
         {extension?.installed && (
@@ -219,37 +218,43 @@ export const UyapDosyalarim = () => {
       )}
 
       {extension && !extension.installed && (
-        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm leading-relaxed">
-          <p className="font-medium">Bu sayfa JurisAI eklentisiyle konuşamıyor.</p>
-          {extension.error && (
-            <p className="mt-1" role="status">
-              Bağlantı kontrolü: {extension.error}
-              {extension.code === "timeout" &&
-                " Bu sonuç eklentinin kurulu olmadığını kanıtlamaz; köprüden süre içinde yanıt alınamadı."}
-            </p>
-          )}
-          <p className="text-muted-foreground mt-1">
-            Eklenti kurulu değilse aşağıdaki "Tarayıcı eklentisi" bölümünden kur. Kuruluysa sırayla
-            dene:
+        <div className="space-y-2 text-sm">
+          <p className="text-muted-foreground">
+            Dosyalarını listelemek için önce yukarıdan UYAP eklentisini kur; kurulum bitince bu
+            bölüm kendiliğinden açılır.
           </p>
-          <ol className="text-muted-foreground mt-1 list-decimal pl-5 space-y-0.5">
-            <li>
-              Güncel JurisAI eklentisini aşağıdan indir; eski klasörden çalışıyorsa yeni klasörü
-              yükle. Ardından <span className="font-mono text-xs">chrome://extensions</span> →
-              JurisAI → ↻ (yeniden yükle).
-            </li>
-            <li>
-              Sonra bu sayfayı F5 ile yenile (eklenti, sayfa açıldıktan sonra güncellendiyse sayfaya
-              ancak yenilenince bağlanır).
-            </li>
-            <li>
-              Hâlâ olmuyorsa eklentinin açık olduğundan emin ol; sayfa adresi{" "}
-              <span className="font-mono text-xs">localhost:3000</span> olmalı.
-            </li>
-          </ol>
-          <Button size="sm" variant="outline" className="mt-2" onClick={() => void detect()}>
-            <RefreshCw className="h-3.5 w-3.5 mr-2" /> Yeniden dene
-          </Button>
+          <details className="text-muted-foreground">
+            <summary className="cursor-pointer select-none text-xs font-medium text-foreground">
+              Eklenti kurulu ama bağlanmıyor mu?
+            </summary>
+            <div className="mt-2 space-y-2 leading-relaxed">
+              {extension.error && (
+                <p role="status" className="text-xs">
+                  Bağlantı kontrolü: {extension.error}
+                  {extension.code === "timeout" &&
+                    " Bu sonuç eklentinin kurulu olmadığını kanıtlamaz; köprüden süre içinde yanıt alınamadı."}
+                </p>
+              )}
+              <ol className="list-decimal space-y-0.5 pl-5">
+                <li>
+                  Güncel eklentiyi yukarıdan indir; eski klasörden çalışıyorsa yeni klasörü yükle.
+                  Ardından <span className="font-mono text-xs">chrome://extensions</span> → JurisAI
+                  → ↻ (yeniden yükle).
+                </li>
+                <li>
+                  Bu sayfayı F5 ile yenile (eklenti, sayfa açıldıktan sonra güncellendiyse sayfaya
+                  ancak yenilenince bağlanır).
+                </li>
+                <li>
+                  Eklentinin açık olduğundan emin ol; sayfa adresi{" "}
+                  <span className="font-mono text-xs">localhost:3000</span> olmalı.
+                </li>
+              </ol>
+              <Button size="sm" variant="outline" onClick={() => void detect()}>
+                <RefreshCw className="h-3.5 w-3.5 mr-2" /> Yeniden dene
+              </Button>
+            </div>
+          </details>
         </div>
       )}
 
@@ -488,12 +493,8 @@ export const UyapDosyalarim = () => {
 
       <p className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
         <ShieldCheck className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-        Ham dosya listesi tarayıcında tutulur. Başlattığın toplu denetim/aktarımın dosya numarası,
-        birimi, sayaçları ve uyarıları rapor geçmişi için hesabına kaydedilir; evraksız, okunamayan
-        ve işlenmeyen dosyalar da raporda kalır. Evraklar yalnız sen başlatınca aktarılır: tek
-        dosyada hangilerinin aktarılacağını seçersin, "Tüm dosyaları aktar" ise onayından sonra
-        hepsini aktarır. Aktarılan dosyanın numarası, birimi ve UYAP listesindeki durumu dava
-        kaydına yazılır.
+        Dosya listesi tarayıcında tutulur. Evraklar yalnız sen başlatınca aktarılır; denetim
+        raporları ve dava kaydındaki dosya durumu hesabına yazılır.
       </p>
     </section>
   );

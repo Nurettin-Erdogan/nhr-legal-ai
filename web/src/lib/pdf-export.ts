@@ -29,15 +29,18 @@ export interface PdfLine {
 export function pdfLines(content: string): PdfLine[] {
   return content
     .replace(/\r\n/g, "\n")
+    .trimEnd()
     .replace(/\n{3,}/g, "\n\n")
     .split("\n")
     .map((raw) => {
       const heading = /^#{1,6}\s+/.test(raw) || /^\*\*[^*]+\*\*:?\s*$/.test(raw.trim());
       const text = raw
+        .replace(/^\s*([-*_])\1{2,}\s*$/, "")
         .replace(/^#{1,6}\s+/, "")
         .replace(/\*\*(.*?)\*\*/g, "$1")
         .replace(/^>\s?/, "")
         .replace(/[`_]/g, "")
+        .replace(/\\([\\`*_{}[\]<>#!|])/g, "$1")
         .replace(/^\s*[-*]\s+/, "• ");
       return { text, bold: heading };
     });
@@ -65,6 +68,7 @@ export async function exportTextPdf(
     const wrapped: string[] = line.text.trim() ? doc.splitTextToSize(line.text, usable) : [""];
     for (const piece of wrapped) {
       if (y > pageHeight - margin) {
+        if (!piece) continue; // Whitespace alone must never create a blank page.
         doc.addPage();
         y = margin + layout.fontPt;
       }
